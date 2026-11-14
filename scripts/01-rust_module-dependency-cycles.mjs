@@ -184,6 +184,27 @@ function printHelp() {
   return lines.join('\n') + '\n';
 }
 
+const BOOLEAN_FLAGS = new Map([
+  ['--json', 'json'],
+  ['--include-tests', 'includeTests'],
+  ['--quiet', 'quiet'],
+  ['--self-test', 'selfTest'],
+  ['-h', 'help'],
+  ['--help', 'help'],
+  ['-V', 'version'],
+  ['--version', 'version'],
+]);
+const CHOICE_FLAGS = new Map([
+  ['--level', { key: 'level', values: LEVELS }],
+  ['--function-scope', { key: 'functionScope', values: FUNCTION_SCOPES }],
+  ['--fail-on', { key: 'failOn', values: FAIL_ON }],
+]);
+const VALUE_FLAGS = new Map([
+  ['--baseline', 'baseline'],
+  ['--write-baseline', 'writeBaseline'],
+  ['--emit-graph', 'emitGraph'],
+]);
+
 function parseArgs(argv) {
   const opts = {
     pathArg: null,
@@ -203,15 +224,6 @@ function parseArgs(argv) {
   };
   const positionals = [];
 
-  const needValue = (token, inlineValue, iter) => {
-    // `--flag=` is a missing value, not an empty one. Accepting the empty string
-    // makes `--write-baseline=` a silent no-op that reads as a recorded baseline,
-    // and lets `--baseline= --write-baseline=x` slip past the exclusivity check.
-    const value = inlineValue !== null ? inlineValue : iter.next();
-    if (value === undefined || value === '') throw new UsageError(`missing value for ${token}`);
-    return value;
-  };
-
   let i = 0;
   const iter = { next: () => (i < argv.length ? argv[i++] : undefined) };
 
@@ -219,84 +231,74 @@ function parseArgs(argv) {
     const token = iter.next();
     if (token === undefined) break;
     if (token === '--') {
-      for (;;) {
-        const rest = iter.next();
-        if (rest === undefined) break;
-        positionals.push(rest);
-      }
+      drainPositionals(iter, positionals);
       break;
     }
     if (!token.startsWith('-') || token === '-') {
       positionals.push(token);
       continue;
     }
-    const eq = token.indexOf('=');
-    const name = eq >= 0 ? token.slice(0, eq) : token;
-    const inline = eq >= 0 ? token.slice(eq + 1) : null;
-
-    switch (name) {
-      case '--json':
-        opts.json = true;
-        break;
-      case '--include-tests':
-        opts.includeTests = true;
-        break;
-      case '--quiet':
-        opts.quiet = true;
-        break;
-      case '--self-test':
-        opts.selfTest = true;
-        break;
-      case '-h':
-      case '--help':
-        opts.help = true;
-        break;
-      case '-V':
-      case '--version':
-        opts.version = true;
-        break;
-      case '--level': {
-        const v = needValue(name, inline, iter);
-        if (!LEVELS.includes(v)) throw new UsageError(
-          `invalid value for --level: ${v} (expected ${LEVELS.join(' | ')})`);
-        opts.level = v;
-        break;
-      }
-      case '--function-scope': {
-        const v = needValue(name, inline, iter);
-        if (!FUNCTION_SCOPES.includes(v)) {
-          throw new UsageError(
-            `invalid value for --function-scope: ${v} (expected ${FUNCTION_SCOPES.join(' | ')})`);
-        }
-        opts.functionScope = v;
-        break;
-      }
-      case '--fail-on': {
-        const v = needValue(name, inline, iter);
-        if (!FAIL_ON.includes(v)) throw new UsageError(
-          `invalid value for --fail-on: ${v} (expected ${FAIL_ON.join(' | ')})`);
-        opts.failOn = v;
-        break;
-      }
-      case '--baseline':
-        opts.baseline = needValue(name, inline, iter);
-        break;
-      case '--write-baseline':
-        opts.writeBaseline = needValue(name, inline, iter);
-        break;
-      case '--emit-graph':
-        opts.emitGraph = needValue(name, inline, iter);
-        break;
-      case '--exclude':
-        opts.excludes.push(needValue(name, inline, iter));
-        break;
-      default:
-        throw new UsageError(`unknown flag: ${name}`);
-    }
+    const { name, inline } = splitFlagToken(token);
+    applyFlag(opts, name, inline, iter);
   }
 
   if (opts.help || opts.version || opts.selfTest) return opts;
 
+  checkRunModeFlags(opts);
+  opts.pathArg = singlePositional(positionals);
+  return opts;
+}
+
+function drainPositionals(iter, positionals) {
+  for (;;) {
+    const rest = iter.next();
+    if (rest === undefined) break;
+    positionals.push(rest);
+  }
+}
+
+function splitFlagToken(token) {
+  const eq = token.indexOf('=');
+  if (eq < 0) return { name: token, inline: null };
+  return { name: token.slice(0, eq), inline: token.slice(eq + 1) };
+}
+
+function needFlagValue(token, inlineValue, iter) {
+  // `--flag=` is a missing value, not an empty one. Accepting the empty string
+  // makes `--write-baseline=` a silent no-op that reads as a recorded baseline,
+  // and lets `--baseline= --write-baseline=x` slip past the exclusivity check.
+  const value = inlineValue !== null ? inlineValue : iter.next();
+  if (value === undefined || value === '') throw new UsageError(`missing value for ${token}`);
+  return value;
+}
+
+function applyFlag(opts, name, inline, iter) {
+  if (BOOLEAN_FLAGS.has(name)) {
+    opts[BOOLEAN_FLAGS.get(name)] = true;
+    return;
+  }
+  const choice = CHOICE_FLAGS.get(name);
+  if (choice) {
+    const v = needFlagValue(name, inline, iter);
+    if (!choice.values.includes(v)) {
+      throw new UsageError(
+        `invalid value for ${name}: ${v} (expected ${choice.values.join(' | ')})`);
+    }
+    opts[choice.key] = v;
+    return;
+  }
+  if (VALUE_FLAGS.has(name)) {
+    opts[VALUE_FLAGS.get(name)] = needFlagValue(name, inline, iter);
+    return;
+  }
+  if (name === '--exclude') {
+    opts.excludes.push(needFlagValue(name, inline, iter));
+    return;
+  }
+  throw new UsageError(`unknown flag: ${name}`);
+}
+
+function checkRunModeFlags(opts) {
   if (opts.baseline && opts.writeBaseline) {
     throw new UsageError('--baseline and --write-baseline are mutually exclusive');
   }
@@ -307,11 +309,13 @@ function parseArgs(argv) {
   if (opts.emitGraph && opts.writeBaseline) {
     throw new UsageError('--emit-graph and --write-baseline are mutually exclusive');
   }
+}
+
+function singlePositional(positionals) {
   if (positionals.length === 0) throw new UsageError('missing <path>');
   if (positionals.length > 1) throw new UsageError(
     `unexpected extra positional: ${positionals[1]}`);
-  opts.pathArg = positionals[0];
-  return opts;
+  return positionals[0];
 }
 
 /* ------------------------------------------------------------------ *
@@ -348,119 +352,121 @@ function stripCommentsAndStrings(src) {
   };
 
   let i = 0;
-  while (i < n) {
-    const c = src[i];
-
-    // Line comment, including /// and //!.
-    if (c === '/' && src[i + 1] === '/') {
-      let j = i;
-      while (j < n && src[j] !== '\n') j++;
-      blank(i, j);
-      i = j;
-      continue;
-    }
-
-    // Block comment. Rust permits nesting, so track depth.
-    if (c === '/' && src[i + 1] === '*') {
-      let depth = 1;
-      let j = i + 2;
-      while (j < n && depth > 0) {
-        if (src[j] === '/' && src[j + 1] === '*') {
-          depth++;
-          j += 2;
-        } else if (src[j] === '*' && src[j + 1] === '/') {
-          depth--;
-          j += 2;
-        } else {
-          j++;
-        }
-      }
-      blank(i, j);
-      i = j;
-      continue;
-    }
-
-    if (isIdentStart(c)) {
-      let j = i;
-      while (j < n && isIdentChar(src[j])) j++;
-      const word = src.slice(i, j);
-
-      if (word === 'r' || word === 'br' || word === 'cr') {
-        let k = j;
-        while (k < n && src[k] === '#') k++;
-        const hashes = k - j;
-        if (src[k] === '"') {
-          // Raw string: ends at the first '"' followed by exactly `hashes` '#'.
-          let m = k + 1;
-          let endIdx = n;
-          while (m < n) {
-            if (src[m] === '"') {
-              let h = 0;
-              while (h < hashes && src[m + 1 + h] === '#') h++;
-              if (h === hashes) {
-                endIdx = m + 1 + hashes;
-                break;
-              }
-            }
-            m++;
-          }
-          blank(i, endIdx);
-          i = endIdx;
-          continue;
-        }
-        if (hashes > 0 && word === 'r') {
-          // Raw identifier such as r#fn or r#type. Not a string; emit unchanged.
-          i = k;
-          continue;
-        }
-      }
-      // Plain identifier, or a b"/c"/b' prefix whose delimiter is handled next.
-      i = j;
-      continue;
-    }
-
-    if (c === '"') {
-      let j = i + 1;
-      while (j < n) {
-        if (src[j] === '\\') {
-          j += 2;
-          continue;
-        }
-        if (src[j] === '"') {
-          j++;
-          break;
-        }
-        j++;
-      }
-      blank(i, j);
-      i = j;
-      continue;
-    }
-
-    if (c === "'") {
-      // Char literal only when the following text is an optional backslash
-      // escape, one character, then a closing quote. Everything else is a
-      // lifetime and must be left alone, or an unterminated "char literal"
-      // swallows the rest of the file.
-      let end = -1;
-      if (src[i + 1] === '\\') {
-        if (src[i + 3] === "'") end = i + 4;
-      } else if (src[i + 2] === "'") {
-        end = i + 3;
-      }
-      if (end > 0) {
-        blank(i, end);
-        i = end;
-        continue;
-      }
-      i++;
-      continue;
-    }
-
-    i++;
-  }
+  while (i < n) i = maskStep(src, i, blank);
 
   return out.join('');
+}
+
+function blankTo(blank, from, to) {
+  blank(from, to);
+  return to;
+}
+
+/** Masks the token at `i` when it is a comment or literal; returns the next index. */
+function maskStep(src, i, blank) {
+  const c = src[i];
+
+  // Line comment, including /// and //!.
+  if (c === '/' && src[i + 1] === '/') return blankTo(blank, i, lineCommentEnd(src, i));
+
+  // Block comment. Rust permits nesting, so track depth.
+  if (c === '/' && src[i + 1] === '*') return blankTo(blank, i, blockCommentEnd(src, i));
+
+  if (isIdentStart(c)) return identStep(src, i, blank);
+
+  if (c === '"') return blankTo(blank, i, quotedStringEnd(src, i));
+
+  if (c === "'") {
+    const end = charLiteralEnd(src, i);
+    return end > 0 ? blankTo(blank, i, end) : i + 1;
+  }
+
+  return i + 1;
+}
+
+function lineCommentEnd(src, i) {
+  const n = src.length;
+  let j = i;
+  while (j < n && src[j] !== '\n') j++;
+  return j;
+}
+
+function blockCommentEnd(src, i) {
+  const n = src.length;
+  let depth = 1;
+  let j = i + 2;
+  while (j < n && depth > 0) {
+    if (src[j] === '/' && src[j + 1] === '*') {
+      depth++;
+      j += 2;
+    } else if (src[j] === '*' && src[j + 1] === '/') {
+      depth--;
+      j += 2;
+    } else {
+      j++;
+    }
+  }
+  return j;
+}
+
+const RAW_STRING_PREFIXES = new Set(['r', 'br', 'cr']);
+
+function identStep(src, i, blank) {
+  const n = src.length;
+  let j = i;
+  while (j < n && isIdentChar(src[j])) j++;
+  const word = src.slice(i, j);
+
+  if (RAW_STRING_PREFIXES.has(word)) {
+    let k = j;
+    while (k < n && src[k] === '#') k++;
+    const hashes = k - j;
+    if (src[k] === '"') return blankTo(blank, i, rawStringEnd(src, k, hashes));
+    // Raw identifier such as r#fn or r#type. Not a string; emit unchanged.
+    if (hashes > 0 && word === 'r') return k;
+  }
+  // Plain identifier, or a b"/c"/b' prefix whose delimiter is handled next.
+  return j;
+}
+
+/** Raw string: ends at the first '"' followed by exactly `hashes` '#'. */
+function rawStringEnd(src, k, hashes) {
+  const n = src.length;
+  for (let m = k + 1; m < n; m++) {
+    if (src[m] !== '"') continue;
+    let h = 0;
+    while (h < hashes && src[m + 1 + h] === '#') h++;
+    if (h === hashes) return m + 1 + hashes;
+  }
+  return n;
+}
+
+function quotedStringEnd(src, i) {
+  const n = src.length;
+  let j = i + 1;
+  while (j < n) {
+    if (src[j] === '\\') {
+      j += 2;
+      continue;
+    }
+    if (src[j] === '"') {
+      j++;
+      break;
+    }
+    j++;
+  }
+  return j;
+}
+
+/**
+ * Char literal only when the following text is an optional backslash
+ * escape, one character, then a closing quote. Everything else is a
+ * lifetime and must be left alone, or an unterminated "char literal"
+ * swallows the rest of the file. Returns -1 for a lifetime.
+ */
+function charLiteralEnd(src, i) {
+  if (src[i + 1] === '\\') return src[i + 3] === "'" ? i + 4 : -1;
+  return src[i + 2] === "'" ? i + 3 : -1;
 }
 
 /* ------------------------------------------------------------------ *
@@ -563,28 +569,40 @@ function readCfgPredicate(m, raw, i, to) {
   const id = readIdent(m, i, to);
   if (!id) return null;
   const k = skipWs(m, id.end, to);
-  if (m[k] === '=') {
-    // The string is masked to spaces; the raw text proves it is a string.
-    let q = k + 1;
-    while (q < to && m[q] === ' ' && raw[q] !== '"' && raw[q] !== 'r') q++;
-    if (raw[q] !== '"' && !(raw[q] === 'r' && (raw[q + 1] === '"' || raw[q + 1] ===
-      '#'))) return null;
-    let e = q;
-    while (e < to && m[e] === ' ') e++;
-    return { requiresTest: false, end: e };
+  if (m[k] === '=') return readCfgStringValue(m, raw, k, to);
+  if (m[k] !== '(') {
+    return { requiresTest: id.name === 'test' && id.end - id.start === 4, end: id.end };
   }
-  if (m[k] !== '(') return { requiresTest: id.name === 'test' && id.end - id.start === 4, end:
-    id.end };
   const close = matchDelimiter(m, k);
   if (close < 0 || close >= to) return null;
   const kids = readCfgPredicateList(m, raw, k + 1, close);
   if (kids === null) return null;
-  let requiresTest;
-  if (id.name === 'all') requiresTest = kids.some(Boolean);
-  else if (id.name === 'any') requiresTest = kids.length > 0 && kids.every(Boolean);
-  else if (id.name === 'not' && kids.length === 1) requiresTest = false;
-  else return null;
+  const requiresTest = cfgCombinatorRequiresTest(id.name, kids);
+  if (requiresTest === null) return null;
   return { requiresTest, end: close + 1 };
+}
+
+/** `ident = "string"` after the `=` at `k`. */
+function readCfgStringValue(m, raw, k, to) {
+  // The string is masked to spaces; the raw text proves it is a string.
+  let q = k + 1;
+  while (q < to && m[q] === ' ' && raw[q] !== '"' && raw[q] !== 'r') q++;
+  if (!startsCfgString(raw, q)) return null;
+  let e = q;
+  while (e < to && m[e] === ' ') e++;
+  return { requiresTest: false, end: e };
+}
+
+function startsCfgString(raw, q) {
+  return raw[q] === '"' || (raw[q] === 'r' && (raw[q + 1] === '"' || raw[q + 1] === '#'));
+}
+
+/** requires-test of all/any/not(list), or null for an unsupported combinator. */
+function cfgCombinatorRequiresTest(name, kids) {
+  if (name === 'all') return kids.some(Boolean);
+  if (name === 'any') return kids.length > 0 && kids.every(Boolean);
+  if (name === 'not' && kids.length === 1) return false;
+  return null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -699,53 +717,62 @@ function findRustFiles(root, compiledExcludes, ctx) {
   const rustFiles = [];
   const manifests = [];
   const stack = [root];
+  const walk = { root, compiledExcludes, ctx, stack, rustFiles, manifests };
 
   while (stack.length > 0) {
     const dir = stack.pop();
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (err) {
-      ctx.diagnostics.push({
-        level: 'error',
-        code: 'directory-read-error',
-        message: `cannot read directory: ${err.message}`,
-        file: relPath(root, dir),
-      });
-      continue;
-    }
-    entries.sort((a, b) => compareCodeUnits(a.name, b.name));
-
-    for (const entry of entries) {
-      const abs = path.join(dir, entry.name);
-      const rel = relPath(root, abs);
-      if (hasDefaultExcludedSegment(rel)) continue;
-      if (isExcluded(rel, compiledExcludes)) continue;
-
-      if (entry.isSymbolicLink()) {
-        // Not followed: a filesystem cycle is a different problem from the one
-        // being solved here.
-        ctx.diagnostics.push({
-          level: 'warn',
-          code: 'symlink-skipped',
-          message: 'symlink not followed',
-          file: rel,
-        });
-        continue;
-      }
-      if (entry.isDirectory()) {
-        stack.push(abs);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      if (entry.name.endsWith('.rs')) rustFiles.push(abs);
-      else if (entry.name === 'Cargo.toml') manifests.push(abs);
-    }
+    const entries = readSortedDir(root, dir, ctx);
+    if (!entries) continue;
+    for (const entry of entries) walkEntry(walk, dir, entry);
   }
 
   rustFiles.sort(compareCodeUnits);
   manifests.sort(compareCodeUnits);
   return { rustFiles, manifests };
+}
+
+/** Directory entries sorted by name, or null after reporting an unreadable directory. */
+function readSortedDir(root, dir, ctx) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    ctx.diagnostics.push({
+      level: 'error',
+      code: 'directory-read-error',
+      message: `cannot read directory: ${err.message}`,
+      file: relPath(root, dir),
+    });
+    return null;
+  }
+  entries.sort((a, b) => compareCodeUnits(a.name, b.name));
+  return entries;
+}
+
+function walkEntry(walk, dir, entry) {
+  const abs = path.join(dir, entry.name);
+  const rel = relPath(walk.root, abs);
+  if (hasDefaultExcludedSegment(rel)) return;
+  if (isExcluded(rel, walk.compiledExcludes)) return;
+
+  if (entry.isSymbolicLink()) {
+    // Not followed: a filesystem cycle is a different problem from the one
+    // being solved here.
+    walk.ctx.diagnostics.push({
+      level: 'warn',
+      code: 'symlink-skipped',
+      message: 'symlink not followed',
+      file: rel,
+    });
+    return;
+  }
+  if (entry.isDirectory()) {
+    walk.stack.push(abs);
+    return;
+  }
+  if (!entry.isFile()) return;
+  if (entry.name.endsWith('.rs')) walk.rustFiles.push(abs);
+  else if (entry.name === 'Cargo.toml') walk.manifests.push(abs);
 }
 
 /* ------------------------------------------------------------------ *
@@ -903,6 +930,17 @@ function makeTarget(fields) {
  * `use agentscommander_lib::...`.
  */
 function discoverTargets(rootAbs, manifests, opts, ctx) {
+  const { workspaceDeps, parsed } = readManifests(rootAbs, manifests, ctx);
+  const targets = [];
+  const env = { rootAbs, workspaceDeps, opts, ctx, targets };
+
+  for (const { manifestAbs, tables } of parsed) addPackageTargets(env, manifestAbs, tables);
+
+  targets.sort((a, b) => compareCodeUnits(a.targetId, b.targetId));
+  return targets;
+}
+
+function readManifests(rootAbs, manifests, ctx) {
   const workspaceDeps = new Set();
   const parsed = [];
 
@@ -923,100 +961,105 @@ function discoverTargets(rootAbs, manifests, opts, ctx) {
     for (const dep of collectDependencyNames(tables)) workspaceDeps.add(identify(dep));
     parsed.push({ manifestAbs, tables });
   }
+  return { workspaceDeps, parsed };
+}
 
-  const targets = [];
+function addPackageTargets(env, manifestAbs, tables) {
+  const { rootAbs, ctx, targets } = env;
+  const pkg = tables.get('package');
+  if (!pkg) return;
+  const packageName = pkg.get('name');
+  if (!packageName) {
+    ctx.diagnostics.push({
+      level: 'warn',
+      code: 'manifest-missing-package-name',
+      message: '[package] has no name; no target derived from this manifest',
+      file: relPath(rootAbs, manifestAbs),
+    });
+    return;
+  }
+  // Cargo's own default when `edition` is absent is 2015, and bare-path
+  // `use` resolution differs between 2015 and 2018+.
+  const edition = pkg.get('edition') || '2015';
+  const dir = path.dirname(manifestAbs);
+  const manifestRel = relPath(rootAbs, manifestAbs);
+  const pkgIdent = identify(packageName);
 
-  for (const { manifestAbs, tables } of parsed) {
-    const pkg = tables.get('package');
-    if (!pkg) continue;
-    const packageName = pkg.get('name');
-    if (!packageName) {
-      ctx.diagnostics.push({
-        level: 'warn',
-        code: 'manifest-missing-package-name',
-        message: '[package] has no name; no target derived from this manifest',
-        file: relPath(rootAbs, manifestAbs),
-      });
-      continue;
-    }
-    // Cargo's own default when `edition` is absent is 2015, and bare-path
-    // `use` resolution differs between 2015 and 2018+.
-    const edition = pkg.get('edition') || '2015';
-    const dir = path.dirname(manifestAbs);
-    const manifestRel = relPath(rootAbs, manifestAbs);
-    const pkgIdent = identify(packageName);
+  const externCrates = new Set(env.workspaceDeps);
+  for (const dep of collectDependencyNames(tables)) externCrates.add(identify(dep));
 
-    const externCrates = new Set(workspaceDeps);
-    for (const dep of collectDependencyNames(tables)) externCrates.add(identify(dep));
+  const lib = tables.get('lib');
+  const libName = lib?.get('name') ? lib.get('name') : pkgIdent;
+  const libPath = lib?.get('path') ? path.resolve(dir, lib.get('path')) : path.join(dir,
+    'src', 'lib.rs');
 
-    const lib = tables.get('lib');
-    const libName = lib?.get('name') ? lib.get('name') : pkgIdent;
-    const libPath = lib?.get('path') ? path.resolve(dir, lib.get('path')) : path.join(dir,
-      'src', 'lib.rs');
+  const common = {
+    packageName,
+    pkgIdent,
+    libName,
+    manifestPath: manifestRel,
+    edition,
+    externCrates,
+  };
 
-    const common = {
-      packageName,
-      pkgIdent,
-      libName,
-      manifestPath: manifestRel,
-      edition,
-      externCrates,
-    };
-
-    if (isFile(libPath)) {
-      targets.push(makeTarget({
-        ...common,
-        targetId: libName,
-        kind: 'lib',
-        rootFile: libPath,
-        sourceRoot: sourceRootFor(dir, libPath),
-        enabled: true,
-      }));
-    }
-
-    const mainRs = path.join(dir, 'src', 'main.rs');
-    if (isFile(mainRs)) {
-      targets.push(makeTarget({
-        ...common,
-        targetId: `${pkgIdent}[bin:main]`,
-        kind: 'bin',
-        rootFile: mainRs,
-        sourceRoot: sourceRootFor(dir, mainRs),
-        enabled: true,
-      }));
-    }
-
-    for (const { stem, file } of listRootFilesIn(path.join(dir, 'src', 'bin'))) {
-      targets.push(makeTarget({
-        ...common,
-        targetId: `${pkgIdent}[bin:${stem}]`,
-        kind: 'bin',
-        rootFile: file,
-        sourceRoot: sourceRootFor(dir, file),
-        enabled: true,
-      }));
-    }
-
-    // Integration test, bench and example targets are separate leaf crates.
-    // They cannot participate in a cycle with the lib, and a test referencing
-    // production code is not a coupling constraint on splitting the crate.
-    for (const [subdir, kind] of [['tests', 'test'], ['benches', 'bench'], ['examples',
-      'example']]) {
-      for (const { stem, file } of listRootFilesIn(path.join(dir, subdir))) {
-        targets.push(makeTarget({
-          ...common,
-          targetId: `${pkgIdent}[${kind}:${stem}]`,
-          kind,
-          rootFile: file,
-          sourceRoot: sourceRootFor(dir, file),
-          enabled: opts.includeTests,
-        }));
-      }
-    }
+  if (isFile(libPath)) {
+    targets.push(makeTarget({
+      ...common,
+      targetId: libName,
+      kind: 'lib',
+      rootFile: libPath,
+      sourceRoot: sourceRootFor(dir, libPath),
+      enabled: true,
+    }));
   }
 
-  targets.sort((a, b) => compareCodeUnits(a.targetId, b.targetId));
-  return targets;
+  addBinTargets(targets, common, dir);
+  addLeafTargets(env, common, dir);
+}
+
+function addBinTargets(targets, common, dir) {
+  const pkgIdent = common.pkgIdent;
+  const mainRs = path.join(dir, 'src', 'main.rs');
+  if (isFile(mainRs)) {
+    targets.push(makeTarget({
+      ...common,
+      targetId: `${pkgIdent}[bin:main]`,
+      kind: 'bin',
+      rootFile: mainRs,
+      sourceRoot: sourceRootFor(dir, mainRs),
+      enabled: true,
+    }));
+  }
+
+  for (const { stem, file } of listRootFilesIn(path.join(dir, 'src', 'bin'))) {
+    targets.push(makeTarget({
+      ...common,
+      targetId: `${pkgIdent}[bin:${stem}]`,
+      kind: 'bin',
+      rootFile: file,
+      sourceRoot: sourceRootFor(dir, file),
+      enabled: true,
+    }));
+  }
+}
+
+// Integration test, bench and example targets are separate leaf crates.
+// They cannot participate in a cycle with the lib, and a test referencing
+// production code is not a coupling constraint on splitting the crate.
+function addLeafTargets(env, common, dir) {
+  for (const [subdir, kind] of [['tests', 'test'], ['benches', 'bench'], ['examples',
+    'example']]) {
+    for (const { stem, file } of listRootFilesIn(path.join(dir, subdir))) {
+      env.targets.push(makeTarget({
+        ...common,
+        targetId: `${common.pkgIdent}[${kind}:${stem}]`,
+        kind,
+        rootFile: file,
+        sourceRoot: sourceRootFor(dir, file),
+        enabled: env.opts.includeTests,
+      }));
+    }
+  }
 }
 
 /**
@@ -1091,36 +1134,12 @@ function findItemBody(m, from, to) {
 function parseImplSelfType(header) {
   let h = header.trim();
 
-  if (h.startsWith('<')) {
-    let depth = 0;
-    let k = 0;
-    for (; k < h.length; k++) {
-      if (h[k] === '<') depth++;
-      else if (h[k] === '>') {
-        depth--;
-        if (depth <= 0) {
-          k++;
-          break;
-        }
-      }
-    }
-    h = h.slice(k);
-  }
+  if (h.startsWith('<')) h = h.slice(genericParamsEnd(h));
 
   const whereIdx = h.search(/\bwhere\b/);
   if (whereIdx >= 0) h = h.slice(0, whereIdx);
 
-  let depth = 0;
-  let forIdx = -1;
-  for (let k = 0; k < h.length; k++) {
-    const ch = h[k];
-    if (ch === '<' || ch === '(' || ch === '[') depth++;
-    else if (ch === '>' || ch === ')' || ch === ']') depth = depth > 0 ? depth - 1 : 0;
-    else if (depth === 0 && /\s/.test(ch) && h.startsWith('for', k + 1) && /[\s<]/.test(h[k + 4] ||
-      ' ')) {
-      forIdx = k + 4;
-    }
-  }
+  const forIdx = implForTypeStart(h);
   if (forIdx >= 0) h = h.slice(forIdx);
 
   h = h.trim();
@@ -1133,6 +1152,35 @@ function parseImplSelfType(header) {
   const segments = h.split('::').map((s) => s.trim()).filter(Boolean);
   const last = segments.length > 0 ? segments[segments.length - 1] : '';
   return /^[A-Za-z_]\w*$/.test(last) ? last : null;
+}
+
+/** Index just past the leading `<...>` generic parameters of `h`. */
+function genericParamsEnd(h) {
+  let depth = 0;
+  for (let k = 0; k < h.length; k++) {
+    if (h[k] === '<') depth++;
+    else if (h[k] === '>') {
+      depth--;
+      if (depth <= 0) return k + 1;
+    }
+  }
+  return h.length;
+}
+
+/** Start of the self type after a top-level ` for `, or -1 for an inherent impl. */
+function implForTypeStart(h) {
+  let depth = 0;
+  let forIdx = -1;
+  for (let k = 0; k < h.length; k++) {
+    const ch = h[k];
+    if (ch === '<' || ch === '(' || ch === '[') depth++;
+    else if (ch === '>' || ch === ')' || ch === ']') depth = depth > 0 ? depth - 1 : 0;
+    else if (depth === 0 && /\s/.test(ch) && h.startsWith('for', k + 1)
+      && /[\s<]/.test(h[k + 4] || ' ')) {
+      forIdx = k + 4;
+    }
+  }
+  return forIdx;
 }
 
 function newItems() {
@@ -1182,8 +1230,7 @@ function scanScope(st, from, to, ctx, depth) {
   }
   const m = st.masked;
   let i = from;
-  let attrs = [];
-  let attrStart = -1;
+  const pending = { attrs: [], attrStart: -1 };
 
   while (i < to) {
     const c = m[i];
@@ -1193,220 +1240,245 @@ function scanScope(st, from, to, ctx, depth) {
     }
 
     if (c === '#') {
-      let j = i + 1;
-      const inner = m[j] === '!';
-      if (inner) j++;
-      if (m[j] === '[') {
-        const e = matchDelimiter(m, j);
-        if (e < 0 || e >= to) {
-          i = j + 1;
-          continue;
-        }
-        const raw = st.src.slice(i, e + 1);
-        if (inner) {
-          if (ctx.kind === 'file' && hasRequiredTestCfg(raw)) st.out.fileCfgTest = true;
-        } else {
-          if (attrs.length === 0) attrStart = i;
-          attrs.push(raw);
-        }
-        i = e + 1;
-        continue;
-      }
-      i++;
+      i = scanAttribute(st, i, to, ctx, pending);
       continue;
     }
 
-    const itemStart = attrs.length > 0 ? attrStart : i;
-    const next = scanItem(st, i, to, ctx, attrs, itemStart, depth);
-    attrs = [];
-    attrStart = -1;
+    const itemStart = pending.attrs.length > 0 ? pending.attrStart : i;
+    const next = scanItem(st, i, to, ctx, pending.attrs, itemStart, depth);
+    pending.attrs = [];
+    pending.attrStart = -1;
     i = next > i ? next : i + 1;
   }
 }
 
+/** Reads the attribute that `#` at `i` may start; returns the index to resume at. */
+function scanAttribute(st, i, to, ctx, pending) {
+  const m = st.masked;
+  let j = i + 1;
+  const inner = m[j] === '!';
+  if (inner) j++;
+  if (m[j] !== '[') return i + 1;
+  const e = matchDelimiter(m, j);
+  if (e < 0 || e >= to) return j + 1;
+  const raw = st.src.slice(i, e + 1);
+  if (!inner) {
+    if (pending.attrs.length === 0) pending.attrStart = i;
+    pending.attrs.push(raw);
+  } else if (ctx.kind === 'file' && hasRequiredTestCfg(raw)) {
+    st.out.fileCfgTest = true;
+  }
+  return e + 1;
+}
+
+const ITEM_SCANNERS = new Map([
+  ['macro_rules', scanMacroRulesItem],
+  ['use', scanUseItem],
+  ['mod', scanModItem],
+  ['fn', scanFnItem],
+  ['impl', scanImplItem],
+  ['trait', scanTraitItem],
+  ['struct', scanTypeItem],
+  ['enum', scanTypeItem],
+  ['union', scanTypeItem],
+  ['type', scanTypeItem],
+]);
+
 function scanItem(st, i, to, ctx, attrs, itemStart, depth) {
   const m = st.masked;
+  const modifiers = skipItemModifiers(m, i, to);
+  const j = skipWs(m, modifiers.end, to);
+  const kw = readIdent(m, j, to);
+  const attrText = attrs.join(' ');
+  const cfgTest = attrs.some(hasRequiredTestCfg);
+  const cfgGated = !cfgTest && CFG_ANY_RE.test(attrText);
+  const pathAttrRaw = attrs.find((a) => /#\s*\[\s*path\s*=/.test(a)) || null;
+  const item = { st, m, to, ctx, kw, itemStart, depth, cfgTest, cfgGated, pathAttrRaw };
+
+  if (!kw) return recordItem(item, findItemBody(m, j, to).end);
+
+  const scanner = ITEM_SCANNERS.get(kw.name);
+  if (scanner) return scanner(item);
+
+  const body = findItemBody(m, kw.end, to);
+  // A `const` or `static` initializer can hold call syntax that belongs to no
+  // function body. Recorded so those sites are counted, not attributed.
+  if (modifiers.sawValueKeyword) st.out.constStaticRanges.push([itemStart, body.end]);
+  return recordItem(item, body.end);
+}
+
+function skipItemModifiers(m, i, to) {
   let j = i;
   let sawValueKeyword = false;
-
   for (;;) {
     j = skipWs(m, j, to);
     const id = readIdent(m, j, to);
     if (!id || !MODIFIERS.has(id.name)) break;
     j = id.end;
     if (id.name === 'const' || id.name === 'static') sawValueKeyword = true;
-    if (id.name === 'pub') {
-      const k = skipWs(m, j, to);
-      if (m[k] === '(') {
-        const e = matchDelimiter(m, k);
-        if (e > 0 && e < to) j = e + 1;
-      }
-    }
+    if (id.name === 'pub') j = skipVisibilityScope(m, j, to);
   }
+  return { end: j, sawValueKeyword };
+}
 
-  j = skipWs(m, j, to);
-  const kw = readIdent(m, j, to);
-  const attrText = attrs.join(' ');
-  const cfgTest = attrs.some(hasRequiredTestCfg);
-  const cfgGated = !cfgTest && CFG_ANY_RE.test(attrText);
-  const pathAttrRaw = attrs.find((a) => /#\s*\[\s*path\s*=/.test(a)) || null;
-
-  const record = (end) => {
-    if (cfgTest) st.out.cfgTestRanges.push([itemStart, end]);
-    else if (cfgGated) st.out.cfgGatedRanges.push([itemStart, end]);
-  };
-
-  if (!kw) {
-    const body = findItemBody(m, j, to);
-    record(body.end);
-    return body.end;
+/** Steps over the `(crate)` of `pub(crate)`; returns `j` when there is none. */
+function skipVisibilityScope(m, j, to) {
+  const k = skipWs(m, j, to);
+  if (m[k] === '(') {
+    const e = matchDelimiter(m, k);
+    if (e > 0 && e < to) return e + 1;
   }
+  return j;
+}
 
-  const name = kw.name;
+function recordItem(item, end) {
+  if (item.cfgTest) item.st.out.cfgTestRanges.push([item.itemStart, end]);
+  else if (item.cfgGated) item.st.out.cfgGatedRanges.push([item.itemStart, end]);
+  return end;
+}
+
+function itemNameAfterKeyword(item) {
+  return readIdent(item.m, skipWs(item.m, item.kw.end, item.to), item.to);
+}
+
+function scanMacroRulesItem(item) {
+  // The body is a template whose expansion site is unknown, so a path inside
+  // it cannot be attributed to a real module pair. Skipped wholesale.
+  const { m, to } = item;
+  let k = skipWs(m, item.kw.end, to);
+  if (m[k] === '!') k = skipWs(m, k + 1, to);
+  const nameId = readIdent(m, k, to);
+  const body = findItemBody(m, nameId ? nameId.end : k, to);
+  item.st.out.macroRulesRanges.push([item.itemStart, body.end]);
+  return recordItem(item, body.end);
+}
+
+function scanUseItem(item) {
+  const { kw, ctx } = item;
   const afterKw = kw.end;
+  const body = findItemBody(item.m, afterKw, item.to);
+  item.st.out.useDecls.push({
+    start: item.itemStart,
+    keywordStart: kw.start,
+    end: body.end,
+    bodyStart: afterKw,
+    bodyEnd: body.kind === 'semi' ? body.end - 1 : body.end,
+    modStack: ctx.modStack.slice(),
+    cfgTest: item.cfgTest,
+    cfgGated: item.cfgGated,
+  });
+  return recordItem(item, body.end);
+}
 
-  if (name === 'macro_rules') {
-    // The body is a template whose expansion site is unknown, so a path inside
-    // it cannot be attributed to a real module pair. Skipped wholesale.
-    let k = skipWs(m, afterKw, to);
-    if (m[k] === '!') k = skipWs(m, k + 1, to);
-    const nameId = readIdent(m, k, to);
-    const body = findItemBody(m, nameId ? nameId.end : k, to);
-    st.out.macroRulesRanges.push([itemStart, body.end]);
-    record(body.end);
-    return body.end;
-  }
+function scanModItem(item) {
+  const nameId = itemNameAfterKeyword(item);
+  if (!nameId) return recordItem(item, findItemBody(item.m, item.kw.end, item.to).end);
+  const body = findItemBody(item.m, nameId.end, item.to);
+  if (body.kind === 'block') return scanInlineMod(item, nameId, body);
+  const ctx = item.ctx;
+  item.st.out.modDecls.push({
+    name: nameId.name,
+    start: item.itemStart,
+    keywordStart: item.kw.start,
+    end: body.end,
+    modStack: ctx.modStack.slice(),
+    cfgTest: item.cfgTest,
+    cfgGated: item.cfgGated,
+    pathAttrRaw: item.pathAttrRaw,
+  });
+  return recordItem(item, body.end);
+}
 
-  if (name === 'use') {
-    const body = findItemBody(m, afterKw, to);
-    st.out.useDecls.push({
-      start: itemStart,
-      keywordStart: kw.start,
-      end: body.end,
-      bodyStart: afterKw,
-      bodyEnd: body.kind === 'semi' ? body.end - 1 : body.end,
-      modStack: ctx.modStack.slice(),
-      cfgTest,
-      cfgGated,
-    });
-    record(body.end);
-    return body.end;
-  }
-
-  if (name === 'mod') {
-    const nameId = readIdent(m, skipWs(m, afterKw, to), to);
-    if (!nameId) {
-      const body = findItemBody(m, afterKw, to);
-      record(body.end);
-      return body.end;
-    }
-    const body = findItemBody(m, nameId.end, to);
-    if (body.kind === 'block') {
-      st.out.inlineMods.push({
-        name: nameId.name,
-        start: itemStart,
-        end: body.end,
-        bodyStart: body.bodyStart,
-        bodyEnd: body.bodyEnd,
-        modStack: ctx.modStack.slice(),
-        innerStack: ctx.modStack.concat([nameId.name]),
-        cfgTest,
-        cfgGated,
-        pathAttrRaw,
-      });
-      record(body.end);
-      scanScope(
-        st,
-        body.bodyStart,
-        body.bodyEnd,
-        { kind: 'mod', modStack: ctx.modStack.concat([nameId.name]), ownerType: null },
-        depth + 1,
-      );
-      return body.end;
-    }
-    st.out.modDecls.push({
-      name: nameId.name,
-      start: itemStart,
-      keywordStart: kw.start,
-      end: body.end,
-      modStack: ctx.modStack.slice(),
-      cfgTest,
-      cfgGated,
-      pathAttrRaw,
-    });
-    record(body.end);
-    return body.end;
-  }
-
-  if (name === 'fn') {
-    const nameId = readIdent(m, skipWs(m, afterKw, to), to);
-    const body = findItemBody(m, nameId ? nameId.end : afterKw, to);
-    if (nameId) {
-      st.out.fns.push({
-        name: nameId.name,
-        start: itemStart,
-        nameOffset: nameId.start,
-        end: body.end,
-        bodyStart: body.kind === 'block' ? body.bodyStart : -1,
-        bodyEnd: body.kind === 'block' ? body.bodyEnd : -1,
-        modStack: ctx.modStack.slice(),
-        ownerType: ctx.ownerType,
-        cfgTest,
-        cfgGated,
-      });
-    }
-    record(body.end);
-    return body.end;
-  }
-
-  if (name === 'impl') {
-    const body = findItemBody(m, afterKw, to);
-    record(body.end);
-    if (body.kind === 'block') {
-      const header = m.slice(afterKw, body.bodyStart - 1);
-      const selfType = parseImplSelfType(header);
-      scanScope(
-        st,
-        body.bodyStart,
-        body.bodyEnd,
-        { kind: 'impl', modStack: ctx.modStack.slice(), ownerType: selfType },
-        depth + 1,
-      );
-    }
-    return body.end;
-  }
-
-  if (name === 'trait') {
-    const nameId = readIdent(m, skipWs(m, afterKw, to), to);
-    const body = findItemBody(m, nameId ? nameId.end : afterKw, to);
-    record(body.end);
-    if (nameId) st.out.typeDefs.push({ name: nameId.name, modStack: ctx.modStack.slice() });
-    if (body.kind === 'block') {
-      scanScope(
-        st,
-        body.bodyStart,
-        body.bodyEnd,
-        { kind: 'trait', modStack: ctx.modStack.slice(), ownerType: nameId ? nameId.name : null },
-        depth + 1,
-      );
-    }
-    return body.end;
-  }
-
-  if (name === 'struct' || name === 'enum' || name === 'union' || name === 'type') {
-    const nameId = readIdent(m, skipWs(m, afterKw, to), to);
-    const body = findItemBody(m, nameId ? nameId.end : afterKw, to);
-    if (nameId) st.out.typeDefs.push({ name: nameId.name, modStack: ctx.modStack.slice() });
-    record(body.end);
-    return body.end;
-  }
-
-  const body = findItemBody(m, afterKw, to);
-  // A `const` or `static` initializer can hold call syntax that belongs to no
-  // function body. Recorded so those sites are counted, not attributed.
-  if (sawValueKeyword) st.out.constStaticRanges.push([itemStart, body.end]);
-  record(body.end);
+function scanInlineMod(item, nameId, body) {
+  const ctx = item.ctx;
+  item.st.out.inlineMods.push({
+    name: nameId.name,
+    start: item.itemStart,
+    end: body.end,
+    bodyStart: body.bodyStart,
+    bodyEnd: body.bodyEnd,
+    modStack: ctx.modStack.slice(),
+    innerStack: ctx.modStack.concat([nameId.name]),
+    cfgTest: item.cfgTest,
+    cfgGated: item.cfgGated,
+    pathAttrRaw: item.pathAttrRaw,
+  });
+  recordItem(item, body.end);
+  scanScope(
+    item.st,
+    body.bodyStart,
+    body.bodyEnd,
+    { kind: 'mod', modStack: ctx.modStack.concat([nameId.name]), ownerType: null },
+    item.depth + 1,
+  );
   return body.end;
+}
+
+function scanFnItem(item) {
+  const ctx = item.ctx;
+  const nameId = itemNameAfterKeyword(item);
+  const body = findItemBody(item.m, nameId ? nameId.end : item.kw.end, item.to);
+  if (nameId) {
+    const isBlock = body.kind === 'block';
+    item.st.out.fns.push({
+      name: nameId.name,
+      start: item.itemStart,
+      nameOffset: nameId.start,
+      end: body.end,
+      bodyStart: isBlock ? body.bodyStart : -1,
+      bodyEnd: isBlock ? body.bodyEnd : -1,
+      modStack: ctx.modStack.slice(),
+      ownerType: ctx.ownerType,
+      cfgTest: item.cfgTest,
+      cfgGated: item.cfgGated,
+    });
+  }
+  return recordItem(item, body.end);
+}
+
+function scanImplItem(item) {
+  const { m, kw } = item;
+  const body = findItemBody(m, kw.end, item.to);
+  recordItem(item, body.end);
+  if (body.kind === 'block') {
+    const header = m.slice(kw.end, body.bodyStart - 1);
+    const selfType = parseImplSelfType(header);
+    scanScope(
+      item.st,
+      body.bodyStart,
+      body.bodyEnd,
+      { kind: 'impl', modStack: item.ctx.modStack.slice(), ownerType: selfType },
+      item.depth + 1,
+    );
+  }
+  return body.end;
+}
+
+function scanTraitItem(item) {
+  const ctx = item.ctx;
+  const nameId = itemNameAfterKeyword(item);
+  const body = findItemBody(item.m, nameId ? nameId.end : item.kw.end, item.to);
+  recordItem(item, body.end);
+  if (nameId) item.st.out.typeDefs.push({ name: nameId.name, modStack: ctx.modStack.slice() });
+  if (body.kind === 'block') {
+    scanScope(
+      item.st,
+      body.bodyStart,
+      body.bodyEnd,
+      { kind: 'trait', modStack: ctx.modStack.slice(), ownerType: nameId ? nameId.name : null },
+      item.depth + 1,
+    );
+  }
+  return body.end;
+}
+
+function scanTypeItem(item) {
+  const nameId = itemNameAfterKeyword(item);
+  const body = findItemBody(item.m, nameId ? nameId.end : item.kw.end, item.to);
+  if (nameId) {
+    item.st.out.typeDefs.push({ name: nameId.name, modStack: item.ctx.modStack.slice() });
+  }
+  return recordItem(item, body.end);
 }
 
 function inAnyRange(offset, ranges) {
@@ -1476,60 +1548,69 @@ function parseUseNode(masked, from, to, prefix, leadingColons, out, depth, capHi
     return;
   }
   const segments = prefix.slice();
-  let leading = leadingColons;
+  const node = { masked, to, segments, leading: leadingColons, out, depth, capHits };
   let i = skipWs(masked, from, to);
 
-  if (masked[i] === ':' && masked[i + 1] === ':') {
-    leading = true;
+  if (isPathSeparator(masked, i)) {
+    node.leading = true;
     i = skipWs(masked, i + 2, to);
   }
 
   while (i < to) {
     i = skipWs(masked, i, to);
     if (i >= to) break;
-    const c = masked[i];
-
-    if (c === '{') {
-      const e = matchDelimiter(masked, i);
-      if (e < 0 || e > to) return;
-      for (const [s, t] of splitTopLevel(masked, i + 1, e, ',')) {
-        parseUseNode(masked, s, t, segments, leading, out, depth + 1, capHits);
-      }
-      return;
-    }
-
-    if (c === '*') {
-      out.push({ segments: segments.slice(), alias: null, isGlob: true, leadingColons: leading });
-      return;
-    }
-
-    const id = readIdent(masked, i, to);
-    if (!id) {
-      i++;
-      continue;
-    }
-    i = id.end;
-
-    if (id.name === 'self' && segments.length > 0) {
-      // `use crate::a::{self, b};` yields crate::a and crate::a::b.
-      const alias = readTrailingAlias(masked, i, to);
-      out.push({ segments: segments.slice(), alias, isGlob: false, leadingColons: leading });
-      return;
-    }
-    segments.push(id.name);
-
-    const k = skipWs(masked, i, to);
-    if (masked[k] === ':' && masked[k + 1] === ':') {
-      i = k + 2;
-      continue;
-    }
-    const alias = readTrailingAlias(masked, i, to);
-    out.push({ segments: segments.slice(), alias, isGlob: false, leadingColons: leading });
-    return;
+    i = parseUseStep(node, i);
+    if (i < 0) return;
   }
 
-  if (segments.length > prefix.length) {
-    out.push({ segments: segments.slice(), alias: null, isGlob: false, leadingColons: leading });
+  if (node.segments.length > prefix.length) out.push(useLeaf(node, null, false));
+}
+
+function isPathSeparator(masked, i) {
+  return masked[i] === ':' && masked[i + 1] === ':';
+}
+
+function useLeaf(node, alias, isGlob) {
+  return { segments: node.segments.slice(), alias, isGlob, leadingColons: node.leading };
+}
+
+/** One step of a use node at `i`: the next index, or -1 once the node is complete. */
+function parseUseStep(node, i) {
+  const { masked, to, segments } = node;
+  const c = masked[i];
+
+  if (c === '{') {
+    parseUseGroup(node, i);
+    return -1;
+  }
+
+  if (c === '*') {
+    node.out.push(useLeaf(node, null, true));
+    return -1;
+  }
+
+  const id = readIdent(masked, i, to);
+  if (!id) return i + 1;
+
+  if (id.name === 'self' && segments.length > 0) {
+    // `use crate::a::{self, b};` yields crate::a and crate::a::b.
+    node.out.push(useLeaf(node, readTrailingAlias(masked, id.end, to), false));
+    return -1;
+  }
+  segments.push(id.name);
+
+  const k = skipWs(masked, id.end, to);
+  if (isPathSeparator(masked, k)) return k + 2;
+  node.out.push(useLeaf(node, readTrailingAlias(masked, id.end, to), false));
+  return -1;
+}
+
+function parseUseGroup(node, i) {
+  const { masked, to } = node;
+  const e = matchDelimiter(masked, i);
+  if (e < 0 || e > to) return;
+  for (const [s, t] of splitTopLevel(masked, i + 1, e, ',')) {
+    parseUseNode(masked, s, t, node.segments, node.leading, node.out, node.depth + 1, node.capHits);
   }
 }
 
@@ -1606,137 +1687,147 @@ function withinRoot(rootAbs, candidate) {
  * instead of being reported as unreachable.
  */
 function buildModuleTree(target, opts, ctx) {
-  const modules = new Map();
-  const fileToModule = new Map();
-  const visitedFiles = new Set();
+  const tree = { modules: new Map(), fileToModule: new Map(), visitedFiles: new Set() };
   const queue = [{ file: target.rootFile, segments: [], testOnly: false }];
 
-  while (queue.length > 0) {
-    const cur = queue.shift();
-    const fileAbs = cur.file;
-    if (visitedFiles.has(fileAbs)) {
-      ctx.diagnostics.push({
-        level: 'warn',
-        code: 'duplicate-module-file',
-        message:
-          `file already bound to module ${fileToModule.get(fileAbs)}; second binding ignored`,
-        file: relPath(ctx.root, fileAbs),
-      });
-      continue;
-    }
-    visitedFiles.add(fileAbs);
+  while (queue.length > 0) visitModuleFile(target, tree, queue.shift(), queue, ctx);
 
-    const id = moduleIdFor(target, cur.segments);
-    const rel = relPath(ctx.root, fileAbs);
-    modules.set(id, {
-      id,
-      segments: cur.segments.slice(),
-      file: fileAbs,
-      relFile: rel,
-      children: new Map(),
-      testOnly: cur.testOnly,
+  return tree;
+}
+
+function visitModuleFile(target, tree, cur, queue, ctx) {
+  const { modules, fileToModule, visitedFiles } = tree;
+  const fileAbs = cur.file;
+  if (visitedFiles.has(fileAbs)) {
+    ctx.diagnostics.push({
+      level: 'warn',
+      code: 'duplicate-module-file',
+      message:
+        `file already bound to module ${fileToModule.get(fileAbs)}; second binding ignored`,
+      file: relPath(ctx.root, fileAbs),
     });
-    fileToModule.set(fileAbs, id);
+    return;
+  }
+  visitedFiles.add(fileAbs);
 
-    if (cur.segments.length > 0) {
-      const parentId = moduleIdFor(target, cur.segments.slice(0, -1));
-      const parent = modules.get(parentId);
-      if (parent) parent.children.set(cur.segments.at(-1), id);
-    }
+  const id = moduleIdFor(target, cur.segments);
+  const rel = relPath(ctx.root, fileAbs);
+  modules.set(id, {
+    id,
+    segments: cur.segments.slice(),
+    file: fileAbs,
+    relFile: rel,
+    children: new Map(),
+    testOnly: cur.testOnly,
+  });
+  fileToModule.set(fileAbs, id);
 
-    const fc = getFile(fileAbs, ctx);
-    if (!fc) continue;
+  if (cur.segments.length > 0) {
+    const parentId = moduleIdFor(target, cur.segments.slice(0, -1));
+    const parent = modules.get(parentId);
+    if (parent) parent.children.set(cur.segments.at(-1), id);
+  }
 
-    for (const inline of fc.items.inlineMods) {
-      if (inline.pathAttrRaw) {
-        ctx.blindSpots.unsupportedPathAttributes.push({
-          file: rel,
-          line: lineColOf(fc.lineIndex, inline.start).line,
-          raw: collapseText(inline.pathAttrRaw),
-        });
-      }
-    }
+  const fc = getFile(fileAbs, ctx);
+  if (!fc) return;
 
-    for (const decl of fc.items.modDecls) {
-      const line = lineColOf(fc.lineIndex, decl.start).line;
-      if (decl.modStack.length > 0) {
-        // Rust resolves this against a directory named after the inline module
-        // chain. Guessing produces wrong module identities, so declare the gap.
-        ctx.blindSpots.inlineModuleFileDeclarations.push({
-          file: rel,
-          line,
-          raw: collapseText(fc.src.slice(decl.keywordStart, decl.end)),
-        });
-        continue;
-      }
+  reportInlinePathAttributes(fc, rel, ctx);
 
-      const searchDir = moduleSearchDir(fileAbs, cur.segments);
-      let resolved = null;
+  for (const decl of fc.items.modDecls) {
+    const resolved = resolveModDeclFile(target, cur, decl, { fc, rel, ctx });
+    if (resolved === null) continue;
+    queue.push({
+      file: resolved,
+      segments: cur.segments.concat([decl.name]),
+      testOnly: cur.testOnly || decl.cfgTest,
+    });
+  }
+}
 
-      if (decl.pathAttrRaw) {
-        const pm = /#\s*\[\s*path\s*=\s*"([^"]*)"\s*\]/.exec(decl.pathAttrRaw);
-        const raw = pm ? pm[1] : null;
-        const candidate = raw ? path.resolve(searchDir, raw) : null;
-        const bounded =
-          candidate !== null && withinRoot(target.sourceRoot, candidate) && withinRoot(ctx.root,
-            candidate);
-        if (bounded && isFile(candidate)) {
-          resolved = candidate;
-        } else if (bounded && isDirectory(candidate) && isFile(path.join(candidate, 'mod.rs'))) {
-          resolved = path.join(candidate, 'mod.rs');
-        } else {
-          ctx.blindSpots.unsupportedPathAttributes.push({
-            file: rel,
-            line,
-            raw: collapseText(`${decl.pathAttrRaw} ${fc.src.slice(decl.keywordStart, decl.end)}`),
-          });
-          ctx.diagnostics.push({
-            level: 'warn',
-            code: 'unsupported-path-attribute',
-            message: bounded === false ? '#[path] escapes the crate source root' :
-              '#[path] target does not exist',
-            file: rel,
-          });
-          continue;
-        }
-      } else {
-        const flat = path.join(searchDir, `${decl.name}.rs`);
-        const nested = path.join(searchDir, decl.name, 'mod.rs');
-        const flatExists = isFile(flat);
-        const nestedExists = isFile(nested);
-        if (flatExists && nestedExists) {
-          // Real rustc rejects this. Picking one silently would be a lie.
-          ctx.diagnostics.push({
-            level: 'warn',
-            code: 'ambiguous-module-file',
-            message: `both ${decl.name}.rs and ${decl.name}/mod.rs exist; using ${decl.name}.rs`,
-            file: rel,
-          });
-          resolved = flat;
-        } else if (flatExists) {
-          resolved = flat;
-        } else if (nestedExists) {
-          resolved = nested;
-        } else {
-          ctx.diagnostics.push({
-            level: 'warn',
-            code: 'unresolved-mod-declaration',
-            message: `mod ${decl.name}; resolves to no file`,
-            file: rel,
-          });
-          continue;
-        }
-      }
-
-      queue.push({
-        file: resolved,
-        segments: cur.segments.concat([decl.name]),
-        testOnly: cur.testOnly || decl.cfgTest,
+function reportInlinePathAttributes(fc, rel, ctx) {
+  for (const inline of fc.items.inlineMods) {
+    if (inline.pathAttrRaw) {
+      ctx.blindSpots.unsupportedPathAttributes.push({
+        file: rel,
+        line: lineColOf(fc.lineIndex, inline.start).line,
+        raw: collapseText(inline.pathAttrRaw),
       });
     }
   }
+}
 
-  return { modules, fileToModule, visitedFiles };
+/** File a `mod name;` declaration loads, or null when it is reported and skipped. */
+function resolveModDeclFile(target, cur, decl, site) {
+  const { fc, rel, ctx } = site;
+  const line = lineColOf(fc.lineIndex, decl.start).line;
+  if (decl.modStack.length > 0) {
+    // Rust resolves this against a directory named after the inline module
+    // chain. Guessing produces wrong module identities, so declare the gap.
+    ctx.blindSpots.inlineModuleFileDeclarations.push({
+      file: rel,
+      line,
+      raw: collapseText(fc.src.slice(decl.keywordStart, decl.end)),
+    });
+    return null;
+  }
+
+  const searchDir = moduleSearchDir(cur.file, cur.segments);
+  if (decl.pathAttrRaw) return resolvePathAttributeFile(target, searchDir, decl, line, site);
+  return resolveModFileByName(searchDir, decl, site);
+}
+
+function resolvePathAttributeFile(target, searchDir, decl, line, site) {
+  const { fc, rel, ctx } = site;
+  const pm = /#\s*\[\s*path\s*=\s*"([^"]*)"\s*\]/.exec(decl.pathAttrRaw);
+  const raw = pm ? pm[1] : null;
+  const candidate = raw ? path.resolve(searchDir, raw) : null;
+  const bounded =
+    candidate !== null && withinRoot(target.sourceRoot, candidate) && withinRoot(ctx.root,
+      candidate);
+  if (bounded && isFile(candidate)) return candidate;
+  if (bounded && isDirectory(candidate) && isFile(path.join(candidate, 'mod.rs'))) {
+    return path.join(candidate, 'mod.rs');
+  }
+  ctx.blindSpots.unsupportedPathAttributes.push({
+    file: rel,
+    line,
+    raw: collapseText(`${decl.pathAttrRaw} ${fc.src.slice(decl.keywordStart, decl.end)}`),
+  });
+  ctx.diagnostics.push({
+    level: 'warn',
+    code: 'unsupported-path-attribute',
+    message: bounded === false ? '#[path] escapes the crate source root' :
+      '#[path] target does not exist',
+    file: rel,
+  });
+  return null;
+}
+
+function resolveModFileByName(searchDir, decl, site) {
+  const { rel, ctx } = site;
+  const flat = path.join(searchDir, `${decl.name}.rs`);
+  const nested = path.join(searchDir, decl.name, 'mod.rs');
+  const flatExists = isFile(flat);
+  const nestedExists = isFile(nested);
+  if (flatExists && nestedExists) {
+    // Real rustc rejects this. Picking one silently would be a lie.
+    ctx.diagnostics.push({
+      level: 'warn',
+      code: 'ambiguous-module-file',
+      message: `both ${decl.name}.rs and ${decl.name}/mod.rs exist; using ${decl.name}.rs`,
+      file: rel,
+    });
+    return flat;
+  }
+  if (flatExists) return flat;
+  if (nestedExists) return nested;
+  ctx.diagnostics.push({
+    level: 'warn',
+    code: 'unresolved-mod-declaration',
+    message: `mod ${decl.name}; resolves to no file`,
+    file: rel,
+  });
+  return null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1826,62 +1917,9 @@ function foldToFileModule(tree, target, segments) {
  */
 function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
   if (segments.length === 0) return null;
-  const first = segments[0];
-  let base = null;
-  let rest = null;
-
-  if (first === 'crate' || (target.kind !== 'lib'
-    && (first === target.libName || first === target.pkgIdent))) {
-    base = [];
-    rest = segments.slice(1);
-  } else if (first === 'self') {
-    base = contextSegments.slice();
-    rest = segments.slice(1);
-  } else if (first === 'super') {
-    let k = 0;
-    let up = contextSegments.slice();
-    while (k < segments.length && segments[k] === 'super') {
-      if (up.length === 0) {
-        ctx.stats.unresolvedInternalPaths++;
-        return null;
-      }
-      up.pop();
-      k++;
-    }
-    base = up;
-    rest = segments.slice(k);
-  } else if (contextSegments.length > 0
-    && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
-    // Rust 2018 resolves a relative first segment in the current module before
-    // the crate root: `use process::X` inside `a::b` with `mod process;` names
-    // `a::b::process`, never a crate-root `process` (#3991). The path resolves
-    // against the current module, so the child arc is recorded and a same-name
-    // crate-root module can never receive a false arc (#3998).
-    base = contextSegments.slice();
-    rest = segments.slice();
-    ctx.stats.barePathResolutions++;
-  } else {
-    const isExternal = target.externCrates.has(first);
-    const rootModule = tree.modules.get(target.targetId);
-    const isTopLevelModule = rootModule ? rootModule.children.has(first) : false;
-    if (isExternal && isTopLevelModule) {
-      // Rust 2018 uniform paths make this genuinely ambiguous. Never guess.
-      ctx.blindSpots.ambiguousBarePaths++;
-      return null;
-    }
-    if (isExternal) {
-      ctx.stats.externalReferences++;
-      return null;
-    }
-    if (isTopLevelModule) {
-      ctx.stats.barePathResolutions++;
-      base = [];
-      rest = segments.slice();
-    } else {
-      ctx.stats.externalReferences++;
-      return null;
-    }
-  }
+  const start = resolvePathBase(segments, contextSegments, target, tree, ctx);
+  if (!start) return null;
+  const { base, rest } = start;
 
   const baseId = moduleIdFor(target, base);
   if (!tree.modules.has(baseId)) {
@@ -1900,6 +1938,65 @@ function resolvePathDetailed(segments, contextSegments, target, tree, ctx) {
     idx++;
   }
   return { moduleId: currentId, rest: rest.slice(idx), folded: [] };
+}
+
+/** Base module segments of a path plus the segments still to walk, or null. */
+function resolvePathBase(segments, contextSegments, target, tree, ctx) {
+  const first = segments[0];
+
+  if (first === 'crate' || (target.kind !== 'lib'
+    && (first === target.libName || first === target.pkgIdent))) {
+    return { base: [], rest: segments.slice(1) };
+  }
+  if (first === 'self') return { base: contextSegments.slice(), rest: segments.slice(1) };
+  if (first === 'super') return resolveSuperPathBase(segments, contextSegments, ctx);
+  if (contextSegments.length > 0
+    && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
+    // Rust 2018 resolves a relative first segment in the current module before
+    // the crate root: `use process::X` inside `a::b` with `mod process;` names
+    // `a::b::process`, never a crate-root `process` (#3991). The path resolves
+    // against the current module, so the child arc is recorded and a same-name
+    // crate-root module can never receive a false arc (#3998).
+    ctx.stats.barePathResolutions++;
+    return { base: contextSegments.slice(), rest: segments.slice() };
+  }
+  return resolveBarePathBase(segments, target, tree, ctx);
+}
+
+function resolveSuperPathBase(segments, contextSegments, ctx) {
+  let k = 0;
+  const up = contextSegments.slice();
+  while (k < segments.length && segments[k] === 'super') {
+    if (up.length === 0) {
+      ctx.stats.unresolvedInternalPaths++;
+      return null;
+    }
+    up.pop();
+    k++;
+  }
+  return { base: up, rest: segments.slice(k) };
+}
+
+function resolveBarePathBase(segments, target, tree, ctx) {
+  const first = segments[0];
+  const isExternal = target.externCrates.has(first);
+  const rootModule = tree.modules.get(target.targetId);
+  const isTopLevelModule = rootModule ? rootModule.children.has(first) : false;
+  if (isExternal && isTopLevelModule) {
+    // Rust 2018 uniform paths make this genuinely ambiguous. Never guess.
+    ctx.blindSpots.ambiguousBarePaths++;
+    return null;
+  }
+  if (isExternal) {
+    ctx.stats.externalReferences++;
+    return null;
+  }
+  if (isTopLevelModule) {
+    ctx.stats.barePathResolutions++;
+    return { base: [], rest: segments.slice() };
+  }
+  ctx.stats.externalReferences++;
+  return null;
 }
 
 /** Innermost inline module containing `offset`, as full context segments. */
@@ -1926,10 +2023,7 @@ function skipRangesFor(items, includeTests) {
 }
 
 function buildModuleGraph(targets, trees, opts, ctx) {
-  const nodes = [];
-  const edges = [];
-  const adjacency = new Map();
-  const nodeMeta = new Map();
+  const graph = { nodes: [], edges: [], adjacency: new Map(), nodeMeta: new Map() };
 
   for (const target of targets) {
     if (!target.enabled) continue;
@@ -1938,86 +2032,109 @@ function buildModuleGraph(targets, trees, opts, ctx) {
 
     for (const mod of sortedModules(tree)) {
       if (mod.testOnly && !opts.includeTests) continue;
-      nodes.push(mod.id);
-      if (!adjacency.has(mod.id)) adjacency.set(mod.id, new Set());
-      nodeMeta.set(mod.id, {
-        parent: mod.segments.length === 0 ? null : moduleIdFor(target, mod.segments.slice(0, -1)),
-        file: mod.relFile,
-        crateTarget: target.targetId,
-        loc: null,
-      });
-
-      const fc = getFile(mod.file, ctx);
-      if (!fc) continue;
-      // Only reachable with a file that was read. The one path where getFile
-      // returns null pushes an error diagnostic, and an error means no graph is
-      // written at all, so a null `loc` can never reach a file. Defaulting it to
-      // 0 would turn an unreadable file into a zero-line module, which is the
-      // failure mode this tool exists to refuse.
-      nodeMeta.get(mod.id).loc = lineCountOf(fc);
-      const items = fc.items;
-      if (items.fileCfgTest && !opts.includeTests) continue;
-
-      const skip = skipRangesFor(items, opts.includeTests);
-      const useRanges = [];
-
-      for (const decl of items.useDecls) {
-        useRanges.push([decl.start, decl.end]);
-        if (inAnyRange(decl.start, skip)) continue;
-        const context = mod.segments.concat(decl.modStack);
-        const leaves = expandUseTree(fc.masked, decl.bodyStart, decl.bodyEnd, ctx, mod.relFile);
-        const pos = lineColOf(fc.lineIndex, decl.keywordStart);
-        const text = collapseText(fc.src.slice(decl.start, decl.end));
-        const cfgGated = decl.cfgGated || inAnyRange(decl.start, items.cfgGatedRanges);
-
-        for (const leaf of leaves) {
-          if (leaf.isGlob) ctx.blindSpots.globImports++;
-          if (leaf.leadingColons) {
-            ctx.stats.externalReferences++;
-            continue;
-          }
-          const detailed = resolvePathDetailed(leaf.segments, context, target, tree, ctx);
-          if (!detailed) continue;
-          addModuleEdge(edges, adjacency, {
-            from: mod.id,
-            to: detailed.moduleId,
-            item: itemOf(detailed),
-            file: mod.relFile,
-            line: pos.line,
-            column: pos.column,
-            kind: leaf.isGlob ? 'use-glob' : 'use',
-            cfgGated,
-            text,
-          }, opts, ctx);
-        }
-      }
-
-      // A path written inside println!("{}", crate::a::b::VALUE) is a genuine
-      // reference at that exact site, so macro invocations are not skipped at
-      // module level. Function level treats them differently.
-      const paths = extractQualifiedPaths(fc.masked, skip.concat(useRanges), target);
-      for (const found of paths) {
-        const context = contextSegmentsAt(mod.segments, items.inlineMods, found.start);
-        const detailed = resolvePathDetailed(found.segments, context, target, tree, ctx);
-        if (!detailed) continue;
-        const pos = lineColOf(fc.lineIndex, found.start);
-        addModuleEdge(edges, adjacency, {
-          from: mod.id,
-          to: detailed.moduleId,
-          item: itemOf(detailed),
-          file: mod.relFile,
-          line: pos.line,
-          column: pos.column,
-          kind: 'path',
-          cfgGated: inAnyRange(found.start, items.cfgGatedRanges),
-          text: collapseText(fc.src.slice(found.start, found.end)),
-        }, opts, ctx);
-      }
+      addModuleGraphNode(graph, { target, tree, mod, opts, ctx });
     }
   }
 
-  nodes.sort(compareCodeUnits);
-  return { nodes, edges, adjacency, nodeMeta };
+  graph.nodes.sort(compareCodeUnits);
+  return graph;
+}
+
+function addModuleGraphNode(graph, scan) {
+  const { target, mod, opts, ctx } = scan;
+  const { adjacency, nodeMeta } = graph;
+  graph.nodes.push(mod.id);
+  if (!adjacency.has(mod.id)) adjacency.set(mod.id, new Set());
+  nodeMeta.set(mod.id, {
+    parent: mod.segments.length === 0 ? null : moduleIdFor(target, mod.segments.slice(0, -1)),
+    file: mod.relFile,
+    crateTarget: target.targetId,
+    loc: null,
+  });
+
+  const fc = getFile(mod.file, ctx);
+  if (!fc) return;
+  // Only reachable with a file that was read. The one path where getFile
+  // returns null pushes an error diagnostic, and an error means no graph is
+  // written at all, so a null `loc` can never reach a file. Defaulting it to
+  // 0 would turn an unreadable file into a zero-line module, which is the
+  // failure mode this tool exists to refuse.
+  nodeMeta.get(mod.id).loc = lineCountOf(fc);
+  const items = fc.items;
+  if (items.fileCfgTest && !opts.includeTests) return;
+
+  const skip = skipRangesFor(items, opts.includeTests);
+  const fileScan = { ...scan, graph, fc, items };
+  const useRanges = addUseEdges(fileScan, skip);
+
+  // A path written inside println!("{}", crate::a::b::VALUE) is a genuine
+  // reference at that exact site, so macro invocations are not skipped at
+  // module level. Function level treats them differently.
+  addPathEdges(fileScan, skip.concat(useRanges));
+}
+
+/** Edges of every `use` in the file; returns the use-declaration ranges. */
+function addUseEdges(scan, skip) {
+  const { mod, fc, items, ctx } = scan;
+  const useRanges = [];
+
+  for (const decl of items.useDecls) {
+    useRanges.push([decl.start, decl.end]);
+    if (inAnyRange(decl.start, skip)) continue;
+    const site = {
+      context: mod.segments.concat(decl.modStack),
+      leaves: expandUseTree(fc.masked, decl.bodyStart, decl.bodyEnd, ctx, mod.relFile),
+      pos: lineColOf(fc.lineIndex, decl.keywordStart),
+      text: collapseText(fc.src.slice(decl.start, decl.end)),
+      cfgGated: decl.cfgGated || inAnyRange(decl.start, items.cfgGatedRanges),
+    };
+    for (const leaf of site.leaves) addUseLeafEdge(scan, leaf, site);
+  }
+  return useRanges;
+}
+
+function addUseLeafEdge(scan, leaf, site) {
+  const { target, tree, mod, opts, ctx, graph } = scan;
+  if (leaf.isGlob) ctx.blindSpots.globImports++;
+  if (leaf.leadingColons) {
+    ctx.stats.externalReferences++;
+    return;
+  }
+  const detailed = resolvePathDetailed(leaf.segments, site.context, target, tree, ctx);
+  if (!detailed) return;
+  addModuleEdge(graph.edges, graph.adjacency, {
+    from: mod.id,
+    to: detailed.moduleId,
+    item: itemOf(detailed),
+    file: mod.relFile,
+    line: site.pos.line,
+    column: site.pos.column,
+    kind: leaf.isGlob ? 'use-glob' : 'use',
+    cfgGated: site.cfgGated,
+    text: site.text,
+  }, opts, ctx);
+}
+
+function addPathEdges(scan, skipped) {
+  const { target, tree, mod, fc, items, opts, ctx, graph } = scan;
+  const paths = extractQualifiedPaths(fc.masked, skipped, target);
+  for (const found of paths) {
+    const context = contextSegmentsAt(mod.segments, items.inlineMods, found.start);
+    const detailed = resolvePathDetailed(found.segments, context, target, tree, ctx);
+    if (!detailed) continue;
+    const pos = lineColOf(fc.lineIndex, found.start);
+    addModuleEdge(graph.edges, graph.adjacency, {
+      from: mod.id,
+      to: detailed.moduleId,
+      item: itemOf(detailed),
+      file: mod.relFile,
+      line: pos.line,
+      column: pos.column,
+      kind: 'path',
+      cfgGated: inAnyRange(found.start, items.cfgGatedRanges),
+      text: collapseText(fc.src.slice(found.start, found.end)),
+    }, opts, ctx);
+  }
 }
 
 /**
@@ -2089,10 +2206,10 @@ function functionNodeId(moduleId, ownerType, name) {
   return ownerType ? `${moduleId}::${ownerType}::${name}` : `${moduleId}::${name}`;
 }
 
+const TYPE_CALL_PATH_ROOTS = new Set(['crate', 'super', 'self']);
+
 function buildCallGraph(targets, trees, opts, ctx) {
-  const nodes = new Map();
-  const edges = [];
-  const adjacency = new Map();
+  const graph = { nodes: new Map(), edges: [], adjacency: new Map() };
   const perTarget = new Map();
 
   // Pass one: every function node, so a call can only ever resolve to a node
@@ -2101,75 +2218,7 @@ function buildCallGraph(targets, trees, opts, ctx) {
     if (!target.enabled) continue;
     const tree = trees.get(target.targetId);
     if (!tree) continue;
-    const index = {
-      target,
-      tree,
-      freeFns: new Map(),
-      typeMethods: new Map(),
-      typesByModule: new Map(),
-      // Definitions that lost a node-id collision, per module. Their bodies must
-      // not be attributed to the surviving node.
-      discardedFns: new Map(),
-    };
-    perTarget.set(target.targetId, index);
-
-    for (const mod of sortedModules(tree)) {
-      if (mod.testOnly && !opts.includeTests) continue;
-      const fc = getFile(mod.file, ctx);
-      if (!fc) continue;
-      const items = fc.items;
-      if (items.fileCfgTest && !opts.includeTests) continue;
-      const skip = skipRangesFor(items, opts.includeTests);
-
-      const types = new Set();
-      for (const def of items.typeDefs) types.add(def.name);
-      index.typesByModule.set(mod.id, types);
-
-      for (const fn of items.fns) {
-        if (inAnyRange(fn.start, skip)) continue;
-        if (fn.bodyStart < 0) continue;
-        const id = functionNodeId(mod.id, fn.ownerType, fn.name);
-        if (nodes.has(id)) {
-          // Two definitions collapse to one node id: `#[cfg]` twins, or trait
-          // impl overloads such as `From<A>` and `From<B>` for the same type.
-          // The second definition is not analysed, and §4.9's attribution rule
-          // does not authorise charging its body to the surviving node, so its
-          // body range is excluded from call attribution below. Silence here
-          // would let the tool report full visibility while blind, and would
-          // fabricate edges from the discarded body.
-          const kept = nodes.get(id);
-          const dup = lineColOf(fc.lineIndex, fn.nameOffset);
-          ctx.diagnostics.push({
-            level: 'warn',
-            code: 'duplicate-function-node',
-            message:
-              `${id} is already bound to ${kept.file}:${kept.line}; the definition at line ${dup.line} ` +
-              'is not analysed and its body is excluded from call attribution',
-            file: mod.relFile,
-          });
-          if (!index.discardedFns.has(mod.id)) index.discardedFns.set(mod.id, []);
-          index.discardedFns.get(mod.id).push(fn);
-          continue;
-        }
-        const pos = lineColOf(fc.lineIndex, fn.nameOffset);
-        nodes.set(id, {
-          id,
-          name: fn.name,
-          ownerType: fn.ownerType,
-          moduleId: mod.id,
-          file: mod.relFile,
-          line: pos.line,
-        });
-        if (fn.ownerType) {
-          const key = `${mod.id}::${fn.ownerType}`;
-          if (!index.typeMethods.has(key)) index.typeMethods.set(key, new Map());
-          index.typeMethods.get(key).set(fn.name, id);
-          types.add(fn.ownerType);
-        } else {
-          index.freeFns.set(`${mod.id}::${fn.name}`, id);
-        }
-      }
-    }
+    perTarget.set(target.targetId, indexTargetFunctions(target, tree, graph.nodes, opts, ctx));
   }
 
   // Pass two: call sites.
@@ -2177,166 +2226,291 @@ function buildCallGraph(targets, trees, opts, ctx) {
     if (!target.enabled) continue;
     const index = perTarget.get(target.targetId);
     if (!index) continue;
-    const tree = index.tree;
-
-    for (const mod of sortedModules(tree)) {
-      if (mod.testOnly && !opts.includeTests) continue;
-      const fc = getFile(mod.file, ctx);
-      if (!fc) continue;
-      const items = fc.items;
-      if (items.fileCfgTest && !opts.includeTests) continue;
-
-      const skip = skipRangesFor(items, opts.includeTests);
-      const macroRanges = macroInvocationRanges(fc.masked, skip, ctx);
-      // A discarded definition's body belongs to no node, so nothing inside it
-      // may be attributed: keeping it out of `bodies` is what stops the collision
-      // from manufacturing edges out of the surviving node. It is deliberately
-      // NOT part of `dead`, because unanalysable is not the same as invisible.
-      // A call the tool stopped looking at still belongs in the blind-spot
-      // tally, otherwise the surface shrinks exactly as visibility shrinks.
-      const discarded = index.discardedFns.get(mod.id) || [];
-      const discardedStarts = new Set(discarded.map((fn) => fn.start));
-      const discardedBodies = discarded.map((fn) => [fn.bodyStart, fn.bodyEnd]);
-      const dead = skip.concat(macroRanges);
-      const importMap = buildImportMap(fc, mod, target, tree, ctx, skip);
-      const bodies = items.fns
-        .filter((fn) => fn.bodyStart >= 0 && !inAnyRange(fn.start, skip) && !discardedStarts.has(
-          fn.start))
-        .map((fn) => ({ fn, id: functionNodeId(mod.id, fn.ownerType, fn.name) }));
-
-      const enclosing = (offset) => {
-        let best = null;
-        for (const entry of bodies) {
-          if (offset >= entry.fn.bodyStart && offset < entry.fn.bodyEnd) {
-            if (best === null || entry.fn.bodyStart > best.fn.bodyStart) best = entry;
-          }
-        }
-        return best;
-      };
-
-      const emit = (fromEntry, toId, offset, kind) => {
-        if (!toId || !nodes.has(toId)) return false;
-        const pos = lineColOf(fc.lineIndex, offset);
-        if (!adjacency.has(fromEntry.id)) adjacency.set(fromEntry.id, new Set());
-        adjacency.get(fromEntry.id).add(toId);
-        edges.push({
-          from: fromEntry.id,
-          to: toId,
-          file: mod.relFile,
-          line: pos.line,
-          column: pos.column,
-          kind,
-          cfgGated: inAnyRange(offset, items.cfgGatedRanges),
-          text: callText(fc.src, fc.masked, offset),
-        });
-        return true;
-      };
-
-      // Method-call syntax: the receiver type is unknown without type
-      // information, so this is structurally out of reach.
-      METHOD_CALL_RE.lastIndex = 0;
-      let m;
-      while ((m = METHOD_CALL_RE.exec(fc.masked)) !== null) {
-        const offset = m.index;
-        if (inAnyRange(offset, dead)) continue;
-        if (!enclosing(offset) && !inAnyRange(offset, discardedBodies)) continue;
-        ctx.blindSpots.unresolvedMethodCalls++;
-      }
-
-      // Call syntax that belongs to no function body: counted, never attributed.
-      for (const re of [METHOD_CALL_RE, TYPE_CALL_RE, BARE_CALL_RE]) {
-        re.lastIndex = 0;
-        let outside;
-        while ((outside = re.exec(fc.masked)) !== null) {
-          const offset = outside.index;
-          if (!inAnyRange(offset, items.constStaticRanges)) continue;
-          if (inAnyRange(offset, dead)) continue;
-          if (re === BARE_CALL_RE && NON_CALL_WORDS.has(outside[1])) continue;
-          ctx.blindSpots.callsOutsideFunctionBodies++;
-        }
-      }
-
-      const consumed = [];
-      const qualified = extractQualifiedPaths(fc.masked, dead, target);
-      for (const found of qualified) {
-        const after = skipWs(fc.masked, found.end, fc.masked.length);
-        const isCall = fc.masked[after] === '(' || (fc.masked[after] === ':' && fc.masked[after +
-          1] === ':');
-        if (!isCall) continue;
-        const openIdx = fc.masked[after] === '(' ? after : findTurbofishParen(fc.masked, after);
-        if (openIdx < 0) continue;
-        consumed.push([found.start, openIdx + 1]);
-        const from = enclosing(found.start);
-        if (!from) {
-          if (inAnyRange(found.start, discardedBodies)) ctx.blindSpots.unresolvedBareCalls++;
-          continue;
-        }
-        const context = contextSegmentsAt(mod.segments, items.inlineMods, found.start);
-        const detailed = resolvePathDetailed(found.segments, context, target, tree, ctx);
-        if (!detailed) continue;
-        let toId = null;
-        if (detailed.rest.length === 1) toId = `${detailed.moduleId}::${detailed.rest[0]}`;
-        else if (detailed.rest.length === 2) toId =
-          `${detailed.moduleId}::${detailed.rest[0]}::${detailed.rest[1]}`;
-        if (!emit(from, toId, found.start, 'path-call')) ctx.blindSpots.unresolvedBareCalls++;
-      }
-
-      TYPE_CALL_RE.lastIndex = 0;
-      while ((m = TYPE_CALL_RE.exec(fc.masked)) !== null) {
-        const offset = m.index;
-        if (inAnyRange(offset, dead) || inAnyRange(offset, consumed)) continue;
-        const typeName = m[1];
-        const method = m[2];
-        if (typeName === 'crate' || typeName === 'super' || typeName === 'self') continue;
-        const from = enclosing(offset);
-        const inDiscarded = !from && inAnyRange(offset, discardedBodies);
-        if (!from && !inDiscarded) continue;
-        // Claim the range either way, so the bare-call pass below cannot count
-        // the same site a second time.
-        consumed.push([offset, offset + m[0].length]);
-        if (inDiscarded) {
-          ctx.blindSpots.unresolvedBareCalls++;
-          continue;
-        }
-        let toId = null;
-        if (typeName === 'Self') {
-          const owner = from.fn.ownerType;
-          if (owner) toId = `${mod.id}::${owner}::${method}`;
-        } else {
-          const imported = importMap.get(typeName);
-          if (imported?.moduleId) {
-            toId = `${imported.moduleId}::${typeName}::${method}`;
-          }
-          const localTypes = index.typesByModule.get(mod.id);
-          if ((!toId || !nodes.has(toId)) && localTypes?.has(typeName)) {
-            toId = `${mod.id}::${typeName}::${method}`;
-          }
-        }
-        if (!emit(from, toId, offset, 'type-call')) ctx.blindSpots.unresolvedBareCalls++;
-      }
-
-      BARE_CALL_RE.lastIndex = 0;
-      while ((m = BARE_CALL_RE.exec(fc.masked)) !== null) {
-        const offset = m.index;
-        if (inAnyRange(offset, dead) || inAnyRange(offset, consumed)) continue;
-        const name = m[1];
-        if (NON_CALL_WORDS.has(name)) continue;
-        const from = enclosing(offset);
-        if (!from) {
-          if (inAnyRange(offset, discardedBodies)) ctx.blindSpots.unresolvedBareCalls++;
-          continue;
-        }
-        let toId = index.freeFns.get(`${mod.id}::${name}`) || null;
-        if (!toId) {
-          const imported = importMap.get(name);
-          if (imported?.moduleId) toId = `${imported.moduleId}::${imported.name}`;
-        }
-        if (!emit(from, toId, offset, 'call')) ctx.blindSpots.unresolvedBareCalls++;
-      }
-    }
+    for (const mod of sortedModules(index.tree)) scanModuleCalls(mod, index, graph, opts, ctx);
   }
 
-  return { nodes, edges, adjacency };
+  return graph;
+}
+
+/** The parsed file of a module the call graph covers, or null when it is out of scope. */
+function callGraphFile(mod, opts, ctx) {
+  if (mod.testOnly && !opts.includeTests) return null;
+  const fc = getFile(mod.file, ctx);
+  if (!fc) return null;
+  if (fc.items.fileCfgTest && !opts.includeTests) return null;
+  return fc;
+}
+
+function indexTargetFunctions(target, tree, nodes, opts, ctx) {
+  const index = {
+    target,
+    tree,
+    freeFns: new Map(),
+    typeMethods: new Map(),
+    typesByModule: new Map(),
+    // Definitions that lost a node-id collision, per module. Their bodies must
+    // not be attributed to the surviving node.
+    discardedFns: new Map(),
+  };
+
+  for (const mod of sortedModules(tree)) {
+    const fc = callGraphFile(mod, opts, ctx);
+    if (!fc) continue;
+    const items = fc.items;
+    const skip = skipRangesFor(items, opts.includeTests);
+
+    const types = new Set();
+    for (const def of items.typeDefs) types.add(def.name);
+    index.typesByModule.set(mod.id, types);
+
+    for (const fn of items.fns) {
+      if (inAnyRange(fn.start, skip)) continue;
+      if (fn.bodyStart < 0) continue;
+      addFunctionNode(fn, mod, fc, index, nodes, ctx);
+    }
+  }
+  return index;
+}
+
+function addFunctionNode(fn, mod, fc, index, nodes, ctx) {
+  const id = functionNodeId(mod.id, fn.ownerType, fn.name);
+  if (nodes.has(id)) {
+    // Two definitions collapse to one node id: `#[cfg]` twins, or trait
+    // impl overloads such as `From<A>` and `From<B>` for the same type.
+    // The second definition is not analysed, and §4.9's attribution rule
+    // does not authorise charging its body to the surviving node, so its
+    // body range is excluded from call attribution below. Silence here
+    // would let the tool report full visibility while blind, and would
+    // fabricate edges from the discarded body.
+    const kept = nodes.get(id);
+    const dup = lineColOf(fc.lineIndex, fn.nameOffset);
+    ctx.diagnostics.push({
+      level: 'warn',
+      code: 'duplicate-function-node',
+      message:
+        `${id} is already bound to ${kept.file}:${kept.line}; the definition at line ${dup.line} ` +
+        'is not analysed and its body is excluded from call attribution',
+      file: mod.relFile,
+    });
+    if (!index.discardedFns.has(mod.id)) index.discardedFns.set(mod.id, []);
+    index.discardedFns.get(mod.id).push(fn);
+    return;
+  }
+  const pos = lineColOf(fc.lineIndex, fn.nameOffset);
+  nodes.set(id, {
+    id,
+    name: fn.name,
+    ownerType: fn.ownerType,
+    moduleId: mod.id,
+    file: mod.relFile,
+    line: pos.line,
+  });
+  if (fn.ownerType) {
+    const key = `${mod.id}::${fn.ownerType}`;
+    if (!index.typeMethods.has(key)) index.typeMethods.set(key, new Map());
+    index.typeMethods.get(key).set(fn.name, id);
+    index.typesByModule.get(mod.id).add(fn.ownerType);
+  } else {
+    index.freeFns.set(`${mod.id}::${fn.name}`, id);
+  }
+}
+
+function scanModuleCalls(mod, index, graph, opts, ctx) {
+  const fc = callGraphFile(mod, opts, ctx);
+  if (!fc) return;
+  const items = fc.items;
+
+  const skip = skipRangesFor(items, opts.includeTests);
+  const macroRanges = macroInvocationRanges(fc.masked, skip, ctx);
+  // A discarded definition's body belongs to no node, so nothing inside it
+  // may be attributed: keeping it out of `bodies` is what stops the collision
+  // from manufacturing edges out of the surviving node. It is deliberately
+  // NOT part of `dead`, because unanalysable is not the same as invisible.
+  // A call the tool stopped looking at still belongs in the blind-spot
+  // tally, otherwise the surface shrinks exactly as visibility shrinks.
+  const discarded = index.discardedFns.get(mod.id) || [];
+  const discardedStarts = new Set(discarded.map((fn) => fn.start));
+  const discardedBodies = discarded.map((fn) => [fn.bodyStart, fn.bodyEnd]);
+  const dead = skip.concat(macroRanges);
+  const importMap = buildImportMap(fc, mod, index.target, index.tree, ctx, skip);
+  const bodies = items.fns
+    .filter((fn) => fn.bodyStart >= 0 && !inAnyRange(fn.start, skip) && !discardedStarts.has(
+      fn.start))
+    .map((fn) => ({ fn, id: functionNodeId(mod.id, fn.ownerType, fn.name) }));
+  const scan = {
+    mod, fc, items, index, graph, ctx, discardedBodies, dead, importMap, bodies, consumed: [],
+  };
+
+  countMethodCalls(scan);
+  countCallsOutsideBodies(scan);
+  resolvePathCalls(scan);
+  resolveTypeCalls(scan);
+  resolveBareCalls(scan);
+}
+
+function enclosingBody(bodies, offset) {
+  let best = null;
+  for (const entry of bodies) {
+    if (offset >= entry.fn.bodyStart && offset < entry.fn.bodyEnd) {
+      if (best === null || entry.fn.bodyStart > best.fn.bodyStart) best = entry;
+    }
+  }
+  return best;
+}
+
+function emitCallEdge(scan, fromEntry, toId, offset, kind) {
+  const { nodes, adjacency, edges } = scan.graph;
+  const fc = scan.fc;
+  if (!toId || !nodes.has(toId)) return false;
+  const pos = lineColOf(fc.lineIndex, offset);
+  if (!adjacency.has(fromEntry.id)) adjacency.set(fromEntry.id, new Set());
+  adjacency.get(fromEntry.id).add(toId);
+  edges.push({
+    from: fromEntry.id,
+    to: toId,
+    file: scan.mod.relFile,
+    line: pos.line,
+    column: pos.column,
+    kind,
+    cfgGated: inAnyRange(offset, scan.items.cfgGatedRanges),
+    text: callText(fc.src, fc.masked, offset),
+  });
+  return true;
+}
+
+// Method-call syntax: the receiver type is unknown without type
+// information, so this is structurally out of reach.
+function countMethodCalls(scan) {
+  METHOD_CALL_RE.lastIndex = 0;
+  let m;
+  while ((m = METHOD_CALL_RE.exec(scan.fc.masked)) !== null) {
+    const offset = m.index;
+    if (inAnyRange(offset, scan.dead)) continue;
+    if (!enclosingBody(scan.bodies, offset) && !inAnyRange(offset, scan.discardedBodies)) continue;
+    scan.ctx.blindSpots.unresolvedMethodCalls++;
+  }
+}
+
+// Call syntax that belongs to no function body: counted, never attributed.
+function countCallsOutsideBodies(scan) {
+  for (const re of [METHOD_CALL_RE, TYPE_CALL_RE, BARE_CALL_RE]) {
+    re.lastIndex = 0;
+    let outside;
+    while ((outside = re.exec(scan.fc.masked)) !== null) {
+      const offset = outside.index;
+      if (!inAnyRange(offset, scan.items.constStaticRanges)) continue;
+      if (inAnyRange(offset, scan.dead)) continue;
+      if (re === BARE_CALL_RE && NON_CALL_WORDS.has(outside[1])) continue;
+      scan.ctx.blindSpots.callsOutsideFunctionBodies++;
+    }
+  }
+}
+
+/** Offset of the call paren after a qualified path, or -1 when the path is not called. */
+function pathCallParen(masked, after) {
+  if (masked[after] === '(') return after;
+  if (masked[after] === ':' && masked[after + 1] === ':') return findTurbofishParen(masked, after);
+  return -1;
+}
+
+function pathCallTargetId(detailed) {
+  if (detailed.rest.length === 1) return `${detailed.moduleId}::${detailed.rest[0]}`;
+  if (detailed.rest.length === 2) {
+    return `${detailed.moduleId}::${detailed.rest[0]}::${detailed.rest[1]}`;
+  }
+  return null;
+}
+
+function resolvePathCalls(scan) {
+  const { fc, mod, items, index, ctx } = scan;
+  const qualified = extractQualifiedPaths(fc.masked, scan.dead, index.target);
+  for (const found of qualified) {
+    const after = skipWs(fc.masked, found.end, fc.masked.length);
+    const openIdx = pathCallParen(fc.masked, after);
+    if (openIdx < 0) continue;
+    scan.consumed.push([found.start, openIdx + 1]);
+    const from = enclosingBody(scan.bodies, found.start);
+    if (!from) {
+      if (inAnyRange(found.start, scan.discardedBodies)) ctx.blindSpots.unresolvedBareCalls++;
+      continue;
+    }
+    const context = contextSegmentsAt(mod.segments, items.inlineMods, found.start);
+    const detailed = resolvePathDetailed(found.segments, context, index.target, index.tree, ctx);
+    if (!detailed) continue;
+    const toId = pathCallTargetId(detailed);
+    if (!emitCallEdge(scan, from, toId, found.start, 'path-call')) {
+      ctx.blindSpots.unresolvedBareCalls++;
+    }
+  }
+}
+
+function typeCallTargetId(scan, from, typeName, method) {
+  const modId = scan.mod.id;
+  if (typeName === 'Self') {
+    const owner = from.fn.ownerType;
+    return owner ? `${modId}::${owner}::${method}` : null;
+  }
+  let toId = null;
+  const imported = scan.importMap.get(typeName);
+  if (imported?.moduleId) {
+    toId = `${imported.moduleId}::${typeName}::${method}`;
+  }
+  const localTypes = scan.index.typesByModule.get(modId);
+  if ((!toId || !scan.graph.nodes.has(toId)) && localTypes?.has(typeName)) {
+    toId = `${modId}::${typeName}::${method}`;
+  }
+  return toId;
+}
+
+function resolveTypeCalls(scan) {
+  const ctx = scan.ctx;
+  TYPE_CALL_RE.lastIndex = 0;
+  let m;
+  while ((m = TYPE_CALL_RE.exec(scan.fc.masked)) !== null) {
+    const offset = m.index;
+    if (inAnyRange(offset, scan.dead) || inAnyRange(offset, scan.consumed)) continue;
+    const typeName = m[1];
+    const method = m[2];
+    if (TYPE_CALL_PATH_ROOTS.has(typeName)) continue;
+    const from = enclosingBody(scan.bodies, offset);
+    const inDiscarded = !from && inAnyRange(offset, scan.discardedBodies);
+    if (!from && !inDiscarded) continue;
+    // Claim the range either way, so the bare-call pass below cannot count
+    // the same site a second time.
+    scan.consumed.push([offset, offset + m[0].length]);
+    if (inDiscarded) {
+      ctx.blindSpots.unresolvedBareCalls++;
+      continue;
+    }
+    const toId = typeCallTargetId(scan, from, typeName, method);
+    if (!emitCallEdge(scan, from, toId, offset, 'type-call')) ctx.blindSpots.unresolvedBareCalls++;
+  }
+}
+
+function bareCallTargetId(scan, name) {
+  const toId = scan.index.freeFns.get(`${scan.mod.id}::${name}`) || null;
+  if (toId) return toId;
+  const imported = scan.importMap.get(name);
+  return imported?.moduleId ? `${imported.moduleId}::${imported.name}` : null;
+}
+
+function resolveBareCalls(scan) {
+  const ctx = scan.ctx;
+  BARE_CALL_RE.lastIndex = 0;
+  let m;
+  while ((m = BARE_CALL_RE.exec(scan.fc.masked)) !== null) {
+    const offset = m.index;
+    if (inAnyRange(offset, scan.dead) || inAnyRange(offset, scan.consumed)) continue;
+    const name = m[1];
+    if (NON_CALL_WORDS.has(name)) continue;
+    const from = enclosingBody(scan.bodies, offset);
+    if (!from) {
+      if (inAnyRange(offset, scan.discardedBodies)) ctx.blindSpots.unresolvedBareCalls++;
+      continue;
+    }
+    const toId = bareCallTargetId(scan, name);
+    if (!emitCallEdge(scan, from, toId, offset, 'call')) ctx.blindSpots.unresolvedBareCalls++;
+  }
 }
 
 function findTurbofishParen(masked, from) {
@@ -2371,20 +2545,23 @@ function buildImportMap(fc, mod, target, tree, ctx, skip) {
   for (const decl of fc.items.useDecls) {
     if (inAnyRange(decl.start, skip)) continue;
     if (decl.modStack.length > 0) continue;
-    for (const leaf of expandUseTree(fc.masked, decl.bodyStart, decl.bodyEnd, ctx, mod.relFile)) {
-      if (leaf.isGlob || leaf.leadingColons) continue;
-      if (leaf.segments.length === 0) continue;
-      const local = leaf.alias || leaf.segments[leaf.segments.length - 1];
-      const silent = { stats: silentStats(), blindSpots: silentStats() };
-      const detailed = resolvePathDetailed(leaf.segments, mod.segments, target, tree, silent);
-      if (!detailed) continue;
-      map.set(local, {
-        moduleId: detailed.moduleId,
-        name: leaf.segments[leaf.segments.length - 1],
-      });
-    }
+    const leaves = expandUseTree(fc.masked, decl.bodyStart, decl.bodyEnd, ctx, mod.relFile);
+    for (const leaf of leaves) addImportLeaf(map, leaf, mod, target, tree);
   }
   return map;
+}
+
+function addImportLeaf(map, leaf, mod, target, tree) {
+  if (leaf.isGlob || leaf.leadingColons) return;
+  if (leaf.segments.length === 0) return;
+  const local = leaf.alias || leaf.segments[leaf.segments.length - 1];
+  const silent = { stats: silentStats(), blindSpots: silentStats() };
+  const detailed = resolvePathDetailed(leaf.segments, mod.segments, target, tree, silent);
+  if (!detailed) return;
+  map.set(local, {
+    moduleId: detailed.moduleId,
+    name: leaf.segments[leaf.segments.length - 1],
+  });
 }
 
 /** Counter sink: import-map resolution must not double-count blind spots. */
@@ -2405,69 +2582,78 @@ function silentStats() {
 /** Iterative, so a large graph cannot blow the JS stack. */
 function tarjan(nodeIds, adjacency) {
   const ids = nodeIds.slice().sort(compareCodeUnits);
+  const st = {
+    neighbours: tarjanNeighbours(ids, adjacency),
+    index: new Map(),
+    lowlink: new Map(),
+    onStack: new Set(),
+    stack: [],
+    sccs: [],
+    counter: 0,
+  };
+
+  for (const root of ids) {
+    if (st.index.has(root)) continue;
+    const work = [{ node: root, edge: 0 }];
+    tarjanVisit(st, root);
+    while (work.length > 0) tarjanStep(st, work);
+  }
+
+  st.sccs.sort((a, b) => compareCodeUnits(a[0], b[0]));
+  return st.sccs;
+}
+
+function tarjanNeighbours(ids, adjacency) {
   const neighbours = new Map();
   for (const id of ids) {
     const set = adjacency.get(id);
     neighbours.set(id, set ? Array.from(set).filter((n) => adjacency.has(n) || ids.includes(
       n)).sort(compareCodeUnits) : []);
   }
+  return neighbours;
+}
 
-  const index = new Map();
-  const lowlink = new Map();
-  const onStack = new Set();
-  const stack = [];
-  const sccs = [];
-  let counter = 0;
+function tarjanVisit(st, node) {
+  st.index.set(node, st.counter);
+  st.lowlink.set(node, st.counter);
+  st.counter++;
+  st.stack.push(node);
+  st.onStack.add(node);
+}
 
-  for (const root of ids) {
-    if (index.has(root)) continue;
-    const work = [{ node: root, edge: 0 }];
-    index.set(root, counter);
-    lowlink.set(root, counter);
-    counter++;
-    stack.push(root);
-    onStack.add(root);
-
-    while (work.length > 0) {
-      const frame = work.at(-1);
-      const list = neighbours.get(frame.node) || [];
-      if (frame.edge < list.length) {
-        const next = list[frame.edge];
-        frame.edge++;
-        if (!index.has(next)) {
-          index.set(next, counter);
-          lowlink.set(next, counter);
-          counter++;
-          stack.push(next);
-          onStack.add(next);
-          work.push({ node: next, edge: 0 });
-        } else if (onStack.has(next)) {
-          lowlink.set(frame.node, Math.min(lowlink.get(frame.node), index.get(next)));
-        }
-        continue;
-      }
-
-      work.pop();
-      if (work.length > 0) {
-        const parent = work.at(-1).node;
-        lowlink.set(parent, Math.min(lowlink.get(parent), lowlink.get(frame.node)));
-      }
-      if (lowlink.get(frame.node) === index.get(frame.node)) {
-        const component = [];
-        for (;;) {
-          const popped = stack.pop();
-          onStack.delete(popped);
-          component.push(popped);
-          if (popped === frame.node) break;
-        }
-        component.sort(compareCodeUnits);
-        sccs.push(component);
-      }
+function tarjanStep(st, work) {
+  const frame = work.at(-1);
+  const list = st.neighbours.get(frame.node) || [];
+  if (frame.edge < list.length) {
+    const next = list[frame.edge];
+    frame.edge++;
+    if (!st.index.has(next)) {
+      tarjanVisit(st, next);
+      work.push({ node: next, edge: 0 });
+    } else if (st.onStack.has(next)) {
+      st.lowlink.set(frame.node, Math.min(st.lowlink.get(frame.node), st.index.get(next)));
     }
+    return;
   }
 
-  sccs.sort((a, b) => compareCodeUnits(a[0], b[0]));
-  return sccs;
+  work.pop();
+  if (work.length > 0) {
+    const parent = work.at(-1).node;
+    st.lowlink.set(parent, Math.min(st.lowlink.get(parent), st.lowlink.get(frame.node)));
+  }
+  if (st.lowlink.get(frame.node) === st.index.get(frame.node)) tarjanPopComponent(st, frame.node);
+}
+
+function tarjanPopComponent(st, node) {
+  const component = [];
+  for (;;) {
+    const popped = st.stack.pop();
+    st.onStack.delete(popped);
+    component.push(popped);
+    if (popped === node) break;
+  }
+  component.sort(compareCodeUnits);
+  st.sccs.push(component);
 }
 
 function hasSelfEdge(adjacency, id) {
@@ -2545,11 +2731,7 @@ function classifyFunctionCycles(graph, ctx) {
 
   for (const members of sccs) {
     if (members.length === 1) {
-      if (hasSelfEdge(graph.adjacency, members[0])) {
-        const node = graph.nodes.get(members[0]);
-        recursion.push({ function: members[0], file: node ? node.file : '', line: node ? node.line :
-          0 });
-      }
+      pushRecursion(graph, members[0], recursion);
       continue;
     }
     const memberSet = new Set(members);
@@ -2568,6 +2750,12 @@ function classifyFunctionCycles(graph, ctx) {
   cycles.sort(compareCycles);
   recursion.sort((a, b) => compareCodeUnits(a.function, b.function));
   return { cycles, recursion };
+}
+
+function pushRecursion(graph, id, recursion) {
+  if (!hasSelfEdge(graph.adjacency, id)) return;
+  const node = graph.nodes.get(id);
+  recursion.push({ function: id, file: node ? node.file : '', line: node ? node.line : 0 });
 }
 
 /* ------------------------------------------------------------------ *
@@ -2626,47 +2814,60 @@ function applyBaseline(result, baseline, baselinePath, opts, ctx) {
     return { used: false };
   }
 
-  const from = baseline.generatedFrom || {};
-  if (from.functionScope !== opts.functionScope || from.includeTests !== opts.includeTests) {
-    ctx.diagnostics.push({
-      level: 'warn',
-      code: 'baseline-settings-mismatch',
-      message:
-        `baseline was generated with functionScope=${from.functionScope} includeTests=${from.includeTests}; ` +
-        `this run uses functionScope=${opts.functionScope} includeTests=${opts.includeTests}`,
-      file: toPosix(baselinePath),
-    });
-  }
+  warnOnBaselineSettings(baseline, baselinePath, opts, ctx);
 
   const moduleIds = new Set((baseline.moduleCycles || []).map((c) => c.id));
   const functionIds = new Set((baseline.functionCycles || []).map((c) => c.id));
   const currentModule = new Set(result.moduleCycles.map((c) => c.id));
   const currentFunction = new Set(result.functionCycles.map((c) => c.id));
 
-  let knownModule = 0;
-  let newModule = 0;
-  let knownFunction = 0;
-  let newFunction = 0;
+  const moduleCounts = markCycleStatus(result.moduleCycles, moduleIds);
+  const functionCounts = markCycleStatus(result.functionCycles, functionIds);
+  const resolvedCycles = resolvedBaselineCycles(baseline, currentModule, currentFunction);
 
-  for (const cycle of result.moduleCycles) {
-    if (moduleIds.has(cycle.id)) {
+  return {
+    used: true,
+    path: toPosix(baselinePath),
+    knownModuleCycles: moduleCounts.known,
+    newModuleCycles: moduleCounts.fresh,
+    knownFunctionCycles: functionCounts.known,
+    newFunctionCycles: functionCounts.fresh,
+    resolvedCycles,
+  };
+}
+
+function warnOnBaselineSettings(baseline, baselinePath, opts, ctx) {
+  const from = baseline.generatedFrom || {};
+  if (from.functionScope !== opts.functionScope || from.includeTests !== opts.includeTests) {
+    ctx.diagnostics.push({
+      level: 'warn',
+      code: 'baseline-settings-mismatch',
+      message:
+        `baseline was generated with functionScope=${from.functionScope} ` +
+        `includeTests=${from.includeTests}; ` +
+        `this run uses functionScope=${opts.functionScope} includeTests=${opts.includeTests}`,
+      file: toPosix(baselinePath),
+    });
+  }
+}
+
+/** Marks each cycle known or new against the baseline ids; returns both counts. */
+function markCycleStatus(cycles, baselineIds) {
+  let known = 0;
+  let fresh = 0;
+  for (const cycle of cycles) {
+    if (baselineIds.has(cycle.id)) {
       cycle.status = 'known';
-      knownModule++;
+      known++;
     } else {
       cycle.status = 'new';
-      newModule++;
+      fresh++;
     }
   }
-  for (const cycle of result.functionCycles) {
-    if (functionIds.has(cycle.id)) {
-      cycle.status = 'known';
-      knownFunction++;
-    } else {
-      cycle.status = 'new';
-      newFunction++;
-    }
-  }
+  return { known, fresh };
+}
 
+function resolvedBaselineCycles(baseline, currentModule, currentFunction) {
   const resolvedCycles = [];
   for (const cycle of baseline.moduleCycles || []) {
     if (!currentModule.has(cycle.id)) {
@@ -2682,16 +2883,7 @@ function applyBaseline(result, baseline, baselinePath, opts, ctx) {
     if (a.graph !== b.graph) return a.graph < b.graph ? -1 : 1;
     return a.id < b.id ? -1 : 1;
   });
-
-  return {
-    used: true,
-    path: toPosix(baselinePath),
-    knownModuleCycles: knownModule,
-    newModuleCycles: newModule,
-    knownFunctionCycles: knownFunction,
-    newFunctionCycles: newFunction,
-    resolvedCycles,
-  };
+  return resolvedCycles;
 }
 
 /* ------------------------------------------------------------------ *
@@ -2736,68 +2928,11 @@ function analyze(opts) {
   const ctx = newContext(rootAbs);
   const compiled = compileExcludes(opts.excludes);
 
-  let rustFiles;
-  let manifests;
-  let targets;
-  let crateDiscovery;
+  const { rustFiles, targets, crateDiscovery } = stat.isFile()
+    ? singleFileInput(rootAbs, ctx)
+    : directoryInput(rootAbs, compiled, opts, ctx);
 
-  if (stat.isFile()) {
-    if (!rootAbs.endsWith('.rs')) throw new AnalysisError(`not a .rs file: ${toPosix(rootAbs)}`);
-    rustFiles = [rootAbs];
-    ctx.root = path.dirname(rootAbs);
-    targets = [
-      makeTarget({
-        targetId: 'crate',
-        kind: path.basename(rootAbs) === 'lib.rs' ? 'lib' : 'bin',
-        packageName: null,
-        pkgIdent: 'crate',
-        libName: 'crate',
-        manifestPath: null,
-        rootFile: rootAbs,
-        sourceRoot: path.dirname(rootAbs),
-        edition: '2021',
-        externCrates: new Set(),
-        enabled: true,
-      }),
-    ];
-    crateDiscovery = 'fallback';
-  } else {
-    const walk = findRustFiles(rootAbs, compiled, ctx);
-    rustFiles = walk.rustFiles;
-    manifests = walk.manifests;
-    if (rustFiles.length === 0) throw new AnalysisError(
-      `no .rs files found under ${toPosix(rootAbs)}`);
-    targets = discoverTargets(rootAbs, manifests, opts, ctx);
-    crateDiscovery = 'manifest';
-    if (targets.length === 0) {
-      const fallback = fallbackTarget(rootAbs);
-      if (!fallback) {
-        throw new AnalysisError(
-          manifests.length === 0
-            ? `no Cargo.toml and no crate root (lib.rs / main.rs) found under ${toPosix(rootAbs)}`
-            : `no crate target found under ${toPosix(rootAbs)}: manifests exist but none yields a lib.rs or main.rs`,
-        );
-      }
-      targets = [fallback];
-      crateDiscovery = 'fallback';
-    }
-  }
-
-  // Disabled targets are still traversed, for file accounting only. Without
-  // that, every file under tests/ would be reported as unreachable, which it
-  // is not: it is excluded test code, a different category.
-  const trees = new Map();
-  const reached = new Set();
-  for (const target of targets) {
-    const tree = buildModuleTree(target, opts, ctx);
-    trees.set(target.targetId, tree);
-    for (const file of tree.visitedFiles) reached.add(file);
-  }
-
-  for (const file of rustFiles) {
-    if (!reached.has(file)) ctx.blindSpots.unreachableFiles.push(relPath(rootAbs, file));
-  }
-  ctx.blindSpots.unreachableFiles.sort(compareCodeUnits);
+  const trees = buildTargetTrees(targets, rustFiles, rootAbs, opts, ctx);
 
   const wantModule = opts.level === 'module' || opts.level === 'all';
   const wantFunction = opts.level === 'function' || opts.level === 'all';
@@ -2826,24 +2961,7 @@ function analyze(opts) {
   const reportedFunctionCycles =
     opts.functionScope === 'all' ? classified.cycles.slice() : crossModule.slice();
 
-  const enabledTargets = targets.filter((t) => t.enabled);
-  const crates = enabledTargets.map((target) => {
-    const tree = trees.get(target.targetId);
-    const count = tree
-      ? Array.from(tree.modules.values()).filter((m) => opts.includeTests || !m.testOnly).length
-      : 0;
-    return {
-      targetId: target.targetId,
-      kind: target.kind,
-      packageName: target.packageName,
-      manifestPath: target.manifestPath,
-      rootFile: relPath(rootAbs, target.rootFile),
-      edition: target.edition,
-      modules: count,
-      files: count,
-    };
-  });
-  crates.sort((a, b) => compareCodeUnits(a.targetId, b.targetId));
+  const crates = crateSummaries(targets, trees, rootAbs, opts);
 
   return {
     ctx,
@@ -2872,6 +2990,89 @@ function analyze(opts) {
       recursiveFunctions: classified.recursion.length,
     },
   };
+}
+
+function singleFileInput(rootAbs, ctx) {
+  if (!rootAbs.endsWith('.rs')) throw new AnalysisError(`not a .rs file: ${toPosix(rootAbs)}`);
+  const rustFiles = [rootAbs];
+  ctx.root = path.dirname(rootAbs);
+  const targets = [
+    makeTarget({
+      targetId: 'crate',
+      kind: path.basename(rootAbs) === 'lib.rs' ? 'lib' : 'bin',
+      packageName: null,
+      pkgIdent: 'crate',
+      libName: 'crate',
+      manifestPath: null,
+      rootFile: rootAbs,
+      sourceRoot: path.dirname(rootAbs),
+      edition: '2021',
+      externCrates: new Set(),
+      enabled: true,
+    }),
+  ];
+  return { rustFiles, targets, crateDiscovery: 'fallback' };
+}
+
+function directoryInput(rootAbs, compiled, opts, ctx) {
+  const walk = findRustFiles(rootAbs, compiled, ctx);
+  const rustFiles = walk.rustFiles;
+  const manifests = walk.manifests;
+  if (rustFiles.length === 0) throw new AnalysisError(
+    `no .rs files found under ${toPosix(rootAbs)}`);
+  const targets = discoverTargets(rootAbs, manifests, opts, ctx);
+  if (targets.length > 0) return { rustFiles, targets, crateDiscovery: 'manifest' };
+  const fallback = fallbackTarget(rootAbs);
+  if (!fallback) {
+    throw new AnalysisError(
+      manifests.length === 0
+        ? `no Cargo.toml and no crate root (lib.rs / main.rs) found under ${toPosix(rootAbs)}`
+        : `no crate target found under ${toPosix(rootAbs)}: manifests exist but none `
+          + 'yields a lib.rs or main.rs',
+    );
+  }
+  return { rustFiles, targets: [fallback], crateDiscovery: 'fallback' };
+}
+
+// Disabled targets are still traversed, for file accounting only. Without
+// that, every file under tests/ would be reported as unreachable, which it
+// is not: it is excluded test code, a different category.
+function buildTargetTrees(targets, rustFiles, rootAbs, opts, ctx) {
+  const trees = new Map();
+  const reached = new Set();
+  for (const target of targets) {
+    const tree = buildModuleTree(target, opts, ctx);
+    trees.set(target.targetId, tree);
+    for (const file of tree.visitedFiles) reached.add(file);
+  }
+
+  for (const file of rustFiles) {
+    if (!reached.has(file)) ctx.blindSpots.unreachableFiles.push(relPath(rootAbs, file));
+  }
+  ctx.blindSpots.unreachableFiles.sort(compareCodeUnits);
+  return trees;
+}
+
+function crateSummaries(targets, trees, rootAbs, opts) {
+  const enabledTargets = targets.filter((t) => t.enabled);
+  const crates = enabledTargets.map((target) => {
+    const tree = trees.get(target.targetId);
+    const count = tree
+      ? Array.from(tree.modules.values()).filter((m) => opts.includeTests || !m.testOnly).length
+      : 0;
+    return {
+      targetId: target.targetId,
+      kind: target.kind,
+      packageName: target.packageName,
+      manifestPath: target.manifestPath,
+      rootFile: relPath(rootAbs, target.rootFile),
+      edition: target.edition,
+      modules: count,
+      files: count,
+    };
+  });
+  crates.sort((a, b) => compareCodeUnits(a.targetId, b.targetId));
+  return crates;
 }
 
 /* ------------------------------------------------------------------ *
@@ -2966,18 +3167,25 @@ function moduleEdgePayload(edge) {
  * byte-identical and their relative order cannot change the output.
  */
 function compareGraphEdges(a, b) {
-  if (a.from !== b.from) return a.from < b.from ? -1 : 1;
-  if (a.to !== b.to) return a.to < b.to ? -1 : 1;
-  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
-  if (a.line !== b.line) return a.line - b.line;
-  if (a.column !== b.column) return a.column - b.column;
-  if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+  const head = compareGraphEdgeSite(a, b);
+  if (head !== null) return head;
   // Function edges have no item, and a module reference sorts before any item
   // reference at the same site.
   const ai = a.item ?? '';
   const bi = b.item ?? '';
   if (ai !== bi) return ai < bi ? -1 : 1;
   return 0;
+}
+
+/** The first six keys of compareGraphEdges; null when all six tie. */
+function compareGraphEdgeSite(a, b) {
+  if (a.from !== b.from) return a.from < b.from ? -1 : 1;
+  if (a.to !== b.to) return a.to < b.to ? -1 : 1;
+  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+  if (a.line !== b.line) return a.line - b.line;
+  if (a.column !== b.column) return a.column - b.column;
+  if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+  return null;
 }
 
 /**
@@ -3068,30 +3276,34 @@ function checkGraphIntegrity(payload) {
   const moduleIdSet = hasModules ? new Set(payload.modules.map((m) => m.id)) : null;
   const functionIdSet = hasFunctions ? new Set(payload.functions.map((f) => f.id)) : null;
 
-  if (hasModules) {
-    for (const edge of payload.edges) {
-      if (!moduleIdSet.has(edge.to)) problems.push({ check: 1, from: edge.from, to: edge.to });
-    }
-    for (const mod of payload.modules) {
-      if (mod.parent !== null && !moduleIdSet.has(mod.parent)) {
-        problems.push({ check: 2, from: mod.id, to: mod.parent });
-      }
-    }
-  }
-  if (hasFunctions) {
-    for (const edge of payload.functionEdges) {
-      if (!functionIdSet.has(edge.from) || !functionIdSet.has(edge.to)) {
-        problems.push({ check: 3, from: edge.from, to: edge.to });
-      }
-    }
-    if (hasModules) {
-      for (const fn of payload.functions) {
-        if (!moduleIdSet.has(fn.moduleId)) problems.push({ check: 4, from: fn.id, to:
-          fn.moduleId });
-      }
-    }
-  }
+  if (hasModules) moduleIntegrityProblems(payload, moduleIdSet, problems);
+  if (hasFunctions) functionIntegrityProblems(payload, functionIdSet, moduleIdSet, problems);
   return problems;
+}
+
+/** Checks 1 and 2 of checkGraphIntegrity, in that order. */
+function moduleIntegrityProblems(payload, moduleIdSet, problems) {
+  for (const edge of payload.edges) {
+    if (!moduleIdSet.has(edge.to)) problems.push({ check: 1, from: edge.from, to: edge.to });
+  }
+  for (const mod of payload.modules) {
+    if (mod.parent !== null && !moduleIdSet.has(mod.parent)) {
+      problems.push({ check: 2, from: mod.id, to: mod.parent });
+    }
+  }
+}
+
+/** Checks 3 and 4 of checkGraphIntegrity; check 4 only when modules are present. */
+function functionIntegrityProblems(payload, functionIdSet, moduleIdSet, problems) {
+  for (const edge of payload.functionEdges) {
+    if (!functionIdSet.has(edge.from) || !functionIdSet.has(edge.to)) {
+      problems.push({ check: 3, from: edge.from, to: edge.to });
+    }
+  }
+  if (moduleIdSet === null) return;
+  for (const fn of payload.functions) {
+    if (!moduleIdSet.has(fn.moduleId)) problems.push({ check: 4, from: fn.id, to: fn.moduleId });
+  }
 }
 
 /** Only the sections actually present, for the confirmation line. */
@@ -3200,11 +3412,7 @@ function renderHuman(result, baselineInfo, exitCode) {
   } else {
     out.push(`MODULE CYCLES: ${result.moduleCycles.length}${newSuffix(result.moduleCycles)}`);
     for (const cycle of result.moduleCycles) {
-      out.push(`  [${cycle.id.slice(0, 8)}] size ${cycle.size}`);
-      for (const member of cycle.members) out.push(`    ${member}`);
-      for (const edge of cycle.edges) {
-        out.push(`    edge ${edge.file}:${edge.line}:${edge.column}  ${edge.text}`);
-      }
+      pushCycleLines(out, `  [${cycle.id.slice(0, 8)}] size ${cycle.size}`, cycle);
     }
   }
   out.push('');
@@ -3217,11 +3425,7 @@ function renderHuman(result, baselineInfo, exitCode) {
         newSuffix(result.functionCycles),
     );
     for (const cycle of result.functionCycles) {
-      out.push(`  [${cycle.id.slice(0, 8)}] size ${cycle.size} ${cycle.scope}`);
-      for (const member of cycle.members) out.push(`    ${member}`);
-      for (const edge of cycle.edges) {
-        out.push(`    edge ${edge.file}:${edge.line}:${edge.column}  ${edge.text}`);
-      }
+      pushCycleLines(out, `  [${cycle.id.slice(0, 8)}] size ${cycle.size} ${cycle.scope}`, cycle);
     }
   }
   out.push(
@@ -3308,6 +3512,14 @@ function runAnalysis(opts) {
   return { result, baselineInfo, exitCode };
 }
 
+function pushCycleLines(out, header, cycle) {
+  out.push(header);
+  for (const member of cycle.members) out.push(`    ${member}`);
+  for (const edge of cycle.edges) {
+    out.push(`    edge ${edge.file}:${edge.line}:${edge.column}  ${edge.text}`);
+  }
+}
+
 function main(argv) {
   let opts;
   try {
@@ -3330,51 +3542,12 @@ function main(argv) {
   }
 
   try {
-    if (opts.writeBaseline) {
-      const result = analyze(opts);
-      applyBaseline(result, null, '', opts, result.ctx);
-      process.stderr.write(renderDiagnostics(result.ctx));
-      if (result.ctx.diagnostics.some((d) => d.level === 'error')) {
-        process.stderr.write('analysis produced error-level diagnostics; baseline not written\n');
-        return 3;
-      }
-      writeBaseline(opts.writeBaseline, result, opts);
-      // Recording is not a verdict, so this exits 0 even when cycles exist.
-      process.stderr.write(
-        `wrote baseline ${toPosix(opts.writeBaseline)}: ` +
-          `${result.moduleCycles.length} module cycles, ${result.functionCycles.length} function cycles\n`,
-      );
-      return 0;
-    }
+    if (opts.writeBaseline) return runWriteBaseline(opts);
 
     const { result, baselineInfo, exitCode } = runAnalysis(opts);
     process.stderr.write(renderDiagnostics(result.ctx));
 
-    if (opts.emitGraph) {
-      if (result.ctx.diagnostics.some((d) => d.level === 'error')) {
-        // Refusing for the same reason --write-baseline refuses: a graph taken
-        // from an incomplete analysis has holes, and a consumer would rank
-        // modules over it and report a clean gate. The report is still printed,
-        // deliberately: this run exits 3 with or without the flag, and
-        // --emit-graph must not change the stdout of a failure it did not cause.
-        // The two cases below are failures the flag itself introduced, and only
-        // those suppress output.
-        process.stderr.write('analysis produced error-level diagnostics; graph not written\n');
-      } else {
-        const payload = buildGraphPayload(result);
-        const problems = checkGraphIntegrity(payload);
-        if (problems.length > 0) {
-          process.stderr.write(
-            `graph integrity check failed: ${problems.length} closure violation(s) ` +
-              `(check ${problems[0].check}, first: ${problems[0].from} -> ${problems[0].to}); ` +
-              'graph not written\n',
-          );
-          return 3;
-        }
-        writeGraph(opts.emitGraph, payload); // throws AnalysisError -> caught below -> exit 3
-        process.stderr.write(`wrote graph ${toPosix(opts.emitGraph)}: ${graphCounts(payload)}\n`);
-      }
-    }
+    if (opts.emitGraph && !emitGraphFile(opts, result)) return 3;
 
     if (opts.json) {
       process.stdout.write(renderJson(result, baselineInfo, exitCode));
@@ -3383,18 +3556,68 @@ function main(argv) {
     if (!opts.quiet) process.stdout.write(renderHuman(result, baselineInfo, exitCode));
     return exitCode;
   } catch (err) {
-    if (err instanceof UsageError) {
-      process.stderr.write(`usage error: ${err.message}\n`);
-      return 2;
-    }
-    if (err instanceof AnalysisError) {
-      process.stderr.write(`analysis error: ${err.message}\n`);
-      return 3;
-    }
-    process.stderr.write(`internal error: ${err && err.message}\n`);
-    if (err?.stack) process.stderr.write(`${err.stack}\n`);
+    return reportRunError(err);
+  }
+}
+
+function runWriteBaseline(opts) {
+  const result = analyze(opts);
+  applyBaseline(result, null, '', opts, result.ctx);
+  process.stderr.write(renderDiagnostics(result.ctx));
+  if (result.ctx.diagnostics.some((d) => d.level === 'error')) {
+    process.stderr.write('analysis produced error-level diagnostics; baseline not written\n');
     return 3;
   }
+  writeBaseline(opts.writeBaseline, result, opts);
+  // Recording is not a verdict, so this exits 0 even when cycles exist.
+  process.stderr.write(
+    `wrote baseline ${toPosix(opts.writeBaseline)}: ` +
+      `${result.moduleCycles.length} module cycles, ` +
+      `${result.functionCycles.length} function cycles\n`,
+  );
+  return 0;
+}
+
+/** Writes --emit-graph output; false when the graph failed its integrity check (exit 3). */
+function emitGraphFile(opts, result) {
+  if (result.ctx.diagnostics.some((d) => d.level === 'error')) {
+    // Refusing for the same reason --write-baseline refuses: a graph taken
+    // from an incomplete analysis has holes, and a consumer would rank
+    // modules over it and report a clean gate. The report is still printed,
+    // deliberately: this run exits 3 with or without the flag, and
+    // --emit-graph must not change the stdout of a failure it did not cause.
+    // The two cases below are failures the flag itself introduced, and only
+    // those suppress output.
+    process.stderr.write('analysis produced error-level diagnostics; graph not written\n');
+    return true;
+  }
+  const payload = buildGraphPayload(result);
+  const problems = checkGraphIntegrity(payload);
+  if (problems.length > 0) {
+    process.stderr.write(
+      `graph integrity check failed: ${problems.length} closure violation(s) ` +
+        `(check ${problems[0].check}, first: ${problems[0].from} -> ${problems[0].to}); ` +
+        'graph not written\n',
+    );
+    return false;
+  }
+  writeGraph(opts.emitGraph, payload); // throws AnalysisError -> caught in main -> exit 3
+  process.stderr.write(`wrote graph ${toPosix(opts.emitGraph)}: ${graphCounts(payload)}\n`);
+  return true;
+}
+
+function reportRunError(err) {
+  if (err instanceof UsageError) {
+    process.stderr.write(`usage error: ${err.message}\n`);
+    return 2;
+  }
+  if (err instanceof AnalysisError) {
+    process.stderr.write(`analysis error: ${err.message}\n`);
+    return 3;
+  }
+  process.stderr.write(`internal error: ${err && err.message}\n`);
+  if (err?.stack) process.stderr.write(`${err.stack}\n`);
+  return 3;
 }
 
 /* ------------------------------------------------------------------ *

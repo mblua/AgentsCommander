@@ -475,4 +475,34 @@ export function registerTauriEdgeTests({ trees, control }) {
     assert.equal(recovered.reason, 'port trait Sink::emit');
     assert.equal(classifyEmit(declared)().reason, 'port trait Sink::emit');
   });
+
+  test('06 measure characterization: every rule, edge file, test-only Tauri', () => {
+    const head = files({
+      'lib.rs': 'mod ports;\nmod x;\nmod commands;\n',
+      'ports.rs': PORTS,
+      'x.rs': 'use tauri::AppHandle;\nuse tauri::Manager;\n' +
+        'fn a(h: AppHandle) { h.emit("e", 1); let _s = h.state::<u8>(); }\n' +
+        'struct S;\nimpl S { #[tauri::command] fn c(&self) { std::fs::read("a"); } }\n' +
+        '#[tauri::command] fn d() {}\n' +
+        '#[cfg(test)] mod t { fn z(x: tauri::AppHandle) {} }\n',
+      'commands.rs': '#[tauri::command] fn e() { std::fs::read("b"); }\n',
+    });
+    const X = R + 'x.rs', C = R + 'commands.rs';
+    const EXPECTED = {
+      exit: 1,
+      totals: [{}, { tauri_files: 4, emit_files: 1, state_files: 1, command_files: 2,
+        disk_commands: 2 }],
+      diagnostics: [
+        ['FAIL', 'tauri_files', X, 3], ['FAIL', 'emit_files', X, 3],
+        ['FAIL', 'state_files', X, 3], ['FAIL', 'command_files', X, 5],
+        ['FAIL', 'disk_commands', C, 1], ['FAIL', 'new_disk_command', C, 1],
+        ['FAIL', 'tauri_files', X, 3], ['FAIL', 'tauri_files', X, 7],
+        ['FAIL', 'new_disk_command', X, 5],
+      ],
+    };
+    const r = edgeGate(trees({}, head));
+    const shape = { exit: r.exit, totals: r.totals,
+      diagnostics: r.diagnostics.map(d => [d.status, d.rule, d.path, d.line]) };
+    assert.deepEqual(shape, EXPECTED);
+  });
 }

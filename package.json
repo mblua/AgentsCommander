@@ -62,6 +62,8 @@
     "sanitizing:self": "node --test scripts/sanitizing_self_tests.mjs",
     "sanitizing:containers": "node scripts/sanitizing_containers.mjs",
     "seven:self": "node scripts/check-clippy-seven.mjs --self-test",
+    "actions-pinned": "node scripts/check-actions-pinned.mjs",
+    "actions-pinned:self": "node scripts/check-actions-pinned.mjs --self-test",
     "seven:baseline": "node scripts/check-clippy-seven.mjs --baseline-diff",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx}\""

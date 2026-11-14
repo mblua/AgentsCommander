@@ -825,6 +825,19 @@ export function parseArgs(argv) {
   return buildModeOptions(selectMode(flags), flags);
 }
 
+/** Runs a mode; an error of one of `types` prints `<CODE>: <message>` and exits 1. */
+function runReportingTyped(run, stderr, types) {
+  try {
+    return run();
+  } catch (error) {
+    if (types.some((type) => error instanceof type)) {
+      stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    throw error;
+  }
+}
+
 export function main(argv, io = {}) {
   const stdout = io.stdout ?? ((text) => console.log(text));
   const stderr = io.stderr ?? ((text) => console.error(text));
@@ -846,61 +859,33 @@ export function main(argv, io = {}) {
   }
   if (options.mode === 'self-test') return selfTest({ stdout, stderr });
   if (options.mode === 'capture') {
-    try {
-      return runCapture(options, {
-        stdout,
-        stderr,
-        getEnv,
-        readCaptureText: io.readCaptureText,
-        readWorkspace: io.readWorkspace,
-        readWorkspaceBytes: io.readWorkspaceBytes,
-        existsWorkspace: io.existsWorkspace,
-        writeText: io.writeText,
-      });
-    } catch (error) {
-      if (
-        error instanceof CaptureError
-        || error instanceof ConfigError
-        || error instanceof ThresholdError
-      ) {
-        stderr(`${error.code}: ${error.message}`);
-        return 1;
-      }
-      throw error;
-    }
+    return runReportingTyped(() => runCapture(options, {
+      stdout,
+      stderr,
+      getEnv,
+      readCaptureText: io.readCaptureText,
+      readWorkspace: io.readWorkspace,
+      readWorkspaceBytes: io.readWorkspaceBytes,
+      existsWorkspace: io.existsWorkspace,
+      writeText: io.writeText,
+    }), stderr, [CaptureError, ConfigError, ThresholdError]);
   }
   if (options.mode === 'baseline-diff') {
-    try {
-      return runBaselineDiff(options, {
-        stdout,
-        stderr,
-        runGit: io.runGit,
-        readWorkspace: io.readWorkspace,
-        existsWorkspace: io.existsWorkspace,
-      });
-    } catch (error) {
-      if (error instanceof ConfigError) {
-        stderr(`${error.code}: ${error.message}`);
-        return 1;
-      }
-      throw error;
-    }
+    return runReportingTyped(() => runBaselineDiff(options, {
+      stdout,
+      stderr,
+      runGit: io.runGit,
+      readWorkspace: io.readWorkspace,
+      existsWorkspace: io.existsWorkspace,
+    }), stderr, [ConfigError]);
   }
   if (options.mode === 'merge') {
-    try {
-      return runMerge(options, {
-        readInputText: io.readInputText,
-        readWorkspaceBytes: io.readWorkspaceBytes,
-        writeText: io.writeText,
-        now: io.now,
-      });
-    } catch (error) {
-      if (error instanceof ConfigError) {
-        stderr(`${error.code}: ${error.message}`);
-        return 1;
-      }
-      throw error;
-    }
+    return runReportingTyped(() => runMerge(options, {
+      readInputText: io.readInputText,
+      readWorkspaceBytes: io.readWorkspaceBytes,
+      writeText: io.writeText,
+      now: io.now,
+    }), stderr, [ConfigError]);
   }
   if (options.mode === 'classify-probe') {
     return runClassifyProbe(options, { stdout, readCaptureText: io.readCaptureText });
@@ -1436,6 +1421,22 @@ export function idFor(path, line, column, sliceText, readSource = defaultReadSou
   return container === '' ? `rust:${path}::${name}` : `rust:${path}::${container}::${name}`;
 }
 
+/** How each bracket moves `anchorText`'s nesting depth (never below 0). */
+const ANCHOR_NEST_DELTA = new Map([['(', 1], ['[', 1], [')', -1], [']', -1]]);
+
+/** A `'` at `index`: a lifetime keeps the quote; a char literal is skipped whole. */
+function anchorQuote(source, index) {
+  if (isIdentContinue(source[index + 1]) && source[index + 2] !== "'") {
+    return { text: "'", index: index + 1 };
+  }
+  const length = source.length;
+  let cursor = index + 1;
+  if (source[cursor] === '\\') cursor += 2;
+  else cursor += 1;
+  while (cursor < length && source[cursor] !== "'" && source[cursor] !== '\n') cursor += 1;
+  return { text: '', index: cursor >= length ? length : cursor + 1 };
+}
+
 /** The normalised code text from a site to its body brace, empty when no brace. */
 function anchorText(source, start) {
   const length = source.length;
@@ -1450,26 +1451,14 @@ function anchorText(source, start) {
     }
     const ch = source[index];
     if (ch === "'") {
-      if (isIdentContinue(source[index + 1]) && source[index + 2] !== "'") {
-        text += "'";
-        index += 1;
-        continue;
-      }
-      let cursor = index + 1;
-      if (source[cursor] === '\\') cursor += 2;
-      else cursor += 1;
-      while (cursor < length && source[cursor] !== "'" && source[cursor] !== '\n') cursor += 1;
-      index = cursor >= length ? length : cursor + 1;
+      const quote = anchorQuote(source, index);
+      text += quote.text;
+      index = quote.index;
       continue;
     }
-    if (ch === '(' || ch === '[') {
-      nest += 1;
-      text += ch;
-      index += 1;
-      continue;
-    }
-    if (ch === ')' || ch === ']') {
-      nest = Math.max(0, nest - 1);
+    const delta = ANCHOR_NEST_DELTA.get(ch);
+    if (delta !== undefined) {
+      nest = Math.max(0, nest + delta);
       text += ch;
       index += 1;
       continue;
@@ -1569,8 +1558,8 @@ function normaliseCapturePath(fileName, workspaceRoot) {
   return normalised;
 }
 
-/** Validates section 4's schema, then the threshold and toolchain agreement. */
-function validateBaseline(document, rustcVersion) {
+/** Section 4's top-level fields: object, version, threshold and toolchain. */
+function validateBaselineHeader(document, rustcVersion) {
   if (document === null || typeof document !== 'object' || Array.isArray(document)) {
     throw new ConfigError('baseline must be a JSON object');
   }
@@ -1586,102 +1575,129 @@ function validateBaseline(document, rustcVersion) {
     // comparison still needs a version string.
     if (typeof document.toolchain !== 'string' || document.toolchain === '') {
       throw new ConfigError(
-        `baseline toolchain must be a non-empty string, got ${JSON.stringify(document.toolchain)}`,
+        'baseline toolchain must be a non-empty string, got '
+          + JSON.stringify(document.toolchain),
       );
     }
   } else if (document.toolchain !== rustcVersion) {
     throw new ConfigError(
-      `baseline toolchain must be ${JSON.stringify(rustcVersion)}, got ${JSON.stringify(document.toolchain)}`,
+      `baseline toolchain must be ${JSON.stringify(rustcVersion)}, `
+        + `got ${JSON.stringify(document.toolchain)}`,
     );
   }
+}
+
+/** One platform's anchors: non-empty, 12 lowercase hex characters each, sorted. */
+function validateBaselineAnchors(entry, platform, anchors) {
+  if (!Array.isArray(anchors) || anchors.length === 0) {
+    throw new ConfigError(
+      `baseline entry ${entry.id}.sites.${platform} must be a non-empty array`);
+  }
+  for (let index = 0; index < anchors.length; index += 1) {
+    if (typeof anchors[index] !== 'string' || !ANCHOR_RE.test(anchors[index])) {
+      throw new ConfigError(
+        `baseline anchor ${JSON.stringify(anchors[index])} in ${entry.id}.sites.${platform} `
+          + 'must be 12 lowercase hex characters',
+      );
+    }
+    if (index > 0 && anchors[index] < anchors[index - 1]) {
+      throw new ConfigError(`baseline entry ${entry.id}.sites.${platform} must be sorted`);
+    }
+  }
+}
+
+/** One entry after `previousId`: its id order, then its per-platform sites. */
+function validateBaselineEntry(entry, previousId) {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new ConfigError('baseline entries must be objects');
+  }
+  if (typeof entry.id !== 'string' || entry.id === '') {
+    throw new ConfigError('baseline entry id must be a non-empty string');
+  }
+  if (previousId !== null && entry.id <= previousId) {
+    throw new ConfigError(
+      `baseline entries must be sorted by id and unique; ${JSON.stringify(entry.id)} `
+        + `follows ${JSON.stringify(previousId)}`,
+    );
+  }
+  const sites = entry.sites;
+  if (sites === null || typeof sites !== 'object' || Array.isArray(sites)) {
+    throw new ConfigError(`baseline entry ${entry.id} sites must be an object`);
+  }
+  const platforms = Object.keys(sites);
+  if (platforms.length === 0) {
+    throw new ConfigError(`baseline entry ${entry.id} sites must not be empty`);
+  }
+  for (const platform of platforms) {
+    if (!PLATFORMS.has(platform)) {
+      throw new ConfigError(
+        `baseline entry ${entry.id} has unknown platform ${JSON.stringify(platform)}`);
+    }
+    validateBaselineAnchors(entry, platform, sites[platform]);
+  }
+}
+
+/** Validates section 4's schema, then the threshold and toolchain agreement. */
+function validateBaseline(document, rustcVersion) {
+  validateBaselineHeader(document, rustcVersion);
   if (!Array.isArray(document.entries)) {
     throw new ConfigError('baseline entries must be an array');
   }
   let previousId = null;
   for (const entry of document.entries) {
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-      throw new ConfigError('baseline entries must be objects');
-    }
-    if (typeof entry.id !== 'string' || entry.id === '') {
-      throw new ConfigError('baseline entry id must be a non-empty string');
-    }
-    if (previousId !== null && entry.id <= previousId) {
-      throw new ConfigError(
-        `baseline entries must be sorted by id and unique; ${JSON.stringify(entry.id)} follows ${JSON.stringify(previousId)}`,
-      );
-    }
+    validateBaselineEntry(entry, previousId);
     previousId = entry.id;
-    const sites = entry.sites;
-    if (sites === null || typeof sites !== 'object' || Array.isArray(sites)) {
-      throw new ConfigError(`baseline entry ${entry.id} sites must be an object`);
-    }
-    const platforms = Object.keys(sites);
-    if (platforms.length === 0) {
-      throw new ConfigError(`baseline entry ${entry.id} sites must not be empty`);
-    }
-    for (const platform of platforms) {
-      if (!PLATFORMS.has(platform)) {
-        throw new ConfigError(
-          `baseline entry ${entry.id} has unknown platform ${JSON.stringify(platform)}`);
-      }
-      const anchors = sites[platform];
-      if (!Array.isArray(anchors) || anchors.length === 0) {
-        throw new ConfigError(
-          `baseline entry ${entry.id}.sites.${platform} must be a non-empty array`);
-      }
-      for (let index = 0; index < anchors.length; index += 1) {
-        if (typeof anchors[index] !== 'string' || !ANCHOR_RE.test(anchors[index])) {
-          throw new ConfigError(
-            `baseline anchor ${JSON.stringify(anchors[index])} in ${entry.id}.sites.${platform} must be 12 lowercase hex characters`,
-          );
-        }
-        if (index > 0 && anchors[index] < anchors[index - 1]) {
-          throw new ConfigError(`baseline entry ${entry.id}.sites.${platform} must be sorted`);
-        }
-      }
-    }
   }
 }
 
-/**
- * The `--capture` mode, in the order of section 5. Returns an exit code; every
- * failure throws a typed error that `main` prints as `<CODE>: <message>`.
- */
-export function runCapture(options, io = {}) {
-  const stderr = io.stderr ?? ((text) => console.error(text));
-  const getEnv = io.getEnv ?? ((name) => process.env[name]);
+/** The `runCapture` hooks: each `io` entry, or the real process and filesystem. */
+function captureIo(options, io) {
   const workspaceRoot = options.workspaceRoot ?? ROOT;
-  const readCaptureText = io.readCaptureText ?? ((file) => fs.readFileSync(file, 'utf8'));
-  const readWorkspace =
-    io.readWorkspace ?? ((file) => fs.readFileSync(path.join(workspaceRoot, file), 'utf8'));
-  const readWorkspaceBytes =
-    io.readWorkspaceBytes ?? ((file) => fs.readFileSync(path.join(workspaceRoot, file)));
-  const existsWorkspace = io.existsWorkspace ?? ((file) => fs.existsSync(path.join(workspaceRoot,
-    file)));
-  const writeText = io.writeText ?? ((file, text) => fs.writeFileSync(file, text));
+  return {
+    stderr: io.stderr ?? ((text) => console.error(text)),
+    getEnv: io.getEnv ?? ((name) => process.env[name]),
+    workspaceRoot,
+    readCaptureText: io.readCaptureText ?? ((file) => fs.readFileSync(file, 'utf8')),
+    readWorkspace:
+      io.readWorkspace ?? ((file) => fs.readFileSync(path.join(workspaceRoot, file), 'utf8')),
+    readWorkspaceBytes:
+      io.readWorkspaceBytes ?? ((file) => fs.readFileSync(path.join(workspaceRoot, file))),
+    existsWorkspace:
+      io.existsWorkspace ?? ((file) => fs.existsSync(path.join(workspaceRoot, file))),
+    writeText: io.writeText ?? ((file, text) => fs.writeFileSync(file, text)),
+  };
+}
 
-  // 1. Render first, before anything can fail, so a broken build still shows
-  // its diagnostics. Cognitive messages are left to the verdict's own lines.
+/** Pushes every `{` line's JSON; returns the first line that does not parse, or null. */
+function parseCaptureLines(captureText, records) {
+  for (const line of captureText.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    try {
+      records.push(JSON.parse(line));
+    } catch {
+      return line;
+    }
+  }
+  return null;
+}
+
+/** Step 1's read: the capture text, its read error and its parsed records. */
+function readCaptureRecords(readCaptureText, captureFile) {
   let captureText = null;
   let readError = null;
   try {
-    captureText = readCaptureText(options.captureFile);
+    captureText = readCaptureText(captureFile);
   } catch (error) {
     readError = error;
   }
   const records = [];
   let parseError = null;
-  if (typeof captureText === 'string') {
-    for (const line of captureText.split('\n')) {
-      if (!line.startsWith('{')) continue;
-      try {
-        records.push(JSON.parse(line));
-      } catch {
-        parseError = line;
-        break;
-      }
-    }
-  }
+  if (typeof captureText === 'string') parseError = parseCaptureLines(captureText, records);
+  return { captureText, readError, records, parseError };
+}
+
+/** Step 1's render: every non-cognitive compiler message, rendered text first. */
+function renderOtherDiagnostics(records, stderr) {
   for (const record of records) {
     if (record?.reason !== 'compiler-message') continue;
     if (record.message?.code?.code === COGNITIVE_CODE) continue;
@@ -1690,8 +1706,10 @@ export function runCapture(options, io = {}) {
       typeof rendered === 'string' && rendered.length > 0 ? rendered : record.message?.message;
     if (typeof text === 'string' && text.length > 0) stderr(text);
   }
+}
 
-  // 2. Environment. Either variable silences the whole run while leaving exit 0.
+/** Step 2: either variable silences the whole run while leaving exit 0. */
+function checkLintEnvironment(getEnv) {
   if (getEnv('CLIPPY_CONF_DIR') !== undefined) {
     throw new ConfigError('CLIPPY_CONF_DIR is set; it silences the cognitive-complexity lint');
   }
@@ -1703,39 +1721,40 @@ export function runCapture(options, io = {}) {
       );
     }
   }
+}
 
-  // 3. Clippy's own failure is the answer; the ratchet is not consulted.
-  if (options.clippyExit !== 0) {
-    stderr(`cognitive gate not evaluated: clippy exited ${options.clippyExit}`);
-    return options.clippyExit;
-  }
-
-  // 4. Integrity first, then outcome. An empty capture is never "clean".
+/** Step 4: integrity first, then outcome. An empty capture is never "clean". */
+function checkCaptureIntegrity(captureFile, capture) {
+  const { captureText, readError, records, parseError } = capture;
   if (readError !== null) {
     const reason = readError instanceof Error ? readError.message : String(readError);
-    throw new CaptureError(`cannot read ${options.captureFile}: ${reason}`);
+    throw new CaptureError(`cannot read ${captureFile}: ${reason}`);
   }
   if (captureText.length === 0) {
-    throw new CaptureError(`${options.captureFile} is empty`);
+    throw new CaptureError(`${captureFile} is empty`);
   }
   if (parseError !== null) {
     throw new CaptureError(
-      `${options.captureFile} has a line starting with '{' that does not parse: ${JSON.stringify(parseError.slice(0, 120))}`,
+      `${captureFile} has a line starting with '{' that does not parse: `
+        + JSON.stringify(parseError.slice(0, 120)),
     );
   }
   // A terminal build-finished is what makes the capture a complete record:
   // records after it mean a second run was truncated into the same file.
   const finished = records.at(-1);
   if (finished?.reason !== 'build-finished') {
-    throw new CaptureError(`${options.captureFile} has no terminal build-finished record`);
+    throw new CaptureError(`${captureFile} has no terminal build-finished record`);
   }
   if (finished.success !== true) {
     throw new CaptureError(
-      `${options.captureFile} reports build-finished success ${JSON.stringify(finished.success)} while clippy exited 0`,
+      `${captureFile} reports build-finished success ${JSON.stringify(finished.success)}`
+        + ' while clippy exited 0',
     );
   }
+}
 
-  // 5. Threshold file. Clippy 1.97.1 gives a root .clippy.toml precedence.
+/** Step 5: the threshold file. Clippy 1.97.1 gives a root .clippy.toml precedence. */
+function checkRootClippyTomlFile(existsWorkspace, readWorkspaceBytes) {
   if (existsWorkspace('.clippy.toml')) {
     throw new ConfigError(
       'root .clippy.toml exists and takes precedence over clippy.toml; remove it');
@@ -1755,9 +1774,10 @@ export function runCapture(options, io = {}) {
   }
   const tomlProblem = validateRootClippyToml(tomlText);
   if (tomlProblem !== null) throw new ConfigError(tomlProblem.message);
+}
 
-  // 6. Baseline. An absent document is only legal under --report.
-  let baselineDocument;
+/** Step 6: the baseline. An absent document is only legal under --report. */
+function loadCaptureBaseline(options, readWorkspace) {
   let baselineText = null;
   try {
     baselineText = readWorkspace(BASELINE_FILE);
@@ -1766,7 +1786,7 @@ export function runCapture(options, io = {}) {
   }
   if (baselineText === null) {
     if (!options.report) throw new CaptureError(`${BASELINE_FILE} not found`);
-    baselineDocument = {
+    return {
       version: 1,
       issue: 2234,
       threshold: 25,
@@ -1775,62 +1795,71 @@ export function runCapture(options, io = {}) {
       capturedAt: null,
       entries: [],
     };
-  } else {
-    let parsed;
-    try {
-      parsed = JSON.parse(baselineText);
-    } catch {
-      throw new ConfigError(`${BASELINE_FILE} is not valid JSON`);
-    }
-    validateBaseline(parsed, options.rustcVersion);
-    baselineDocument = parsed;
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(baselineText);
+  } catch {
+    throw new ConfigError(`${BASELINE_FILE} is not valid JSON`);
+  }
+  validateBaseline(parsed, options.rustcVersion);
+  return parsed;
+}
 
-  // 7. Threshold in the data: every cognitive message carries the pinned 25.
-  const cognitiveRecords = records.filter(
-    (record) =>
-      record?.reason === 'compiler-message' && record.message?.code?.code === COGNITIVE_CODE,
-  );
+/** Step 7: threshold in the data: every cognitive message carries the pinned 25. */
+function checkPinnedDenominator(cognitiveRecords) {
   for (const record of cognitiveRecords) {
     const message = record.message?.message;
     const match = typeof message === 'string' ? COGNITIVE_MESSAGE_RE.exec(message) : null;
     if (match?.[2] !== '25') {
       throw new ThresholdError(
-        `cognitive-complexity message does not carry the pinned denominator 25: ${JSON.stringify(message)}`,
+        'cognitive-complexity message does not carry the pinned denominator 25: '
+          + JSON.stringify(message),
       );
     }
   }
+}
 
-  // 8 and 9. Normalise the path, then collapse to distinct primary spans. The
-  // whole span is the separating key: (file, line_start) merges two sites that
-  // share a line but are separated by column.
+/** The highlighted text of a span's first line, undefined when the span has none. */
+function spanSliceText(span) {
+  const selection = Array.isArray(span.text) ? span.text[0] : undefined;
+  return selection === undefined
+    ? undefined
+    : selection.text.slice(selection.highlight_start - 1, selection.highlight_end - 1);
+}
+
+/**
+ * Steps 8 and 9. Normalise the path, then collapse to distinct primary spans. The
+ * whole span is the separating key: (file, line_start) merges two sites that
+ * share a line but are separated by column.
+ */
+function collectCaptureSites(cognitiveRecords, workspaceRoot) {
   const sites = new Map();
   for (const record of cognitiveRecords) {
     const span = (record.message.spans ?? []).find((candidate) => candidate?.is_primary === true);
     if (span === undefined) {
       throw new CaptureError(
-        `cognitive-complexity message carries no primary span: ${JSON.stringify(record.message.message)}`,
+        'cognitive-complexity message carries no primary span: '
+          + JSON.stringify(record.message.message),
       );
     }
     const file = normaliseCapturePath(span.file_name, workspaceRoot);
     const key = [file, span.line_start, span.line_end, span.column_start,
       span.column_end].join('\u0000');
     if (sites.has(key)) continue;
-    const selection = Array.isArray(span.text) ? span.text[0] : undefined;
-    const sliceText =
-      selection === undefined
-        ? undefined
-        : selection.text.slice(selection.highlight_start - 1, selection.highlight_end - 1);
     sites.set(key, {
       file,
       line: span.line_start,
       column: span.column_start,
-      sliceText,
+      sliceText: spanSliceText(span),
       rendered: typeof record.message.rendered === 'string' ? record.message.rendered : null,
     });
   }
+  return sites;
+}
 
-  // 10 and 11. Phase 2's identity rule, exactly, and the sorted anchors per id.
+/** Steps 10 and 11. Phase 2's identity rule, exactly, and the sorted anchors per id. */
+function observeCaptureSites(sites, readWorkspace) {
   const observed = new Map();
   const renderedByAnchor = new Map();
   for (const site of sites.values()) {
@@ -1842,111 +1871,184 @@ export function runCapture(options, io = {}) {
     if (!renderedByAnchor.has(anchorKey)) renderedByAnchor.set(anchorKey, site.rendered);
   }
   for (const anchors of observed.values()) anchors.sort();
+  return { observed, renderedByAnchor };
+}
 
-  // 14. Emission, after steps 2 to 11 all passed and before the verdict.
-  if (options.emit !== undefined) {
-    const entries = [...observed.keys()]
-      .sort(compareLexically)
-      .map((id) => ({ id, anchors: observed.get(id) }));
-    const document = {
-      platform: options.platform,
-      commit: options.commit ?? null,
-      rustcVersion: options.rustcVersion,
-      entries,
-    };
-    writeText(options.emit, `${JSON.stringify(document, null, 2)}\n`);
+/** Step 14. Emission, after steps 2 to 11 all passed and before the verdict. */
+function emitObserved(options, observed, writeText) {
+  const entries = [...observed.keys()]
+    .sort(compareLexically)
+    .map((id) => ({ id, anchors: observed.get(id) }));
+  const document = {
+    platform: options.platform,
+    commit: options.commit ?? null,
+    rustcVersion: options.rustcVersion,
+    entries,
+  };
+  writeText(options.emit, `${JSON.stringify(document, null, 2)}\n`);
+}
+
+/** How many times each anchor occurs in a baseline anchor list. */
+function anchorCounts(baselineAnchors) {
+  const remaining = new Map();
+  for (const anchor of baselineAnchors ?? []) {
+    remaining.set(anchor, (remaining.get(anchor) ?? 0) + 1);
   }
+  return remaining;
+}
 
-  // 12. Anchor multisets, not counts: an equal-count replacement is refused.
+/** Step 12 for one id: its NEW anchors, then (with a baseline) its STALE ones. */
+function diffIdAnchors(id, observedAnchors, baselineAnchors, renderedByAnchor, findings) {
+  const remaining = anchorCounts(baselineAnchors);
+  for (const anchor of observedAnchors) {
+    const count = remaining.get(anchor) ?? 0;
+    if (count === 0) {
+      findings.newFindings.push({
+        id,
+        anchor,
+        observed: observedAnchors.length,
+        baseline: baselineAnchors === undefined ? 'absent' : baselineAnchors.length,
+        rendered: renderedByAnchor.get(`${id}\u0000${anchor}`) ?? null,
+      });
+    } else {
+      remaining.set(anchor, count - 1);
+    }
+  }
+  if (baselineAnchors === undefined) return;
+  for (const [anchor, count] of remaining) {
+    if (count > 0) {
+      findings.staleFindings.push({
+        id,
+        anchor,
+        observed: observedAnchors.length === 0 ? 'none' : observedAnchors.length,
+        baseline: baselineAnchors.length,
+      });
+    }
+  }
+}
+
+/** Step 12. Anchor multisets, not counts: an equal-count replacement is refused. */
+function diffCaptureAnchors(platform, observed, baselineDocument, renderedByAnchor) {
   const baselineById = new Map(baselineDocument.entries.map((entry) => [entry.id, entry]));
   const ids = [...new Set([...observed.keys(), ...baselineById.keys()])].sort(compareLexically);
-  const newFindings = [];
-  const staleFindings = [];
+  const findings = { newFindings: [], staleFindings: [] };
   for (const id of ids) {
-    const observedAnchors = observed.get(id) ?? [];
     const entry = baselineById.get(id);
-    const baselineAnchors = entry === undefined ? undefined : entry.sites[options.platform];
-    const remaining = new Map();
-    for (const anchor of baselineAnchors ?? []) {
-      remaining.set(anchor, (remaining.get(anchor) ?? 0) + 1);
-    }
-    for (const anchor of observedAnchors) {
-      const count = remaining.get(anchor) ?? 0;
-      if (count === 0) {
-        newFindings.push({
-          id,
-          anchor,
-          observed: observedAnchors.length,
-          baseline: baselineAnchors === undefined ? 'absent' : baselineAnchors.length,
-          rendered: renderedByAnchor.get(`${id}\u0000${anchor}`) ?? null,
-        });
-      } else {
-        remaining.set(anchor, count - 1);
-      }
-    }
-    if (baselineAnchors !== undefined) {
-      for (const [anchor, count] of remaining) {
-        if (count > 0) {
-          staleFindings.push({
-            id,
-            anchor,
-            observed: observedAnchors.length === 0 ? 'none' : observedAnchors.length,
-            baseline: baselineAnchors.length,
-          });
-        }
-      }
-    }
+    const baselineAnchors = entry === undefined ? undefined : entry.sites[platform];
+    diffIdAnchors(id, observed.get(id) ?? [], baselineAnchors, renderedByAnchor, findings);
   }
+  return findings;
+}
+
+/** The NEW line of one capture finding, after its Actions prefix. */
+function newFindingLine(prefix, finding, platform) {
+  return `${prefix}NEW cognitive complexity above 25: ${finding.id}#${finding.anchor} `
+    + `(observed ${finding.observed}, baseline ${finding.baseline}) on ${platform}`;
+}
+
+/** The STALE line of one capture finding, after its Actions prefix. */
+function staleFindingLine(prefix, finding, platform) {
+  return `${prefix}STALE baseline entry: ${finding.id}#${finding.anchor} `
+    + `(baseline ${finding.baseline}, observed ${finding.observed}) on ${platform}`;
+}
+
+/** Step 13. Report mode never emits an Actions error annotation and never fails. */
+function reportCaptureFindings(findings, accepted, platform, underActions, stderr) {
+  const prefix = underActions ? '::notice::' : '';
+  for (const finding of findings.newFindings) {
+    if (finding.rendered !== null) stderr(finding.rendered);
+    stderr(newFindingLine(prefix, finding, platform));
+  }
+  for (const finding of findings.staleFindings) {
+    stderr(staleFindingLine(prefix, finding, platform));
+  }
+  for (const entry of accepted.unusedEntries) stderr(
+    `${prefix}${staleAllowlistLine(entry, platform)}`);
+  return 0;
+}
+
+/** The verdict: every finding with its remedial line, then the exit code. */
+function judgeCaptureFindings(findings, accepted, platform, underActions, stderr) {
+  const prefix = underActions ? '::error::' : '';
+  for (const entry of accepted.unusedEntries) {
+    stderr(`${prefix}${staleAllowlistLine(entry, platform)}`);
+    stderr(STALE_ALLOWLIST_REMEDIAL);
+  }
+  for (const finding of findings.newFindings) {
+    if (finding.rendered !== null) stderr(finding.rendered);
+    stderr(newFindingLine(prefix, finding, platform));
+    stderr(NEW_REMEDIAL);
+  }
+  for (const finding of findings.staleFindings) {
+    stderr(staleFindingLine(prefix, finding, platform));
+    stderr(STALE_REMEDIAL);
+  }
+  if (accepted.unusedEntries.length > 0) return STALE_ALLOWLIST_EXIT;
+  return findings.newFindings.length > 0 || findings.staleFindings.length > 0 ? 1 : 0;
+}
+
+/**
+ * The `--capture` mode, in the order of section 5. Returns an exit code; every
+ * failure throws a typed error that `main` prints as `<CODE>: <message>`.
+ */
+export function runCapture(options, io = {}) {
+  const hooks = captureIo(options, io);
+  const { stderr, getEnv, readWorkspace } = hooks;
+
+  // 1. Render first, before anything can fail, so a broken build still shows
+  // its diagnostics. Cognitive messages are left to the verdict's own lines.
+  const capture = readCaptureRecords(hooks.readCaptureText, options.captureFile);
+  const { records } = capture;
+  renderOtherDiagnostics(records, stderr);
+
+  // 2. Environment.
+  checkLintEnvironment(getEnv);
+
+  // 3. Clippy's own failure is the answer; the ratchet is not consulted.
+  if (options.clippyExit !== 0) {
+    stderr(`cognitive gate not evaluated: clippy exited ${options.clippyExit}`);
+    return options.clippyExit;
+  }
+
+  // 4 to 6. Capture integrity, threshold file, baseline.
+  checkCaptureIntegrity(options.captureFile, capture);
+  checkRootClippyTomlFile(hooks.existsWorkspace, hooks.readWorkspaceBytes);
+  const baselineDocument = loadCaptureBaseline(options, readWorkspace);
+
+  // 7 to 11. Pinned threshold, distinct sites, identities and anchors.
+  const cognitiveRecords = records.filter(
+    (record) =>
+      record?.reason === 'compiler-message' && record.message?.code?.code === COGNITIVE_CODE,
+  );
+  checkPinnedDenominator(cognitiveRecords);
+  const sites = collectCaptureSites(cognitiveRecords, hooks.workspaceRoot);
+  const { observed, renderedByAnchor } = observeCaptureSites(sites, readWorkspace);
+
+  // 14. Emission, after steps 2 to 11 all passed and before the verdict.
+  if (options.emit !== undefined) emitObserved(options, observed, hooks.writeText);
+
+  // 12. Anchor multisets, not counts.
+  const findings = diffCaptureAnchors(options.platform, observed, baselineDocument,
+    renderedByAnchor);
 
   // 12b. #3182: accepted findings. A function moved with an identical anchor
   // pairs its NEW with its STALE; the rest must match sanitizing.allowlist.json,
   // and an allowlist entry that matches nothing fails like a STALE.
-  const accepted = acceptFindings(newFindings, staleFindings, readAllowlistEntries(readWorkspace));
-  newFindings.splice(0, newFindings.length, ...accepted.newFindings);
-  staleFindings.splice(0, staleFindings.length, ...accepted.staleFindings);
+  const accepted = acceptFindings(findings.newFindings, findings.staleFindings,
+    readAllowlistEntries(readWorkspace));
+  findings.newFindings.splice(0, findings.newFindings.length, ...accepted.newFindings);
+  findings.staleFindings.splice(0, findings.staleFindings.length, ...accepted.staleFindings);
   const stdout = io.stdout ?? ((text) => console.log(text));
   stdout(`cognitive gate: ACCEPTED ${accepted.count} finding(s) on ${options.platform} `
-    + `(${accepted.reanchored} re-anchored by hash, ${accepted.count - accepted.reanchored} from ${ALLOWLIST_FILE})`);
+    + `(${accepted.reanchored} re-anchored by hash, `
+    + `${accepted.count - accepted.reanchored} from ${ALLOWLIST_FILE})`);
 
   // 13. Report mode never emits an Actions error annotation and never fails.
   const underActions = getEnv('GITHUB_ACTIONS') === 'true';
   if (options.report) {
-    const prefix = underActions ? '::notice::' : '';
-    for (const finding of newFindings) {
-      if (finding.rendered !== null) stderr(finding.rendered);
-      stderr(
-        `${prefix}NEW cognitive complexity above 25: ${finding.id}#${finding.anchor} (observed ${finding.observed}, baseline ${finding.baseline}) on ${options.platform}`,
-      );
-    }
-    for (const finding of staleFindings) {
-      stderr(
-        `${prefix}STALE baseline entry: ${finding.id}#${finding.anchor} (baseline ${finding.baseline}, observed ${finding.observed}) on ${options.platform}`,
-      );
-    }
-    for (const entry of accepted.unusedEntries) stderr(
-      `${prefix}${staleAllowlistLine(entry, options.platform)}`);
-    return 0;
+    return reportCaptureFindings(findings, accepted, options.platform, underActions, stderr);
   }
-  const prefix = underActions ? '::error::' : '';
-  for (const entry of accepted.unusedEntries) {
-    stderr(`${prefix}${staleAllowlistLine(entry, options.platform)}`);
-    stderr(STALE_ALLOWLIST_REMEDIAL);
-  }
-  for (const finding of newFindings) {
-    if (finding.rendered !== null) stderr(finding.rendered);
-    stderr(
-      `${prefix}NEW cognitive complexity above 25: ${finding.id}#${finding.anchor} (observed ${finding.observed}, baseline ${finding.baseline}) on ${options.platform}`,
-    );
-    stderr(NEW_REMEDIAL);
-  }
-  for (const finding of staleFindings) {
-    stderr(
-      `${prefix}STALE baseline entry: ${finding.id}#${finding.anchor} (baseline ${finding.baseline}, observed ${finding.observed}) on ${options.platform}`,
-    );
-    stderr(STALE_REMEDIAL);
-  }
-  if (accepted.unusedEntries.length > 0) return STALE_ALLOWLIST_EXIT;
-  return newFindings.length > 0 || staleFindings.length > 0 ? 1 : 0;
+  return judgeCaptureFindings(findings, accepted, options.platform, underActions, stderr);
 }
 
 /** #4166: the one exit CI blocks on; NEW and STALE baseline findings stay advisory (1). */
@@ -2302,7 +2404,7 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
 // holds the function. `mod x;` items are resolved to their out-of-line files
 // so a removal is credited when the pull request touched the real file.
 const OUT_OF_LINE_MOD_RE =
-  /((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g;
+  /((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;/g;
 const PATH_ATTRIBUTE_RE = /#\[\s*path\s*=\s*"([^"]+)"\s*\]/;
 
 function stripRustComments(source) {
@@ -2363,6 +2465,126 @@ function sourceFilesOfId(id, readWorkspace, existsWorkspace) {
   return files;
 }
 
+/**
+ * Step 1 of `--baseline-diff`: the base ref may predate the baseline. That is adoption,
+ * but only when git itself says the path is missing: any other read failure is CONFIG.
+ */
+function readBaseBaselineText(runGit, baseRef) {
+  try {
+    return runGit(['show', `${baseRef}:${BASELINE_FILE}`]);
+  } catch (error) {
+    if (!(error instanceof GitError) || error.notFound !== true) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new ConfigError(`cannot read ${BASELINE_FILE} from ${baseRef}: ${reason}`);
+    }
+  }
+  return null;
+}
+
+/** Step 2: the head document (null when absent), validated before the base is trusted. */
+function readHeadBaselineDocument(readWorkspace) {
+  let headText = null;
+  try {
+    headText = readWorkspace(BASELINE_FILE);
+  } catch {
+    headText = null;
+  }
+  return headText === null ? null : parseBaselineDocument(headText, BASELINE_FILE);
+}
+
+/** The sorted union of the platforms either side's entry carries. */
+function entryPlatforms(baseEntry, headEntry) {
+  return [
+    ...new Set([
+      ...(baseEntry === undefined ? [] : Object.keys(baseEntry.sites)),
+      ...(headEntry === undefined ? [] : Object.keys(headEntry.sites)),
+    ]),
+  ].sort(compareLexically);
+}
+
+/** One (id, platform): head anchors beyond the base are additions, the rest removals. */
+function diffPlatformAnchors(key, baseAnchors, headAnchors, additions, removals) {
+  const { id, platform } = key;
+  const remaining = anchorCounts(baseAnchors);
+  for (const anchor of headAnchors ?? []) {
+    const count = remaining.get(anchor) ?? 0;
+    if (count === 0) additions.push({ id, platform, anchor });
+    else remaining.set(anchor, count - 1);
+  }
+  for (const [anchor, count] of remaining) {
+    if (count > 0) removals.push({ id, platform, anchor });
+  }
+}
+
+/** Step 3: anchor multisets per (id, platform); the array length is never the test. */
+function diffBaselineAnchors(baseDocument, headDocument) {
+  const additions = [];
+  const removals = [];
+  const baseById = new Map(baseDocument.entries.map((entry) => [entry.id, entry]));
+  const headById = new Map(headDocument.entries.map((entry) => [entry.id, entry]));
+  const ids = [...new Set([...baseById.keys(), ...headById.keys()])].sort(compareLexically);
+  for (const id of ids) {
+    const baseEntry = baseById.get(id);
+    const headEntry = headById.get(id);
+    for (const platform of entryPlatforms(baseEntry, headEntry)) {
+      diffPlatformAnchors({ id, platform }, baseEntry?.sites[platform],
+        headEntry?.sites[platform], additions, removals);
+    }
+  }
+  return { additions, removals };
+}
+
+/** The names `git diff --name-only <base>...HEAD` reports. */
+function readDiffNames(runGit, baseRef) {
+  try {
+    return runGit(['diff', '--name-only', `${baseRef}...HEAD`])
+      .split('\n')
+      .map((name) => name.trim())
+      .filter((name) => name !== '');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(`cannot read git diff against ${baseRef}: ${reason}`);
+  }
+}
+
+/** Step 5: any addition fails; the ratchet may only shrink. */
+function reportBaselineGrowth(additions, stderr) {
+  for (const addition of additions) {
+    stderr(
+      `Baseline grew without a toolchain refresh: ${addition.id}#${addition.anchor} `
+        + `(${addition.platform})`,
+    );
+  }
+  stderr(GROW_REMEDIAL);
+  return 1;
+}
+
+/** Step 6's filter: a removal is blocked unless pinned, its file gone, or a source touched. */
+function isRemovalBlocked(removal, proof) {
+  const { historical, historical3527, historical3527Keys, diffSet } = proof;
+  if (historical3527 && historical3527Keys.has(historical3527TupleKey(removal))) return false;
+  if (historical && removal.id === HISTORICAL_3319_ID) return false;
+  const file = filePathOfId(removal.id);
+  if (!proof.existsWorkspace(file)) return false;
+  const sources = sourceFilesOfId(removal.id, proof.readWorkspace, proof.existsWorkspace);
+  return ![...sources].some((source) => diffSet.has(source));
+}
+
+/** Step 7: every accepted shrink is printed for the record. */
+function printAcceptedRemovals(removals, proof, stdout) {
+  const { historical, historical3527, historical3527Keys } = proof;
+  for (const removal of removals) {
+    if (historical3527 && historical3527Keys.has(historical3527TupleKey(removal))) {
+      stdout('historical-cleanup#3527: '
+        + `${removal.id}#${removal.anchor} (${removal.platform})`);
+    }
+    if (historical && removal.id === HISTORICAL_3319_ID) {
+      stdout(`historical-cleanup#3319: ${removal.id}#${removal.anchor} (${removal.platform})`);
+    }
+    stdout(`baseline removal accepted: ${removal.id}#${removal.anchor} (${removal.platform})`);
+  }
+}
+
 export function runBaselineDiff(options, io = {}) {
   const baseRef = options.baseRef;
   const stdout = io.stdout ?? ((text) => console.log(text));
@@ -2373,27 +2595,9 @@ export function runBaselineDiff(options, io = {}) {
   const existsWorkspace =
     io.existsWorkspace ?? ((file) => fs.existsSync(path.join(ROOT, file)));
 
-  // 1. The base ref may predate the baseline. That is adoption, but only when
-  // git itself says the path is missing: any other read failure is CONFIG.
-  let baseText = null;
-  try {
-    baseText = runGit(['show', `${baseRef}:${BASELINE_FILE}`]);
-  } catch (error) {
-    if (!(error instanceof GitError) || error.notFound !== true) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new ConfigError(`cannot read ${BASELINE_FILE} from ${baseRef}: ${reason}`);
-    }
-  }
-
-  // 2. The head document, validated before the base document is trusted.
-  let headText = null;
-  try {
-    headText = readWorkspace(BASELINE_FILE);
-  } catch {
-    headText = null;
-  }
-  const headDocument =
-    headText === null ? null : parseBaselineDocument(headText, BASELINE_FILE);
+  // 1 and 2. Base text (null: adoption), then the head document.
+  const baseText = readBaseBaselineText(runGit, baseRef);
+  const headDocument = readHeadBaselineDocument(readWorkspace);
   if (baseText === null) {
     stdout(`ADOPTION: no baseline in ${baseRef}; this pull request introduces it`);
     return 0;
@@ -2403,49 +2607,12 @@ export function runBaselineDiff(options, io = {}) {
     throw new ConfigError(`${BASELINE_FILE} is missing from the head while ${baseRef} carries one`);
   }
 
-  // 3. Anchor multisets per (id, platform); the array length is never the test.
-  const additions = [];
-  const removals = [];
-  const baseById = new Map(baseDocument.entries.map((entry) => [entry.id, entry]));
-  const headById = new Map(headDocument.entries.map((entry) => [entry.id, entry]));
-  const ids = [...new Set([...baseById.keys(), ...headById.keys()])].sort(compareLexically);
-  for (const id of ids) {
-    const baseEntry = baseById.get(id);
-    const headEntry = headById.get(id);
-    const platforms = [
-      ...new Set([
-        ...(baseEntry === undefined ? [] : Object.keys(baseEntry.sites)),
-        ...(headEntry === undefined ? [] : Object.keys(headEntry.sites)),
-      ]),
-    ].sort(compareLexically);
-    for (const platform of platforms) {
-      const remaining = new Map();
-      for (const anchor of baseEntry?.sites[platform] ?? []) {
-        remaining.set(anchor, (remaining.get(anchor) ?? 0) + 1);
-      }
-      for (const anchor of headEntry?.sites[platform] ?? []) {
-        const count = remaining.get(anchor) ?? 0;
-        if (count === 0) additions.push({ id, platform, anchor });
-        else remaining.set(anchor, count - 1);
-      }
-      for (const [anchor, count] of remaining) {
-        if (count > 0) removals.push({ id, platform, anchor });
-      }
-    }
-  }
+  // 3. Anchor multisets per (id, platform).
+  const { additions, removals } = diffBaselineAnchors(baseDocument, headDocument);
 
   // 4. A toolchain refresh exempts growth, but only with no `.rs` change and a
   // strictly higher version.
-  let diffNames;
-  try {
-    diffNames = runGit(['diff', '--name-only', `${baseRef}...HEAD`])
-      .split('\n')
-      .map((name) => name.trim())
-      .filter((name) => name !== '');
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new ConfigError(`cannot read git diff against ${baseRef}: ${reason}`);
-  }
+  const diffNames = readDiffNames(runGit, baseRef);
   const diffSet = new Set(diffNames);
   const rustTouched = diffNames.some((name) => name.endsWith('.rs'));
   if (!rustTouched && compareToolchainVersions(baseDocument.toolchain,
@@ -2457,16 +2624,8 @@ export function runBaselineDiff(options, io = {}) {
     return 0;
   }
 
-  // 5. Any addition fails; the ratchet may only shrink.
-  if (additions.length > 0) {
-    for (const addition of additions) {
-      stderr(
-        `Baseline grew without a toolchain refresh: ${addition.id}#${addition.anchor} (${addition.platform})`,
-      );
-    }
-    stderr(GROW_REMEDIAL);
-    return 1;
-  }
+  // 5. Any addition fails.
+  if (additions.length > 0) return reportBaselineGrowth(additions, stderr);
 
   // 6. Ordinary removals need touched/gone proof; #3319 has exact historical pins.
   const historical = historical3319Shrink({ baseRef, baseDocument, headDocument, diffSet,
@@ -2474,14 +2633,9 @@ export function runBaselineDiff(options, io = {}) {
   const historical3527 = historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
     additions, removals, runGit, readWorkspace, existsWorkspace });
   const historical3527Keys = new Set(historical3527Tuples().map(historical3527TupleKey));
-  const blocked = removals.filter((removal) => {
-    if (historical3527 && historical3527Keys.has(historical3527TupleKey(removal))) return false;
-    if (historical && removal.id === HISTORICAL_3319_ID) return false;
-    const file = filePathOfId(removal.id);
-    if (!existsWorkspace(file)) return false;
-    const sources = sourceFilesOfId(removal.id, readWorkspace, existsWorkspace);
-    return ![...sources].some((source) => diffSet.has(source));
-  });
+  const proof = { historical, historical3527, historical3527Keys, diffSet, readWorkspace,
+    existsWorkspace };
+  const blocked = removals.filter((removal) => isRemovalBlocked(removal, proof));
   if (blocked.length > 0) {
     for (const removal of blocked) {
       stderr(`Baseline entry removed without touching its file: ${removal.id}`
@@ -2492,16 +2646,7 @@ export function runBaselineDiff(options, io = {}) {
   }
 
   // 7. Every accepted shrink is printed for the record.
-  for (const removal of removals) {
-    if (historical3527 && historical3527Keys.has(historical3527TupleKey(removal))) {
-      stdout('historical-cleanup#3527: '
-        + `${removal.id}#${removal.anchor} (${removal.platform})`);
-    }
-    if (historical && removal.id === HISTORICAL_3319_ID) {
-      stdout(`historical-cleanup#3319: ${removal.id}#${removal.anchor} (${removal.platform})`);
-    }
-    stdout(`baseline removal accepted: ${removal.id}#${removal.anchor} (${removal.platform})`);
-  }
+  printAcceptedRemovals(removals, proof, stdout);
   return 0;
 }
 
@@ -2538,6 +2683,106 @@ function readThresholdFromClippyToml(readWorkspaceBytes) {
   return Number(match[1]);
 }
 
+/** One `--merge` input: read, parsed, an object with a known platform. */
+function readMergeInput(file, readInputText) {
+  let text;
+  try {
+    text = readInputText(file);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(`cannot read ${file}: ${reason}`);
+  }
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    throw new ConfigError(`${file} is not valid JSON`);
+  }
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    throw new ConfigError(`${file} must be a JSON object`);
+  }
+  if (!PLATFORMS.has(document.platform)) {
+    throw new ConfigError(
+      `${file} platform must be windows, linux or macos, got ${JSON.stringify(document.platform)}`,
+    );
+  }
+  return document;
+}
+
+/** The three inputs by platform; one of each, in input order. */
+function readMergeInputs(files, readInputText) {
+  if (files.length !== 3) {
+    throw new ConfigError(`--merge requires exactly three inputs, got ${files.length}`);
+  }
+  const byPlatform = new Map();
+  for (const file of files) {
+    const document = readMergeInput(file, readInputText);
+    const platform = document.platform;
+    if (byPlatform.has(platform)) throw new ConfigError(`--merge has two ${platform} inputs`);
+    byPlatform.set(platform, document);
+  }
+  return byPlatform;
+}
+
+/** Every input agrees with the first on `commit` and `rustcVersion`; returns the first. */
+function checkMergeAgreement(byPlatform) {
+  const first = byPlatform.values().next().value;
+  for (const [platform, document] of byPlatform) {
+    if (document.commit !== first.commit) {
+      throw new ConfigError(
+        `--merge inputs must agree on commit: ${JSON.stringify(first.commit)} `
+          + `versus ${JSON.stringify(document.commit)} (${platform})`,
+      );
+    }
+    if (document.rustcVersion !== first.rustcVersion) {
+      throw new ConfigError(
+        `--merge inputs must agree on rustcVersion: ${JSON.stringify(first.rustcVersion)} `
+          + `versus ${JSON.stringify(document.rustcVersion)} (${platform})`,
+      );
+    }
+  }
+  return first;
+}
+
+/** One emission entry: an object with a non-empty id and an array of hex anchors. */
+function validateEmissionEntry(platform, entry) {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new ConfigError(`${platform} emission entries must be objects`);
+  }
+  if (typeof entry.id !== 'string' || entry.id === '') {
+    throw new ConfigError(`${platform} emission entry id must be a non-empty string`);
+  }
+  if (!Array.isArray(entry.anchors)) {
+    throw new ConfigError(`${platform} emission entry ${entry.id} anchors must be an array`);
+  }
+  for (const anchor of entry.anchors) {
+    if (typeof anchor !== 'string' || !ANCHOR_RE.test(anchor)) {
+      throw new ConfigError(
+        `${platform} emission entry ${entry.id} anchor ${JSON.stringify(anchor)} `
+          + 'must be 12 lowercase hex characters',
+      );
+    }
+  }
+}
+
+/** The per-platform anchor arrays unioned by id, entries sorted by id. */
+function mergeEmissions(byPlatform) {
+  const merged = new Map();
+  for (const platform of PLATFORMS) {
+    const document = byPlatform.get(platform);
+    if (!Array.isArray(document.entries)) {
+      throw new ConfigError(`${platform} emission entries must be an array`);
+    }
+    for (const entry of document.entries) {
+      validateEmissionEntry(platform, entry);
+      if (!merged.has(entry.id)) merged.set(entry.id, { id: entry.id, sites: {} });
+      merged.get(entry.id).sites[platform] = [...entry.anchors].sort(compareLexically);
+    }
+  }
+  return [...merged.values()].sort((left, right) =>
+    compareLexically(left.id, right.id));
+}
+
 /** The `--merge` mode, in the order of phase 4 section 4. */
 export function runMerge(options, io = {}) {
   const readInputText = io.readInputText ?? ((file) => fs.readFileSync(file, 'utf8'));
@@ -2546,80 +2791,10 @@ export function runMerge(options, io = {}) {
   const writeText = io.writeText ?? ((file, text) => fs.writeFileSync(file, text));
   const now = io.now ?? (() => new Date());
 
-  const files = options.mergeFiles;
-  if (files.length !== 3) {
-    throw new ConfigError(`--merge requires exactly three inputs, got ${files.length}`);
-  }
-  const byPlatform = new Map();
-  for (const file of files) {
-    let text;
-    try {
-      text = readInputText(file);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new ConfigError(`cannot read ${file}: ${reason}`);
-    }
-    let document;
-    try {
-      document = JSON.parse(text);
-    } catch {
-      throw new ConfigError(`${file} is not valid JSON`);
-    }
-    if (document === null || typeof document !== 'object' || Array.isArray(document)) {
-      throw new ConfigError(`${file} must be a JSON object`);
-    }
-    const platform = document.platform;
-    if (!PLATFORMS.has(platform)) {
-      throw new ConfigError(
-        `${file} platform must be windows, linux or macos, got ${JSON.stringify(platform)}`,
-      );
-    }
-    if (byPlatform.has(platform)) throw new ConfigError(`--merge has two ${platform} inputs`);
-    byPlatform.set(platform, document);
-  }
-  const first = byPlatform.values().next().value;
-  for (const [platform, document] of byPlatform) {
-    if (document.commit !== first.commit) {
-      throw new ConfigError(
-        `--merge inputs must agree on commit: ${JSON.stringify(first.commit)} versus ${JSON.stringify(document.commit)} (${platform})`,
-      );
-    }
-    if (document.rustcVersion !== first.rustcVersion) {
-      throw new ConfigError(
-        `--merge inputs must agree on rustcVersion: ${JSON.stringify(first.rustcVersion)} versus ${JSON.stringify(document.rustcVersion)} (${platform})`,
-      );
-    }
-  }
+  const byPlatform = readMergeInputs(options.mergeFiles, readInputText);
+  const first = checkMergeAgreement(byPlatform);
   const threshold = readThresholdFromClippyToml(readWorkspaceBytes);
-  const merged = new Map();
-  for (const platform of PLATFORMS) {
-    const document = byPlatform.get(platform);
-    if (!Array.isArray(document.entries)) {
-      throw new ConfigError(`${platform} emission entries must be an array`);
-    }
-    for (const entry of document.entries) {
-      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-        throw new ConfigError(`${platform} emission entries must be objects`);
-      }
-      if (typeof entry.id !== 'string' || entry.id === '') {
-        throw new ConfigError(`${platform} emission entry id must be a non-empty string`);
-      }
-      if (!Array.isArray(entry.anchors)) {
-        throw new ConfigError(`${platform} emission entry ${entry.id} anchors must be an array`);
-      }
-      for (const anchor of entry.anchors) {
-        if (typeof anchor !== 'string' || !ANCHOR_RE.test(anchor)) {
-          throw new ConfigError(
-            `${platform} emission entry ${entry.id} anchor ${JSON.stringify(anchor)} must be 12 lowercase hex characters`,
-          );
-        }
-      }
-      if (!merged.has(entry.id)) merged.set(entry.id, { id: entry.id, sites: {} });
-      merged.get(entry.id).sites[platform] = [...entry.anchors].sort(compareLexically);
-    }
-  }
-  const entries = [...merged.values()].sort((left, right) =>
-    compareLexically(left.id, right.id));
+  const entries = mergeEmissions(byPlatform);
   const document = {
     version: 1,
     issue: 2234,
@@ -2649,42 +2824,23 @@ export function runMerge(options, io = {}) {
 const RUSTC_HISTOGRAM_KEY = '<rustc>';
 const RUSTC_CODE_RE = /^E\d{4}$/;
 
-/** The `--classify-probe` mode, in the order of phase 4 section 5. */
-export function runClassifyProbe(options, io = {}) {
-  const stdout = io.stdout ?? ((text) => console.log(text));
-  const readCaptureText = io.readCaptureText ?? ((file) => fs.readFileSync(file, 'utf8'));
-
-  let captureText = null;
-  try {
-    captureText = readCaptureText(options.probeFile);
-  } catch {
-    captureText = null;
+/** Integrity first: why the probe capture is STOP (null when complete); fills `records`. */
+function probeStopReason(probeFile, captureText, records) {
+  if (captureText === null) return `cannot read ${probeFile}`;
+  if (captureText.length === 0) return `${probeFile} is empty`;
+  const parseError = parseCaptureLines(captureText, records);
+  if (parseError !== null) {
+    return `${probeFile} has a line starting with '{' that does not parse: `
+      + JSON.stringify(parseError.slice(0, 120));
   }
-  let stopReason = null;
-  const records = [];
-  if (captureText === null) {
-    stopReason = `cannot read ${options.probeFile}`;
-  } else if (captureText.length === 0) {
-    stopReason = `${options.probeFile} is empty`;
-  } else {
-    let parseError = null;
-    for (const line of captureText.split('\n')) {
-      if (!line.startsWith('{')) continue;
-      try {
-        records.push(JSON.parse(line));
-      } catch {
-        parseError = line;
-        break;
-      }
-    }
-    if (parseError !== null) {
-      stopReason =
-        `${options.probeFile} has a line starting with '{' that does not parse: ${JSON.stringify(parseError.slice(0, 120))}`;
-    } else if (records.at(-1)?.reason !== 'build-finished') {
-      stopReason = `${options.probeFile} has no terminal build-finished record`;
-    }
+  if (records.at(-1)?.reason !== 'build-finished') {
+    return `${probeFile} has no terminal build-finished record`;
   }
+  return null;
+}
 
+/** The count of `error` messages per lint code, rustc's own codes under `<rustc>`. */
+function probeHistogram(records) {
   const histogram = new Map();
   for (const record of records) {
     if (record?.message?.level !== 'error') continue;
@@ -2696,6 +2852,23 @@ export function runClassifyProbe(options, io = {}) {
         : code.code;
     histogram.set(key, (histogram.get(key) ?? 0) + 1);
   }
+  return histogram;
+}
+
+/** The `--classify-probe` mode, in the order of phase 4 section 5. */
+export function runClassifyProbe(options, io = {}) {
+  const stdout = io.stdout ?? ((text) => console.log(text));
+  const readCaptureText = io.readCaptureText ?? ((file) => fs.readFileSync(file, 'utf8'));
+
+  let captureText = null;
+  try {
+    captureText = readCaptureText(options.probeFile);
+  } catch {
+    captureText = null;
+  }
+  const records = [];
+  const stopReason = probeStopReason(options.probeFile, captureText, records);
+  const histogram = probeHistogram(records);
   const keys = [...histogram.keys()].sort(compareLexically);
   for (const key of keys) stdout(`${key} ${histogram.get(key)}`);
 
@@ -2703,9 +2876,11 @@ export function runClassifyProbe(options, io = {}) {
     stdout(`STOP: ${stopReason}`);
     return 1;
   }
-  const finished = records.at(-1);
-  const success = finished.success;
-  const exit = options.probeExit;
+  return probeVerdict(records.at(-1).success, options.probeExit, histogram, keys, stdout);
+}
+
+/** The shape (or STOP) of a complete probe capture, from its exit and histogram. */
+function probeVerdict(success, exit, histogram, keys, stdout) {
   if (exit === 0 && success === false) {
     stdout('STOP: --probe-exit 0 disagrees with build-finished success false');
     return 1;
@@ -3034,6 +3209,113 @@ function stdoutText(fixture) {
   return fixture.state.stdout.join('\n');
 }
 
+/** The fixture's #3527 answer to `git rev-parse` / `git hash-object`. */
+function fixture3527Blob(args, historical3527) {
+  let position = 'workspace';
+  if (args[0] !== 'hash-object') {
+    position = args[1].startsWith('HEAD:') ? 'head' : 'base';
+  }
+  const file = args[0] === 'hash-object' ? args[2] : args[1].slice(args[1].indexOf(':') + 1);
+  if (historical3527.gitFailure === file + ':' + position) throw new GitError('failure', false);
+  const override = historical3527.blobs?.[file + ':' + position];
+  if (override !== undefined) return override;
+  if (file === BASELINE_FILE) return HISTORICAL_3527_BASELINE;
+  return HISTORICAL_3527_PINS.find(([name]) => name === file)?.[1] ?? '';
+}
+
+/** The fixture's #3319 answer to `git rev-parse` / `git hash-object`. */
+function fixture3319Blob(args, historical, baseRef) {
+  if (historical === null) throw new Error('unexpected historical Git invocation');
+  if (historical.gitError) throw new GitError('historical Git failure', false);
+  let key = 'workspaceBlob';
+  if (args[0] !== 'hash-object') {
+    if (args[1] === baseRef + ':' + BASELINE_FILE) key = 'baselineBlob';
+    else key = args[1].startsWith('HEAD:') ? 'headBlob' : 'baseBlob';
+  }
+  return historical[key] ?? (key === 'baselineBlob'
+    ? HISTORICAL_3319_BASELINE : HISTORICAL_3319_SOURCE);
+}
+
+/** Case 3527's per-entry guards: identity, per-platform sites and retained entries. */
+function run3527EntryGuards(run, fixture, index) {
+  const { base, head, entries, paths } = fixture;
+  const clone = (value) => structuredClone(value);
+  const id = entries[index].id;
+  const change = (mutate) => { const value = clone(base);
+    mutate(value.entries.find((e) => e.id === id)); return value; };
+  const file = filePathOfId(id);
+  run('3527 id ' + index, { before: change((e) => { e.id += '_other'; }),
+    working: [...paths, file] });
+  for (const platform of ['windows', 'linux', 'macos']) {
+    run('3527 anchor ' + index + platform, { before: change((e) => {
+      e.sites[platform] = [otherAnchor(e.sites[platform][0])];
+    }) });
+    run('3527 duplicate ' + index + platform, { before: change((e) => {
+      e.sites[platform].push(e.sites[platform][0]);
+    }) });
+    run('3527 missing site ' + index + platform, { before: change((e) => {
+      delete e.sites[platform];
+    }) });
+    run('3527 partial ' + index + platform, { after: { ...clone(head),
+      entries: [...clone(head.entries), { id,
+        sites: { [platform]: entries[index].sites[platform] } }]
+        .sort((a, b) => a.id < b.id ? -1 : 1) } });
+  }
+  run('3527 platform substitution ' + index, { before: change((e) => {
+    delete e.sites.macos;
+  }) });
+  run('3527 bad platform ' + index, { kind: 'config', before: change((e) => {
+    e.sites.other = [A12];
+  }) });
+  const missing = clone(base);
+  missing.entries = missing.entries.filter((e) => e.id !== id);
+  run('3527 missing identity ' + index, { before: missing });
+  const retained = clone(head);
+  retained.entries.push(clone(entries[index]));
+  retained.entries.sort((a, b) => a.id < b.id ? -1 : 1);
+  run('3527 retained identity ' + index, { after: retained });
+}
+
+/** Case 3527's equality guard: one optional-field operation at one level. */
+function run3527Equality(run, fixture, level, operation) {
+  const { base, head, extra } = fixture;
+  const before = structuredClone(base);
+  const after = structuredClone(head);
+  const left = level === 'metadata' ? before
+    : before.entries.find((e) => e.id === extra.id);
+  const right = level === 'metadata' ? after : after.entries[0];
+  left.optional = { nested: [1, 2] };
+  right.optional = { nested: [1, 2] };
+  if (operation === 'changed') right.optional.nested.reverse();
+  if (operation === 'deleted') delete right.optional;
+  if (operation === 'added') delete left.optional;
+  run('3527 equality ' + level + ' ' + operation, { before, after });
+}
+
+/** Case 3527's evidence for a denied run: the kind's attribution or message. */
+function expect3527Denial(fixture, name, denial) {
+  const { kind, removals, tupleText, sameLines, working, diff } = denial;
+  if (kind === 'ordinary') {
+    const prefix = 'baseline removal accepted: ';
+    sameLines(fixture.state.stdout.filter((line) => line.startsWith(prefix))
+      .map((line) => line.slice(prefix.length)), removals.map(tupleText),
+    name + ' ordinary attribution');
+  }
+  if (kind === 'config') {
+    if (!stderrText(fixture).includes('CONFIG')) throw new Error(name + ' missing CONFIG');
+  } else if (kind === 'growth') {
+    if (!stderrText(fixture).includes('Baseline grew')) throw new Error(name + ' growth');
+  } else if (kind === 'blocked') {
+    const prefix = 'Baseline entry removed without touching its file: ';
+    const blocked = fixture.state.stderr.filter((line) => line.startsWith(prefix))
+      .map((line) => line.slice(prefix.length));
+    sameLines(blocked, removals.filter(({ id }) => {
+      const file = filePathOfId(id);
+      return working.includes(file) && !diff.includes(file);
+    }).map(tupleText), name + ' blocked tuples');
+  }
+}
+
 function baselineDiffFixture({
   base = null,
   head = null,
@@ -3049,29 +3331,9 @@ function baselineDiffFixture({
   const stderrLines = [];
   const working = new Set(workingFiles);
   const runGit = (args) => {
-    if (historical3527 !== null && (args[0] === 'rev-parse' || args[0] === 'hash-object')) {
-      let position = 'workspace';
-      if (args[0] !== 'hash-object') {
-        position = args[1].startsWith('HEAD:') ? 'head' : 'base';
-      }
-      const file = args[0] === 'hash-object' ? args[2] : args[1].slice(args[1].indexOf(':') + 1);
-      if (historical3527.gitFailure === file + ':' + position) throw new GitError('failure', false);
-      const override = historical3527.blobs?.[file + ':' + position];
-      if (override !== undefined) return override;
-      if (file === BASELINE_FILE) return HISTORICAL_3527_BASELINE;
-      return HISTORICAL_3527_PINS.find(([name]) => name === file)?.[1] ?? '';
-    }
-    if (args[0] === 'rev-parse' || args[0] === 'hash-object') {
-      if (historical === null) throw new Error('unexpected historical Git invocation');
-      if (historical.gitError) throw new GitError('historical Git failure', false);
-      let key = 'workspaceBlob';
-      if (args[0] !== 'hash-object') {
-        if (args[1] === baseRef + ':' + BASELINE_FILE) key = 'baselineBlob';
-        else key = args[1].startsWith('HEAD:') ? 'headBlob' : 'baseBlob';
-      }
-      return historical[key] ?? (key === 'baselineBlob'
-        ? HISTORICAL_3319_BASELINE : HISTORICAL_3319_SOURCE);
-    }
+    const blobQuery = args[0] === 'rev-parse' || args[0] === 'hash-object';
+    if (historical3527 !== null && blobQuery) return fixture3527Blob(args, historical3527);
+    if (blobQuery) return fixture3319Blob(args, historical, baseRef);
     if (args[0] === 'show') {
       if (showFailure !== null) throw showFailure;
       if (base === null) {
@@ -4498,62 +4760,11 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
         }
         expectEqual(result, exit, name);
         expectEqual(historical.length, 0, name + ' historical denial');
-        if (kind === 'ordinary') {
-          const prefix = 'baseline removal accepted: ';
-          sameLines(fixture.state.stdout.filter((line) => line.startsWith(prefix))
-            .map((line) => line.slice(prefix.length)), removals.map(tupleText),
-          name + ' ordinary attribution');
-        }
-        if (kind === 'config') {
-          if (!stderrText(fixture).includes('CONFIG')) throw new Error(name + ' missing CONFIG');
-        } else if (kind === 'growth') {
-          if (!stderrText(fixture).includes('Baseline grew')) throw new Error(name + ' growth');
-        } else if (kind === 'blocked') {
-          const prefix = 'Baseline entry removed without touching its file: ';
-          const blocked = fixture.state.stderr.filter((line) => line.startsWith(prefix))
-            .map((line) => line.slice(prefix.length));
-          sameLines(blocked, removals.filter(({ id }) => {
-            const file = filePathOfId(id);
-            return working.includes(file) && !diff.includes(file);
-          }).map(tupleText), name + ' blocked tuples');
-        }
+        expect3527Denial(fixture, name, { kind, removals, tupleText, sameLines, working, diff });
       };
       run('3527 exact S', { kind: 'positive' });
       for (let index = 0; index < entries.length; index += 1) {
-        const id = entries[index].id;
-        const change = (mutate) => { const value = clone(base);
-          mutate(value.entries.find((e) => e.id === id)); return value; };
-        const file = filePathOfId(id);
-        run('3527 id ' + index, { before: change((e) => { e.id += '_other'; }),
-          working: [...paths, file] });
-        for (const platform of ['windows', 'linux', 'macos']) {
-          run('3527 anchor ' + index + platform, { before: change((e) => {
-            e.sites[platform] = [otherAnchor(e.sites[platform][0])];
-          }) });
-          run('3527 duplicate ' + index + platform, { before: change((e) => {
-            e.sites[platform].push(e.sites[platform][0]);
-          }) });
-          run('3527 missing site ' + index + platform, { before: change((e) => {
-            delete e.sites[platform];
-          }) });
-          run('3527 partial ' + index + platform, { after: { ...clone(head),
-            entries: [...clone(head.entries), { id,
-              sites: { [platform]: entries[index].sites[platform] } }]
-              .sort((a, b) => a.id < b.id ? -1 : 1) } });
-        }
-        run('3527 platform substitution ' + index, { before: change((e) => {
-          delete e.sites.macos;
-        }) });
-        run('3527 bad platform ' + index, { kind: 'config', before: change((e) => {
-          e.sites.other = [A12];
-        }) });
-        const missing = clone(base);
-        missing.entries = missing.entries.filter((e) => e.id !== id);
-        run('3527 missing identity ' + index, { before: missing });
-        const retained = clone(head);
-        retained.entries.push(clone(entries[index]));
-        retained.entries.sort((a, b) => a.id < b.id ? -1 : 1);
-        run('3527 retained identity ' + index, { after: retained });
+        run3527EntryGuards(run, { base, head, entries, paths }, index);
       }
       const c2Base = clone(base);
       const first = c2Base.entries.find((e) => e.id === entries[0].id);
@@ -4571,17 +4782,7 @@ impl Tr for [u8; 4] { fn m(&self) { let c = |y| y; } }
       run('3527 C3-extra-ordinary', { after: deletedExtra, diff: ['src/3527-other.rs'] });
       for (const level of ['metadata', 'nonselected']) {
         for (const operation of ['changed', 'deleted', 'added']) {
-          const before = clone(base);
-          const after = clone(head);
-          const left = level === 'metadata' ? before
-            : before.entries.find((e) => e.id === extra.id);
-          const right = level === 'metadata' ? after : after.entries[0];
-          left.optional = { nested: [1, 2] };
-          right.optional = { nested: [1, 2] };
-          if (operation === 'changed') right.optional.nested.reverse();
-          if (operation === 'deleted') delete right.optional;
-          if (operation === 'added') delete left.optional;
-          run('3527 equality ' + level + ' ' + operation, { before, after });
+          run3527Equality(run, { base, head, extra }, level, operation);
         }
       }
       const reorder = (value) => {
