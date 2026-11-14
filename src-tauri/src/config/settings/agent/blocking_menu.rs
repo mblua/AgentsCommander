@@ -593,17 +593,17 @@ fn blocking_menus_export_candidates(
             continue;
         };
         let current = (agent.command.as_str(), entries);
-        if let Some(previous) = by_id.insert(agent.id.as_str(), current) {
-            if previous != current {
-                return Err(abort_blocking_menus_export(
-                    local_path,
-                    &format!(
-                        "two agents share the id \
+        if let Some(previous) = by_id.insert(agent.id.as_str(), current)
+            && previous != current
+        {
+            return Err(abort_blocking_menus_export(
+                local_path,
+                &format!(
+                    "two agents share the id \
                     '{}' with different blockingMenus arrays or commands",
-                        agent.id
-                    ),
-                ));
-            }
+                    agent.id
+                ),
+            ));
         }
     }
     Ok(by_id

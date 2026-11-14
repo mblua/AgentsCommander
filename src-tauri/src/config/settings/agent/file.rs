@@ -317,12 +317,11 @@ fn decode_agent_file_snapshot(
         ..AppSettings::default()
     };
     validate_agent_commands(&projection)?;
-    if registered {
-        if let Some(reason) =
+    if registered
+        && let Some(reason) =
             registered_validation.and_then(RegisteredProfileCapture::ordinary_error)
-        {
-            return Err(reason);
-        }
+    {
+        return Err(reason);
     }
     let owner = profile_container(&value, registered)
         .cloned()

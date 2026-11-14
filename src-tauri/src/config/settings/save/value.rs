@@ -387,16 +387,14 @@ fn apply_prepared_profile_groups(
         // authority to materialize the caller's repaired/default profile view.
         out.remove("codingAgentProfiles");
     }
-    if !profiles_in_sidecar {
-        if let Some(prepared) = prepared_profiles {
-            if let Some(profiles) = prepared.get("codingAgentProfiles") {
-                out.insert("codingAgentProfiles".into(), profiles.clone());
-            }
-            if !agents_groups.contains_key("agents") {
-                if let Some(rows) = prepared.get("agents") {
-                    out.insert("agents".into(), rows.clone());
-                }
-            }
+    if !profiles_in_sidecar && let Some(prepared) = prepared_profiles {
+        if let Some(profiles) = prepared.get("codingAgentProfiles") {
+            out.insert("codingAgentProfiles".into(), profiles.clone());
+        }
+        if !agents_groups.contains_key("agents")
+            && let Some(rows) = prepared.get("agents")
+        {
+            out.insert("agents".into(), rows.clone());
         }
     }
 }
@@ -414,10 +412,10 @@ fn retain_disk_legacy_commands(
         .iter()
         .any(|path| path.len() == 1 && path[0] == "codingAgentProfiles");
     let mut retained = Value::Object(out);
-    if retained.get("agents").is_some() {
-        if let Some(prepared) = prepared_duplicate_agents {
-            retained["agents"] = prepared.clone();
-        }
+    if retained.get("agents").is_some()
+        && let Some(prepared) = prepared_duplicate_agents
+    {
+        retained["agents"] = prepared.clone();
     }
     retain_configuration_commands(
         &mut retained,

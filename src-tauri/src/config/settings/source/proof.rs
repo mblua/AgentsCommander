@@ -101,10 +101,10 @@ impl SourceLocalInventory {
             let target = &evidence.target;
             let physical = target.original_physical.as_ref().ok_or_else(invalid)?;
             for image in physical {
-                if let IdentityReferencePhysicalState::Bytes { bytes, .. } = image {
-                    if &IdentityReferencePhysicalState::from_bytes(bytes.clone()) != image {
-                        return Err(invalid());
-                    }
+                if let IdentityReferencePhysicalState::Bytes { bytes, .. } = image
+                    && &IdentityReferencePhysicalState::from_bytes(bytes.clone()) != image
+                {
+                    return Err(invalid());
                 }
             }
             if identity_reference_protected_revision(physical).map_err(|_| invalid())?

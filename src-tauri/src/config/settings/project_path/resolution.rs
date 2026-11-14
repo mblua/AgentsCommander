@@ -460,10 +460,9 @@ pub(super) fn singular_mirrors_first(singular: &ResolvedPair, first: &ResolvedPa
     if let (Some(a), Some(b)) = (
         singular.raw_absolute.value.as_deref(),
         first.raw_absolute.value.as_deref(),
-    ) {
-        if normalize_for_compare(a) == normalize_for_compare(b) {
-            return true;
-        }
+    ) && normalize_for_compare(a) == normalize_for_compare(b)
+    {
+        return true;
     }
     if let (Some(a), Some(b)) = (
         &singular.selected_canonical_raw,

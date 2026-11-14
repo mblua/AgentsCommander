@@ -237,23 +237,22 @@ pub(crate) fn backup_legacy_profiles_before_write(
 ) -> Result<(), SettingsSaveError> {
     // #2015: Preserve builds from the struct, which ignores legacy pre-v2
     // profile fields; keep the original once before any save drops them.
-    if matches!(mode, ProjectWriteMode::Preserve) {
-        if let (Some(map), Some(contents)) = (map, contents) {
-            if legacy_profiles_shape_present(map) {
-                write_pre_384_v1_backup(path, contents).map_err(|e| {
-                    SettingsSaveError::io(
-                        disk_gate_stage,
-                        path,
-                        None,
-                        std::io::Error::other(e.clone()),
-                        SettingsSaveLegacyOutward::DiskRead(format!(
-                            "Refusing to overwrite {}: legacy settings backup failed ({e})",
-                            path.display()
-                        )),
-                    )
-                })?;
-            }
-        }
+    if matches!(mode, ProjectWriteMode::Preserve)
+        && let (Some(map), Some(contents)) = (map, contents)
+        && legacy_profiles_shape_present(map)
+    {
+        write_pre_384_v1_backup(path, contents).map_err(|e| {
+            SettingsSaveError::io(
+                disk_gate_stage,
+                path,
+                None,
+                std::io::Error::other(e.clone()),
+                SettingsSaveLegacyOutward::DiskRead(format!(
+                    "Refusing to overwrite {}: legacy settings backup failed ({e})",
+                    path.display()
+                )),
+            )
+        })?;
     }
     Ok(())
 }
@@ -519,15 +518,13 @@ fn prepare_save_profiles(
         .as_ref()
         .is_some_and(|map| map.contains_key("codingAgentProfiles"))
         && owner_has_active_agents
-    {
-        if let Some(profiles) = prepared_profiles
+        && let Some(profiles) = prepared_profiles
             .as_mut()
             .and_then(|prepared| prepared.get_mut("codingAgentProfiles"))
             .and_then(Value::as_object_mut)
-        {
-            for key in ["letters", "matrix", "agentDefaults"] {
-                profiles.remove(key);
-            }
+    {
+        for key in ["letters", "matrix", "agentDefaults"] {
+            profiles.remove(key);
         }
     }
     if let Some(prepared) = &prepared_profiles {
@@ -541,10 +538,10 @@ fn prepare_save_profiles(
             validate_directional_prepared_identity(profile_before, prepared)?;
         }
     }
-    if directional_split || settings.local_overlay_state.owns_top_level("agents") {
-        if let Some(prepared) = prepared_profiles.as_mut().and_then(Value::as_object_mut) {
-            prepared.remove("agents");
-        }
+    if (directional_split || settings.local_overlay_state.owns_top_level("agents"))
+        && let Some(prepared) = prepared_profiles.as_mut().and_then(Value::as_object_mut)
+    {
+        prepared.remove("agents");
     }
     Ok(prepared_profiles)
 }
@@ -691,10 +688,10 @@ fn publish_settings(
     })?;
     let value = Value::Object(out);
     let written_bytes = write_value_atomic(&value, path)?;
-    if let Some(previous) = previous_contents {
-        if previous.as_bytes() != written_bytes.as_slice() {
-            rotate_settings_backups(path, previous.as_bytes());
-        }
+    if let Some(previous) = previous_contents
+        && previous.as_bytes() != written_bytes.as_slice()
+    {
+        rotate_settings_backups(path, previous.as_bytes());
     }
 
     Ok((value, agents_groups))

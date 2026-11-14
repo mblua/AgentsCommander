@@ -567,28 +567,28 @@ fn validate_agent_config_seed(agent: &AgentConfig) -> Result<(), String> {
     // #598: reject a bad config-seed dest at save so the user gets a clear
     // IPC error here, not a silent fail-soft skip at launch. Inactive
     // (disabled or empty dest) is allowed (means "no seeding").
-    if let Some(seed) = agent.config_seed.as_ref() {
-        if seed.is_active() {
-            validate_config_seed_dest(&seed.dest)
-                .map_err(|e| format!("Agent \"{}\" config seed is invalid: {}", agent.label, e))?;
-            // #2162: a dest ending in an OS token names the same folder as
-            // the OS variant of the shorter dest. Warn, never reject.
-            if let Some(stem) = config_seed_dest_os_token_stem(&seed.dest) {
-                if stem.is_empty() {
-                    log::warn!(
-                        "[config-seed] agent \"{}\" dest '{}' is only an OS token suffix",
-                        agent.label,
-                        seed.dest.trim()
-                    );
-                } else {
-                    log::warn!(
-                        "[config-seed] agent \"{}\" dest '{}' ends with an OS token; it names \
+    if let Some(seed) = agent.config_seed.as_ref()
+        && seed.is_active()
+    {
+        validate_config_seed_dest(&seed.dest)
+            .map_err(|e| format!("Agent \"{}\" config seed is invalid: {}", agent.label, e))?;
+        // #2162: a dest ending in an OS token names the same folder as
+        // the OS variant of the shorter dest. Warn, never reject.
+        if let Some(stem) = config_seed_dest_os_token_stem(&seed.dest) {
+            if stem.is_empty() {
+                log::warn!(
+                    "[config-seed] agent \"{}\" dest '{}' is only an OS token suffix",
+                    agent.label,
+                    seed.dest.trim()
+                );
+            } else {
+                log::warn!(
+                    "[config-seed] agent \"{}\" dest '{}' ends with an OS token; it names \
                             the same template folder as the OS variant of dest '{}'",
-                        agent.label,
-                        seed.dest.trim(),
-                        stem
-                    );
-                }
+                    agent.label,
+                    seed.dest.trim(),
+                    stem
+                );
             }
         }
     }
@@ -657,34 +657,33 @@ pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Resul
     token_strings.extend(normalized.shell_args);
     let tokens: Vec<&str> = token_strings.iter().map(String::as_str).collect();
 
-    if let Some(claude_idx) = find_provider_token(&tokens, "claude") {
-        if tokens[claude_idx + 1..].iter().any(|token| {
+    if let Some(claude_idx) = find_provider_token(&tokens, "claude")
+        && tokens[claude_idx + 1..].iter().any(|token| {
             token.eq_ignore_ascii_case("--continue") || token.eq_ignore_ascii_case("-c")
-        }) {
-            return Err(format!(
-                "{context}: Claude commands must not include --continue or -c"
-            ));
-        }
+        })
+    {
+        return Err(format!(
+            "{context}: Claude commands must not include --continue or -c"
+        ));
     }
 
-    if let Some(codex_idx) = find_provider_token(&tokens, "codex") {
-        if codex_has_manual_resume(&tokens, codex_idx) {
-            return Err(format!(
-                "{context}: Codex commands must not include resume or --last; AgentsCommander \
+    if let Some(codex_idx) = find_provider_token(&tokens, "codex")
+        && codex_has_manual_resume(&tokens, codex_idx)
+    {
+        return Err(format!(
+            "{context}: Codex commands must not include resume or --last; AgentsCommander \
                     injects codex resume --last automatically"
-            ));
-        }
+        ));
     }
 
     if let Some(antigravity_idx) =
         find_provider_token(&tokens, "agy").or_else(|| find_provider_token(&tokens, "antigravity"))
+        && antigravity_has_manual_resume(&tokens, antigravity_idx)
     {
-        if antigravity_has_manual_resume(&tokens, antigravity_idx) {
-            return Err(format!(
-                "{context}: Antigravity commands must not include --continue or -c; \
+        return Err(format!(
+            "{context}: Antigravity commands must not include --continue or -c; \
                     AgentsCommander injects agy --continue automatically"
-            ));
-        }
+        ));
     }
 
     Ok(())
