@@ -1,0 +1,35 @@
+name: Actions pinned
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actions-pinned-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actions-pinned:
+    name: actions-pinned
+    # Skip branch-deletion push events (after-SHA is all zeros); same guard as
+    # validate-no-plans-path.yml.
+    if: github.event_name != 'push' || (github.event.deleted != true && github.event.after != '0000000000000000000000000000000000000000')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+
+      - name: Self-test
+        run: node scripts/check-actions-pinned.mjs --self-test
+
+      - name: Reject uses not pinned to a commit SHA with a version comment
+        run: node scripts/check-actions-pinned.mjs

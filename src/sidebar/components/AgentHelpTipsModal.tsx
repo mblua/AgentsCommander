@@ -73,11 +73,11 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
         if (event.shiftKey) {
           if (index <= 0) {
             event.preventDefault();
-            focusables[focusables.length - 1].focus();
+            focusables[focusables.length - 1]?.focus();
           }
         } else if (index === focusables.length - 1) {
           event.preventDefault();
-          focusables[0].focus();
+          focusables[0]?.focus();
         }
       }
     };

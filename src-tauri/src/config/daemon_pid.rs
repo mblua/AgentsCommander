@@ -97,13 +97,9 @@ fn is_pid_alive(pid: u32) -> bool {
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
-    // SAFETY: All three Win32 calls receive scalar arguments only (a raw u32
-    // PID, the BOOL constant FALSE, and feature-flag constants); no pointers
-    // into our address space are aliased, no buffers are shared across calls.
-    // The handle returned by OpenProcess is owned by this function: it is
-    // consumed by GetExitCodeProcess and then closed by CloseHandle before we
-    // return. `code` is a stack u32 written by GetExitCodeProcess; no escape.
-    // GetLastError is thread-local.
+    // SAFETY: OpenProcess takes scalar flags/PID; null is checked before use. A non-null handle
+    // stays open through the synchronous GetExitCodeProcess, which writes live u32 `code`, then
+    // is closed once. GetLastError has no pointer preconditions; it reads this thread's error.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if handle.is_null() {

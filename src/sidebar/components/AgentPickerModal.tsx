@@ -627,8 +627,8 @@ const AgentPickerModal: Component<{
       await refreshFromSettings();
       const next = agents();
       const newIndex = next.findIndex((candidate) => candidate.id === agentId);
-      if (newIndex >= 0) {
-        const moved = next[newIndex];
+      const moved = next[newIndex];
+      if (newIndex >= 0 && moved !== undefined) {
         setMoveAnnouncement(
           `Moved ${moved.label || moved.id} to position ${newIndex + 1} of ${next.length}.`,
         );
@@ -658,7 +658,7 @@ const AgentPickerModal: Component<{
     const list = orderedAgents();
     const from = list.findIndex((agent) => agent.id === agentId);
     if (from < 0) return;
-    const name = list[from].label || list[from].id;
+    const name = list[from]?.label || list[from]?.id;
     const target = e.key === "ArrowUp" ? from - 1 : from + 1;
     if (target < 0) {
       setMoveAnnouncement(`${name} is already first.`);
@@ -850,7 +850,7 @@ const AgentPickerModal: Component<{
     const current = Math.max(0, letters.indexOf(selectedProfile()));
     const next = Math.min(Math.max(current + delta, 0), letters.length - 1);
     setProfileTouched(true);
-    setSelectedProfile(letters[next]);
+    setSelectedProfile(letters[next] ?? "A");
   };
 
   const chooseProfile = (letter: string) => {
@@ -1318,9 +1318,9 @@ const AgentPickerModal: Component<{
     agentId: string
   ) => {
     setApplyErrors(errors);
-    const firstError = errors[0];
+    const firstMessage = errors[0]?.message ?? "";
     const extra = errors.length - 1;
-    showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
+    showToast(extra > 0 ? `${firstMessage} (+${extra} more)` : firstMessage);
     setDangerArmed(false);
     setConflictDecision(null);
     if (scope !== "replica") setScopePreviews((prev) => ({ ...prev, [scope]: null }));

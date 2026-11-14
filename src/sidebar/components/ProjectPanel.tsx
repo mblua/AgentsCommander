@@ -130,7 +130,7 @@ function agentDisplayName(name: string): string {
 
 function teamMemberDisplayLabel(agentName: string): string {
   const parts = agentName.replaceAll("\\", "/").split("/");
-  const agent = parts[parts.length - 1].replace(/^__?agent_/, "");
+  const agent = (parts[parts.length - 1] ?? "").replace(/^__?agent_/, "");
   const project = parts[0];
   return project && project !== agent ? `${agent}@${project}` : agent;
 }
@@ -1889,7 +1889,7 @@ const ProjectPanel: Component = () => {
             closeReplicaCtxMenu();
             return;
           }
-          if (bots.length === 1) {
+          if (bots.length === 1 && bots[0] !== undefined) {
             closeReplicaCtxMenu();
             await TelegramAPI.attach(sessionId, bots[0].id);
             return;

@@ -194,11 +194,15 @@ fn short_path(p: &Path) -> PathBuf {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
     let wide: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: `wide` is a live NUL-terminated UTF-16 path; GetShortPathNameW permits
+    // a null output buffer with size zero to query the required length.
     let len = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
     if len == 0 {
         return p.to_path_buf();
     }
     let mut buf = vec![0u16; len as usize];
+    // SAFETY: `wide` remains live and NUL-terminated; `buf` has the queried `len` u16
+    // elements, and GetShortPathNameW receives that exact writable capacity.
     let written = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), len) };
     if written == 0 {
         return p.to_path_buf();

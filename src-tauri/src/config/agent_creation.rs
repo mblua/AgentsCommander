@@ -1,6 +1,7 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use crate::config::instructions_filename::CLAUDE_MD_FILE_NAME;
 use crate::filesystem::agent_files;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +48,7 @@ pub fn create_agent_folder_on_disk(
     let display_name = format!("{parent_name}/{agent_name}");
 
     let claude_md = format!("You are the agent {display_name}");
-    let claude_path = agent_dir.join("CLAUDE.md");
+    let claude_path = agent_dir.join(CLAUDE_MD_FILE_NAME);
     agent_files::write_agent_prompt(&claude_path, &claude_md)
         .map_err(|e| format!("Failed to write CLAUDE.md: {e}"))?;
 

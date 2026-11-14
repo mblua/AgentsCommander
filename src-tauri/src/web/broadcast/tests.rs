@@ -14,3 +14,26 @@ fn drops_slow_client_when_queue_is_full() {
     broadcaster.broadcast_event("tick", &serde_json::json!({ "n": "overflow" }));
     assert_eq!(broadcaster.client_count(), 0);
 }
+
+#[test]
+fn a_poisoned_senders_lock_does_not_cascade() {
+    let broadcaster = WsBroadcaster::new();
+    let poisoner = broadcaster.clone();
+    let joined = std::thread::spawn(move || {
+        let _guard = poisoner
+            .senders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        panic!("poison the senders mutex on purpose");
+    })
+    .join();
+    assert!(joined.is_err(), "the helper thread must have panicked");
+    assert!(broadcaster.senders.is_poisoned());
+
+    let mut rx = broadcaster.subscribe();
+    broadcaster.broadcast_event("tick", &serde_json::json!({ "n": 1 }));
+    broadcaster.broadcast_pty_output("session", b"x");
+    assert_eq!(broadcaster.client_count(), 1);
+    assert!(matches!(rx.try_recv(), Ok(WsOutMsg::Text(_))));
+    assert!(matches!(rx.try_recv(), Ok(WsOutMsg::Binary(_))));
+}

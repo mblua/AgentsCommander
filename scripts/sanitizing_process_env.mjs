@@ -30,28 +30,36 @@ function extraChecks(path, m, before, violation) {
 }
 function measure(path, scan) {
   const m = metric(), ts = scan.productionTokens;
-  const launchOwner = /^src-tauri\/src\/(?:process\.rs$|process\/)/.test(path);
-  const readOwner = /^src-tauri\/src\/(?:config\.rs$|config\/|main\.rs$|lib\.rs$)/.test(path);
-  const writeOwner = path === 'src-tauri/src/main.rs';
+  const owner = {
+    launch: /^src-tauri\/src\/(?:process\.rs$|process\/)/.test(path),
+    read: /^src-tauri\/src\/(?:config\.rs$|config\/|main\.rs$|lib\.rs$)/.test(path),
+    write: path === 'src-tauri/src/main.rs',
+  };
   const record = (rule, t) => hit(m,rule,t.line,occurrenceIdentity(scan,t));
   for (let i = 0; i < ts.length; i++) {
-    if (ts[i].kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' &&
-      ts[i - 2]?.kind === 'ident')) continue;
+    if (ts[i].kind !== 'ident' || pathTail(ts, i)) continue;
     const r = qualified(scan, ts, i), value = r.path ?? (r.ambiguous ? r.raw : '');
     if (ts[r.end]?.text !== '(') continue;
-    if (/^(?:(?:std|tokio)::process::)?Command::new$/.test(value)) { if (!launchOwner) { record(
-      'launch_files',ts[i]); } warning(m,path,ts[i].line,r); }
-    if (/^(?:(?:std::)?env::)?(?:var|var_os)$/.test(value) && (value.includes('env::') ||
-      r.binding?.kind === 'import')) {
-      if (!readOwner) { record('env_read_files',ts[i]); } warning(m,path,ts[i].line,r);
-    }
-    if (/^(?:(?:std::)?env::)?(?:set_var|remove_var)$/.test(value) && (value.includes('env::') ||
-      r.binding?.kind === 'import')) {
-      if (!writeOwner) { hit(m,'env_write',ts[i].line); } warning(m,path,ts[i].line,r);
-    }
+    classifyCall({ m, path, t: ts[i], r, value, owner, record });
     i = r.end - 1;
   }
   return m;
+}
+// Ident after `.` or after `ident::`: not the start of a path.
+function pathTail(ts, i) {
+  return ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' && ts[i - 2]?.kind === 'ident';
+}
+function classifyCall({ m, path, t, r, value, owner, record }) {
+  if (/^(?:(?:std|tokio)::process::)?Command::new$/.test(value)) { if (!owner.launch) { record(
+    'launch_files',t); } warning(m,path,t.line,r); }
+  if (/^(?:(?:std::)?env::)?(?:var|var_os)$/.test(value) && (value.includes('env::') ||
+    r.binding?.kind === 'import')) {
+    if (!owner.read) { record('env_read_files',t); } warning(m,path,t.line,r);
+  }
+  if (/^(?:(?:std::)?env::)?(?:set_var|remove_var)$/.test(value) && (value.includes('env::') ||
+    r.binding?.kind === 'import')) {
+    if (!owner.write) { hit(m,'env_write',t.line); } warning(m,path,t.line,r);
+  }
 }
 
 if (isMain(import.meta.url)) process.exitCode = await gateCli(runGate);

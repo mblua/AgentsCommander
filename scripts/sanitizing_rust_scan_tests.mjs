@@ -458,3 +458,23 @@ test('inline mods outside src-tauri/src keep the scanner supported', () => {
     [prefix + 'h.rs']: body});
   assert.ok(inner(prefix + 'h.rs').productionTokens.length > 0);
 });
+
+test('4639 root release profile keeps inheritance; other profile forms stay conservative', () => {
+  const root = '[workspace]\nmembers=["src-tauri"]\n';
+  const profile = '[profile.release]\n# comment\nlto = false\ncodegen-units = 16\n'
+    + 'strip = "debuginfo"\npanic = "unwind"\n';
+  const files = cargo => ({'Cargo.toml': cargo, 'src-tauri/Cargo.toml': packageHeader});
+  for (const text of [profile, profile.replaceAll('\n', '\r\n'), '[ profile.release ]\n',
+    '[profile.release]\nlto="thin"\ncodegen-units=1\nstrip="symbols"\npanic="abort"\n'])
+    externalProof(files(root + text), false);
+  for (const text of ['[profile.dev]\nlto=false\n', '[profile.bench]\nlto=false\n',
+    '[profile.release.package.x]\nlto=false\n', '[profile.release.build-override]\n',
+    '[profile."release"]\n', '[profile.release]\nopt-level=3\n',
+    '[profile.release]\ndebug=true\n', '[profile.release]\nrustflags=["--cfg","test"]\n',
+    '[profile.release]\nlto="other"\n', "[profile.release]\npanic='unwind'\n",
+    '[profile.release]\ncodegen-units=0\n', '[profile.release]\n"lto"=false\n',
+    '[profile.release]\nlto={a=1}\n', '[profile.release]\nlto=\n'])
+    externalProof(files(root + text));
+  for (const path of ['src-tauri/Cargo.toml', 'crates/x/Cargo.toml', 'other/Cargo.toml'])
+    externalProof({...files(root), [path]: packageHeader + profile});
+});

@@ -1065,7 +1065,7 @@ function parseUiPointerOperation(value: string | null | undefined): UiPointerOpe
 
 function parseUiKeyChord(value: string | null | undefined): UiKeyChord | null {
   const match = typeof value === "string" ? UI_KEY_CHORD.exec(value) : null;
-  if (!match || match[5] === undefined) return null;
+  if (match?.[5] === undefined) return null;
   const name = match[5];
   return {
     key: name === "Space" ? " " : name,

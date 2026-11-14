@@ -30,7 +30,7 @@ import BlockedMenuIcon from "./BlockedMenuIcon";
 import ArchiveIcon from "./ArchiveIcon";
 import ArchivedProjectsModal from "./ArchivedProjectsModal";
 
-import { emitRailDiagnostic, railToken, railObjectId, railEntity, railTag, reconcileRailGroups, type RailFields } from "../rail-diagnostics";
+import { emitRailDiagnostic, railToken, railObjectId, railEntity, railTag, reconcileRailGroups, createRailGestureTracker, type RailFields } from "../rail-diagnostics";
 import { isDebugEnabled } from "../../shared/console-capture";
 
 type RailSurface = "embedded" | "sidebar";
@@ -579,8 +579,7 @@ const ProjectRailSection: Component<{
 
     if (candidates.length === 0) return null;
 
-    for (let index = 0; index < candidates.length; index++) {
-      const rect = candidates[index].rect;
+    for (const [index, { rect }] of candidates.entries()) {
       if (clientY < rect.top + rect.height / 2) return index;
     }
     return candidates.length;
@@ -725,6 +724,7 @@ const ProjectRailSection: Component<{
 
     const nextGroups = groupButtons.slice();
     const [moved] = nextGroups.splice(sourceIndex, 1);
+    if (moved === undefined) return base; // unreachable: sourceIndex >= 0 above
     const clampedTarget = Math.max(0, Math.min(current.targetIndex, nextGroups.length));
     nextGroups.splice(clampedTarget, 0, moved);
     return [...systemButtons, ...nextGroups];
@@ -884,64 +884,13 @@ const RoomGroupRail: Component<RoomGroupRailProps> = (props) => {
   onMount(() => {
     untrack(() => props.projects.forEach(reconcile));
     observation.emit("rail-mount", { nodeId: railObjectId(aside), connected: aside.isConnected });
-    type Gesture = { node: Element; fields: RailFields; pointerId?: number };
-    const gestures = new Map<number, Gesture>();
-    const known = (target: EventTarget | null): Element | undefined => {
-      let node = target instanceof Element ? target : null;
-      while (node && node !== aside) {
-        if (metadata.has(node)) return node;
-        node = node.parentElement;
-      }
-      return undefined;
-    };
-    const observe = (event: Event) => untrack(() => {
-      if (!isDebugEnabled()) { gestures.clear(); return; }
-      const pointer = event as PointerEvent;
-      const pointerId = typeof pointer.pointerId === "number" ? pointer.pointerId : undefined;
-      const key = pointerId ?? -1;
-      const inside = event.target instanceof Node && aside.contains(event.target);
-      let gesture = gestures.get(key);
-      if (!gesture && pointerId === undefined) { const values = [...gestures.values()]; gesture = values[values.length - 1]; }
-      if (!inside && (event.type === "pointerdown" || event.type === "mousedown")) {
-        // A new outside press ends attribution to the prior rail gesture.
-        for (const [id, candidate] of gestures) if (id === key || candidate === gesture) gestures.delete(id);
-        return;
-      }
-      if (!inside && !gesture) return;
-      const node = known(event.target);
-      if (event.type === "pointerdown" || (event.type === "mousedown" && !gesture)) {
-        if (!inside) return;
-        if (node) {
-          const fields = { ...metadata.get(node)?.(), nodeId: railObjectId(node) };
-          if (gestures.size >= 8 && !gestures.has(key)) {
-            const oldest = gestures.keys().next().value!;
-            gestures.delete(oldest);
-            observation.emit("pointercancel", { outcome: "overflow" });
-          }
-          gesture = { node, fields, pointerId };
-          gestures.set(key, gesture);
-        }
-      }
-      let captured = false;
-      try { captured = gesture?.pointerId !== undefined && !!gesture.node.hasPointerCapture?.(gesture.pointerId); } catch {}
-      observation.emit(event.type as Parameters<typeof emitRailDiagnostic>[1], {
-        ...(gesture?.fields ?? (node ? metadata.get(node)?.() : {})), ...selection(),
-        pointerId, button: typeof pointer.button === "number" ? pointer.button : undefined,
-        primary: typeof pointer.isPrimary === "boolean" ? pointer.isPrimary : undefined,
-        trusted: event.isTrusted, targetTag: railTag(event.target), activeTag: railTag(document.activeElement),
-        nodeId: railObjectId(node, false), originalNodeId: gesture?.fields.nodeId,
-        connected: node?.isConnected, originalConnected: gesture?.node.isConnected, captured,
-        documentFocused: document.hasFocus(), outcome: event.type === "click" && !gesture ? "no-press" : undefined,
-      });
-      if (event.type === "click") {
-        for (const [id, candidate] of gestures) if (candidate === gesture) gestures.delete(id);
-      }
-    });
+    const gestures = createRailGestureTracker({ aside, metadata, emit: observation.emit, selection });
+    const observe = (event: Event) => untrack(() => gestures.observe(event));
     const types = "pointerdown pointerup pointercancel mousedown mouseup click gotpointercapture lostpointercapture focusin focusout".split(" ");
     const options = { capture: true, passive: true };
     for (const type of types) document.addEventListener(type, observe, options);
     const windowFocus = (event: Event) => {
-      if (gestures.size) observation.emit(event.type === "focus" ? "window-focus" : "window-blur", {
+      if (gestures.size()) observation.emit(event.type === "focus" ? "window-focus" : "window-blur", {
         ...selection(), documentFocused: document.hasFocus(), activeTag: railTag(document.activeElement),
       });
     };

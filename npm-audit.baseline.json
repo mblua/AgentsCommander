@@ -1,0 +1,372 @@
+{
+  "schemaVersion": 1,
+  "issue": 4490,
+  "entries": [
+    {
+      "id": "GHSA-22p9-wv53-3rq4",
+      "package": "linkify-it",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-238p-pmpm-9mq7",
+      "package": "katex",
+      "severity": "low",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-253c-mchw-3w2r",
+      "package": "markdown-it",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-28wg-ghj8-5hjv",
+      "package": "nanoid",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-2v37-7h3g-55p8",
+      "package": "nanoid",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-2v8p-3f2j-5mp7",
+      "package": "mermaid",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-3rrr-jr9j-h3q3",
+      "package": "mermaid",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-4w7w-66w2-5vf9",
+      "package": "vite",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-4x5r-pxfx-6jf8",
+      "package": "@babel/core",
+      "severity": "low",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-55q2-fjhq-7xh7",
+      "package": "dompurify",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-587h-7wmj-h5pm",
+      "package": "vite",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-58qx-3vcg-4xpx",
+      "package": "ws",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-6688-9rhm-gjv2",
+      "package": "dompurify",
+      "severity": "low",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-68fv-2mgg-jv7q",
+      "package": "source-map-js",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-698v-4r3x-3vcv",
+      "package": "vite",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-6g55-p6wh-862q",
+      "package": "postcss",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-6v5v-wf23-fmfq",
+      "package": "markdown-it",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-6x64-9x62-f2gx",
+      "package": "mermaid",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-73wf-gq98-2v4g",
+      "package": "browserslist",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-76mc-f452-cxcm",
+      "package": "dompurify",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-7rv5-mrxv-xcr9",
+      "package": "seroval",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-82fw-gwwq-j7x9",
+      "package": "@vitest/mocker",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-82fw-gwwq-j7x9",
+      "package": "vitest",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-96hv-2xvq-fx4p",
+      "package": "ws",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-97r2-qh9m-474h",
+      "package": "seroval",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-9jrq-w75r-8gcw",
+      "package": "vite",
+      "severity": "low",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-c2j3-45gr-mqc4",
+      "package": "dompurify",
+      "severity": "low",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-c4c3-pg64-4m4v",
+      "package": "mermaid",
+      "severity": "low",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-c6gr-qvv4-5v3f",
+      "package": "dompurify",
+      "severity": "low",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-c83g-rgw3-j3cx",
+      "package": "browserslist",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-cmwh-pvxp-8882",
+      "package": "dompurify",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-fx2h-pf6j-xcff",
+      "package": "vite",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-fxqj-rqcc-2cmp",
+      "package": "postcss",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-g3hv-75wg-m249",
+      "package": "minimatch",
+      "severity": "moderate",
+      "reason": "Pre-gate (main d6658310, via #4460); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-gfr2-rv44-r23c",
+      "package": "markdown-it",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-gvmj-g25r-r7wr",
+      "package": "dompurify",
+      "severity": "low",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-hmw2-7cc7-3qxx",
+      "package": "form-data",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-hpcv-96wg-7vj8",
+      "package": "dompurify",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-jp82-f5mq-hwhp",
+      "package": "seroval",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-mrv2-3pqr-j5jr",
+      "package": "dompurify",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-mv8w-475r-vwqw",
+      "package": "seroval",
+      "severity": "critical",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-p6vx-979v-rg4c",
+      "package": "seroval",
+      "severity": "critical",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-p9ff-h696-f583",
+      "package": "vite",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-qx2v-qp2m-jg93",
+      "package": "postcss",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-qxg6-89mg-rqv8",
+      "package": "@vitest/mocker",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-r28c-9q8g-f849",
+      "package": "postcss",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-r47g-fvhr-h676",
+      "package": "dompurify",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-r7fv-28h4-cvq7",
+      "package": "markdown-it",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-r825-w8mm-5pxw",
+      "package": "vite",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-rhh3-jpg6-66xh",
+      "package": "mermaid",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-rp9w-3fw7-7cwq",
+      "package": "dompurify",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-rq7h-c2jc-7f22",
+      "package": "vite",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-v245-v573-v5vm",
+      "package": "linkify-it",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-v2wj-q39q-566r",
+      "package": "vite",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-v6wh-96g9-6wx3",
+      "package": "vite",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-vfgh-jcmw-g37q",
+      "package": "markdown-it",
+      "severity": "low",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-vxr8-fq34-vvx9",
+      "package": "dompurify",
+      "severity": "low",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-w5vr-8v7q-w6rv",
+      "package": "baseline-browser-mapping",
+      "severity": "moderate",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-wp97-x4hv-qvhp",
+      "package": "seroval",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-x4vx-rjvf-j5p4",
+      "package": "dompurify",
+      "severity": "low",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    },
+    {
+      "id": "GHSA-xwg4-73v4-xw9w",
+      "package": "nanoid",
+      "severity": "high",
+      "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
+    }
+  ]
+}

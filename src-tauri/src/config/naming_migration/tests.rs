@@ -346,3 +346,25 @@ fn seed(dir: &Path, disk: Disk) {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn move_no_replace_renames_a_directory_only_onto_an_absent_target() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let faults = MigrationPathFaults::default();
+    let from = tmp.path().join("agents.json");
+    let to = tmp.path().join("agents.moved");
+    std::fs::create_dir(&from).expect("source dir");
+    std::fs::write(from.join("inner"), b"x").expect("inner file");
+
+    move_no_replace(&from, &to, &faults).expect("directory moved");
+    assert!(to.is_dir());
+    assert!(!from.exists());
+    assert_eq!(std::fs::read(to.join("inner")).expect("inner"), b"x");
+
+    std::fs::create_dir(&from).expect("second source dir");
+    let error = move_no_replace(&from, &to, &faults).expect_err("target exists");
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    assert!(from.is_dir());
+    assert_eq!(std::fs::read(to.join("inner")).expect("inner"), b"x");
+}

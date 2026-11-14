@@ -6,6 +6,14 @@
 //! so a gated module could not serve them. It is `#[doc(hidden)]` and must not
 //! be referenced from any production code path.
 
+/// Origin Tauri treats as the local app for IPC ACL checks
+/// (`http://tauri.localhost/` on Windows, `tauri://localhost/` elsewhere).
+#[doc(hidden)]
+pub const LOCAL_IPC_ORIGIN: &str = if cfg!(windows) {
+    "http://tauri.localhost/"
+} else {
+    "tauri://localhost/"
+};
 type TestBuilder = tauri::Builder<tauri::Wry>;
 
 #[doc(hidden)]

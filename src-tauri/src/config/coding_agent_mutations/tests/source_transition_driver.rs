@@ -96,8 +96,9 @@ impl DriverFixture {
         .unwrap()
     }
     fn expectation(&self) -> SourceResumeExpectation {
+        // A parallel test's fork can briefly retain the flock until exec on Unix.
         let identity =
-            IdentityWriteLease::acquire(&self.context, std::time::Duration::ZERO).unwrap();
+            IdentityWriteLease::acquire(&self.context, std::time::Duration::from_secs(5)).unwrap();
         let lease = SourceWriteContext::acquire(&self.context, &self.source, &identity).unwrap();
         SourceResumeExpectation {
             source: lease.source_revision().unwrap(),

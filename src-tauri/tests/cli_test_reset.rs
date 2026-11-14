@@ -163,6 +163,8 @@ impl HeldMutex {
     fn create(name: &str) -> Self {
         use windows_sys::Win32::System::Threading::CreateMutexW;
         let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: wide owns a NUL-terminated UTF-16 name through CreateMutexW; null
+        // security attributes select defaults, and false initial ownership needs no release.
         let handle = unsafe { CreateMutexW(std::ptr::null(), 0, wide.as_ptr()) };
         assert!(!handle.is_null(), "failed to create mutex {name}");
         Self(handle)
@@ -177,6 +179,8 @@ impl HeldMutex {
 #[cfg(target_os = "windows")]
 impl Drop for HeldMutex {
     fn drop(&mut self) {
+        // SAFETY: HeldMutex::create rejects null and owns the CreateMutexW handle;
+        // HeldMutex is not Clone, and Drop closes that handle exactly once.
         unsafe {
             let _ = windows_sys::Win32::Foundation::CloseHandle(self.0);
         }
@@ -190,10 +194,14 @@ fn mutex_exists(name: &str) -> bool {
     use windows_sys::Win32::System::Threading::OpenMutexW;
     const SYNCHRONIZE: u32 = 0x0010_0000;
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: wide owns the NUL-terminated UTF-16 name for OpenMutexW; SYNCHRONIZE
+    // is a supported mutex access right, and the returned null handle is checked below.
     let handle = unsafe { OpenMutexW(SYNCHRONIZE, 0, wide.as_ptr()) };
     if handle.is_null() {
         return false;
     }
+    // SAFETY: the null check above rejected failure; this function owns the OpenMutexW
+    // handle and closes it exactly once here, with no subsequent handle access.
     unsafe {
         let _ = CloseHandle(handle);
     }

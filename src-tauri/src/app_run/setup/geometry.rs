@@ -237,6 +237,8 @@ fn log_selected_monitor(
         GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
 
+    // SAFETY: `requested` borrows an initialized RECT for MonitorFromRect. The null check
+    // guards GetMonitorInfoW; `monitor_info.cbSize` names its writable MONITORINFO size.
     unsafe {
         let monitor = MonitorFromRect(requested, MONITOR_DEFAULTTONEAREST);
         if monitor.is_null() {
@@ -309,6 +311,10 @@ fn apply_test_window_placement(
         };
 
         match win.hwnd() {
+            // SAFETY: `win.hwnd()` returned this window handle; `win` remains borrowed here.
+            // GetWindowPlacement receives a local WINDOWPLACEMENT with its length set below.
+            // The initialized storage remains usable on query failure. SetWindowPos has no Z-order
+            // handle requirement with SWP_NOZORDER. ShowWindow and IsZoomed take this HWND.
             Ok(hwnd) => unsafe {
                 let requested = RECT {
                     left: x,

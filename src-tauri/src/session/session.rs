@@ -85,7 +85,7 @@ pub struct SessionCommunication {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: Uuid,
@@ -236,6 +236,89 @@ pub struct Session {
     pub context_percent: Option<u8>,
 }
 
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            id,
+            name,
+            shell,
+            shell_args,
+            backend_kind,
+            effective_shell_args,
+            created_at,
+            working_directory,
+            status,
+            waiting_for_input,
+            communication,
+            pending_review,
+            last_prompt,
+            agent_id,
+            agent_label,
+            git_repos,
+            is_coordinator,
+            is_root_agent,
+            git_repos_gen,
+            agent_turn_armed,
+            token: _,
+            agent_kind,
+            requested_profile,
+            effective_profile,
+            profile_fallback_chain,
+            profile_fallback_applied,
+            match_tier,
+            original_profile_letter,
+            effective_codex_home,
+            resolved_claude_projects_dir,
+            profile_content_hash,
+            trusted_configured_spawn,
+            telegram_bot_id,
+            was_detached,
+            detached_geometry,
+            start_fresh_on_restore,
+            context_percent,
+        } = self;
+        f.debug_struct("Session")
+            .field("id", id)
+            .field("name", name)
+            .field("shell", shell)
+            .field("shell_args", shell_args)
+            .field("backend_kind", backend_kind)
+            .field("effective_shell_args", effective_shell_args)
+            .field("created_at", created_at)
+            .field("working_directory", working_directory)
+            .field("status", status)
+            .field("waiting_for_input", waiting_for_input)
+            .field("communication", communication)
+            .field("pending_review", pending_review)
+            .field("last_prompt", last_prompt)
+            .field("agent_id", agent_id)
+            .field("agent_label", agent_label)
+            .field("git_repos", git_repos)
+            .field("is_coordinator", is_coordinator)
+            .field("is_root_agent", is_root_agent)
+            .field("git_repos_gen", git_repos_gen)
+            .field("agent_turn_armed", agent_turn_armed)
+            .field("token", &"[REDACTED]")
+            .field("agent_kind", agent_kind)
+            .field("requested_profile", requested_profile)
+            .field("effective_profile", effective_profile)
+            .field("profile_fallback_chain", profile_fallback_chain)
+            .field("profile_fallback_applied", profile_fallback_applied)
+            .field("match_tier", match_tier)
+            .field("original_profile_letter", original_profile_letter)
+            .field("effective_codex_home", effective_codex_home)
+            .field("resolved_claude_projects_dir", resolved_claude_projects_dir)
+            .field("profile_content_hash", profile_content_hash)
+            .field("trusted_configured_spawn", trusted_configured_spawn)
+            .field("telegram_bot_id", telegram_bot_id)
+            .field("was_detached", was_detached)
+            .field("detached_geometry", detached_geometry)
+            .field("start_fresh_on_restore", start_fresh_on_restore)
+            .field("context_percent", context_percent)
+            .finish()
+    }
+}
+
 pub use crate::session::status::SessionStatus;
 
 /// Backend "working" predicate. Identical to `cli/list_peers.rs`'s documented
@@ -304,7 +387,7 @@ pub(crate) fn read_workgroup_task_for_cwd(cwd: &str) -> Option<String> {
 }
 
 /// Info sent to the frontend via IPC
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     pub id: String,
@@ -396,6 +479,87 @@ pub struct SessionInfo {
     /// unchanged.
     #[serde(skip)]
     pub context_percent: Option<u8>,
+}
+
+impl std::fmt::Debug for SessionInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            id,
+            name,
+            shell,
+            shell_args,
+            backend_kind,
+            effective_shell_args,
+            created_at,
+            working_directory,
+            status,
+            waiting_for_input,
+            communication,
+            pending_review,
+            last_prompt,
+            agent_id,
+            agent_label,
+            git_repos,
+            workgroup_task,
+            is_coordinator,
+            is_root_agent,
+            token: _,
+            agent_kind,
+            requested_profile,
+            effective_profile,
+            profile_fallback_chain,
+            profile_fallback_applied,
+            match_tier,
+            original_profile_letter,
+            effective_codex_home,
+            profile_content_hash,
+            trusted_configured_spawn,
+            profile_outdated,
+            telegram_bot_id,
+            was_detached,
+            detached_geometry,
+            start_fresh_on_restore,
+            context_percent,
+        } = self;
+        f.debug_struct("SessionInfo")
+            .field("id", id)
+            .field("name", name)
+            .field("shell", shell)
+            .field("shell_args", shell_args)
+            .field("backend_kind", backend_kind)
+            .field("effective_shell_args", effective_shell_args)
+            .field("created_at", created_at)
+            .field("working_directory", working_directory)
+            .field("status", status)
+            .field("waiting_for_input", waiting_for_input)
+            .field("communication", communication)
+            .field("pending_review", pending_review)
+            .field("last_prompt", last_prompt)
+            .field("agent_id", agent_id)
+            .field("agent_label", agent_label)
+            .field("git_repos", git_repos)
+            .field("workgroup_task", workgroup_task)
+            .field("is_coordinator", is_coordinator)
+            .field("is_root_agent", is_root_agent)
+            .field("token", &"[REDACTED]")
+            .field("agent_kind", agent_kind)
+            .field("requested_profile", requested_profile)
+            .field("effective_profile", effective_profile)
+            .field("profile_fallback_chain", profile_fallback_chain)
+            .field("profile_fallback_applied", profile_fallback_applied)
+            .field("match_tier", match_tier)
+            .field("original_profile_letter", original_profile_letter)
+            .field("effective_codex_home", effective_codex_home)
+            .field("profile_content_hash", profile_content_hash)
+            .field("trusted_configured_spawn", trusted_configured_spawn)
+            .field("profile_outdated", profile_outdated)
+            .field("telegram_bot_id", telegram_bot_id)
+            .field("was_detached", was_detached)
+            .field("detached_geometry", detached_geometry)
+            .field("start_fresh_on_restore", start_fresh_on_restore)
+            .field("context_percent", context_percent)
+            .finish()
+    }
 }
 
 impl SessionInfo {

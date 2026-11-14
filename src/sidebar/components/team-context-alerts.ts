@@ -82,7 +82,7 @@ export function validateContextAlertThresholdDrafts(
   const rows = drafts.map<ContextAlertThresholdRowValidation>((draft, index) => {
     const errorCodes: ContextAlertThresholdErrorCode[] = [];
     const messages: string[] = [];
-    const parsed = parsedDrafts[index];
+    const parsed = parsedDrafts[index] ?? parseDraft(draft.raw); // same length; never falls back
 
     if (index >= MAX_CONTEXT_ALERT_THRESHOLDS) {
       errorCodes.push("cardinality");

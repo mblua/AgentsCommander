@@ -14,14 +14,6 @@
   overflow: hidden;
 }
 
-/* Sidebar pane preserves the legacy "no accidental text-select" UX that
- * sidebar.css used to set via `html, body, #root { user-select: none }`.
- * In unified mode terminal.css's html/body/#root rule wins the cascade
- * (later import), so we re-apply user-select scoped to the sidebar pane.
- * The terminal pane explicitly allows selection (xterm relies on it). */
-.main-sidebar-pane { user-select: none; }
-.main-terminal-pane { user-select: text; }
-
 .main-body {
   display: flex;
   flex-direction: row;
@@ -37,6 +29,11 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
+  /* Sidebar pane preserves the legacy "no accidental text-select" UX that
+   * sidebar.css used to set via `html, body, #root { user-select: none }`.
+   * In unified mode terminal.css's html/body/#root rule wins the cascade
+   * (later import), so we re-apply user-select scoped to the sidebar pane. */
+  user-select: none;
 }
 
 /* Embedded SidebarApp needs its root flex box to fill the pane vertically. */
@@ -89,6 +86,8 @@
   flex-direction: column;
   /* #587 — containing block for the Resource Monitor overlay (.main-rm-pane). */
   position: relative;
+  /* The terminal pane explicitly allows selection (xterm relies on it). */
+  user-select: text;
 }
 
 /* #587 — Resource Monitor as a central-pane view. The RM overlay covers the

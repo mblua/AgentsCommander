@@ -159,7 +159,7 @@ fn parse_send_options(args: Vec<OsString>) -> HelperResult<SendOptions> {
                 if options.pty_input.is_some() || options.pty_input_stdin {
                     return Err("exactly_one_payload_required".to_string());
                 }
-                options.pty_input = Some(iter.next().ok_or_else(|| "invalid_text".to_string())?)
+                options.pty_input = Some(iter.next().ok_or_else(|| "invalid_text".to_string())?);
             }
             "--pty-input-stdin" => {
                 if options.pty_input.is_some() || options.pty_input_stdin {

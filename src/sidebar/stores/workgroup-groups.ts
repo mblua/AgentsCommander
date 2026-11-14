@@ -149,6 +149,7 @@ export function reorderGroups(
 
   const next = groups.slice();
   const [moved] = next.splice(sourceIndex, 1);
+  if (moved === undefined) return groups; // unreachable: sourceIndex >= 0 above
   const safeTarget = Number.isFinite(targetIndex) ? Math.round(targetIndex) : sourceIndex;
   const clampedTarget = Math.max(0, Math.min(safeTarget, next.length));
   next.splice(clampedTarget, 0, moved);
@@ -287,7 +288,7 @@ function removeExactGroupTokenUnchecked(regex: string, wgName: string): string |
   const token = escapeRegexLiteral(wgName);
   const generated = /^\^\((.*)\)\$$/.exec(pattern);
   if (generated) {
-    const alternatives = splitEscapedAlternatives(generated[1]);
+    const alternatives = splitEscapedAlternatives(generated[1] ?? ""); // (.*) always captures
     if (!alternatives.includes(token)) return null;
     const remaining = alternatives.filter((alternative) => alternative !== token);
     return remaining.length > 0 ? `^(${remaining.join("|")})$` : "(?!)";
@@ -527,7 +528,7 @@ export const workgroupGroupsStore = {
 
     const current = activeProjectKey();
     if (current !== null && projectKeys.includes(current)) return;
-    setActiveProjectKey(projectKeys[0]);
+    setActiveProjectKey(projectKeys[0] ?? null); // length > 0 above
   },
 
   select(projectPath: string, selection: WorkgroupGroupSelection): void {

@@ -11,7 +11,9 @@ pub fn default_instructions_filename_for_command(command: &str) -> &'static str 
     let agents_md_filename = ManagedContextTarget::Codex.filename();
     match normalize_legacy_agent_command(command) {
         Ok(n) => match CodingAgentKind::detect(&n.shell, &n.shell_args) {
-            Some(CodingAgentKind::Claude) => "CLAUDE.md",
+            Some(CodingAgentKind::Claude) => {
+                crate::config::instructions_filename::CLAUDE_MD_FILE_NAME
+            }
             Some(
                 CodingAgentKind::Codex
                 | CodingAgentKind::Pi

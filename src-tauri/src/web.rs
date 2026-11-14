@@ -1,3 +1,6 @@
+//! Embedded web server: `axum` router, WebSocket event broadcast, auth and
+//! the command port for the browser client.
+
 pub mod auth;
 pub mod broadcast;
 pub(crate) mod command_port;

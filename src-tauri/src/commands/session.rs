@@ -655,7 +655,9 @@ pub async fn switch_session(
 
     // If this session is detached, focus its window instead of switching the main terminal
     let is_detached = {
-        let detached_set = detached.lock().unwrap();
+        let detached_set = detached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         detached_set.contains(&uuid)
     };
     if is_detached {

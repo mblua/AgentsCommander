@@ -744,3 +744,29 @@ fn room_lock_resources_small_budget_prefers_directories() {
 
     assert_eq!(result, vec![room.to_path_buf(), repo]);
 }
+
+#[cfg(windows)]
+#[test]
+fn room_lock_resources_orders_dirs_hot_cold_and_caps_total() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let room = tmp.path();
+    let repo = room.join("repo-a");
+    let git = repo.join(".git");
+    std::fs::create_dir_all(&git).expect("git dir");
+    std::fs::create_dir(room.join("docs")).expect("docs");
+    std::fs::write(git.join("index"), "hot").expect("index");
+    std::fs::write(repo.join("b.lock"), "hot").expect("lock");
+    std::fs::write(room.join("TASK.md"), "cold").expect("task");
+    std::fs::write(room.join("z.txt"), "cold").expect("z");
+
+    let result = crate::filesystem::room_diagnostics::collect_room_lock_resources(room, 5);
+
+    let expected = vec![
+        room.to_path_buf(),
+        repo.clone(),
+        repo.join("b.lock"),
+        git.join("index"),
+        room.join("TASK.md"),
+    ];
+    assert_eq!(result, expected);
+}

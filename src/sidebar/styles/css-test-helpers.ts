@@ -23,12 +23,12 @@ export function scanRules(css: string): ScannedRule[] {
   const re = /([^{}]*)\{([^{}]*)\}/g;
   let m: RegExpExecArray | null = re.exec(css);
   while (m !== null) {
-    const lead = m[1];
+    const lead = m[1] ?? ""; // group 1 always captures
     const raw = lead.trim();
     if (raw !== "") {
       out.push({
         selectors: raw.split(",").map((s) => s.trim()).filter((s) => s !== ""),
-        body: m[2],
+        body: m[2] ?? "", // group 2 always captures
         index: m.index + (lead.length - lead.trimStart().length),
       });
     }
@@ -68,6 +68,7 @@ export function scanSheet(url: URL): ScannedRule[] {
 /** Body of the single rule whose selector list contains `selector`. Throws unless exactly one. */
 export function soleRuleBody(rules: ScannedRule[], selector: string): string {
   const hits = rules.filter((r) => r.selectors.includes(selector));
-  if (hits.length !== 1) throw new Error(`expected 1 rule for ${selector}, got ${hits.length}`);
-  return hits[0].body;
+  const hit = hits[0];
+  if (hits.length !== 1 || hit === undefined) throw new Error(`expected 1 rule for ${selector}, got ${hits.length}`);
+  return hit.body;
 }

@@ -38,9 +38,9 @@ const MAX_ATTEMPTS: u32 = 2;
 /// Everything the call needs, copied field by field from phase 2's
 /// `AppSettings` by the caller.
 ///
-/// Holds the Jev API key: never log this struct with `{:?}`, and never log
+/// Holds the Jev API key: `Debug` redacts `api_key` (#4637); never log
 /// `api_key` in any form (#2455).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct JevSettings {
     pub api_key: String,
     pub model: String,
@@ -48,6 +48,27 @@ pub struct JevSettings {
     pub timeout_secs: u64,
     pub threshold: f32,
     pub margin: f32,
+}
+
+impl std::fmt::Debug for JevSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            api_key: _,
+            model,
+            endpoint,
+            timeout_secs,
+            threshold,
+            margin,
+        } = self;
+        f.debug_struct("JevSettings")
+            .field("api_key", &"[REDACTED]")
+            .field("model", model)
+            .field("endpoint", endpoint)
+            .field("timeout_secs", timeout_secs)
+            .field("threshold", threshold)
+            .field("margin", margin)
+            .finish()
+    }
 }
 
 /// The decision: a destination, or an abstention with a visible reason.

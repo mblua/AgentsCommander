@@ -5,6 +5,7 @@ mod provisioning;
 mod skill_files;
 mod skill_snapshots;
 
+use crate::config::shared_locations::SKILL_MD_FILENAME;
 pub use crate::config::ROOT_AGENT_DIR_NAME;
 use crate::filesystem::projects::entities::roles;
 #[cfg(test)]
@@ -79,7 +80,6 @@ const ROOT_AGENT_PRE_979_DEFAULT_CONTEXT: &[&str] = &[
 /// gain the Root supplement) rather than degrade to a bare `["Role.md"]`.
 const ROOT_AGENT_OLD_DEFAULT_CONTEXT: &[&str] = &[CONTEXT_TOKEN_GLOBAL, roles::ROLE_FILE_NAME];
 const ROOT_AGENT_SKILLS_DIR: &str = "skills";
-const SKILL_MD_FILENAME: &str = "SKILL.md";
 /// #909: slack added to the cap in `max_migratable_len`, covering the leading and trailing
 /// whitespace that `normalize_role_text` trims away.
 const MAX_DEFAULT_SKILL_TRIM_SLACK_BYTES: u64 = 4096;
