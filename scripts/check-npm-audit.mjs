@@ -338,7 +338,13 @@ export function main(argv) {
   try {
     const base = parseBaseline(readFileSync(BASELINE_URL, 'utf8'));
     const result = runAudit();
-    const live = liveKeys(result.stdout, result.status);
+    let live;
+    try {
+      live = liveKeys(result.stdout, result.status);
+    } catch (err) {
+      if (err instanceof AuditError) err.stderr = result.stderr ?? '';
+      throw err;
+    }
     const { code, lines } = report(compare(live, base), base.size);
     for (const line of lines) console.log(line);
     return code;
