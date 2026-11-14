@@ -23,6 +23,7 @@ against the current module, so parent-to-child arcs are recorded).
 - SHA-256 after #4708 B4c: `f175a82daf36e579b4cb20407c2f60118f0440ad32dd45a8a92d87b52d594abd`
 - SHA-256 after #4709 B4d: `f93d29528adcbfb1091e04529eb54a2f003aef68c53cccd4c577102752adda38`
 - SHA-256 after #4710 B4e: `094d5029af6145b8628810cd8408f11e66632a32b56154d87fe72bde0a434917`
+- SHA-256 after #4727: `63f9564e3a172f389b4dc7afdce73494f34ae3c939aa683bfbe089285945eda7`
 
 Edit it here, through a reviewed fix with tests, and update the hash above. Do not re-copy
 the vault source over it: that would drop these fixes. The vault is not refreshed from here.
