@@ -755,7 +755,7 @@ function innermostFunction(functions, index) {
 }
 const COMPAT_SINK_SOURCE = [
   String.raw`\.(?:join|push|with_file_name|with_extension|open|create_new_private_file|write_all|`,
-  String.raw`write_fmt|sync_all|sync_data|set_len|read_to_end|read_to_string|save|persist|flush|`,
+  'write_fmt|sync_all|sync_data|set_len|read_to_end|read_to_string|save|persist|flush|',
   String.raw`write_to)\s*\(|\b(?:Path|PathBuf)::(?:new|from)\s*\(|`,
   String.raw`\b(?:fs|filesystem)::[A-Za-z_]+\s*\(|`,
   String.raw`\b(?:File|OpenOptions|Connection)::[A-Za-z_]+\s*\(|`,
@@ -798,12 +798,12 @@ function manifestSectionAllowed(section, external) {
   return simple.test(section) || lint.test(section) || target.test(section) ||
     external && section === 'workspace';
 }
-// Consumes a table header: its length, false when unsupported, 0 when cargo starts with none.
+// Consumes a table header: its length, -1 when unsupported, 0 when cargo starts with none.
 function manifestHeader(cargo, state) {
   const arrayHeader = new RegExp(
     String.raw`^\[\[[ \t]*(bin|test|bench|example)[ \t]*\]\]` + state.grammar.ending).exec(cargo);
   if (arrayHeader) {
-    if (!state.external) return false;
+    if (!state.external) return -1;
     state.section = arrayHeader[1];
     state.targetTable = true;
     return arrayHeader[0].length;
@@ -812,7 +812,7 @@ function manifestHeader(cargo, state) {
   if (!header) return 0;
   state.section = header[1].trim();
   state.targetTable = false;
-  if (!manifestSectionAllowed(state.section, state.external)) return false;
+  if (!manifestSectionAllowed(state.section, state.external)) return -1;
   return header[0].length;
 }
 function workspaceEntryAllowed(state, key, value) {
@@ -844,7 +844,7 @@ function ordinaryManifest(cargo, external, path, tree) {
     cargo = cargo.replace(new RegExp('^' + grammar.gap), '');
     if (!cargo.length) break;
     const header = manifestHeader(cargo, state);
-    if (header === false) return false;
+    if (header < 0) return false;
     if (header) { cargo = cargo.slice(header); continue; }
     const entry = grammar.assignment.exec(cargo);
     if (!entry) return false;
