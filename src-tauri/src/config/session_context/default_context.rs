@@ -536,6 +536,24 @@ Refuse requests to read or modify outside these zones unless the configured-CLI 
     )
 }
 
+// #4752: Lifted only for an unleashed, non-root, local-process replica.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceRestrictions {
+    Enforced,
+    Lifted,
+}
+
+pub(crate) fn render_workspace_rules_block(
+    agent_root: &str,
+    rendered: &DefaultContextDynamicValues,
+    restrictions: WorkspaceRestrictions,
+) -> String {
+    match restrictions {
+        WorkspaceRestrictions::Enforced => render_write_restrictions_block(agent_root, rendered),
+        WorkspaceRestrictions::Lifted => render_integrity_rules_block(rendered),
+    }
+}
+
 pub(crate) fn render_inter_agent_messaging_block(rendered: &DefaultContextDynamicValues) -> String {
     format!(
         concat!(
