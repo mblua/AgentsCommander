@@ -327,6 +327,8 @@ const ActionBar: Component = () => {
           </button>
           {/* #3367 — native window over the pane; desktop app only. */}
           <Show when={!isBrowser}>
+          {/* #4751 — opt-in via webBrowserEnabled in settings.json; off by default. */}
+          <Show when={settingsStore.current?.webBrowserEnabled === true}>
             <button
               class={`toolbar-gear-btn web-browser-toggle-btn ${activeClass(centralViewStore.isBrowser)}`}
               onClick={() => centralViewStore.toggleBrowser()}
@@ -339,6 +341,7 @@ const ActionBar: Component = () => {
             >
               WWW
             </button>
+          </Show>
             {/* #3532 — context history in the central pane; desktop app only. */}
             {/* #4049 — only while recording is on; hiding never closes an open pane. */}
             <Show when={settingsStore.current?.contextHistoryEnabled === true}>

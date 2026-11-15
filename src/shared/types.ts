@@ -838,12 +838,12 @@ export interface AppSettings {
   railCollapsedProjects?: string[];
   railFavoritesCollapsed?: boolean;
   specBoardEnabled: boolean;
+  webBrowserEnabled: boolean;
   gitSweepConcurrency: number;
   gitSweepMinIntervalSecs: number;
-  // #2064 — the remote-activity dials the Rust sweeper reads. OPTIONAL on purpose,
-  // following `railCollapsedProjects?` above: Rust serializes all six unconditionally,
-  // so the object the frontend loads and sends back already carries them, and the
-  // seven tests that build a COMPLETE AppSettings literal do not each need six new
+  // #2064 — remote-activity dials the Rust sweeper reads. OPTIONAL on purpose, like
+  // `railCollapsedProjects?`: Rust always serializes all six, so loaded settings carry
+  // them, and the seven tests building a COMPLETE AppSettings literal need no six new
   // lines for dials no UI reads. Round-tripping is unaffected either way.
   ciActivityEnabled?: boolean;
   ciActivityNotifyOrchestrator?: boolean;

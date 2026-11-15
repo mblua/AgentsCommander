@@ -252,6 +252,20 @@ fn spec_board_enabled_defaults_false_when_missing_from_json() {
 }
 
 #[test]
+fn web_browser_enabled_defaults_false_when_missing_from_json() {
+    // #4751 - older settings.json files without the key keep the WWW button hidden.
+    let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+
+    let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+    assert!(!s.web_browser_enabled);
+}
+
+#[test]
 fn coding_agent_install_enabled_default_impl_is_false() {
     assert!(!AppSettings::default().coding_agent_install_enabled);
 }

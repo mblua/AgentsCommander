@@ -15,7 +15,12 @@ const mockState = vi.hoisted(() => ({
     soundsEnabled: true,
     themeLight: true,
     specBoardEnabled: false,
-  } as { soundsEnabled: boolean; themeLight: boolean; specBoardEnabled: boolean } | null,
+  } as {
+    soundsEnabled: boolean;
+    themeLight: boolean;
+    specBoardEnabled: boolean;
+    webBrowserEnabled?: boolean;
+  } | null,
   isBrowser: false,
 }));
 
@@ -544,9 +549,23 @@ describe("ActionBar toggle button labels (#4693)", () => {
     ["terminal", "Show web browser"],
     ["browser", "Hide web browser"],
   ] as const)("web browser button in %s view -> %s", (view, expected) => {
+    mockState.settings = { soundsEnabled: true, themeLight: true, specBoardEnabled: false, webBrowserEnabled: true };
     centralViewStore.setInitialView(view);
     const { dispose } = renderActionBar();
     expect(labels("actionBar.webBrowser")).toEqual([expected, expected]);
+    dispose();
+  });
+
+  // #4751 — WWW is opt-in through webBrowserEnabled; missing or false hides it.
+  it.each([
+    [undefined, false],
+    [false, false],
+    [true, true],
+  ] as const)("web browser button with webBrowserEnabled=%s -> shown=%s", (webBrowserEnabled, shown) => {
+    mockState.settings = { soundsEnabled: true, themeLight: true, specBoardEnabled: false, webBrowserEnabled };
+    const { dispose } = renderActionBar();
+    const el = document.body.querySelector('[data-ac-testid="actionBar.webBrowser"]');
+    expect(el !== null).toBe(shown);
     dispose();
   });
 
