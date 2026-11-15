@@ -81,6 +81,7 @@ mod task_snapshot_tests;
 mod task_title;
 mod team_config;
 mod team_copy;
+mod unleash_cleanup_4752;
 mod workgroup_delete;
 
 fn issue_3068_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {

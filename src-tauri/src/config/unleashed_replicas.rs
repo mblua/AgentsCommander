@@ -140,5 +140,67 @@ pub(crate) fn set_unleashed(replica_root: &str, unleashed: bool) -> Result<(), S
     set_unleashed_in(&path, replica_root, unleashed)
 }
 
+// #4752 P07: removes every key at or under `root` from `path`; returns how many. A
+// missing store stays absent. No replica-shape check (a room dir is a valid root).
+pub(crate) fn forget_under_in(path: &Path, root: &str) -> Result<usize, String> {
+    let key = replica_key(root);
+    if key.is_empty() || key == "/" {
+        return Ok(0);
+    }
+    if let Err(e) = unleash_io::read_unleashed_store(path) {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Ok(0);
+        }
+    }
+    let prefix = format!("{key}/");
+    let mut removed = 0;
+    update_config_json_object(path, true, |obj| {
+        let entries: Vec<String> = obj
+            .get("replicas")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let before = entries.len();
+        let kept: Vec<String> = entries
+            .into_iter()
+            .filter(|entry| entry != &key && !entry.starts_with(&prefix))
+            .collect();
+        removed = before - kept.len();
+        obj.insert("schemaVersion".to_string(), Value::from(SCHEMA_VERSION));
+        obj.insert(
+            "replicas".to_string(),
+            Value::Array(kept.into_iter().map(Value::String).collect()),
+        );
+        Ok(())
+    })?;
+    Ok(removed)
+}
+
+// #4752 P07: drops the flags under a deleted room or replica. Never fails the delete.
+pub(crate) fn forget_under(root: &Path) {
+    let Some(store) = store_path() else {
+        return;
+    };
+    match forget_under_in(&store, &root.to_string_lossy()) {
+        Ok(n) if n > 0 => {
+            log::info!(
+                "[unleash] #4752 removed {n} flag(s) under {}",
+                root.display()
+            );
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!(
+            "[unleash] #4752 cannot clear flags under {}: {e}",
+            root.display()
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests;

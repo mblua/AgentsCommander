@@ -253,10 +253,15 @@ pub(crate) fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, S
 pub(crate) use crate::config::entity_creation::directories::WgDeleteOutcome;
 
 pub(crate) fn try_atomic_delete_wg(wg_dir: &Path) -> WgDeleteOutcome {
-    try_atomic_delete_wg_with_remove(
+    let outcome = try_atomic_delete_wg_with_remove(
         wg_dir,
         crate::config::entity_creation::directories::remove_room_orphan,
-    )
+    );
+    if outcome.logical_path_removed() {
+        // #4752: a room that is gone keeps no Unleash flag.
+        crate::config::unleashed_replicas::forget_under(wg_dir);
+    }
+    outcome
 }
 
 pub(crate) fn try_atomic_delete_wg_with_remove(

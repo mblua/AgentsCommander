@@ -98,3 +98,57 @@ fn missing_file_is_leashed() {
     assert!(!is_unleashed_in(&path, "/w/__agent_a"));
     assert!(!path.exists());
 }
+
+// #4752 P07: writes the given keys as a store file.
+fn store_with(dir: &tempfile::TempDir, keys: &[&str]) -> PathBuf {
+    let path = store_in(dir);
+    for key in keys {
+        set_unleashed_in(&path, key, true).unwrap();
+    }
+    path
+}
+
+#[test]
+fn forget_under_removes_room_and_its_replicas_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = store_with(
+        &dir,
+        &[
+            "/w/.ac/room-1-a/__agent_x",
+            "/w/.ac/room-1-a/__agent_y",
+            "/w/.ac/room-1-ab/__agent_x",
+        ],
+    );
+    assert_eq!(forget_under_in(&path, "/w/.ac/room-1-a").unwrap(), 2);
+    assert_eq!(load_from(&path), vec!["/w/.ac/room-1-ab/__agent_x"]);
+}
+
+#[test]
+fn forget_under_removes_one_replica() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = store_with(
+        &dir,
+        &["/w/.ac/room-1-a/__agent_x", "/w/.ac/room-1-a/__agent_y"],
+    );
+    assert_eq!(
+        forget_under_in(&path, "/w/.ac/room-1-a/__agent_x").unwrap(),
+        1
+    );
+    assert_eq!(load_from(&path), vec!["/w/.ac/room-1-a/__agent_y"]);
+}
+
+#[test]
+fn forget_under_matches_windows_path_variants() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = store_with(&dir, &["c:/a/.ac/room-1-a/__agent_x"]);
+    assert_eq!(forget_under_in(&path, r"C:\A\.ac\room-1-a\").unwrap(), 1);
+    assert!(load_from(&path).is_empty());
+}
+
+#[test]
+fn forget_under_missing_store_creates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = store_in(&dir);
+    assert_eq!(forget_under_in(&path, "/w/.ac/room-1-a").unwrap(), 0);
+    assert!(!path.exists());
+}
