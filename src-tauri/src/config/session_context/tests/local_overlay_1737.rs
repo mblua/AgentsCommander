@@ -42,6 +42,7 @@ fn resolve_global(fixture: &Fixture) -> Result<String, String> {
         None,
         None,
         None,
+        WorkspaceRestrictions::Enforced,
     )
 }
 
@@ -387,6 +388,7 @@ fn resolve_global_activated(
         None,
         None,
         activation,
+        WorkspaceRestrictions::Enforced,
     )
 }
 

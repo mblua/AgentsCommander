@@ -258,6 +258,14 @@
       "resolution": "Stays ignored by design as a print-only capture helper; it runs manually to re-capture the S6 control with cargo test --lib print_s6_normalized_non_project_settings -- --ignored --nocapture."
     },
     {
+      "id": "rust:src-tauri/src/config/settings/tests/app_defaults_4766.rs::print_app_settings_default_4766",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 4766,
+      "reason": "#4766 fixture capture helper, not a behavior test. It only prints the filtered AppSettings::default JSON via println and asserts nothing, so as a standard debug-lane member it would have no pass criterion. The behavior is pinned by app_settings_default_matches_pinned_fixture.",
+      "resolution": "Stays ignored by design as a print-only capture helper; it runs manually to check the fixture with cargo test --lib print_app_settings_default_4766 -- --ignored --nocapture."
+    },
+    {
       "id": "rust:src-tauri/src/commands/ac_discovery/tests/discovery.rs::inner_read_preferred_agent_id_logged_loads_once",
       "category": "ignored-rust-test",
       "owner": "dev-rust",

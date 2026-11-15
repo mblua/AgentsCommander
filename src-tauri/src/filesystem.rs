@@ -61,6 +61,7 @@ pub(crate) mod tasks;
 pub(crate) mod telegram_logs;
 pub(crate) mod terminal_snapshots;
 pub(crate) mod transcripts;
+pub(crate) mod unleashed_replicas;
 pub(crate) mod update_cache;
 
 static TEMP_NAME_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

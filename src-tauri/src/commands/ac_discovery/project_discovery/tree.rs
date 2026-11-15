@@ -204,9 +204,11 @@ async fn discover_workgroup(
                 let (saved_pair, selection_state, selection_error) =
                     replica_selection_wire_fields(&wg_path);
 
+                let path = projected_path_string(&wg_path);
                 wg_agents.push(AcAgentReplica {
                     name: replica_name,
-                    path: projected_path_string(&wg_path),
+                    unleashed: crate::config::unleashed_replicas::is_unleashed(&path),
+                    path,
                     identity_path,
                     origin_project,
                     preferred_agent_id,

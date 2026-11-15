@@ -72,6 +72,41 @@ impl GitGuardTempSequence {
     }
 }
 
+// #4752 P02: the two Git brakes of a spawn (GIT_CEILING_DIRECTORIES and the Windows git.cmd
+// guard on PATH). An unleashed replica gets neither; both variables are removed because
+// CommandBuilder::new copies the whole parent env.
+fn apply_git_brakes(
+    command: &mut portable_pty::CommandBuilder,
+    spawn_cwd: &str,
+    unleashed: bool,
+    #[cfg(windows)] git_guard: &GitGuardTempSequence,
+) -> Result<(), AppError> {
+    if unleashed {
+        command.env_remove("GIT_CEILING_DIRECTORIES");
+        command.env_remove("AC_REAL_GIT");
+        log::info!("[pty] #4752 unleashed session cwd {spawn_cwd}: Git brakes not applied");
+        return Ok(());
+    }
+    if let Some(git_ceiling_dirs) =
+        crate::config::session_context::git_ceiling_directories_for_session_root(spawn_cwd)
+    {
+        command.env("GIT_CEILING_DIRECTORIES", &git_ceiling_dirs);
+        log::info!(
+            "[pty] Applied GIT_CEILING_DIRECTORIES for session cwd {spawn_cwd}: \
+             {git_ceiling_dirs}"
+        );
+
+        #[cfg(windows)]
+        if let Some(git_guard_env) = build_git_guard_env(git_guard)? {
+            command.env("PATH", &git_guard_env.path);
+            command.env("PATHEXT", &git_guard_env.pathext);
+            command.env("AC_REAL_GIT", &git_guard_env.real_git);
+            log::info!("[pty] Enabled git guard wrapper for session cwd {spawn_cwd}");
+        }
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn build_git_guard_env(sequence: &GitGuardTempSequence) -> Result<Option<GitGuardEnv>, AppError> {
     let Some(real_git) = resolve_real_git_path() else {
@@ -515,23 +550,13 @@ impl LocalProcessBackend {
             );
         }
 
-        if let Some(git_ceiling_dirs) =
-            crate::config::session_context::git_ceiling_directories_for_session_root(spawn_cwd)
-        {
-            command.env("GIT_CEILING_DIRECTORIES", &git_ceiling_dirs);
-            log::info!(
-                "[pty] Applied GIT_CEILING_DIRECTORIES for session cwd {spawn_cwd}: \
-                 {git_ceiling_dirs}"
-            );
-
+        apply_git_brakes(
+            &mut command,
+            spawn_cwd,
+            crate::config::unleashed_replicas::is_unleashed(spawn_cwd),
             #[cfg(windows)]
-            if let Some(git_guard_env) = build_git_guard_env(&self.git_guard)? {
-                command.env("PATH", &git_guard_env.path);
-                command.env("PATHEXT", &git_guard_env.pathext);
-                command.env("AC_REAL_GIT", &git_guard_env.real_git);
-                log::info!("[pty] Enabled git guard wrapper for session cwd {spawn_cwd}");
-            }
-        }
+            &self.git_guard,
+        )?;
 
         Ok(SpawnCommand {
             command,

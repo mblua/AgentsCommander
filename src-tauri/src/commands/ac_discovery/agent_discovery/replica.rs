@@ -111,9 +111,11 @@ pub(crate) async fn discover_replica(
     // surfaced as `invalid`, never as default false.
     let (saved_pair, selection_state, selection_error) = replica_selection_wire_fields(wg_path);
 
+    let path = projected_path_string(wg_path);
     AcAgentReplica {
         name: replica_name,
-        path: projected_path_string(wg_path),
+        unleashed: crate::config::unleashed_replicas::is_unleashed(&path),
+        path,
         identity_path,
         origin_project,
         preferred_agent_id,

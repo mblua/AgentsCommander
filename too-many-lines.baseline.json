@@ -59,25 +59,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/config/settings/app_defaults.rs::impl:Default for AppSettings::default",
-      "name": "default",
-      "anchor": "7e3365e7af00",
-      "sites": {
-        "linux": {
-          "lines": 121,
-          "production": true
-        },
-        "macos": {
-          "lines": 121,
-          "production": true
-        },
-        "windows": {
-          "lines": 121,
-          "production": true
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/src/lib.rs::invoke_handler",
       "name": "invoke_handler",
       "anchor": "6414ea1057d7",

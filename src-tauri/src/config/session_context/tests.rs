@@ -5,6 +5,7 @@ mod coordinator_and_seed;
 mod default_context_access;
 mod default_context_render;
 mod host_platform;
+mod integrity_rules_4752;
 mod issue_2832;
 mod issue_2868;
 mod legacy_sections;
@@ -17,6 +18,7 @@ mod skill_index;
 mod template_heal;
 mod template_render;
 mod token_accounting;
+mod unleash_context_4752;
 mod yaml_parity_4470;
 
 fn issue_2832_fixture() -> (tempfile::TempDir, PathBuf) {
@@ -394,6 +396,7 @@ fn render_global_template_for_test(
         None,
         None,
         is_root_agent,
+        WorkspaceRestrictions::Enforced,
     )
 }
 

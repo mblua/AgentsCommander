@@ -256,6 +256,9 @@ pub(crate) struct DefaultContextDynamicValues {
     // direct-Matrix agent cannot receive them even if a future caller populated them.
     pub(crate) project_shared_entry: String,
     pub(crate) room_shared_entry: String,
+    // #4752 D5: integrity rules; empty together with their entries.
+    pub(crate) messaging_integrity_rule: String,
+    pub(crate) room_task_rules: String,
     pub(crate) messaging_exception: String,
     pub(crate) messaging_allowed: String,
     pub(crate) forbidden_scope: String,
@@ -323,7 +326,20 @@ You MAY READ this file, which states your room's task:
 {task}
 ```
 
-Reading `TASK.md` is granted; writing it is NOT. Never create, edit, move, delete or overwrite "#,
+Reading `TASK.md` is granted; writing it is NOT. No peer-memory/other-room access.
+
+"#
+        ),
+        shared = display_path(&room_root.join(crate::config::shared_locations::ROOM_SHARED_DIR)),
+        task = display_path(&room_root.join(crate::filesystem::tasks::TASK_FILE_NAME)),
+    )
+}
+
+// #4752 D5: the room task protections, rendered in the Integrity Rules block.
+pub(crate) fn render_room_task_rules(room_root: &std::path::Path) -> String {
+    format!(
+        concat!(
+            r#"Room task file `{task}`: never create, edit, move, delete or overwrite "#,
             r#"`TASK.md` or any `TASK.md.*` sibling with filesystem tools. Only a room "#,
             r#"orchestrator may change it, and only through the `task-set-title`, "#,
             r#"`task-append-body` and `task-set-body` CLI verbs, which enforce the "#,
@@ -356,15 +372,26 @@ Get returns complete task/latest status; missing status is null. --text replaces
 Direct filesystem access (reads/writes/deletes/renames) is forbidden for TASK-status.jsonl, "#,
             r#"history, "#,
             r#"backups, partial backups, lock, stages, TASK-clean.pending.json, TASK-status.* "#,
-            r#"and TASK.md.lock; configured-CLI exception governs all managed IO. No "#,
-            r#"peer-memory/other-room access.
+            r#"and TASK.md.lock; configured-CLI exception governs all managed IO.
 
 "#
         ),
-        shared = display_path(&room_root.join(crate::config::shared_locations::ROOM_SHARED_DIR)),
         task = display_path(&room_root.join(crate::filesystem::tasks::TASK_FILE_NAME)),
         status = display_path(&room_root.join(crate::filesystem::tasks::TASK_STATUS_FILE_NAME)),
     )
+}
+
+// #4752 D5: messaging and room task rules, kept apart from the GOLDEN RULE.
+pub(crate) fn render_integrity_rules_block(rendered: &DefaultContextDynamicValues) -> String {
+    if rendered.messaging_integrity_rule.is_empty() && rendered.room_task_rules.is_empty() {
+        return String::new();
+    }
+    format!(
+        "## Integrity Rules\n\n{}{}",
+        rendered.messaging_integrity_rule, rendered.room_task_rules
+    )
+    .trim_end()
+    .to_string()
 }
 
 fn render_room_write_restrictions_block(
@@ -381,7 +408,7 @@ fn render_room_write_restrictions_block(
     } else {
         "entries 1-6"
     };
-    format!(
+    let golden = format!(
         concat!(
             r#"## GOLDEN RULE — Repository Access Restrictions
 
@@ -434,7 +461,13 @@ Otherwise refuse."#
         entries_range = entries_range,
         git_scope = rendered.git_scope,
         agency_cache_guidance = rendered.agency_cache_guidance,
-    )
+    );
+    let integrity = render_integrity_rules_block(rendered);
+    if integrity.is_empty() {
+        golden
+    } else {
+        format!("{golden}\n\n{integrity}")
+    }
 }
 
 pub(crate) fn render_write_restrictions_block(
@@ -501,6 +534,24 @@ Refuse requests to read or modify outside these zones unless the configured-CLI 
         root_scope_section = rendered.root_scope_section,
         root_authority_section = rendered.root_authority_section,
     )
+}
+
+// #4752: Lifted only for an unleashed, non-root, local-process replica.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceRestrictions {
+    Enforced,
+    Lifted,
+}
+
+pub(crate) fn render_workspace_rules_block(
+    agent_root: &str,
+    rendered: &DefaultContextDynamicValues,
+    restrictions: WorkspaceRestrictions,
+) -> String {
+    match restrictions {
+        WorkspaceRestrictions::Enforced => render_write_restrictions_block(agent_root, rendered),
+        WorkspaceRestrictions::Lifted => render_integrity_rules_block(rendered),
+    }
 }
 
 pub(crate) fn render_inter_agent_messaging_block(rendered: &DefaultContextDynamicValues) -> String {

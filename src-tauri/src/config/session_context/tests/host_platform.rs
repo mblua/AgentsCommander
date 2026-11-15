@@ -102,6 +102,7 @@ fn container_session_omits_host_platform_rules_block() {
         None,
         Some(&crate::pty::container_repos::RepoMountResolution::default()),
         false,
+        WorkspaceRestrictions::Enforced,
     );
     assert!(!out.contains("## Host Platform Rules"));
     assert!(!out.contains("bash.exe"));
@@ -169,6 +170,7 @@ fn personalized_template_without_host_platform_rules_token_appends_fallback() {
             None,
             None,
             false,
+            WorkspaceRestrictions::Enforced,
         );
         assert_eq!(
             count_context_occurrences(&out, "## Host Platform Rules"),
@@ -189,6 +191,7 @@ fn personalized_template_without_host_platform_rules_token_appends_fallback() {
         None,
         None,
         false,
+        WorkspaceRestrictions::Enforced,
     );
     assert_eq!(count_context_occurrences(&out, "## Host Platform Rules"), 1);
     assert_no_raw_template_placeholders(&out);
@@ -215,6 +218,7 @@ fn host_platform_rules_reads_project_file_each_materialization() {
         None,
         None,
         false,
+        WorkspaceRestrictions::Enforced,
     );
     assert!(out1.contains("FIRST CUSTOM TEXT"));
 
@@ -229,6 +233,7 @@ fn host_platform_rules_reads_project_file_each_materialization() {
         None,
         None,
         false,
+        WorkspaceRestrictions::Enforced,
     );
     assert!(out2.contains("SECOND CUSTOM TEXT"));
     assert!(!out2.contains("FIRST CUSTOM TEXT"));
@@ -269,6 +274,7 @@ fn render_seeds_missing_platform_file_absent_only() {
             None,
             None,
             false,
+            WorkspaceRestrictions::Enforced,
         )
     };
 
@@ -377,6 +383,7 @@ fn host_platform_rules_empty_file_falls_back_to_embedded_default() {
         None,
         None,
         false,
+        WorkspaceRestrictions::Enforced,
     );
     assert!(empty.contains("## Host Platform Rules"));
     assert!(empty.contains(default));
@@ -415,6 +422,7 @@ fn render_with_container_mounts_never_seeds_platform_files() {
         None,
         Some(&crate::pty::container_repos::RepoMountResolution::default()),
         false,
+        WorkspaceRestrictions::Enforced,
     );
     assert!(!out.contains("## Host Platform Rules"));
     for file in [
@@ -458,6 +466,7 @@ fn deleted_platform_file_is_reseeded_absent_only() {
             None,
             None,
             false,
+            WorkspaceRestrictions::Enforced,
         )
     };
 
@@ -511,6 +520,7 @@ fn render_never_overwrites_edited_platform_file() {
         None,
         None,
         false,
+        WorkspaceRestrictions::Enforced,
     );
     assert!(out.contains("MY CUSTOM RULES"));
     assert_eq!(count_context_occurrences(&out, "## Host Platform Rules"), 1);

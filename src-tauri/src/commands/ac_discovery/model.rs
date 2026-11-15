@@ -73,6 +73,8 @@ pub struct AcAgentReplica {
     pub selection_state: Option<String>,
     /// #1941 - the strict-read diagnostic when `selection_state` is `invalid`.
     pub selection_error: Option<String>,
+    // #4752: true when the user unleashed this replica (persisted per replica path).
+    pub unleashed: bool,
 }
 
 /// #1941 - the selection pair as discovery exposes it. A strict complete pair
