@@ -357,7 +357,16 @@ pub(super) fn initialize_workgroup_replicas_on_disk_traced(
 pub(crate) use crate::config::entity_creation::directories::ReplicaRemovalOutcome;
 
 pub(crate) fn remove_replica_dir(replica_dir: &Path) -> ReplicaRemovalOutcome {
-    crate::config::entity_creation::directories::remove_replica_directory(replica_dir)
+    let outcome =
+        crate::config::entity_creation::directories::remove_replica_directory(replica_dir);
+    if matches!(
+        outcome,
+        ReplicaRemovalOutcome::Removed | ReplicaRemovalOutcome::AlreadyAbsent
+    ) {
+        // #4752: a replica that is gone keeps no Unleash flag.
+        crate::config::unleashed_replicas::forget_under(replica_dir);
+    }
+    outcome
 }
 
 // ===========================================================================
