@@ -1,0 +1,33 @@
+/* #4752 D9 - breathing red halo on an unleashed tile (prototype B). Loaded last. */
+.replica-item.unleashed {
+  --unleash-red: var(--status-exited);
+  position: relative;
+  z-index: 2;
+  border-radius: 4px;
+  animation: unleash-breathe 1.8s ease-in-out infinite;
+}
+.replica-item.unleashed.active {
+  animation-name: unleash-breathe-glow;
+}
+@keyframes unleash-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; background: transparent; }
+  50% {
+    box-shadow: 0 0 22px 8px var(--unleash-red),
+      0 0 44px 14px color-mix(in srgb, var(--unleash-red) 40%, transparent);
+    background: color-mix(in srgb, var(--unleash-red) 18%, transparent);
+  }
+}
+@keyframes unleash-breathe-glow {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% {
+    box-shadow: 0 0 22px 8px var(--unleash-red),
+      0 0 44px 14px color-mix(in srgb, var(--unleash-red) 40%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .replica-item.unleashed,
+  .replica-item.unleashed.active {
+    animation: none;
+    box-shadow: inset 0 0 0 3px var(--unleash-red), 0 0 12px 3px var(--unleash-red);
+  }
+}
