@@ -8,6 +8,7 @@ use serde_json::Value;
 use crate::config::config_dir;
 use crate::config::instance_artifacts::UNLEASHED_REPLICAS_FILE_NAME;
 use crate::config::local_config_io::update_config_json_object;
+use crate::filesystem::unleashed_replicas as unleash_io;
 use crate::path_utils::normalize_windows_verbatim_path;
 
 // A replica directory name starts with this prefix; a Root Agent directory never does.
@@ -46,7 +47,7 @@ fn store_path() -> Option<PathBuf> {
 // Reads the stored keys. A missing file is empty; any unreadable or invalid content logs
 // one warning and reads as empty. Never rewrites the file.
 pub(crate) fn load_from(path: &Path) -> Vec<String> {
-    let text = match std::fs::read_to_string(path) {
+    let text = match unleash_io::read_unleashed_store(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(e) => {
