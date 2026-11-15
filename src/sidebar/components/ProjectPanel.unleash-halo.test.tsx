@@ -58,25 +58,20 @@ describe("ProjectPanel unleashed halo class (#4752)", () => {
 
   async function setupPanel() {
     const fake = new FakeTransport();
-    const result = discovery({
-      workgroups: [
-        {
-          name: "wg-1-dev-team",
-          path: wgPath,
-          task: null,
-          taskTitle: "Clean",
-          agents: [agent("dev-rust", wildPath, true), agent("dev-web", tamePath, false)],
-        },
-      ],
-    });
-    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
-    fake.resolve("discover_project", { ...result, teams: [] });
-    fake.resolve("get_settings", baseSettings());
-    fake.resolve("set_replica_unleashed", undefined);
+    const agents = [agent("dev-rust", wildPath, true), agent("dev-web", tamePath, false)];
+    const wg = { name: "wg-1-dev-team", path: wgPath, task: null, taskTitle: "Clean", agents };
+    const canned: Record<string, unknown> = {
+      new_project: { path: projectPath, registered: true, created: false },
+      discover_project: { ...discovery({ workgroups: [wg] }), teams: [] },
+      get_settings: baseSettings(),
+      set_replica_unleashed: undefined,
+    };
+    for (const [cmd, value] of Object.entries(canned)) fake.resolve(cmd, value);
     fake.onInvoke("restart_session", ({ id }) => session({ id: String(id) }));
+    const snapshot = { task: null, taskTitle: "Clean", description: "", status: null };
     fake.onInvoke("task_get_snapshot_at", ({ workgroupRoot }) => ({
-      workgroupRoot: String(workgroupRoot), task: null, taskTitle: "Clean", description: "",
-      status: null, revision: "topic:0", statusRecord: null, tailIncomplete: false,
+      ...snapshot, workgroupRoot: String(workgroupRoot),
+      revision: "topic:0", statusRecord: null, tailIncomplete: false,
     }));
     sessionsStore.setSessions([
       session({ id: "wild", name: "wg-1-dev-team/dev-rust",
