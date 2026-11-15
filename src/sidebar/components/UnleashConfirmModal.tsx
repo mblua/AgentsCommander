@@ -3,8 +3,8 @@ import { automationAttrs } from "../../shared/automation-hooks";
 import { focusOnMount } from "../../shared/focus-on-mount";
 
 /**
- * #4752 - confirmation before a replica is unleashed. Same structure as
- * AgentMatrixNoticeModal: the overlay click and Escape cancel. Cancel has the
+ * #4752 - confirmation before a replica is unleashed. Escape handling and classes
+ * from AgentMatrixNoticeModal; the backdrop button and Escape cancel. Cancel has the
  * default focus, so a stray Enter never unleashes the agent.
  */
 const UnleashConfirmModal: Component<{
@@ -20,19 +20,36 @@ const UnleashConfirmModal: Component<{
   onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
 
   return (
-    <div
-      class="modal-overlay"
-      onClick={props.onCancel}
-      {...automationAttrs("unleashConfirm.overlay", "overlay")}
-    >
-      <div
+    <div class="modal-overlay">
+      {/* The backdrop is a sibling button, so a click inside the dialog never reaches it. */}
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label="Cancel"
+        onClick={props.onCancel}
+        style={{
+          position: "absolute",
+          inset: "0",
+          background: "transparent",
+          border: "none",
+          padding: "0",
+          cursor: "default",
+        }}
+        {...automationAttrs("unleashConfirm.overlay", "overlay")}
+      />
+      <dialog
+        open
         class="agent-modal"
-        role="dialog"
         aria-modal="true"
         aria-labelledby="unleashConfirmTitle"
         aria-describedby="unleashConfirmDescription"
-        style={{ "max-width": "380px" }}
-        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: "relative",
+          margin: "0",
+          padding: "0",
+          color: "inherit",
+          "max-width": "380px",
+        }}
         {...automationAttrs("unleashConfirm.modal", "dialog")}
       >
         <div class="agent-modal-header">
@@ -70,7 +87,7 @@ const UnleashConfirmModal: Component<{
             Unleash and restart
           </button>
         </div>
-      </div>
+      </dialog>
     </div>
   );
 };

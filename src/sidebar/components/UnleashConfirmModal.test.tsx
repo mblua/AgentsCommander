@@ -37,7 +37,10 @@ describe("UnleashConfirmModal (#4752)", () => {
   it("states the three required facts", () => {
     mount();
     const dialog = byTestId("unleashConfirm.modal")!;
-    expect(dialog.getAttribute("role")).toBe("dialog");
+    expect(dialog.tagName).toBe("DIALOG");
+    expect(dialog.hasAttribute("open")).toBe(true);
+    expect(dialog.getAttribute("aria-labelledby")).toBe("unleashConfirmTitle");
+    expect(dialog.getAttribute("aria-describedby")).toBe("unleashConfirmDescription");
     expect(dialog.getAttribute("aria-modal")).toBe("true");
     const text = dialog.textContent!.replace(/\s+/g, " ");
     expect(text).toContain("Unleash dev-rust?");
