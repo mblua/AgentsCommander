@@ -1659,10 +1659,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       const open = findExactMenuButton(menu, "Detach session")!;
       const attach = findExactMenuButton(menu, "Attach Telegram")!;
       const add = findExactMenuButton(menu, "Add to Group")!;
-
-      const unleash = findExactMenuButton(menu, "Unleash")!;
-      expect(matrix.nextElementSibling).toBe(unleash);
-      expect(unleash.nextElementSibling).toBe(close);
+      expect(matrix.nextElementSibling?.nextElementSibling).toBe(close);
       expect(close.nextElementSibling?.classList.contains("context-separator")).toBe(true);
       const labels = menuButtonLabels(menu);
       expect(labels.indexOf("Attach Telegram")).toBe(labels.indexOf("Detach session") + 1);

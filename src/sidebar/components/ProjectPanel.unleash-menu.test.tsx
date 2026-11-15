@@ -115,6 +115,11 @@ describe("ProjectPanel Unleash menu item (#4752)", () => {
     expect(el.textContent).toContain("Unleash");
     expect(el.getAttribute("data-ac-state")).toBe("leashed");
     expect(el.nextElementSibling?.textContent).toContain("Close Session (Ctrl+Shift+W)");
+    const buttons = Array.from(menu()!.querySelectorAll("button"));
+    const matrix = buttons.find((b) => b.textContent?.trim().endsWith("Open Matrix folder"));
+    const close = buttons.find((b) => b.textContent?.includes("Close Session (Ctrl+Shift+W)"));
+    expect(matrix?.nextElementSibling).toBe(el);
+    expect(el.nextElementSibling).toBe(close);
   });
 
   it("disables the item for a leashed container session, with a tooltip", async () => {
