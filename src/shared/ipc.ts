@@ -1366,12 +1366,12 @@ export function onSessionEnvWarning(
 
 export const AcDiscoveryAPI = {
   discover: () => transport.invoke<AcDiscoveryResult>("discover_ac_agents"),
-
   getReplicaContextFiles: (path: string) =>
     transport.invoke<string[]>("get_replica_context_files", { path }),
-
   setReplicaContextFiles: (path: string, files: string[]) =>
     transport.invoke<void>("set_replica_context_files", { path, files }),
+  setReplicaUnleashed: (replicaPath: string, unleashed: boolean) =>
+    transport.invoke<void>("set_replica_unleashed", { replicaPath, unleashed }),
 };
 
 export const ProjectAPI = {

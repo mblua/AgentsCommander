@@ -786,6 +786,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       "docs",
       "cli",
       "Open Matrix folder",
+      "Unleash",
       "Close Session (Ctrl+Shift+W)",
       "Detach session",
       "Attach Telegram",
@@ -1658,8 +1659,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       const open = findExactMenuButton(menu, "Detach session")!;
       const attach = findExactMenuButton(menu, "Attach Telegram")!;
       const add = findExactMenuButton(menu, "Add to Group")!;
-
-      expect(matrix.nextElementSibling).toBe(close);
+      expect(matrix.nextElementSibling?.nextElementSibling).toBe(close);
       expect(close.nextElementSibling?.classList.contains("context-separator")).toBe(true);
       const labels = menuButtonLabels(menu);
       expect(labels.indexOf("Attach Telegram")).toBe(labels.indexOf("Detach session") + 1);
