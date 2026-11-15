@@ -111,6 +111,7 @@ impl Default for AppSettings {
             rail_collapsed_projects: Vec::new(),
             rail_favorites_collapsed: false,
             spec_board_enabled: false,
+            web_browser_enabled: false,
             git_sweep_concurrency: default_git_sweep_concurrency(),
             git_sweep_min_interval_secs: default_git_sweep_min_interval_secs(),
             ci_activity_enabled: default_ci_activity_enabled(),

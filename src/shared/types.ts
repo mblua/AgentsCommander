@@ -838,6 +838,7 @@ export interface AppSettings {
   railCollapsedProjects?: string[];
   railFavoritesCollapsed?: boolean;
   specBoardEnabled: boolean;
+  webBrowserEnabled: boolean;
   gitSweepConcurrency: number;
   gitSweepMinIntervalSecs: number;
   // #2064 — the remote-activity dials the Rust sweeper reads. OPTIONAL on purpose,

@@ -100,6 +100,7 @@ fn fields_2(s: &AppSettings, d: &mut fmt::DebugStruct<'_, '_>) {
     d.field("rail_collapsed_projects", &s.rail_collapsed_projects);
     d.field("rail_favorites_collapsed", &s.rail_favorites_collapsed);
     d.field("spec_board_enabled", &s.spec_board_enabled);
+    d.field("web_browser_enabled", &s.web_browser_enabled);
     d.field("git_sweep_concurrency", &s.git_sweep_concurrency);
     d.field("git_sweep_min_interval_secs", &s.git_sweep_min_interval_secs);
     d.field("ci_activity_enabled", &s.ci_activity_enabled);
@@ -177,7 +178,8 @@ fn all_fields_listed(s: &AppSettings) {
         onboarding_dismissed: _, coord_sort_by_activity: _, always_show_selected_workgroup: _,
         log_level: _, activity_log_enabled: _, auto_generate_task_title: _, agent_templates_path: _,
         theme_light: _, rail_collapsed_projects: _, rail_favorites_collapsed: _,
-        spec_board_enabled: _, git_sweep_concurrency: _, git_sweep_min_interval_secs: _,
+        spec_board_enabled: _, web_browser_enabled: _, git_sweep_concurrency: _,
+        git_sweep_min_interval_secs: _,
         ci_activity_enabled: _, ci_activity_notify_orchestrator: _, branch_staleness_enabled: _,
         branch_staleness_notify_orchestrator: _, ci_sweep_min_interval_secs: _,
         branch_staleness_interval_secs: _, resource_monitor_enabled: _,

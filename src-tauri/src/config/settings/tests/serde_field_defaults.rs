@@ -340,6 +340,23 @@ fn spec_board_enabled_round_trips_through_serde() {
 }
 
 #[test]
+fn web_browser_enabled_round_trips_through_serde() {
+    // #4751 - manual opt-in key for the sidebar WWW button.
+    let mut s = AppSettings::default();
+    assert!(!s.web_browser_enabled);
+    let default_json = serde_json::to_string(&s).expect("serialize default");
+    assert!(default_json.contains("\"webBrowserEnabled\":false"));
+
+    s.web_browser_enabled = true;
+
+    let json = serde_json::to_string(&s).expect("serialize");
+    assert!(json.contains("\"webBrowserEnabled\":true"));
+
+    let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+    assert!(back.web_browser_enabled);
+}
+
+#[test]
 fn resource_monitor_settings_round_trip_through_serde() {
     let mut s = AppSettings::default();
     assert!(s.resource_monitor_enabled);

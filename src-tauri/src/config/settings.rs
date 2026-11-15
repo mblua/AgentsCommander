@@ -709,6 +709,11 @@ pub struct AppSettings {
     /// board is an opt-in feature enabled manually from settings.json.
     #[serde(default)]
     pub spec_board_enabled: bool,
+    /// #4751 - when true, show the sidebar WWW (embedded web browser) button.
+    /// Defaults off; manual opt-in from settings.json, same shape as
+    /// `spec_board_enabled`. Gates the button only, not the CLI open path.
+    #[serde(default)]
+    pub web_browser_enabled: bool,
     /// #1298 - how many repositories the global git sweeper detects at once.
     /// Default 1, i.e. strictly sequential, which is the property the sweeper
     /// exists for. Read once per round and clamped to 1..=4 at the read site, which
