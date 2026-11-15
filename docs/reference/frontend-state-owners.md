@@ -16,6 +16,7 @@ mapped path no longer exists. Add one line here when you add a store module.
 | `src/sidebar/stores/sessions-helpers.ts` | (none) | pure helpers for `sessionsStore`, no state |
 | `src/sidebar/stores/project.ts` | `projectStore` | loaded projects, archived paths, loading, last load error |
 | `src/sidebar/stores/project-merge.ts` | (none) | pure merge helpers for `projectStore`, no state |
+| `src/sidebar/stores/unleashed-replicas.ts` | `unleashedReplicasStore` | per-replica Unleash overrides keyed by normalized path (#4752) |
 | `src/sidebar/stores/project-refresh.ts` | (none) | pure path-compare helpers for `projectStore`, no state |
 | `src/sidebar/stores/project-collapse.ts` | `projectCollapseStore` | ProjectPanel section collapse map |
 | `src/sidebar/stores/rail-collapse.ts` | `railCollapseStore` | rail project collapse map, favorites collapsed |
@@ -23,7 +24,6 @@ mapped path no longer exists. Add one line here when you add a store module.
 | `src/sidebar/stores/coding-agents.ts` | `codingAgentsStore` | coding-agent catalog, reseedable commands, load state and error |
 | `src/sidebar/stores/agent-update-overview.ts` | `agentUpdateOverviewStore` | agent update rows, install states |
 | `src/sidebar/stores/replica-volatile.ts` | `replicaVolatileStore` | per-replica volatile git, branch, dirty and last-message data |
-| `src/sidebar/stores/unleashed-replicas.ts` | `unleashedReplicasStore` | per-replica Unleash overrides (#4752) |
 | `src/sidebar/stores/remote-activity.ts` | `remoteActivityStore` | remote activity by path |
 | `src/sidebar/stores/room-activity.ts` | module functions | room activity entries (observer-counted) |
 | `src/sidebar/stores/team-idle-watcher.ts` | module functions | OS focus, busy-to-idle grace state |

@@ -706,7 +706,7 @@ const ProjectPanel: Component = () => {
     await restartReplicaSessionCore(sessionId);
   };
 
-  const handleReplicaClick =async (replica: AcAgentReplica, wg: AcWorkgroup) => {
+  const handleReplicaClick = async (replica: AcAgentReplica, wg: AcWorkgroup) => {
     const existing = replicaSession(wg, replica);
     if (existing) {
       if (!isSessionLive(existing)) {
