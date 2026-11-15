@@ -1113,6 +1113,12 @@ export const TaskAPI = {
     transport.invoke<TaskUpdateResult>("task_set_title_at", { workgroupRoot, title }),
 };
 
+// #4752 - UI-only toggle; there is no CLI verb on purpose.
+export const UnleashAPI = {
+  set: (replicaPath: string, unleashed: boolean) =>
+    transport.invoke<void>("set_replica_unleashed", { replicaPath, unleashed }),
+};
+
 export const TelegramAPI = {
   attach: (sessionId: string, botId: string) =>
     transport.invoke<BridgeInfo>("telegram_attach", { sessionId, botId }),

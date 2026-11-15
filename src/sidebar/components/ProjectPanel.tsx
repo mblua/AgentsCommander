@@ -31,6 +31,7 @@ import {
   replicaVolatileStore,
 } from "../stores/replica-volatile";
 import { remoteActivityStore } from "../stores/remote-activity";
+import { unleashedReplicasStore } from "../stores/unleashed-replicas";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
 import {
   projectCollapseStore,
@@ -65,6 +66,7 @@ import LoopTargetMissingModal from "./LoopTargetMissingModal";
 import AgentPickerModal, { type AgentPickerScopeContext, LockIcon } from "./AgentPickerModal";
 import RestartPromptModal from "./RestartPromptModal";
 import AgentMatrixNoticeModal from "./AgentMatrixNoticeModal";
+import UnleashConfirmModal from "./UnleashConfirmModal";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
 import DetachIcon from "./DetachIcon";
@@ -436,6 +438,8 @@ const ProjectPanel: Component = () => {
 
   const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
   const [agentMatrixNotice, setAgentMatrixNotice] = createSignal<{ name: string; path: string } | null>(null);
+  const [unleashPrompt, setUnleashPrompt] = createSignal<{ sessionId: string; replicaPath: string; replicaName: string } | null>(null);
+  const [unleashBusy, setUnleashBusy] = createSignal(false);
   const [collapsedByKey, setCollapsedByKey] = createSignal<Record<string, boolean>>({});
   const isPanelCollapsed = (key: string, defaultCollapsed = false) =>
     collapsedByKey()[key] ?? defaultCollapsed;
@@ -686,7 +690,23 @@ const ProjectPanel: Component = () => {
     }
   };
 
-  const handleReplicaClick = async (replica: AcAgentReplica, wg: AcWorkgroup) => {
+  // #4752 - store the flag, then fresh-restart so the new context applies. A failed
+  // restart keeps the flag (user decision Q2); restartReplicaSessionCore toasts it.
+  const applyUnleash = async (sessionId: string, replicaPath: string, unleashed: boolean) => {
+    setUnleashBusy(true);
+    try {
+      await unleashedReplicasStore.set(replicaPath, unleashed);
+    } catch (e) {
+      toastStore.error(`Could not ${unleashed ? "unleash" : "leash"} the agent: ${String(e)}`);
+      return;
+    } finally {
+      setUnleashBusy(false);
+    }
+    setUnleashPrompt(null);
+    await restartReplicaSessionCore(sessionId);
+  };
+
+  const handleReplicaClick =async (replica: AcAgentReplica, wg: AcWorkgroup) => {
     const existing = replicaSession(wg, replica);
     if (existing) {
       if (!isSessionLive(existing)) {
@@ -4443,6 +4463,39 @@ const ProjectPanel: Component = () => {
                           )}
                         </Show>
                         <Show when={activeReplicaMenuSession()}>
+                          <Show when={!activeReplicaMenuSession()!.isRootAgent}>
+                            {(() => {
+                              // #4752 - an unleashed container session can still be Leashed.
+                              const unleashDisabled = () =>
+                                activeReplicaMenuSession()!.backendKind === "containerTransport" &&
+                                !unleashedReplicasStore.isUnleashed(menu().replica);
+                              return (
+                                <button
+                                  class="session-context-option context-option-danger"
+                                  classList={{ "context-option-disabled": unleashDisabled() }}
+                                  data-ac-testid={`replica.${menu().sessionId}.menu.unleash`}
+                                  data-ac-role="menuitem"
+                                  data-ac-state={unleashedReplicasStore.isUnleashed(menu().replica) ? "unleashed" : "leashed"}
+                                  disabled={unleashDisabled()}
+                                  title={unleashDisabled()
+                                    ? "Not available for container sessions: the container mounts still limit what the agent can see."
+                                    : undefined}
+                                  onClick={() => {
+                                    const m = menu();
+                                    closeReplicaCtxMenu();
+                                    if (unleashedReplicasStore.isUnleashed(m.replica)) {
+                                      void applyUnleash(m.sessionId, m.replica.path, false);
+                                    } else {
+                                      setUnleashPrompt({ sessionId: m.sessionId, replicaPath: m.replica.path, replicaName: m.replica.name });
+                                    }
+                                  }}
+                                >
+                                  <span class="session-context-option-icon" aria-hidden="true">&#x26D3;</span>{" "}
+                                  {unleashedReplicasStore.isUnleashed(menu().replica) ? "Leash" : "Unleash"}
+                                </button>
+                              );
+                            })()}
+                          </Show>
                           <button
                             class="session-context-option context-option-danger"
                             onClick={(event) =>
@@ -5102,6 +5155,21 @@ const ProjectPanel: Component = () => {
           name={agentMatrixNotice()!.name}
           path={agentMatrixNotice()!.path}
           onClose={() => setAgentMatrixNotice(null)}
+        />
+      </Portal>
+    )}
+
+    {/* #4752: Unleash confirmation, at the same stable root as the notice above. */}
+    {unleashPrompt() && (
+      <Portal>
+        <UnleashConfirmModal
+          replicaName={unleashPrompt()!.replicaName}
+          busy={unleashBusy()}
+          onCancel={() => setUnleashPrompt(null)}
+          onConfirm={() => {
+            const p = unleashPrompt()!;
+            void applyUnleash(p.sessionId, p.replicaPath, true);
+          }}
         />
       </Portal>
     )}

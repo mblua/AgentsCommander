@@ -14,6 +14,7 @@ import { baseSettings } from "./base-settings";
 import { toastStore } from "../stores/toasts";
 import { projectStore } from "../../sidebar/stores/project";
 import { replicaVolatileStore } from "../../sidebar/stores/replica-volatile";
+import { unleashedReplicasStore } from "../../sidebar/stores/unleashed-replicas";
 import { remoteActivityStore } from "../../sidebar/stores/remote-activity";
 import { autoUnarchiveStore } from "../../sidebar/stores/auto-unarchive";
 import { sessionsStore } from "../../sidebar/stores/sessions";
@@ -225,6 +226,8 @@ export function resetUiStoresForTests(): void {
   // lands a branch event leaks its repoBranch/repoBranchByPath into the next test
   // in the same file (order-dependent, and silently wrong rather than red).
   replicaVolatileStore.clearAll();
+  // #4752 - the unleash overrides are module-level too; reset them the same way.
+  unleashedReplicasStore.resetForTests();
   // #2064 - same hazard, same reason: the remote-activity map is event-fed and out
   // of setSessions' reach, so it would survive into the next test in the same file.
   remoteActivityStore.clearAll();

@@ -1600,14 +1600,14 @@ export interface AcAgentReplica {
   lastUserMessageAt?: string;
   autoClosedAt?: string;
   manuallyClosedAt?: string;
-  /** #1942 - complete stored protected pair, or `null` when absent/invalid. An
-   *  absent property is an older backend: unsupported/unknown, never proven
-   *  unlocked. */
+  /** #1942 - complete stored protected pair, or `null` when absent/invalid. An absent
+   *  property is an older backend: unsupported/unknown, never proven unlocked. */
   savedPair?: SavedPair | null;
   /** #1942 - strict protection state; absent means unsupported/unknown. */
   selectionState?: SelectionState;
   /** #1942 - strict-read diagnostic when `selectionState` is invalid. */
   selectionError?: string | null;
+  unleashed?: boolean; // #4752 - true when the user unleashed it; absent from older backends.
 }
 
 export interface CoordinatorCloseOutcome {
