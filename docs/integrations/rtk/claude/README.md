@@ -56,7 +56,35 @@ AC seeds `.ac/default.claude/` into each room replica when it creates the replic
 
 No `timeout` is set on any of them, so each gets the 600-second default. Every measured path of every hook finishes in well under a second.
 
-Before every `Bash` tool call and every `PowerShell` tool call, Claude Code runs the matching hook with the tool input as JSON on stdin. The hook decides whether to rewrite the command so it runs through RTK, and answers with `permissionDecision: "allow"`.
+Before every `Bash` tool call and every `PowerShell` tool call, Claude Code runs the matching
+hook with the tool input as JSON on stdin. When it rewrites a command through RTK, the hook
+answers with only `updatedInput`. Claude Code's normal permission flow then decides whether
+it can run, matching permission rules against the rewritten command.
+
+### Permission rules see the rewritten command
+
+Rules match the command returned by the hook. For example, rules for the RTK form can be:
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(rtk git status:*)", "PowerShell(rtk git status:*)"],
+    "deny": ["Bash(rtk rm:*)"]
+  }
+}
+```
+
+A Bash rewrite starts with `exec 2> >(grep ...)` on a separate line, so a Bash prefix rule
+for `rtk ...` may not match it; a permission prompt is expected in that case. PowerShell
+rewrites stay on one line. Rules for the original form may miss the rewritten command,
+including deny rules; review rules against the actual returned input.
+
+This is option A from P558, chosen by the coordinator under user delegation. Matching rules
+against the original form is tracked in
+[#4584](https://github.com/mblua/AgentsCommander/issues/4584).
+In auto mode, Claude Code may deny a changed call after its initial review and retry it;
+command hooks configured in settings are normally exempt, according to the
+[hook documentation](https://code.claude.com/docs/en/hooks#pretooluse-decision-control).
 
 Before **and** after every `Read`, `Grep`, `Glob`, `Edit`, `Write` and `NotebookEdit` call, Claude Code runs `ac_rtk_claude_Tools.js` with the same payload on stdin. That hook answers with **nothing at all**. It writes no stdout on any path, so it returns no `permissionDecision`, cannot change the tool input and cannot block the call, which proceeds through the normal permission flow untouched. It is observability only: the `PreToolUse` half leaves a start mark in the OS temp directory, and the `PostToolUse` half, which Claude Code runs only when the tool succeeded, writes one database row.
 
@@ -260,7 +288,14 @@ echo '{"tool_input":{"command":"ls -la"}}' | node .claude/hooks/ac_rtk_claude_Ba
 ```
 
 ```json
-{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"ac_rtk_claude_Bash","updatedInput":{"command":"exec 2> >(grep --line-buffered -v 'No hook installed' >&2)\nrtk ls -la"}}}
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "updatedInput": {
+      "command": "exec 2> >(grep --line-buffered -v 'No hook installed' >&2)\nrtk ls -la"
+    }
+  }
+}
 ```
 
 ```bash
@@ -268,7 +303,14 @@ echo '{"tool_input":{"command":"git status"}}' | node .claude/hooks/ac_rtk_claud
 ```
 
 ```json
-{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"ac_rtk_claude_PowerShell","updatedInput":{"command":"rtk git status"}}}
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "updatedInput": {
+      "command": "rtk git status"
+    }
+  }
+}
 ```
 
 A passed-through command prints nothing and exits 0. Run one from a real replica and it appends a line to that agent's real `rtk-ignored-tools-claude.md`.
@@ -346,7 +388,11 @@ These are `PreToolUse` hooks: the line is written before the shell starts, and n
 
 Two different writers fill the `commands` table, and they work in completely different ways.
 
-**The two shell hooks touch the database not at all.** They read no `RTK_DB_PATH`, know nothing about SQLite, and only rewrite the command and return `allow`. Their rows are written by `rtk` when the rewritten command runs, into the `RTK_DB_PATH` of that session. [RTK usage and per-agent statistics](../README.md) covers how to point that variable at the agent's Matrix and how to read the results.
+**The two shell hooks touch the database not at all.** They read no `RTK_DB_PATH`, know nothing
+about SQLite, and only rewrite the command. Their rows are written by `rtk` when the rewritten
+command runs, into the `RTK_DB_PATH` of that session. [RTK usage and per-agent
+statistics](../README.md) covers how to point that variable at the agent's Matrix and how to read
+the results.
 
 **`ac_rtk_claude_Tools.js` writes its own row**, directly, with `node:sqlite`, one per successful native-tool call. It only ever `INSERT`s into the `commands` table that is already there: it creates no database, no table and no column, because the schema belongs to `rtk`. When `RTK_DB_PATH` is unset or names a file that does not exist, it writes nothing and creates nothing.
 

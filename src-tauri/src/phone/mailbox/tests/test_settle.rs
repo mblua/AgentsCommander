@@ -802,3 +802,67 @@ async fn test_pty_input_operation_retried_on_menu_guard() {
         Some(crate::phone::types::PtyInputReasonCode::MenuGuardBlocked)
     );
 }
+
+#[test]
+fn gate_reports_exact_fields_for_skipped_and_resize_unsettled_peers() {
+    let quiet = Duration::from_millis(3000);
+    let empty = make_gate_peer("proj:wg-1/devs/alice", vec![], vec!["aaa".to_string()]);
+    let (sid_a, sid_b) = (Uuid::new_v4(), Uuid::new_v4());
+    let resize = make_gate_peer(
+        "proj:wg-1/devs/bob",
+        vec![
+            PurgeGateSession {
+                session_id: sid_a,
+                readiness: make_readiness(sid_a, Some(4000), true, Some(3100)),
+                mirror_idle: true,
+            },
+            PurgeGateSession {
+                session_id: sid_b,
+                readiness: make_readiness(sid_b, Some(3000), true, Some(3100)),
+                mirror_idle: true,
+            },
+        ],
+        vec!["bbb".to_string(), "ccc".to_string()],
+    );
+
+    let decision = evaluate_gate(&[empty, resize], quiet);
+
+    assert!(!decision.passed);
+    let got: Vec<_> = decision
+        .peers
+        .iter()
+        .map(|p| {
+            let flags = (p.purgeable, p.watcher_idle, p.mirror_idle, p.resize_settled);
+            (
+                p.fqn.as_str(),
+                p.outcome,
+                p.idle_ms,
+                p.silence_ms,
+                flags,
+                p.session_ids.clone(),
+            )
+        })
+        .collect();
+    let bob_ids = vec!["bbb".to_string(), "ccc".to_string()];
+    assert_eq!(
+        got,
+        vec![
+            (
+                "proj:wg-1/devs/alice",
+                "skipped",
+                None,
+                None,
+                (true, false, true, true),
+                vec!["aaa".to_string()]
+            ),
+            (
+                "proj:wg-1/devs/bob",
+                "resize_unsettled",
+                Some(3000),
+                None,
+                (false, true, true, false),
+                bob_ids
+            ),
+        ]
+    );
+}

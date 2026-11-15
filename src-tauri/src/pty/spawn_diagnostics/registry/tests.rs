@@ -766,11 +766,20 @@ fn scrub_merges_touching_spans_and_keeps_plain_text_unchanged() {
 #[test]
 fn thresholds_from_env_are_clamped() {
     assert_eq!(env_u64("AC_SPAWN_TEST_MISSING_KEY", 7, 100), 7);
-    std::env::set_var("AC_SPAWN_TEST_CLAMP", "1000000000");
+    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    unsafe {
+        std::env::set_var("AC_SPAWN_TEST_CLAMP", "1000000000");
+    }
     assert_eq!(env_u64("AC_SPAWN_TEST_CLAMP", 512, 65_536), 65_536);
-    std::env::set_var("AC_SPAWN_TEST_CLAMP", "not-a-number");
+    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    unsafe {
+        std::env::set_var("AC_SPAWN_TEST_CLAMP", "not-a-number");
+    }
     assert_eq!(env_u64("AC_SPAWN_TEST_CLAMP", 512, 65_536), 512);
-    std::env::remove_var("AC_SPAWN_TEST_CLAMP");
+    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    unsafe {
+        std::env::remove_var("AC_SPAWN_TEST_CLAMP");
+    }
 }
 
 #[test]
@@ -819,7 +828,7 @@ impl FakeProbe {
         })
     }
 
-    fn probe(self: &Arc<Self>) -> impl Fn() -> ChildLiveness + Send + 'static {
+    fn probe(self: &Arc<Self>) -> impl Fn() -> ChildLiveness + Send + 'static + use<> {
         let probe = Arc::clone(self);
         move || {
             probe.calls.fetch_add(1, Ordering::SeqCst);

@@ -17,11 +17,10 @@ pub(crate) fn registered_profiles_for_read(source: &Value) -> Value {
             if let Some(profiles) = diagnostic
                 .get_mut("codingAgentProfiles")
                 .and_then(Value::as_object_mut)
+                && profiles.get("profileBindingVersion") == Some(&Value::from(1))
             {
-                if profiles.get("profileBindingVersion") == Some(&Value::from(1)) {
-                    for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
-                        profiles.remove(key);
-                    }
+                for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                    profiles.remove(key);
                 }
             }
             diagnostic
@@ -239,15 +238,14 @@ pub(crate) fn validate_registered_profile_capture(
         let mut profile_source = value.clone();
         // Shadowed rows/groups cannot contribute active collisions. Structural
         // map/quarantine validation still covers each original participant.
-        if participant == path
+        if (participant == path
             && sidecar.is_some_and(|map| {
                 map.contains_key("agents") || map.contains_key("codingAgentProfiles")
             })
-            || physical_profile_rows(&profile_source, true).is_err()
+            || physical_profile_rows(&profile_source, true).is_err())
+            && let Some(object) = profile_source.as_object_mut()
         {
-            if let Some(object) = profile_source.as_object_mut() {
-                object.remove("agents");
-            }
+            object.remove("agents");
         }
         if let Err(reason) = physical_profile_sets(&profile_source, true) {
             captured.problems.push(RegisteredProfileProblem {
@@ -260,15 +258,15 @@ pub(crate) fn validate_registered_profile_capture(
     }
     if !protected {
         let selected = selected_registered_profile_owner(&main, sidecar, true);
-        if physical_profile_rows(&selected, true).is_ok() {
-            if let Err(reason) = physical_profile_sets(&selected, true) {
-                captured.problems.push(RegisteredProfileProblem {
-                    path: path.to_path_buf(),
-                    kind: RegisteredProfileProblemKind::ProfileSemantic,
-                    reason: format!("{}: {reason}", path.display()),
-                    ordinary_participant: true,
-                });
-            }
+        if physical_profile_rows(&selected, true).is_ok()
+            && let Err(reason) = physical_profile_sets(&selected, true)
+        {
+            captured.problems.push(RegisteredProfileProblem {
+                path: path.to_path_buf(),
+                kind: RegisteredProfileProblemKind::ProfileSemantic,
+                reason: format!("{}: {reason}", path.display()),
+                ordinary_participant: true,
+            });
         }
     }
 }

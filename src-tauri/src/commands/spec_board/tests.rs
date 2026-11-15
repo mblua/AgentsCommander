@@ -420,3 +420,11 @@ async fn concurrent_update_list_and_close_do_not_hang() {
     .await
     .expect("concurrent operations hung");
 }
+
+#[test]
+fn path_is_under_uses_key_separator() {
+    use crate::spec_board::paths::path_is_under;
+    let root = Path::new("/a/repo-X");
+    assert!(path_is_under(Path::new("/a/repo-X/specs/f.mmd"), root));
+    assert!(!path_is_under(Path::new("/a/repo-Xy/f.mmd"), root));
+}

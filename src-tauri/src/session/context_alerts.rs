@@ -35,7 +35,7 @@ use runtime::{
     session_matches_policy_snapshot, validate_attempt_guard, validated_project_fqn_component,
 };
 
-pub(crate) const CONTEXT_SAMPLE_QUEUE_CAPACITY: usize = 1024;
+pub(crate) use crate::session::context_sample_queue::CONTEXT_SAMPLE_QUEUE_CAPACITY;
 pub(crate) const CONTEXT_ALERT_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
 
 const FIRST_RETRY_DELAY: Duration = Duration::from_secs(5);

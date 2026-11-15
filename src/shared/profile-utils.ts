@@ -245,7 +245,7 @@ function readQuotedStep(
   index: number,
   quote: ArgvQuote,
 ): { text: string; index: number; quote: ArgvQuote | null } {
-  const char = input[index];
+  const char = input.charAt(index);
   if (char === "\\") {
     let slashCount = 0;
     while (input[index] === "\\") {
@@ -275,7 +275,7 @@ export function parseArgvText(input: string): ArgvParseResult {
   let quote: ArgvQuote | null = null;
 
   for (let index = 0; index < input.length;) {
-    const char = input[index];
+    const char = input.charAt(index);
 
     if (quote) {
       const step = readQuotedStep(input, index, quote);

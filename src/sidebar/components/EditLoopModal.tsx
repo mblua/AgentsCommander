@@ -190,8 +190,8 @@ const EditLoopModal: Component<{
 
         <div class="new-agent-form">
           <div class="new-agent-field">
-            <label class="new-agent-label">ID</label>
-            <input
+            <label class="new-agent-label" for="edit-loop-id">ID</label>
+            <input id="edit-loop-id"
               type="text"
               class="entity-input"
               value={props.loop.id}
@@ -201,8 +201,8 @@ const EditLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Name</label>
-            <input
+            <label class="new-agent-label" for="edit-loop-name">Name</label>
+            <input id="edit-loop-name"
               type="text"
               class="entity-input"
               value={name()}
@@ -213,8 +213,8 @@ const EditLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Cron</label>
-            <input
+            <label class="new-agent-label" for="edit-loop-cron">Cron</label>
+            <input id="edit-loop-cron"
               type="text"
               class="entity-input"
               value={expr()}
@@ -234,8 +234,8 @@ const EditLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Room Orchestrator</label>
-            <select
+            <label class="new-agent-label" for="edit-loop-workgroup">Room Orchestrator</label>
+            <select id="edit-loop-workgroup"
               class="entity-select"
               value={selectedWorkgroup()}
               onChange={(e) => setSelectedWorkgroup(e.currentTarget.value)}
@@ -253,8 +253,8 @@ const EditLoopModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Prompt</label>
-            <textarea
+            <label class="new-agent-label" for="edit-loop-prompt">Prompt</label>
+            <textarea id="edit-loop-prompt"
               class="entity-textarea loop-prompt-textarea"
               value={promptBody()}
               onInput={(e) => setPromptBody(e.currentTarget.value)}

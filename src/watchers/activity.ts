@@ -149,7 +149,8 @@ export function capPerSession(
   for (const [sessionId, seqs] of seqsBySession) {
     if (seqs.length <= limit) continue;
     seqs.sort((a, b) => b - a);
-    survivesFrom.set(sessionId, seqs[limit - 1]);
+    const threshold = seqs[limit - 1];
+    if (threshold !== undefined) survivesFrom.set(sessionId, threshold);
   }
   if (survivesFrom.size === 0) return rows.slice();
 

@@ -88,7 +88,7 @@ function startToastExit(id: number): void {
   clearTimer(id);
 
   const index = toasts.findIndex((toast) => toast.id === id);
-  if (index === -1 || toasts[index].exiting || exitTimers.has(id)) return;
+  if (index === -1 || toasts[index]?.exiting || exitTimers.has(id)) return;
 
   setToasts(index, "exiting", true);
   exitTimers.set(
@@ -103,7 +103,8 @@ function updateTaggedToast(existingIndex: number, opts: PushToastOptions): numbe
   // #1857: a tagged re-push onto a DYING toast must revive it. Without
   // this, the exit timer armed by the dismiss deletes the freshly painted
   // message 180 ms after that dismiss, counted from the dismiss.
-  const existing = toasts[existingIndex];
+  // Sole caller `push` passes a findIndex result already checked against -1.
+  const existing = toasts[existingIndex]!;
   if (existing.exiting) {
     clearExitTimer(existing.id);
     setToasts(existingIndex, "exiting", false);
@@ -129,7 +130,7 @@ function updateTaggedToast(existingIndex: number, opts: PushToastOptions): numbe
   setToasts(existingIndex, "action", opts.action);
   setToasts(existingIndex, "secondaryAction", opts.secondaryAction);
   setToasts(existingIndex, "pinned", opts.pinned);
-  return toasts[existingIndex].id;
+  return existing.id;
 }
 
 function evictOverflow(next: Toast[]): number[] {
@@ -146,7 +147,7 @@ function evictOverflow(next: Toast[]): number[] {
     let victim = next.findIndex((t) => t.kind !== "error" && !t.pinned);
     if (victim === -1) victim = next.findIndex((t) => !t.pinned);
     if (victim === -1) victim = 0;
-    evicted.push(next.splice(victim, 1)[0].id);
+    evicted.push(...next.splice(victim, 1).map((t) => t.id));
   }
   return evicted;
 }

@@ -6,14 +6,20 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 fn with_container_image_env(value: Option<&str>, test: impl FnOnce()) {
     let _guard = ENV_LOCK.lock().unwrap();
     let previous = std::env::var_os("AGENTSCOMMANDER_CONTAINER_IMAGE");
-    match value {
-        Some(value) => std::env::set_var("AGENTSCOMMANDER_CONTAINER_IMAGE", value),
-        None => std::env::remove_var("AGENTSCOMMANDER_CONTAINER_IMAGE"),
+    // SAFETY: ENV_LOCK is held
+    unsafe {
+        match value {
+            Some(value) => std::env::set_var("AGENTSCOMMANDER_CONTAINER_IMAGE", value),
+            None => std::env::remove_var("AGENTSCOMMANDER_CONTAINER_IMAGE"),
+        }
     }
     test();
-    match previous {
-        Some(value) => std::env::set_var("AGENTSCOMMANDER_CONTAINER_IMAGE", value),
-        None => std::env::remove_var("AGENTSCOMMANDER_CONTAINER_IMAGE"),
+    // SAFETY: ENV_LOCK is held
+    unsafe {
+        match previous {
+            Some(value) => std::env::set_var("AGENTSCOMMANDER_CONTAINER_IMAGE", value),
+            None => std::env::remove_var("AGENTSCOMMANDER_CONTAINER_IMAGE"),
+        }
     }
 }
 

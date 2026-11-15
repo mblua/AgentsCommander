@@ -273,6 +273,8 @@ pub fn attach_parent_console() {
     if startup_message_destination(stdout_invalid, stderr_invalid)
         == StartupMessageDestination::NativeDialog
     {
+        // SAFETY: AttachConsole uses the documented ATTACH_PARENT_PROCESS sentinel; it and
+        // AllocConsole take no pointers. The destination check above gates console creation.
         unsafe {
             if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
                 AllocConsole();
@@ -312,6 +314,8 @@ fn standard_handle_is_invalid(handle: windows_sys::Win32::Foundation::HANDLE) ->
 
     // GetFileType returns FILE_TYPE_UNKNOWN for null/invalid handles. Short-
     // circuit the null check first so GetFileType is never called on null.
+    // SAFETY: The short-circuit `handle.is_null()` excludes null. GetFileType accepts
+    // the standard handle from `standard_handle_state` and reports invalid handles as UNKNOWN.
     handle.is_null() || unsafe { GetFileType(handle) == FILE_TYPE_UNKNOWN }
 }
 
@@ -319,6 +323,8 @@ fn standard_handle_is_invalid(handle: windows_sys::Win32::Foundation::HANDLE) ->
 fn standard_handle_state() -> (bool, bool) {
     use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
 
+    // SAFETY: GetStdHandle accepts the STD_OUTPUT_HANDLE and STD_ERROR_HANDLE constants,
+    // returns borrowed handles, and needs no pointer arguments or ownership transfer.
     unsafe {
         let stdout = GetStdHandle(STD_OUTPUT_HANDLE);
         let stderr = GetStdHandle(STD_ERROR_HANDLE);
@@ -342,6 +348,8 @@ fn show_native_startup_message(message: &str) {
         .chain(std::iter::once(0))
         .collect();
 
+    // SAFETY: `message` and `title` are live NUL-terminated UTF-16 buffers; MessageBoxW
+    // borrows them during the call and permits a null owner window.
     unsafe {
         MessageBoxW(
             std::ptr::null_mut(),

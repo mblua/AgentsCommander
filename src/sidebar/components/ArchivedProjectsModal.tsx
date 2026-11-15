@@ -59,6 +59,7 @@ const ArchivedProjectsModal: Component<ArchivedProjectsModalProps> = (props) => 
 
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
+      if (!first || !last) return; // unreachable: length > 0 above
       const active = document.activeElement as HTMLElement | null;
       if (!active || !modalRef?.contains(active)) {
         event.preventDefault();

@@ -160,40 +160,51 @@ function patternRanges(tokens, body) {
   for (let k = body.start; k < body.end; k++) {
     const t = tokens[k];
     if (t.name === 'let') {
-      let e = k + 1;
-      while (e < body.end && !['=', ';'].includes(tokens[e].text)) e++;
-      ranges.push([k, e]);
+      ranges.push([k, scanUntil(tokens, k + 1, body.end, x => ['=', ';'].includes(x.text))]);
     } else if (t.name === 'for') {
-      let e = k + 1;
-      while (e < body.end && tokens[e].name !== 'in') e++;
-      ranges.push([k, e]);
+      ranges.push([k, scanUntil(tokens, k + 1, body.end, x => x.name === 'in')]);
     } else if (t.text === '|' || t.text === '||') {
       if (!closureStart(tokens, k)) continue;
-      let e = k;
-      if (t.text === '|') { e = k + 1; while (e < body.end && tokens[e].text !== '|') e++; }
-      ranges.push([k, e]);
+      ranges.push([k, closurePipeEnd(tokens, body, k)]);
     } else if (t.name === 'match') {
-      let open = k + 1;
-      while (open < body.end && tokens[open].text !== '{') {
-        if (['(', '['].includes(tokens[open].text)) open = tokens[open].mate;
-        open++;
-      }
-      need(open < body.end, 'unparsed match');
-      let arm = open + 1, inPattern = true;
-      for (let a = open + 1; a < tokens[open].mate; a++) {
-        const x = tokens[a];
-        if (inPattern && x.text === '=>') { ranges.push([arm, a]); inPattern = false; continue; }
-        if (['(', '[', '{'].includes(x.text)) {
-          const startBlock = !inPattern && tokens[a - 1]?.text === '=>' && x.text === '{';
-          a = x.mate;
-          if (startBlock) { inPattern = true; arm = a + 1; if (tokens[a + 1]?.text === ',') a++; }
-          continue;
-        }
-        if (!inPattern && x.text === ',') { inPattern = true; arm = a + 1; }
-      }
+      matchArmRanges(tokens, matchOpen(tokens, body, k), ranges);
     }
   }
   return ranges;
+}
+// First index in [from, end) whose token satisfies stop; end when none does.
+function scanUntil(tokens, from, end, stop) {
+  let e = from;
+  while (e < end && !stop(tokens[e])) e++;
+  return e;
+}
+// Index of the `{` that opens the arms of the `match` at k.
+function matchOpen(tokens, body, k) {
+  let open = k + 1;
+  while (open < body.end && tokens[open].text !== '{') {
+    if (['(', '['].includes(tokens[open].text)) open = tokens[open].mate;
+    open++;
+  }
+  need(open < body.end, 'unparsed match');
+  return open;
+}
+// Pushes the pattern range of every arm inside the braces opened at open.
+function matchArmRanges(tokens, open, ranges) {
+  let arm = open + 1, inPattern = true;
+  for (let a = open + 1; a < tokens[open].mate; a++) {
+    const x = tokens[a];
+    if (inPattern && x.text === '=>') { ranges.push([arm, a]); inPattern = false; continue; }
+    if (['(', '[', '{'].includes(x.text)) {
+      const startBlock = !inPattern && tokens[a - 1]?.text === '=>' && x.text === '{';
+      a = x.mate;
+      if (startBlock) { inPattern = true; arm = a + 1; a = skipComma(tokens, a); }
+      continue;
+    }
+    if (!inPattern && x.text === ',') { inPattern = true; arm = a + 1; }
+  }
+}
+function skipComma(tokens, a) {
+  return tokens[a + 1]?.text === ',' ? a + 1 : a;
 }
 function closureStart(tokens, k) {
   const prev = tokens[k - 1];

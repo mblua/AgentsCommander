@@ -255,15 +255,15 @@ pub(crate) fn validate_identity_snapshot_with_digest(
         for (letter, profile) in entry.profiles.into_iter().flat_map(BTreeMap::iter) {
             let preimage = profile_identity_preimage(profile);
             let id = digest("pid1:", &preimage);
-            if let Some((existing_preimage, existing_name)) = profile_preimages.get(&id) {
-                if existing_preimage != &preimage {
-                    return Err(IdentityValidationError {
-                        code: IdentityValidationCode::IdentityHashCollision,
-                        existing_name: (*existing_name).to_owned(),
-                        entry_hint: entry.key.to_owned(),
-                        requested_profile: Some(letter.clone()),
-                    });
-                }
+            if let Some((existing_preimage, existing_name)) = profile_preimages.get(&id)
+                && existing_preimage != &preimage
+            {
+                return Err(IdentityValidationError {
+                    code: IdentityValidationCode::IdentityHashCollision,
+                    existing_name: (*existing_name).to_owned(),
+                    entry_hint: entry.key.to_owned(),
+                    requested_profile: Some(letter.clone()),
+                });
             }
             profile_preimages
                 .entry(id.clone())

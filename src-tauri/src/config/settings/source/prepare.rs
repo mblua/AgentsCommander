@@ -581,10 +581,10 @@ fn assign_candidate_names(
                 .get(key_name)
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if incumbents.get(key).and_then(|a| a.get(label_name)) == agent.get(label_name) {
-                if let Some(label) = agent.get(label_name).and_then(Value::as_str) {
-                    used.insert(label.trim().to_lowercase());
-                }
+            if incumbents.get(key).and_then(|a| a.get(label_name)) == agent.get(label_name)
+                && let Some(label) = agent.get(label_name).and_then(Value::as_str)
+            {
+                used.insert(label.trim().to_lowercase());
             }
         }
         for agent in agents {

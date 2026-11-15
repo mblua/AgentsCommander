@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fs from 'node:fs';
+import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -45,6 +46,46 @@ test('missing Rust root and empty registry selections fail closed', () => {
   assert.throws(() => selectCrates([{ packages: [pkg('agentscommander', { source: null })],
     resolve: { nodes: [{ id: 'agentscommander', deps: [] }] } }]), /No Rust crates/);
   assert.throws(() => selectCrates([]), /No Rust crates/);
+});
+
+const crateEntry = name => ({ name, version: '1.0.0', license: 'MIT', authors: [],
+  dir: path.dirname(`/registry/${name}/Cargo.toml`) });
+const rootedMetadata = (packages, nodes) => ({
+  packages: [pkg('agentscommander', { source: null }), ...packages],
+  resolve: { nodes },
+});
+
+test('selectCrates returns full sorted entries', () => {
+  assert.deepEqual(selectCrates([metadata()]), [crateEntry('indirect'), crateEntry('normal')]);
+});
+
+test('selectCrates fails closed on a missing package or resolve node', () => {
+  assert.throws(() => selectCrates([rootedMetadata([], [
+    { id: 'agentscommander', deps: [dep('ghost')] },
+  ])]), /cargo metadata is missing package ghost/);
+  assert.throws(() => selectCrates([rootedMetadata([pkg('lonely')], [
+    { id: 'agentscommander', deps: [dep('lonely')] },
+  ])]), /cargo metadata is missing resolve node lonely/);
+});
+
+test('selectCrates defaults missing authors to an empty list', () => {
+  const noAuthors = pkg('noauth');
+  delete noAuthors.authors;
+  assert.deepEqual(selectCrates([rootedMetadata([noAuthors], [
+    { id: 'agentscommander', deps: [dep('noauth')] }, { id: 'noauth', deps: [] },
+  ])]), [crateEntry('noauth')]);
+});
+
+test('selectCrates walks a dependency cycle once', () => {
+  assert.deepEqual(selectCrates([rootedMetadata([pkg('a'), pkg('b')], [
+    { id: 'agentscommander', deps: [dep('a')] },
+    { id: 'a', deps: [dep('b')] }, { id: 'b', deps: [dep('a')] },
+  ])]), [crateEntry('a'), crateEntry('b')]);
+});
+
+test('selectCrates keys the same crate across targets once', () => {
+  assert.deepEqual(selectCrates([metadata(), metadata()]),
+    [crateEntry('indirect'), crateEntry('normal')]);
 });
 
 test('npm filters dev/types, includes nested packages and forced Vite, uses lock version', () => {
@@ -101,6 +142,38 @@ test('fallback handles OR, AND, slash, WITH, parentheses, and copyright authors'
 test('normalization removes BOM, CRLF, CR, trailing spaces and extra final newlines', () => {
   assert.equal(normalize('\uFEFFa \r\nb\t\rc\n\n'), 'a\nb\nc\n');
   assert.equal(normalize(''), '\n');
+});
+
+function oldNormalize(text) {
+  return text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
+    .split('\n').map(line => line.replace(/[ \t]+$/g, '')).join('\n')
+    .replace(/\n*$/, '\n');
+}
+
+test('normalize matches the previous regex implementation', () => {
+  const fixed = ['', '\n', '\n\n\n', 'a', 'a \t \n\n', '\uFEFFa\r\nb \r\n\r\n', ' \t',
+    'a\n \n\t\n', '\r\r\n\n\r', '\uFEFF\uFEFFa'];
+  for (const s of fixed) assert.equal(normalize(s), oldNormalize(s), JSON.stringify(s));
+  const alphabet = [' ', '\t', '\n', '\r', '\uFEFF', 'a', '\u00a0'];
+  let seed = 12345;
+  const next = () => {
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    return seed >>> 16;
+  };
+  for (let i = 0; i < 2000; i++) {
+    let s = '';
+    const length = next() % 41;
+    for (let j = 0; j < length; j++) s += alphabet[next() % alphabet.length];
+    assert.equal(normalize(s), oldNormalize(s), JSON.stringify(s));
+  }
+});
+
+test('normalize stays linear on long space and newline runs', () => {
+  for (const input of [' '.repeat(200000) + 'x', '\n'.repeat(200000) + 'x']) {
+    const start = performance.now();
+    normalize(input);
+    assert.ok(performance.now() - start < 200);
+  }
 });
 
 test('render is stable for shuffled inputs and deduplicates normalized texts', () => {

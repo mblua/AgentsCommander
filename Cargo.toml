@@ -11,7 +11,7 @@ default-members = [
     "crates/rust-source-scrub",
     "crates/terminal-snapshot-renderer",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.lints.clippy]
 fn_params_excessive_bools = "warn"
@@ -25,6 +25,7 @@ checked_conversions = "deny"
 large_stack_arrays = "deny"
 mut_mut = "deny"
 ref_option_ref = "deny"
+undocumented_unsafe_blocks = "deny"
 expl_impl_clone_on_copy = "warn"
 explicit_into_iter_loop = "warn"
 filter_map_next = "warn"
@@ -51,3 +52,14 @@ fallible_impl_from = "warn"
 path_buf_push_overwrite = "warn"
 string_lit_as_bytes = "warn"
 trait_duplication_in_bounds = "warn"
+collapsible_if = "allow"   # #4451 PC1: 2024 let-chain form; removed by follow-up #4566
+let_and_return = "allow"   # #4451 PC1: fires only on 2024; removed by follow-up #4566
+
+[profile.release]
+# #4639: explicit release profile. panic/strip equal Cargo's defaults
+# (unwind keeps catch_unwind and #98 poison recovery working; debuginfo
+# keeps symbols). lto/codegen-units chosen by the #4639 P00 measurement.
+lto = false
+codegen-units = 16
+strip = "debuginfo"
+panic = "unwind"

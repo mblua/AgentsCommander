@@ -30,7 +30,8 @@ const BACKEND_OWNED_COMPLETION_COMMANDS = new Set<string>([
 /** A uniform integer in [0, bound) from the Web Crypto CSPRNG (reconnect jitter). */
 function randomJitter(bound: number): number {
   const [value] = crypto.getRandomValues(new Uint32Array(1));
-  return Math.floor((value / 0x100000000) * bound);
+  // A length-1 Uint32Array always yields element 0.
+  return Math.floor((value! / 0x100000000) * bound);
 }
 
 export class WsTransport implements Transport {

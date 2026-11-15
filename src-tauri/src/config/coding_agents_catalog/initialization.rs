@@ -6,6 +6,7 @@ use crate::config::naming_migration;
 use crate::config::seed_manifest::{
     acquire_project_gate_soft, has_catalog_publication, ManifestActivationToken,
     ManifestPathIdentity, ProjectSeedManifestGuard, PublishedManifestRow, SoftProjectGate,
+    CODING_AGENTS_CATALOG_REL_PATH,
 };
 use crate::filesystem::{catalog, config_seed};
 
@@ -738,15 +739,14 @@ pub(crate) fn record_catalog_publication(
     activation: &ManifestActivationToken,
     published_at: DateTime<Utc>,
 ) {
-    let identity = match ManifestPathIdentity::from_relative_path(Path::new(
-        ".ac/coding-agents/agents.json",
-    )) {
-        Ok(identity) => identity,
-        Err(error) => {
-            log::warn!("[coding-agents] seed-manifest catalog row rejected path error={error}");
-            return;
-        }
-    };
+    let identity =
+        match ManifestPathIdentity::from_relative_path(Path::new(CODING_AGENTS_CATALOG_REL_PATH)) {
+            Ok(identity) => identity,
+            Err(error) => {
+                log::warn!("[coding-agents] seed-manifest catalog row rejected path error={error}");
+                return;
+            }
+        };
     let row = match PublishedManifestRow::coding_agent_catalog(identity, published_at) {
         Ok(row) => row,
         Err(error) => {

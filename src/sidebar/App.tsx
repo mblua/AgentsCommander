@@ -92,7 +92,7 @@ import { wireAgentUpdateListeners } from "./agent-update";
 import { applySelectedRowRail } from "./selected-row-rail";
 import { requestTaskbarAttention } from "./attention";
 import AgentUpdateOverlay from "./components/AgentUpdateOverlay";
-import "./styles/sidebar.css";
+import "./styles/sidebar-all.css";
 import "../shared/styles/toast.css";
 
 interface SidebarAppProps {
@@ -411,7 +411,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
       // Build the text from the memo's value objects ONLY. Reaching back into
       // `sessionsStore` here would move the subscription out of the memo.
-      const newest = blocked[0];
+      const newest = blocked[0]; if (newest === undefined) return; // length > 0 above
       const suffix =
         blocked.length > 1 ? ` (and ${blocked.length - 1} more waiting)` : "";
       toastStore.push({

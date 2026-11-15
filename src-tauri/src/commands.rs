@@ -1,3 +1,5 @@
+//! Tauri command handlers exposed to the frontend, grouped by feature.
+
 pub mod ac_discovery;
 pub(crate) mod agent_creator;
 pub(crate) mod co_managed;

@@ -1,5 +1,6 @@
 pub(crate) mod auto_close;
 pub(crate) mod context_alerts;
+pub(crate) mod context_sample_queue;
 pub(crate) mod create_contracts;
 pub(crate) mod maintenance;
 pub mod manager;

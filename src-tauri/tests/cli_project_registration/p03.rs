@@ -426,6 +426,8 @@ impl P03SettingsLock {
         {
             use std::os::fd::AsRawFd;
             assert_eq!(
+                // SAFETY: file is the open File local above, alive through flock; LOCK_EX and
+                // LOCK_NB are scalar flags, and flock borrows rather than closes the fd.
                 unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
                 0
             );
@@ -437,8 +439,13 @@ impl P03SettingsLock {
                 LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
             };
             let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED =
+                // SAFETY: OVERLAPPED is a Windows C record of integers/pointers admitting all
+                // zeros. This sets offset zero and a null hEvent for the synchronous lock.
                 unsafe { std::mem::zeroed() };
             assert_ne!(
+                // SAFETY: file is still open without overlapped mode. overlapped is live writable
+                // zero-offset storage for synchronous LockFileEx; range/flags are scalar.
+                // Self(file) retains the handle for the matching unlock in Drop.
                 unsafe {
                     LockFileEx(
                         file.as_raw_handle(),
@@ -461,6 +468,8 @@ impl Drop for P03SettingsLock {
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
+            // SAFETY: self.0 retains the File from acquire and stays open until this Drop returns,
+            // so flock can synchronously release its lock with LOCK_UN.
             assert_eq!(unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) }, 0);
         }
         #[cfg(windows)]
@@ -468,8 +477,13 @@ impl Drop for P03SettingsLock {
             use std::os::windows::io::AsRawHandle;
             use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
             let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED =
+                // SAFETY: OVERLAPPED is a Windows C record of integers/pointers admitting all
+                // zeros. This selects offset zero and a null event for the matching synchronous
+                // unlock.
                 unsafe { std::mem::zeroed() };
             assert_ne!(
+                // SAFETY: self.0 remains open during Drop; overlapped is live writable zero-offset
+                // storage. UnlockFileEx uses the same offset and length as acquire, synchronously.
                 unsafe {
                     UnlockFileEx(
                         self.0.as_raw_handle(),

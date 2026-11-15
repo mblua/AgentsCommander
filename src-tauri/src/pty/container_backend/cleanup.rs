@@ -65,14 +65,19 @@ impl ContainerTransportBackend {
         };
         if let Some(producer) = producer {
             producer.spawn_owned(Some(session_id), reason, work);
-        } else if let Some(producer) = self.shutdown_work.register_producer() {
-            producer.spawn_owned(Some(session_id), reason, work);
         } else {
-            log::warn!(
+            match self.shutdown_work.register_producer() {
+                Some(producer) => {
+                    producer.spawn_owned(Some(session_id), reason, work);
+                }
+                _ => {
+                    log::warn!(
                 "[container-transport] cleanup retained for the explicit global sweep without \
                     reopening sealed shutdown work session={session_id} reason={reason} \
                     state=retained"
             );
+                }
+            }
         }
     }
 
@@ -126,14 +131,20 @@ impl ContainerTransportBackend {
         };
         if let Some(producer) = producer {
             producer.spawn_owned(Some(session_id), reason, work);
-        } else if let Some(producer) = self.shutdown_work.register_producer() {
-            producer.spawn_owned(Some(session_id), reason, work);
         } else {
-            log::warn!(
+            match self.shutdown_work.register_producer() {
+                Some(producer) => {
+                    producer.spawn_owned(Some(session_id), reason, work);
+                }
+                _ => {
+                    log::warn!(
                 "[container-transport] cleanup retained for the explicit global sweep without \
                     reopening sealed shutdown work session={session_id} reason={reason} \
                     state=retained"
             );
+                    return;
+                }
+            }
         }
         match tokio::time::timeout(CLEANUP_TASK_TIMEOUT, completion).await {
             Ok(Ok(())) => {}
@@ -151,7 +162,10 @@ impl ContainerTransportBackend {
 
     pub async fn reap_expired_pending_sessions(&self) -> usize {
         let expired = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let now = Instant::now();
             sessions
                 .iter()

@@ -504,7 +504,7 @@ struct ContextWorkInput<'a> {
 async fn run_context_work<R: tauri::Runtime>(
     ctx: &CreateBodyContext<'_, R>,
     input: ContextWorkInput<'_>,
-) -> Result<Result<Option<String>, String>, impl std::fmt::Display> {
+) -> Result<Result<Option<String>, String>, impl std::fmt::Display + use<R>> {
     let ContextWorkInput {
         target_filename,
         managed_filenames,

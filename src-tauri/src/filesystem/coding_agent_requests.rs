@@ -33,6 +33,6 @@ pub(crate) fn queue_path_is_dir(path: &Path) -> bool {
 
 pub(crate) fn queue_directory_paths(
     path: &Path,
-) -> io::Result<impl Iterator<Item = io::Result<PathBuf>>> {
+) -> io::Result<impl Iterator<Item = io::Result<PathBuf>> + use<>> {
     std::fs::read_dir(path).map(|entries| entries.map(|entry| entry.map(|entry| entry.path())))
 }

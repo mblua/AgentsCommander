@@ -272,13 +272,34 @@ pub(crate) const RULE_LEGACY_MIGRATION_SOURCE: &str = "legacy migration source (
 /// `paths` and `base_values` are parallel and always the same length: entry `i`
 /// says "the overlay owns `paths[i]`, and the base file held `base_values[i]`
 /// there". `dropped` and `dropped_rules` are parallel in the same way.
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub(crate) struct LocalSettingsOverlay {
     paths: Vec<Vec<String>>,
     base_values: Vec<Option<Value>>,
     dropped: Vec<String>,
     dropped_rules: Vec<&'static str>,
     rejection: Option<OverlayRejection>,
+}
+
+/// #4638 - `base_values` holds raw `settings.json` values, which can be API keys,
+/// so Debug never prints them.
+impl std::fmt::Debug for LocalSettingsOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            paths,
+            base_values: _,
+            dropped,
+            dropped_rules,
+            rejection,
+        } = self;
+        f.debug_struct("LocalSettingsOverlay")
+            .field("paths", paths)
+            .field("base_values", &"[REDACTED]")
+            .field("dropped", dropped)
+            .field("dropped_rules", dropped_rules)
+            .field("rejection", rejection)
+            .finish()
+    }
 }
 
 impl LocalSettingsOverlay {

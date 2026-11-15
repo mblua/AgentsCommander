@@ -155,6 +155,8 @@ fn raw_non_verbatim_replacefilew_still_fails_over_max_path() {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
+    // SAFETY: `dest_wide` and `tmp_wide` are live NUL-terminated UTF-16 vectors.
+    // ReplaceFileW permits a null backup name; both reserved parameters are null.
     let ok = unsafe {
         ReplaceFileW(
             dest_wide.as_ptr(),

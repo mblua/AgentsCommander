@@ -983,7 +983,7 @@ pub(crate) fn spend_budget_for_tests(room_root: &Path, units: u32, capture: &Cap
 /// Hold the room's advisory lock until the returned guard is dropped. Tests
 /// only: it is how a test proves a path is not waiting on the file lock.
 #[cfg(test)]
-pub(crate) fn hold_room_lock_for_tests(room_root: &Path) -> impl Send {
+pub(crate) fn hold_room_lock_for_tests(room_root: &Path) -> impl Send + use<> {
     match acquire_lock(room_root, Duration::from_secs(5)) {
         LockAttempt::Held(lock) => lock,
         _ => panic!("the test holder must get the room lock"),

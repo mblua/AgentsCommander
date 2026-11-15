@@ -63,6 +63,13 @@ pub(crate) mod terminal_snapshots;
 pub(crate) mod transcripts;
 pub(crate) mod update_cache;
 
+static TEMP_NAME_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Next process-wide number for a unique staged temp file name.
+pub(crate) fn next_temp_name_sequence() -> u64 {
+    TEMP_NAME_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Read the capture catalog without changing the platform's file semantics.
 pub(crate) fn read_capture_catalog(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)

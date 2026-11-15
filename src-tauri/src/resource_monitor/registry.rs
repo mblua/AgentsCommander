@@ -612,7 +612,10 @@ impl ResourceMonitorState {
         self.prune_terminated_groups();
 
         let snapshot = {
-            let inner = self.inner.lock().expect("resource monitor lock poisoned");
+            let inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let groups = inner
                 .groups
                 .values()

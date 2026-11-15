@@ -489,7 +489,7 @@ impl WatcherEngine {
                     log::error!(
                         "[watchers] the internal Codex Working pattern does not compile; Codex \
                          activity will be reported unavailable: {err}"
-                    )
+                    );
                 })
                 .ok()
         });

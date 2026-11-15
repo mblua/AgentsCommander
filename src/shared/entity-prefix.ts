@@ -16,13 +16,15 @@ export function isNumberedEntityDirName(name: string): boolean {
 /** Case-insensitive slot number, or null. */
 export function entityDirNumber(name: string): number | null {
   const m = /^(?:room|wg)-(\d+)/i.exec(name);
-  return m ? Number.parseInt(m[1], 10) : null;
+  const digits = m?.[1];
+  return digits !== undefined ? Number.parseInt(digits, 10) : null;
 }
 
 /** Case-insensitive short label: "ROOM1" for a Room, "WG1" for a legacy Workgroup. */
 export function entityShortLabel(name: string): string | null {
   const m = /^(room|wg)-(\d+)/i.exec(name);
-  return m ? `${m[1].toUpperCase()}${m[2]}` : null;
+  const kind = m?.[1];
+  return kind !== undefined ? `${kind.toUpperCase()}${m?.[2]}` : null;
 }
 
 /** Case-sensitive: does this path contain a Room or legacy Workgroup directory segment? */

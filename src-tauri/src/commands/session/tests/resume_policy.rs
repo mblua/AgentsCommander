@@ -132,10 +132,15 @@ fn claude_projects_dir_for_config_dir_expands_percent_envvar_in_base() {
     let var = "AC_TEST_599_CONFIG_DIR";
     let tmp = tempfile::tempdir().unwrap();
     let custom_base = tmp.path().join(".claude-env");
-    // SAFETY: env state is process-global; unique name avoids cross-test races.
-    std::env::set_var(var, custom_base.to_str().unwrap());
+    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    unsafe {
+        std::env::set_var(var, custom_base.to_str().unwrap());
+    }
     let resolved = super::super::claude_projects_dir_for_config_dir(&format!("%{var}%"), "C:\\x");
-    std::env::remove_var(var);
+    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    unsafe {
+        std::env::remove_var(var);
+    }
     let expected = custom_base
         .join("projects")
         .join(crate::session::session::mangle_cwd_for_claude("C:\\x"));
@@ -162,12 +167,18 @@ fn local_resume_probe_env_layer_expands_powershell_envvar() {
     let var = "AC_TEST_894_CONFIG_DIR";
     let tmp = tempfile::tempdir().unwrap();
     let custom_base = tmp.path().join(".claude-env");
-    std::env::set_var(var, custom_base.to_str().unwrap());
+    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    unsafe {
+        std::env::set_var(var, custom_base.to_str().unwrap());
+    }
 
     let resolved =
         super::super::claude_projects_dir_for_config_dir(&format!("$env:{var}\\.claude"), "C:\\x");
 
-    std::env::remove_var(var);
+    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    unsafe {
+        std::env::remove_var(var);
+    }
     let expected = PathBuf::from(format!("{}\\.claude", custom_base.to_string_lossy()))
         .join("projects")
         .join(crate::session::session::mangle_cwd_for_claude("C:\\x"));
@@ -661,8 +672,10 @@ fn resolve_claude_projects_dir_expands_percent_envvar_value() {
     let var = "AC_TEST_186_BASE_PCT";
     let tmp = tempfile::tempdir().unwrap();
     let custom_base = tmp.path().join(".claude-mb");
-    // SAFETY: env state is process-global; unique name avoids cross-test races.
-    std::env::set_var(var, custom_base.to_str().unwrap());
+    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    unsafe {
+        std::env::set_var(var, custom_base.to_str().unwrap());
+    }
     let wrapper = write_wrapper(
         tmp.path(),
         "claude-mb.cmd",
@@ -670,7 +683,10 @@ fn resolve_claude_projects_dir_expands_percent_envvar_value() {
     );
     let resolved =
         super::super::resolve_claude_projects_dir(wrapper.to_str().unwrap(), &[], "C:\\x");
-    std::env::remove_var(var);
+    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    unsafe {
+        std::env::remove_var(var);
+    }
     let expected = custom_base
         .join("projects")
         .join(crate::session::session::mangle_cwd_for_claude("C:\\x"));
@@ -682,7 +698,10 @@ fn resolve_claude_projects_dir_expands_powershell_envvar_value() {
     let var = "AC_TEST_186_BASE_PS";
     let tmp = tempfile::tempdir().unwrap();
     let custom_base = tmp.path().join(".claude-mb");
-    std::env::set_var(var, custom_base.to_str().unwrap());
+    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    unsafe {
+        std::env::set_var(var, custom_base.to_str().unwrap());
+    }
     let wrapper = write_wrapper(
         tmp.path(),
         "claude-mb.ps1",
@@ -690,7 +709,10 @@ fn resolve_claude_projects_dir_expands_powershell_envvar_value() {
     );
     let resolved =
         super::super::resolve_claude_projects_dir(wrapper.to_str().unwrap(), &[], "C:\\x");
-    std::env::remove_var(var);
+    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    unsafe {
+        std::env::remove_var(var);
+    }
     let expected = custom_base
         .join("projects")
         .join(crate::session::session::mangle_cwd_for_claude("C:\\x"));

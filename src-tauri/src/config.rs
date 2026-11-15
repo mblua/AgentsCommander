@@ -13,6 +13,7 @@ pub(crate) mod coding_agent_profiles;
 pub(crate) mod coding_agents_catalog;
 pub(crate) mod config_seed;
 pub(crate) mod coordinator_clocks;
+pub(crate) mod coordinator_replica;
 pub(crate) mod daemon_pid;
 pub(crate) mod entity_creation;
 pub(crate) mod entity_prefix;

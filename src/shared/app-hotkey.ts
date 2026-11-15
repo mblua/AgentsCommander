@@ -17,6 +17,7 @@ export function parseAppHotkey(value: string): { letter: string } | null {
   const parts = value.trim().split("+").map((p) => p.trim());
   if (parts.length !== 3) return null;
   const [ctrl, shift, letter] = parts;
+  if (ctrl === undefined || shift === undefined || letter === undefined) return null;
   if (!/^(ctrl|control)$/i.test(ctrl) || !/^shift$/i.test(shift)) return null;
   // /^[A-Za-z]$/, never toLowerCase(): "K".toLowerCase() === "k" would
   // accept the Kelvin sign that Rust's is_ascii_alphabetic rejects.
@@ -47,6 +48,7 @@ export function letterFromCaptureEvent(
   const match = /^Key([A-Z])$/.exec(e.code);
   if (!match) return null;
   const letter = match[1];
+  if (letter === undefined) return null;
   if (isReserved(letter) || isReserved(e.key)) {
     return {
       error: `Ctrl+Shift+${letter} conflicts with a built-in shortcut (Ctrl+Shift+W/R/C/V).`,

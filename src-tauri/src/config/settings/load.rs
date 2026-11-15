@@ -325,10 +325,10 @@ fn finalize_composed_settings(
     settings.normalize_context_history_sessions();
     report_overlay_diagnostics(source, &overlay);
     settings.local_overlay_state = Arc::new(overlay);
-    if settings.local_overlay_state.owns_top_level("agents") {
-        if let Some(startup) = startup {
-            *startup = None;
-        }
+    if settings.local_overlay_state.owns_top_level("agents")
+        && let Some(startup) = startup
+    {
+        *startup = None;
     }
 }
 
@@ -796,11 +796,10 @@ pub(crate) fn apply_loaded_window_migrations(settings: &mut AppSettings) {
         .local_overlay_state
         .owns_top_level(OVERLAY_KEY_MAIN_GEOMETRY)
         && settings.main_geometry.is_none()
+        && let Some(ref g) = settings.terminal_geometry
     {
-        if let Some(ref g) = settings.terminal_geometry {
-            settings.main_geometry = Some(g.clone());
-            log::info!("[settings-migration] seeded main_geometry from legacy terminal_geometry");
-        }
+        settings.main_geometry = Some(g.clone());
+        log::info!("[settings-migration] seeded main_geometry from legacy terminal_geometry");
     }
     // Seed main_zoom from sidebar_zoom on first boot. EPSILON guard: avoid clobbering
     // a user-set main_zoom=1.0 (which would equal default_zoom) with an effectively-unity

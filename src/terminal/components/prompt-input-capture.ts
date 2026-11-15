@@ -61,7 +61,7 @@ function skipStringSequence(
 }
 
 function skipControlSequence(data: string, index: number): number {
-  const char = data[index];
+  const char = data.charAt(index); // only called with index < data.length
 
   if (char === "\x1b") {
     const next = data[index + 1];
@@ -114,7 +114,7 @@ function promptTextFromInputChunk(data: string) {
       continue;
     }
 
-    const char = data[index];
+    const char = data.charAt(index); // index < data.length, so same as data[index]
     if (isControlIntroducer(char)) {
       index = skipControlSequence(data, index);
       continue;

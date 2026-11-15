@@ -400,7 +400,9 @@ async fn new_project_replacement_after_save_rolls_back_registration_and_is_retry
         &std::fs::read_to_string(settings_path.with_file_name("project-paths.json")).unwrap(),
     )
     .unwrap();
-    assert!(disk["projectPaths"].as_array().unwrap().is_empty());
+    assert!(disk
+        .get("projectPaths")
+        .is_none_or(|v| v.as_array().is_some_and(|a| a.is_empty())));
     assert_eq!(
         std::fs::read(project.join(".ac").join("foreign.txt")).unwrap(),
         b"FOREIGN"

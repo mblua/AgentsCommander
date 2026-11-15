@@ -30,7 +30,10 @@ fn main() {
     // `tauri build`, and tauri-build 2.7.1 lets that variable override
     // WindowsAttributes and prints a deprecation warning. Drop it so this
     // explicit setting is the only source. No effect on non-MSVC targets.
-    std::env::remove_var("STATIC_VCRUNTIME");
+    // SAFETY: build scripts run single-threaded
+    unsafe {
+        std::env::remove_var("STATIC_VCRUNTIME");
+    }
     let windows = tauri_build::WindowsAttributes::new().static_vc_runtime(true);
     let attributes = tauri_build::Attributes::new().windows_attributes(windows);
     if let Err(error) = tauri_build::try_build(attributes) {
@@ -78,7 +81,10 @@ fn omit_missing_dist_resource_for_dev_check() {
         "cargo:warning=overriding Tauri bundle resources for this dev/check \
         build because ../dist is missing"
     );
-    std::env::set_var("TAURI_CONFIG", r#"{"bundle":{"resources":[]}}"#);
+    // SAFETY: build scripts run single-threaded
+    unsafe {
+        std::env::set_var("TAURI_CONFIG", r#"{"bundle":{"resources":[]}}"#);
+    }
 }
 
 fn emit_dist_rerun_paths(path: &Path) {

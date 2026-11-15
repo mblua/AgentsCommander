@@ -8,7 +8,10 @@ pub(super) struct ConfigEnvGuard {
 impl ConfigEnvGuard {
     pub(super) fn set(path: &Path) -> Self {
         let previous = std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR");
-        std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", path);
+        // SAFETY: used only in isolated --test-threads=1 child processes
+        unsafe {
+            std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", path);
+        }
         Self { previous }
     }
 }
@@ -16,9 +19,15 @@ impl ConfigEnvGuard {
 impl Drop for ConfigEnvGuard {
     fn drop(&mut self) {
         if let Some(previous) = self.previous.take() {
-            std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", previous);
+            // SAFETY: used only in isolated --test-threads=1 child processes
+            unsafe {
+                std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", previous);
+            }
         } else {
-            std::env::remove_var("AGENTSCOMMANDER_TEST_CONFIG_DIR");
+            // SAFETY: used only in isolated --test-threads=1 child processes
+            unsafe {
+                std::env::remove_var("AGENTSCOMMANDER_TEST_CONFIG_DIR");
+            }
         }
     }
 }

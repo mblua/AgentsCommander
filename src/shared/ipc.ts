@@ -557,7 +557,7 @@ export function expectedCodingAgentMoveOrder(
   const to = direction === "up" ? from - 1 : from + 1;
   if (from < 0 || to < 0 || to >= ids.length) return [...ids];
   const next = [...ids];
-  next.splice(to, 0, next.splice(from, 1)[0]);
+  next.splice(to, 0, ...next.splice(from, 1));
   return next;
 }
 
@@ -1512,12 +1512,12 @@ function normalizeTeamConfigResult(value: unknown): TeamConfigResult {
 
   const coordinator = value.coordinator;
   if (typeof coordinator !== "string") {
-    throw new Error("Invalid get_team_config response: coordinator must be a string");
+    throw new TypeError("Invalid get_team_config response: coordinator must be a string");
   }
 
   const rawRepos = value.repos;
   if (!Array.isArray(rawRepos)) {
-    throw new Error(
+    throw new TypeError(
       "Invalid get_team_config response: repos must be an array of { url: string; agents: string[] }",
     );
   }

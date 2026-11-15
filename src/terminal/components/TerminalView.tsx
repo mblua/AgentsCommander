@@ -310,6 +310,31 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       webglAddon = null;
     }
 
+    const copySelectionKey = (event: KeyboardEvent): boolean => {
+      if (event.type !== "keydown") return !terminal.hasSelection();
+      if (!terminal.hasSelection()) return true;
+      event.preventDefault();
+      event.stopPropagation();
+      navigator.clipboard
+        .writeText(terminal.getSelection())
+        .catch((err) => console.warn("[copy] write failed:", err?.name ?? "Error"));
+      return false;
+    };
+    const pasteClipboardKey = (event: KeyboardEvent): void => {
+      if (event.type !== "keydown") return;
+      event.preventDefault();
+      event.stopPropagation();
+      navigator.clipboard
+        .readText()
+        .then((text) => {
+          if (!text) return;
+          if (visibleSessionId !== sessionId) return; // session switched during await
+          if (terminal.element?.isConnected !== true) return; // terminal not in DOM (pre-open or post-dispose detached)
+          const sanitized = text.replace(/\x9b20[01]~|\x1b\[20[01]~/g, "");
+          terminal.paste(sanitized);
+        })
+        .catch((err) => console.warn("[paste] read failed:", err?.name ?? "Error"));
+    };
     const handleTerminalKeyEvent = (event: KeyboardEvent): boolean => {
       if (event.isComposing) return true;
       // #2236 D9: veto only; no stopPropagation, so shortcuts.ts still toggles.
@@ -318,37 +343,9 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       const isCtrlShift = event.ctrlKey && event.shiftKey;
       const key = event.key.toLowerCase();
 
-      if (isCtrlShift && key === "c") {
-        if (event.type === "keydown") {
-          if (!terminal.hasSelection()) return true;
-          event.preventDefault();
-          event.stopPropagation();
-          navigator.clipboard
-            .writeText(terminal.getSelection())
-            .catch((err) => console.warn("[copy] write failed:", err?.name ?? "Error"));
-          return false;
-        }
-        return !terminal.hasSelection();
-      }
+      if (isCtrlShift && key === "c") return copySelectionKey(event);
 
-      if (isCtrlShift && key === "v") {
-        if (event.type === "keydown") {
-          event.preventDefault();
-          event.stopPropagation();
-          navigator.clipboard
-            .readText()
-            .then((text) => {
-              if (!text) return;
-              if (visibleSessionId !== sessionId) return; // session switched during await
-              if (terminal.element?.isConnected !== true) return; // terminal not in DOM (pre-open or post-dispose detached)
-              const sanitized = text.replace(/\x9b20[01]~|\x1b\[20[01]~/g, "");
-              terminal.paste(sanitized);
-            })
-            .catch((err) => console.warn("[paste] read failed:", err?.name ?? "Error"));
-          return false;
-        }
-        return false;
-      }
+      if (isCtrlShift && key === "v") { pasteClipboardKey(event); return false; }
 
       if (event.key === "Enter" && event.shiftKey) {
         if (event.type === "keydown" && visibleSessionId === sessionId) {
@@ -898,7 +895,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // it (the issue's own straddle class).
     const drain = attachDrains.get(entry);
     const releaseDrain = () => releaseAttachDrain(drain);
-    for (let index = 0; index < kept.length; index += 1) {
+    for (const [index, event] of kept.entries()) {
       const isLast = index === kept.length - 1;
       if (drain) {
         if (drain.inFlight === 0) {
@@ -915,7 +912,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         }
       };
       try {
-        writeTerminalBytes(entry, new Uint8Array(kept[index].data), onWritten);
+        writeTerminalBytes(entry, new Uint8Array(event.data), onWritten);
       } catch (error) {
         // xterm's 50-MiB queue guard throws synchronously BEFORE queueing the
         // chunk: the byte was never queued, so the drain must not wait for it,
@@ -926,7 +923,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         console.warn(`[terminal] attach replay ${sessionId} failed:`, error);
         return;
       }
-      markAppliedSequence(entry, eventSequence(kept[index]));
+      markAppliedSequence(entry, eventSequence(event));
     }
   };
 

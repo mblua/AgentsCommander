@@ -3,7 +3,9 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-pub(crate) fn loop_discovery_entries(root: &Path) -> io::Result<impl Iterator<Item = PathBuf>> {
+pub(crate) fn loop_discovery_entries(
+    root: &Path,
+) -> io::Result<impl Iterator<Item = PathBuf> + use<>> {
     std::fs::read_dir(root).map(|entries| entries.flatten().map(|entry| entry.path()))
 }
 
@@ -117,6 +119,8 @@ pub(crate) fn replace_file(src: &Path, dst: &Path) -> std::io::Result<()> {
 
     let src_wide: Vec<u16> = src.as_os_str().encode_wide().chain(Some(0)).collect();
     let dst_wide: Vec<u16> = dst.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: src_wide and dst_wide own the NUL-terminated UTF-16 buffers built above;
+    // both stay alive through MoveFileExW, which only reads their contents.
     let ok = unsafe {
         MoveFileExW(
             src_wide.as_ptr(),

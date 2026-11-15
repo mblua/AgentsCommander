@@ -598,15 +598,14 @@ impl SourcePrivateJournal {
                     return Err(SourceCoordinationError::Invalid);
                 }
             }
-            if let Some(intent) = self.intents.get(id) {
-                if intent.source != inventory.source
+            if let Some(intent) = self.intents.get(id)
+                && (intent.source != inventory.source
                     || intent.mappings != inventory.mappings
                     || intent.editor_id != inventory.editor_id
                     || intent.context_revision != inventory.context_revision
-                    || intent.authorization_revision != inventory.authorization_revision
-                {
-                    return Err(SourceCoordinationError::Invalid);
-                }
+                    || intent.authorization_revision != inventory.authorization_revision)
+            {
+                return Err(SourceCoordinationError::Invalid);
             }
         }
         Ok(())

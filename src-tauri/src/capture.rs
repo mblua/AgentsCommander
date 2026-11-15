@@ -1,3 +1,7 @@
+//! Turn capture: the per-session sink, its state and owners, the Codex
+//! turn-boundary machine, the user catalog, the `Jev` call and the pre-egress
+//! secret detector.
+
 // #2232 phase 3: the sink, its state and the per-session owners join phase 1's
 // record. Every module here is a leaf: the phone, session and commands
 // subtrees, and the teams and settings config modules, may not be named from

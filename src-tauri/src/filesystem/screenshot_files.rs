@@ -33,7 +33,7 @@ pub(crate) fn ensure_screenshots_directory(root: &Path, child: &Path) -> Result<
 pub(crate) fn create_png_file(
     dir: &Path,
     base_filename: &str,
-) -> Result<(PathBuf, impl std::io::Write + std::io::Seek), String> {
+) -> Result<(PathBuf, impl std::io::Write + std::io::Seek + use<>), String> {
     let stem = base_filename
         .strip_suffix(".png")
         .ok_or_else(|| format!("filename '{base_filename}' must end in .png"))?;

@@ -13,7 +13,8 @@ export type TextWidth = (font: string, text: string) => number;
 
 export const isMonospaceFamily = (family: string, width: TextWidth): boolean => {
   const widths = PROBE_CHARS.map((ch) => width(`${PROBE_SIZE} '${family}'`, ch));
-  return widths[0] > 0 && widths.every((w) => Math.abs(w - widths[0]) < TOLERANCE_PX);
+  const first = widths[0] ?? 0; // PROBE_CHARS is non-empty; 0 fails the check as undefined did
+  return first > 0 && widths.every((w) => Math.abs(w - first) < TOLERANCE_PX);
 };
 
 export const resolveTerminalFontFamily = (width: TextWidth | null): string => {

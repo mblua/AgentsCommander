@@ -153,6 +153,11 @@ fn description_publication(
                 };
                 if len_changed || mtime_changed {
                     let _ = remove_task_artifact(&tmp_path);
+                    #[allow(
+                        clippy::expect_used,
+                        reason = "pre_sentinel is Some only when file_existed; \
+                                  description_backup then returns Some or Err"
+                    )]
                     let bp = backup_path
                         .clone()
                         .expect("file_existed ⇒ backup_path is Some");
@@ -165,6 +170,11 @@ fn description_publication(
                 // (normal create on both Windows MoveFileExW(MOVEFILE_REPLACE_EXISTING)
                 // and Unix), undoing the external delete. Treat as ExternalWrite.
                 let _ = remove_task_artifact(&tmp_path);
+                #[allow(
+                    clippy::expect_used,
+                    reason = "pre_sentinel is Some only when file_existed; \
+                              description_backup then returns Some or Err"
+                )]
                 let bp = backup_path
                     .clone()
                     .expect("file_existed ⇒ backup_path is Some");

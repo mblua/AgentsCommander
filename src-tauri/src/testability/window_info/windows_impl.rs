@@ -20,6 +20,8 @@ pub fn collect_window_info() -> Result<WindowInfoOutput, String> {
         windows: Vec::new(),
     };
 
+    // SAFETY: EnumWindows invokes enum_windows_proc synchronously with this lparam;
+    // state is an initialized EnumState that stays live and is accessed only by the callback.
     let ok = unsafe {
         EnumWindows(
             Some(enum_windows_proc),
@@ -45,13 +47,20 @@ struct EnumState {
     windows: Vec<WindowSnapshot>,
 }
 
+/// # Safety
+/// Must be called by EnumWindows with its enumerated HWND and the lparam supplied by
+/// collect_window_info: an initialized, exclusively accessible EnumState that stays live
+/// until EnumWindows returns. The callback must not be invoked after that state is dropped.
 unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
-    let state = &mut *(lparam as *mut EnumState);
-    if IsWindowVisible(hwnd) == 0 {
+    // SAFETY: EnumWindows passes a live hwnd and the &mut EnumState given as lparam.
+    let state = unsafe { &mut *(lparam as *mut EnumState) };
+    // SAFETY: EnumWindows passes a live hwnd and the &mut EnumState given as lparam.
+    if unsafe { IsWindowVisible(hwnd) } == 0 {
         return 1;
     }
 
-    let title = match window_title(hwnd) {
+    // SAFETY: EnumWindows passes a live hwnd and the &mut EnumState given as lparam.
+    let title = match unsafe { window_title(hwnd) } {
         Some(title) => title,
         None => return 1,
     };
@@ -60,7 +69,10 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
     }
 
     let mut pid = 0u32;
-    GetWindowThreadProcessId(hwnd, &mut pid);
+    // SAFETY: EnumWindows passes a live hwnd and the &mut EnumState given as lparam.
+    unsafe {
+        GetWindowThreadProcessId(hwnd, &mut pid);
+    }
     if pid == 0 {
         return 1;
     }
@@ -73,7 +85,8 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
         return 1;
     }
 
-    let Some(raw_rect) = physical_window_rect(hwnd) else {
+    // SAFETY: EnumWindows passes a live hwnd and the &mut EnumState given as lparam.
+    let Some(raw_rect) = (unsafe { physical_window_rect(hwnd) }) else {
         return 1;
     };
 
@@ -90,12 +103,16 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
             width: raw_rect.right - raw_rect.left,
             height: raw_rect.bottom - raw_rect.top,
         },
-        maximized: IsZoomed(hwnd) != 0,
+        // SAFETY: EnumWindows passes a live hwnd and the &mut EnumState given as lparam.
+        maximized: unsafe { IsZoomed(hwnd) } != 0,
     });
 
     1
 }
 
+/// # Safety
+/// The caller must pass a window handle supplied by EnumWindows, as enum_windows_proc does.
+/// DwmGetWindowAttribute and GetWindowRect report failure if that window becomes unavailable.
 unsafe fn physical_window_rect(hwnd: HWND) -> Option<RECT> {
     let mut raw_rect = RECT {
         left: 0,
@@ -103,29 +120,38 @@ unsafe fn physical_window_rect(hwnd: HWND) -> Option<RECT> {
         right: 0,
         bottom: 0,
     };
-    let dwm_ok = DwmGetWindowAttribute(
-        hwnd,
-        DWMWA_EXTENDED_FRAME_BOUNDS as u32,
-        (&mut raw_rect as *mut RECT).cast(),
-        std::mem::size_of::<RECT>() as u32,
-    ) == 0;
+    // SAFETY: the caller passes a live window handle (this unsafe fn's contract).
+    let dwm_ok = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+            (&mut raw_rect as *mut RECT).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        )
+    } == 0;
     if dwm_ok {
         return Some(raw_rect);
     }
 
-    if GetWindowRect(hwnd, &mut raw_rect) == 0 {
+    // SAFETY: the caller passes a live window handle (this unsafe fn's contract).
+    if unsafe { GetWindowRect(hwnd, &mut raw_rect) } == 0 {
         return None;
     }
     Some(raw_rect)
 }
 
+/// # Safety
+/// The caller must pass a window handle supplied by EnumWindows, as enum_windows_proc does.
+/// GetWindowTextW bounds writes to the supplied buffer capacity even if the title changes.
 unsafe fn window_title(hwnd: HWND) -> Option<String> {
-    let len = GetWindowTextLengthW(hwnd);
+    // SAFETY: the caller passes a live window handle (this unsafe fn's contract).
+    let len = unsafe { GetWindowTextLengthW(hwnd) };
     if len <= 0 {
         return None;
     }
     let mut buf = vec![0u16; len as usize + 1];
-    let copied = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+    // SAFETY: the caller passes a live window handle (this unsafe fn's contract).
+    let copied = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
     if copied <= 0 {
         return None;
     }
@@ -133,6 +159,9 @@ unsafe fn window_title(hwnd: HWND) -> Option<String> {
 }
 
 fn process_path(pid: u32) -> Option<PathBuf> {
+    // SAFETY: OpenProcess takes a numeric PID; its null result is rejected below.
+    // QueryFullProcessImageNameW receives that live handle, a 32768-u16 buffer and its
+    // capacity in len; success bounds len to that capacity. CloseHandle runs once after use.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {

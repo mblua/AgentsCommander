@@ -847,10 +847,13 @@ impl OwnedReplacementContinuation {
         match outcome {
             FinalizedOwnedCarryOutcome::Applied => {
                 // Consume Carry synchronously before any further await.
-                if let Ok(mut state) = self.owner.state.lock() {
-                    state.stage = ReplacementStage::FinalizedPreRename;
-                } else {
-                    return false;
+                match self.owner.state.lock() {
+                    Ok(mut state) => {
+                        state.stage = ReplacementStage::FinalizedPreRename;
+                    }
+                    _ => {
+                        return false;
+                    }
                 }
                 effect.complete(Ok(None));
             }

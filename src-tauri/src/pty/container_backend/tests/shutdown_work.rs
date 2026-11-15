@@ -54,6 +54,43 @@ async fn shutdown_barrier_rejects_start_and_stop_registration_after_empty_drain(
     assert_eq!(backend.shutdown_work_state_for_test(), (true, 0, 0));
 }
 
+#[tokio::test]
+async fn offloaded_cleanup_without_producer_returns_without_waiting() {
+    let runtime = Arc::new(RecordingRuntime::default());
+    let (mut backend, _manager) = backend_with_tuning(ContainerTransportTuning::default());
+    backend.runtime = Some(runtime.clone());
+    backend.seal_and_drain_shutdown_work_blocking(Instant::now() + Duration::from_secs(1));
+    assert_eq!(backend.shutdown_work_state_for_test(), (true, 0, 0));
+
+    let session_id = Uuid::new_v4();
+    let resources = RemovedSessionResources {
+        session_id,
+        runtime_handle: Some(ContainerRuntimeHandle {
+            session_id,
+            container_id: format!("container-{session_id}"),
+        }),
+        api_client_id: None,
+        logical_resource_slot: None,
+        container_credential_path: None,
+    };
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        backend.cleanup_removed_resources_offloaded_owned(resources, "test-no-producer", None),
+    )
+    .await
+    .expect("no-producer cleanup returns without the 10 s completion wait");
+    assert!(runtime.stopped().is_empty());
+    assert_eq!(
+        backend.retained_cleanup_sessions_for_test(),
+        vec![session_id]
+    );
+
+    let report = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
+    assert!(report.terminal, "retained={:?}", report.retained);
+    assert_eq!(runtime.stopped(), vec![session_id]);
+    assert!(backend.retained_cleanup_sessions_for_test().is_empty());
+}
+
 #[test]
 fn shutdown_barrier_waits_for_presealed_producer_and_its_late_cleanup() {
     let registry = Arc::new(ContainerShutdownWorkRegistry::default());

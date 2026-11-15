@@ -21,7 +21,8 @@ import { declarations, declProps, declValue, escapeRe } from "./css-test-helpers
 // that, the absence and count assertions are vacuous — `expect(body ?? "")
 // .not.toContain(...)` would pass on the empty string, and a census that
 // returned an empty list instead of throwing would pass as zero hits.
-const CSS = readFileSync(new URL("./sidebar.css", import.meta.url), "utf8");
+const CSS = ["./sidebar.css", "./agent-picker-modal.css"] // #4577 split, in load order
+  .map((p) => readFileSync(new URL(p, import.meta.url), "utf8")).join("");
 
 // Blank out comment spans, preserving length and line breaks so byte indices
 // stay comparable between the raw and the scanned copy. Required for

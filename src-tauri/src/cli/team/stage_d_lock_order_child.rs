@@ -115,7 +115,10 @@ impl ChildContext {
         ] {
             std::fs::create_dir_all(dir).expect("fixture dir");
         }
-        std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", &config_dir);
+        // SAFETY: only the driven child or the ignored --test-threads=1 driver writes these
+        unsafe {
+            std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", &config_dir);
+        }
         let settings = serde_json::json!({
             "defaultShell": "powershell.exe",
             "defaultShellArgs": [],
@@ -165,9 +168,12 @@ impl EnvGuard {
 impl Drop for EnvGuard {
     fn drop(&mut self) {
         for (key, value) in &self.saved {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
+            // SAFETY: only the driven child or the ignored --test-threads=1 driver writes these
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
             }
         }
     }

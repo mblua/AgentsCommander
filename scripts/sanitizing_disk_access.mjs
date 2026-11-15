@@ -32,7 +32,7 @@ function lifetimeOnly(T, open) {
   for (let k = open; k < T.length; k++) {
     const t = T[k];
     if (t.mate !== undefined && t.mate > k) { k = t.mate; entry = false; continue; }
-    if (t.text === '<') { depth++; if (depth === 1) { entry = true; continue; } }
+    if (t.text === '<' && ++depth === 1) { entry = true; continue; }
     else if (t.text === '>' && --depth === 0) return true;
     else if (depth === 1 && t.text === ',') { entry = true; continue; }
     if (entry && depth === 1 && t.kind !== 'lifetime') return false;

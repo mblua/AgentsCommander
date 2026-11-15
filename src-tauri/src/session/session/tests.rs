@@ -218,19 +218,35 @@ fn live_session_record_requires_id_and_non_exited_status() {
 
 #[test]
 fn find_workgroup_task_path_returns_path_when_cwd_is_workgroup_root() {
-    let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac\wg-3-team");
+    let p = find_workgroup_task_path_for_cwd(if cfg!(windows) {
+        r"C:\proj\.ac\wg-3-team"
+    } else {
+        "/proj/.ac/wg-3-team"
+    });
     assert_eq!(
         p,
-        Some(std::path::PathBuf::from(r"C:\proj\.ac\wg-3-team\TASK.md"))
+        Some(std::path::PathBuf::from(if cfg!(windows) {
+            r"C:\proj\.ac\wg-3-team\TASK.md"
+        } else {
+            "/proj/.ac/wg-3-team/TASK.md"
+        }))
     );
 }
 
 #[test]
 fn find_workgroup_task_path_walks_up_from_replica_dir() {
-    let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac\wg-3-team\__agent_dev-rust");
+    let p = find_workgroup_task_path_for_cwd(if cfg!(windows) {
+        r"C:\proj\.ac\wg-3-team\__agent_dev-rust"
+    } else {
+        "/proj/.ac/wg-3-team/__agent_dev-rust"
+    });
     assert_eq!(
         p,
-        Some(std::path::PathBuf::from(r"C:\proj\.ac\wg-3-team\TASK.md"))
+        Some(std::path::PathBuf::from(if cfg!(windows) {
+            r"C:\proj\.ac\wg-3-team\TASK.md"
+        } else {
+            "/proj/.ac/wg-3-team/TASK.md"
+        }))
     );
 }
 
@@ -239,6 +255,8 @@ fn find_workgroup_task_path_returns_none_outside_workgroup() {
     assert_eq!(find_workgroup_task_path_for_cwd(r"C:\Users\me\misc"), None);
 }
 
+// The verbatim UNC prefix exists only on Windows; the two path-walk tests cover Unix.
+#[cfg(windows)]
 #[test]
 fn find_workgroup_task_path_handles_unc_prefix_input() {
     // The helper is a pure path walk; it does not strip `\\?\` itself —
@@ -362,4 +380,27 @@ fn is_working_ignores_pending_review() {
         idle.pending_review = pending_review;
         assert!(!is_working(&idle));
     }
+}
+
+#[test]
+fn session_debug_redacts_token() {
+    let mut s = sample_session(None);
+    s.token = Uuid::new_v4();
+    let out = format!("{s:?}");
+    assert!(!out.contains(&s.token.to_string()));
+    assert!(!out.contains(&s.token.simple().to_string()));
+    assert!(out.contains("[REDACTED]"));
+    assert!(out.contains("Session 1"));
+}
+
+#[test]
+fn session_info_debug_redacts_token() {
+    let mut s = sample_session(None);
+    s.token = Uuid::new_v4();
+    let info = SessionInfo::from(&s);
+    let out = format!("{info:?}");
+    assert!(!out.contains(&s.token.to_string()));
+    assert!(!out.contains(&s.token.simple().to_string()));
+    assert!(out.contains("[REDACTED]"));
+    assert!(out.contains("Session 1"));
 }

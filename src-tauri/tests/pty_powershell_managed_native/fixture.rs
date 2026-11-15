@@ -64,7 +64,10 @@ struct TestConfigEnvGuard {
 impl TestConfigEnvGuard {
     fn set(path: &Path) -> Self {
         let previous = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").ok();
-        std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", path);
+        // SAFETY: the fixture holds TEST_CONFIG_ENV_LOCK
+        unsafe {
+            std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", path);
+        }
         Self { previous }
     }
 }
@@ -72,9 +75,15 @@ impl TestConfigEnvGuard {
 impl Drop for TestConfigEnvGuard {
     fn drop(&mut self) {
         if let Some(previous) = self.previous.as_ref() {
-            std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", previous);
+            // SAFETY: the fixture holds TEST_CONFIG_ENV_LOCK
+            unsafe {
+                std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", previous);
+            }
         } else {
-            std::env::remove_var("AGENTSCOMMANDER_TEST_CONFIG_DIR");
+            // SAFETY: the fixture holds TEST_CONFIG_ENV_LOCK
+            unsafe {
+                std::env::remove_var("AGENTSCOMMANDER_TEST_CONFIG_DIR");
+            }
         }
     }
 }
@@ -441,14 +450,20 @@ pub(crate) struct PathEnvGuard {
 impl PathEnvGuard {
     pub(crate) fn prepend(dir: &Path) -> Self {
         let previous = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{};{}", path_to_string(dir), previous));
+        // SAFETY: callers hold PATH_ENV_LOCK
+        unsafe {
+            std::env::set_var("PATH", format!("{};{}", path_to_string(dir), previous));
+        }
         Self { previous }
     }
 }
 
 impl Drop for PathEnvGuard {
     fn drop(&mut self) {
-        std::env::set_var("PATH", &self.previous);
+        // SAFETY: callers hold PATH_ENV_LOCK
+        unsafe {
+            std::env::set_var("PATH", &self.previous);
+        }
     }
 }
 
@@ -723,16 +738,22 @@ pub(crate) struct ReporterEnvGuard {
 impl ReporterEnvGuard {
     pub(crate) fn set() -> Self {
         let previous = std::env::var("AC_1271_ARGV_REPORTER").ok();
-        std::env::set_var("AC_1271_ARGV_REPORTER", "1");
+        // SAFETY: callers hold PATH_ENV_LOCK
+        unsafe {
+            std::env::set_var("AC_1271_ARGV_REPORTER", "1");
+        }
         Self { previous }
     }
 }
 
 impl Drop for ReporterEnvGuard {
     fn drop(&mut self) {
-        match self.previous.as_ref() {
-            Some(previous) => std::env::set_var("AC_1271_ARGV_REPORTER", previous),
-            None => std::env::remove_var("AC_1271_ARGV_REPORTER"),
+        // SAFETY: callers hold PATH_ENV_LOCK
+        unsafe {
+            match self.previous.as_ref() {
+                Some(previous) => std::env::set_var("AC_1271_ARGV_REPORTER", previous),
+                None => std::env::remove_var("AC_1271_ARGV_REPORTER"),
+            }
         }
     }
 }

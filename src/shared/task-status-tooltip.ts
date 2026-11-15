@@ -91,7 +91,9 @@ export function createTaskStatusTooltip(options: {
       Home: 0, End: element.scrollHeight,
     };
     if (!(event.key in targets)) return;
-    element.scrollTop = targets[event.key];
+    const target = targets[event.key];
+    if (target === undefined) return;
+    element.scrollTop = target;
     event.preventDefault();
     event.stopPropagation();
   };

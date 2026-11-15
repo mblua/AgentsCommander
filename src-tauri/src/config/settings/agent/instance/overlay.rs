@@ -427,15 +427,16 @@ pub(crate) fn restrict_split_profile_mutation_rows(
         }
         if stored || base_edit || profile_edit {
             admitted.insert(id.clone());
-            if old_hash.is_none() && !profile_edit {
-                if let Some(cells) = sets.cells.get(&hash) {
-                    incoming["codingAgentProfiles"]["profilesByAgent"][&id] = cells.clone();
-                    incoming["codingAgentProfiles"]["profileLabelsByAgent"][&id] = sets
-                        .labels
-                        .get(&hash)
-                        .cloned()
-                        .unwrap_or_else(|| empty.clone());
-                }
+            if old_hash.is_none()
+                && !profile_edit
+                && let Some(cells) = sets.cells.get(&hash)
+            {
+                incoming["codingAgentProfiles"]["profilesByAgent"][&id] = cells.clone();
+                incoming["codingAgentProfiles"]["profileLabelsByAgent"][&id] = sets
+                    .labels
+                    .get(&hash)
+                    .cloned()
+                    .unwrap_or_else(|| empty.clone());
             }
         }
     }

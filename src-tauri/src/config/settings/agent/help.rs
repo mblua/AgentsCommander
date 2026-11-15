@@ -85,18 +85,18 @@ pub(crate) fn is_https_url(value: &str) -> bool {
 }
 
 pub(crate) fn check_agent_help_entry_urls(key: &str, entry: &AgentHelpEntry) -> Result<(), String> {
-    if let Some(docs_url) = &entry.docs_url {
-        if !is_https_url(docs_url) {
-            return Err(format!("entry {key}: docsUrl is not an https URL"));
-        }
+    if let Some(docs_url) = &entry.docs_url
+        && !is_https_url(docs_url)
+    {
+        return Err(format!("entry {key}: docsUrl is not an https URL"));
     }
     for (index, tip) in entry.tips.iter().enumerate() {
-        if let Some(link) = &tip.link {
-            if !is_https_url(&link.url) {
-                return Err(format!(
-                    "entry {key} tip {index}: link url is not an https URL"
-                ));
-            }
+        if let Some(link) = &tip.link
+            && !is_https_url(&link.url)
+        {
+            return Err(format!(
+                "entry {key} tip {index}: link url is not an https URL"
+            ));
         }
     }
     Ok(())

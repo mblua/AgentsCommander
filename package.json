@@ -20,7 +20,7 @@
     "reclaim:artifacts:apply": "node scripts/reclaim-build-artifacts.mjs --apply",
     "prepare": "husky",
     "tauri": "tauri",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.app.json",
     "lint": "eslint --max-warnings 0 src",
     "check:frontend-dependencies": "node scripts/check-frontend-dependencies.mjs",
     "test": "vitest run",
@@ -59,10 +59,15 @@
     "sanitizing:global_state": "node scripts/sanitizing_global_state.mjs",
     "sanitizing:disk_access": "node scripts/sanitizing_disk_access.mjs",
     "sanitizing:process_env": "node scripts/sanitizing_process_env.mjs",
+    "sanitizing:lock_poison": "node scripts/sanitizing_lock_poison.mjs",
     "sanitizing:self": "node --test scripts/sanitizing_self_tests.mjs",
     "sanitizing:containers": "node scripts/sanitizing_containers.mjs",
     "seven:self": "node scripts/check-clippy-seven.mjs --self-test",
-    "seven:baseline": "node scripts/check-clippy-seven.mjs --baseline-diff"
+    "actions-pinned": "node scripts/check-actions-pinned.mjs",
+    "actions-pinned:self": "node scripts/check-actions-pinned.mjs --self-test",
+    "seven:baseline": "node scripts/check-clippy-seven.mjs --baseline-diff",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -86,6 +91,7 @@
     "husky": "^9.1.7",
     "jscpd": "5.2.1",
     "jsdom": "^25.0.1",
+    "prettier": "3.6.2",
     "typescript": "^5",
     "typescript-eslint": "8.72.1",
     "vite": "^8.0.2",

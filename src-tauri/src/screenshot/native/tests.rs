@@ -799,13 +799,13 @@ fn placement_frame_matches_target() {
     assert_eq!(placement_frame(), expected);
 }
 
-/// Link proof for the CoreGraphics gate; `CGRequestScreenCaptureAccess` is
-/// never called from tests (it would prompt).
+/// CoreGraphics gate link proof; tests never call `CGRequestScreenCaptureAccess` (it prompts).
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_screen_recording_gate() {
     assert!(MACOS_SCREEN_RECORDING_REQUIRED.contains("Screen Recording"));
     assert!(MACOS_SCREEN_RECORDING_REQUIRED.contains("System Settings"));
+    // SAFETY: CGPreflightScreenCaptureAccess is a no-argument permission query, not a prompt.
     let _ = unsafe { CGPreflightScreenCaptureAccess() };
 }
 

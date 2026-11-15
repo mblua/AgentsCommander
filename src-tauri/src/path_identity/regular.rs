@@ -133,6 +133,8 @@ pub fn opened_file_is_delete_pending(file: &File) -> bool {
     };
 
     let mut information = MaybeUninit::<FILE_STANDARD_INFO>::zeroed();
+    // SAFETY: `file` retains its handle for the call; `information` is writable storage
+    // of the FILE_STANDARD_INFO size passed to GetFileInformationByHandleEx.
     let succeeded = unsafe {
         GetFileInformationByHandleEx(
             file.as_raw_handle(),
@@ -141,6 +143,8 @@ pub fn opened_file_is_delete_pending(file: &File) -> bool {
             std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
         )
     };
+    // SAFETY: short-circuiting requires nonzero `succeeded`, so
+    // GetFileInformationByHandleEx initialized the FILE_STANDARD_INFO output.
     succeeded != 0 && unsafe { information.assume_init() }.DeletePending != 0
 }
 
@@ -260,6 +264,9 @@ pub(super) fn remove_windows_regular_file_by_handle_inner(
     }
     before_delete();
     let disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    // SAFETY: `file` is the live DELETE-access handle opened by `options.open` above.
+    // `disposition` is initialized FILE_DISPOSITION_INFO storage of the supplied size
+    // and remains borrowed until SetFileInformationByHandle returns.
     unsafe {
         SetFileInformationByHandle(
             file.as_raw_handle(),
@@ -288,6 +295,8 @@ pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), 
     }
 
     #[link(name = "kernel32")]
+    // SAFETY: MoveFileExW matches the WinBase.h declaration: two UTF-16 string
+    // pointers, DWORD flags and BOOL return, using the Windows system ABI.
     unsafe extern "system" {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
     }
@@ -303,6 +312,8 @@ pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), 
         .chain(Some(0))
         .collect();
     // Omitting MOVEFILE_REPLACE_EXISTING is the Windows no-clobber contract.
+    // SAFETY: `existing` and `new` are UTF-16 vectors terminated by chain(Some(0))
+    // above and remain alive throughout MoveFileExW; the flag is its documented value.
     let moved = unsafe { MoveFileExW(existing.as_ptr(), new.as_ptr(), MOVEFILE_WRITE_THROUGH) };
     if moved == 0 {
         Err("atomic_publish_failed".to_string())
@@ -322,6 +333,9 @@ pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), 
         .map_err(|_| "atomic_publish_failed".to_string())?;
     let destination = CString::new(destination.as_os_str().as_bytes())
         .map_err(|_| "atomic_publish_failed".to_string())?;
+    // SAFETY: SYS_renameat2 receives two AT_FDCWD directory descriptors, pointers
+    // to the live `source`/`destination` CStrings constructed above, and the documented
+    // RENAME_NOREPLACE flag. CString::new rejects interior NULs and adds terminators.
     let result = unsafe {
         libc::syscall(
             libc::SYS_renameat2,
@@ -344,6 +358,8 @@ pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), 
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
+    // SAFETY: renamex_np matches the stdio.h declaration on macOS: two const char
+    // pointers, unsigned int flags and int return, using the C ABI.
     unsafe extern "C" {
         fn renamex_np(
             old_path: *const std::ffi::c_char,
@@ -356,6 +372,8 @@ pub fn publish_new_file_atomic(source: &Path, destination: &Path) -> Result<(), 
         .map_err(|_| "atomic_publish_failed".to_string())?;
     let destination = CString::new(destination.as_os_str().as_bytes())
         .map_err(|_| "atomic_publish_failed".to_string())?;
+    // SAFETY: `source` and `destination` are live CStrings constructed above, so
+    // renamex_np receives terminated byte strings and the documented RENAME_EXCL flag.
     let result = unsafe { renamex_np(source.as_ptr(), destination.as_ptr(), RENAME_EXCL) };
     if result == 0 {
         Ok(())
@@ -387,6 +405,8 @@ pub(super) fn atomic_replace_existing(source: &Path, destination: &Path) -> Resu
     }
 
     #[link(name = "kernel32")]
+    // SAFETY: ReplaceFileW matches WinBase.h: three UTF-16 string pointers, DWORD
+    // flags, two reserved void pointers and BOOL return, using the Windows system ABI.
     unsafe extern "system" {
         fn ReplaceFileW(
             replaced: *const u16,
@@ -408,6 +428,9 @@ pub(super) fn atomic_replace_existing(source: &Path, destination: &Path) -> Resu
         .collect();
     let replacement: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     const REPLACEFILE_WRITE_THROUGH: u32 = 0x0000_0001;
+    // SAFETY: `replaced` and `replacement` retain the terminated UTF-16 buffers
+    // built above. ReplaceFileW permits null backup and requires null reserved pointers;
+    // the supplied flag is its documented value and all buffers outlive the call.
     let replaced_ok = unsafe {
         ReplaceFileW(
             replaced.as_ptr(),
@@ -512,6 +535,8 @@ fn component_eq(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
     use std::os::windows::ffi::OsStrExt;
 
     #[link(name = "kernel32")]
+    // SAFETY: CompareStringOrdinal matches the Stringapiset.h declaration: UTF-16
+    // pointers, signed int lengths, BOOL ignore-case and int return, Windows system ABI.
     unsafe extern "system" {
         fn CompareStringOrdinal(
             left: *const u16,
@@ -530,6 +555,9 @@ fn component_eq(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
     let Ok(right_len) = i32::try_from(right.len()) else {
         return false;
     };
+    // SAFETY: `left_len` and `right_len` are checked i32 conversions of their live
+    // UTF-16 vector lengths. CompareStringOrdinal reads only those explicit lengths
+    // (including zero), requires no terminator, and accepts BOOL 1 for ignore-case.
     unsafe {
         CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) == CSTR_EQUAL
     }

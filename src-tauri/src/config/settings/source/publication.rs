@@ -266,11 +266,11 @@ fn checkpoint_source_publication_proof(
             // Pure Err-before/Err-landed/other classification. Every
             // outcome retains the stage and returns the original error;
             // no native, unlink or second CAS follows an Err.
-            if capability.check().is_ok() {
-                if let Ok((revision, current)) = read_own_source_journal(context) {
-                    let _before_exact = revision == *private_revision && current == *journal;
-                    let _after_exact = current == planned;
-                }
+            if capability.check().is_ok()
+                && let Ok((revision, current)) = read_own_source_journal(context)
+            {
+                let _before_exact = revision == *private_revision && current == *journal;
+                let _after_exact = current == planned;
             }
             Err(error)
         }

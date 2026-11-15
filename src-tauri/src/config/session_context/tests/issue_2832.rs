@@ -328,6 +328,39 @@ fn issue_2832_modified_snapshots_survive_provisioning_and_final_materialization(
     println!("issue_2832 custom-byte/state materialization cases: {cases}");
 }
 
+fn assert_protected_untouched(protected: &[PathBuf], sentinels_present: bool) {
+    for path in protected {
+        if sentinels_present {
+            assert_eq!(
+                std::fs::read_to_string(path).unwrap(),
+                "PROTECTED CONTEXT SENTINEL\n",
+                "{}",
+                path.display()
+            );
+        } else {
+            assert!(!path.exists(), "created excluded file {}", path.display());
+        }
+    }
+}
+
+fn expected_root_payload<'a>(
+    entries: &serde_json::Value,
+    auto: bool,
+    role: &'a str,
+    selected_on: &'a str,
+    selected_off: &'a str,
+) -> &'a str {
+    if *entries == serde_json::json!([]) {
+        ""
+    } else if *entries == serde_json::json!(["Role.md"]) {
+        role
+    } else if auto {
+        selected_on
+    } else {
+        selected_off
+    }
+}
+
 #[test]
 fn issue_2832_successful_root_resolver_and_direct_ensure_preserve_exclusions() {
     let temp = tempfile::tempdir().unwrap();
@@ -382,15 +415,8 @@ fn issue_2832_successful_root_resolver_and_direct_ensure_preserve_exclusions() {
             )
             .unwrap();
             for auto in [false, true] {
-                let expected = if entries == serde_json::json!([]) {
-                    ""
-                } else if entries == serde_json::json!(["Role.md"]) {
-                    role
-                } else if auto {
-                    selected_on
-                } else {
-                    selected_off
-                };
+                let expected =
+                    expected_root_payload(&entries, auto, role, selected_on, selected_off);
                 for _ in 0..2 {
                     // Actual public materializer -> production resolver -> Root
                     // identity/builder -> final writer, with coordinator=true.
@@ -405,18 +431,7 @@ fn issue_2832_successful_root_resolver_and_direct_ensure_preserve_exclusions() {
                         "direct ensure renders selected file with \
                         auto=false, independently of context[]"
                     );
-                    for path in &protected {
-                        if sentinels_present {
-                            assert_eq!(
-                                std::fs::read_to_string(path).unwrap(),
-                                "PROTECTED CONTEXT SENTINEL\n",
-                                "{}",
-                                path.display()
-                            );
-                        } else {
-                            assert!(!path.exists(), "created excluded file {}", path.display());
-                        }
-                    }
+                    assert_protected_untouched(&protected, sentinels_present);
                 }
                 cases += 1;
             }

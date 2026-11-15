@@ -71,6 +71,8 @@ fn open_is_idempotent_on_repeat_call() {
     assert_eq!(s.project_paths.len(), 1);
 }
 
+// Case-insensitive, slash-agnostic dedup is a Windows filesystem property.
+#[cfg(windows)]
 #[test]
 fn open_dedup_is_case_insensitive_and_slash_agnostic() {
     let fix = FixtureRoot::new("proj-open-norm");
@@ -86,6 +88,20 @@ fn open_dedup_is_case_insensitive_and_slash_agnostic() {
     assert_eq!(s.project_paths.len(), 1);
     // Original retained, NOT replaced with the mangled form.
     assert_eq!(s.project_paths[0], original);
+}
+
+#[cfg(not(windows))]
+#[test]
+fn open_rejects_case_variant_missing_on_unix() {
+    let fix = FixtureRoot::new("proj-open-case-sensitive");
+    std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
+    let original = fix.path().to_string_lossy().to_string();
+    let mut settings = AppSettings::default();
+    register_existing_project(&mut settings, &original).unwrap();
+    let result = register_existing_project(&mut settings, &original.to_uppercase());
+    assert!(matches!(result, Err(ProjectError::PathMissing(_))));
+    assert_eq!(settings.project_paths.len(), 1);
+    assert_eq!(settings.project_paths[0], original);
 }
 
 // ── register_new_project ─────────────────────────────────────────────

@@ -1,6 +1,7 @@
 mod agent;
 mod app_defaults;
 pub(crate) mod context_history;
+mod debug;
 mod field;
 mod instance;
 mod load;
@@ -377,7 +378,7 @@ pub(crate) use crate::config::local_config_io::{
     ProtectedRevision as IdentityReferenceProtectedRevision,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub default_shell: String,
