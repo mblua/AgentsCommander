@@ -5,6 +5,7 @@ mod coordinator_and_seed;
 mod default_context_access;
 mod default_context_render;
 mod host_platform;
+mod integrity_rules_4752;
 mod issue_2832;
 mod issue_2868;
 mod legacy_sections;

@@ -1,7 +1,7 @@
 use super::{
-    display_path, render_project_shared_entry, render_room_shared_entry, replica_shared_roots,
-    DefaultContextDynamicValues, DIRECT_MATRIX_GIT_SCOPE, ROOT_AUTHORITY_SECTION, ROOT_GIT_SCOPE,
-    ROOT_PROJECT_SCOPE_ENTRY, WORKGROUP_GIT_SCOPE,
+    display_path, render_project_shared_entry, render_room_shared_entry, render_room_task_rules,
+    replica_shared_roots, DefaultContextDynamicValues, DIRECT_MATRIX_GIT_SCOPE,
+    ROOT_AUTHORITY_SECTION, ROOT_GIT_SCOPE, ROOT_PROJECT_SCOPE_ENTRY, WORKGROUP_GIT_SCOPE,
 };
 #[cfg(test)]
 use super::{render_default_agent_context, render_root_runtime_prologue_inner};
@@ -101,19 +101,24 @@ pub(crate) fn default_context_dynamic_values(
     // empty together or populated together. No `debug_assert!` that entry 4 implies
     // entries 5 and 6: under the strict resolver a nested non-replica renders entry 4
     // and must NOT render entries 5 and 6, so that implication is false by design.
-    let (project_shared_entry, room_shared_entry) = match replica_shared_roots(agent_root) {
-        Some((ac_root, room_root)) => (
-            render_project_shared_entry(&ac_root),
-            render_room_shared_entry(&room_root),
-        ),
-        None => (String::new(), String::new()),
-    };
+    let (project_shared_entry, room_shared_entry, room_task_rules) =
+        match replica_shared_roots(agent_root) {
+            Some((ac_root, room_root)) => (
+                render_project_shared_entry(&ac_root),
+                render_room_shared_entry(&room_root),
+                render_room_task_rules(&room_root),
+            ),
+            None => (String::new(), String::new(), String::new()),
+        };
+    let messaging_integrity_rule = messaging_integrity_rule(&messaging_mode);
     DefaultContextDynamicValues {
         replica_usage,
         matrix_section,
         workgroup_messaging_entry,
         project_shared_entry,
         room_shared_entry,
+        messaging_integrity_rule,
+        room_task_rules,
         messaging_exception,
         messaging_allowed,
         forbidden_scope,
@@ -265,10 +270,7 @@ You MAY create message files inside this directory:
 {path}
 ```
 
-Strictly limited to canonical inter-agent message files whose name matches the pattern "#,
-                r#"`YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md` (the CLI rejects "#,
-                r#"any other shape). Do NOT modify or delete any message file once written. "#,
-                r#"Do NOT write any other kind of file here. You may also READ message "#,
+You may also READ message "#,
                 r#"files inside this directory, and list your room root "#,
                 r#"(`room-<N>-*`) to resolve that directory's path.
 
@@ -286,7 +288,8 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
                 r#"provide that "#,
                 r#"exact file "#,
                 r#"path without directory discovery, and the filename must match the canonical "#,
-                r#"pattern above. This authorization is read-only and limited to that file. "#,
+                r#"pattern in Integrity Rules. "#,
+                r#"This authorization is read-only and limited to that file. "#,
                 r#"Do NOT list or explore the other workspace or room, read a second "#,
                 r#"external file or any other file or content there, or create, "#,
                 r#"write, modify, or delete anything in its `messaging` directory.
@@ -296,6 +299,25 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
             path = path,
         )),
         MessagingContextMode::Root(_) | MessagingContextMode::None => None,
+    }
+}
+
+// #4752 D5: the message file rules, rendered in the Integrity Rules block.
+fn messaging_integrity_rule(messaging_mode: &MessagingContextMode) -> String {
+    match messaging_mode {
+        MessagingContextMode::Workgroup(path) => format!(
+            concat!(
+                r#"Messaging directory `{path}`: strictly limited to canonical inter-agent "#,
+                r#"message files whose name matches the pattern "#,
+                r#"`YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md` (the CLI rejects "#,
+                r#"any other shape). Do NOT modify or delete any message file once written. "#,
+                r#"Do NOT write any other kind of file there.
+
+"#
+            ),
+            path = path,
+        ),
+        MessagingContextMode::Root(_) | MessagingContextMode::None => String::new(),
     }
 }
 
