@@ -38,10 +38,16 @@ const HomeView: Component = () => {
         </button>
       </div>
       <Show when={homeStore.loading && homeStore.content === null}>
-        <div class="home-status">Loading Home…</div>
+        <div class="home-status" data-ac-testid="home.loading" data-ac-role="status">
+          Loading Home…
+        </div>
       </Show>
       <Show when={homeStore.error && homeStore.content === null}>
-        <div class="home-status home-status-error">
+        <div
+          class="home-status home-status-error"
+          data-ac-testid="home.error"
+          data-ac-role="status"
+        >
           <p>Could not load Home: {homeStore.error}</p>
           <button class="home-retry-btn" onClick={() => homeStore.fetch()}>
             Try again
@@ -51,6 +57,8 @@ const HomeView: Component = () => {
       <Show when={homeStore.content !== null}>
         <div
           class="home-markdown"
+          data-ac-testid="home.content"
+          data-ac-role="text"
           // eslint-disable-next-line solid/no-innerhtml
           innerHTML={html()}
         />

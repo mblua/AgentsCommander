@@ -477,7 +477,13 @@ const SpecBoardApp: Component = () => {
               <AskAgentPanel />
             </Show>
             <Show when={specBoardStore.renderError}>
-              <div class="spec-board-error">{specBoardStore.renderError}</div>
+              <div
+                class="spec-board-error"
+                data-ac-testid="specBoard.error"
+                data-ac-role="status"
+              >
+                {specBoardStore.renderError}
+              </div>
             </Show>
           </div>
 
