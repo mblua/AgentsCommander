@@ -38,15 +38,15 @@ use default_context::WINDOWS_SHELL_ROUTING;
 #[cfg(test)]
 use default_context::{
     host_platform_rules_default, host_platform_rules_filename, render_root_runtime_prologue_inner,
-    CORE_CONCEPTS_SECTION,
+    render_write_restrictions_block, CORE_CONCEPTS_SECTION,
 };
 use default_context::{
     render_host_platform_rules_block, render_inter_agent_messaging_block,
     render_project_shared_entry, render_room_shared_entry, render_room_task_rules,
-    render_write_restrictions_block, strip_legacy_self_maintenance, DefaultContextDynamicValues,
-    DEFAULT_CLI_CONTEXT, DEFAULT_DELEGATED_TASK_REPORTING, DEFAULT_SESSION_CREDENTIALS,
-    DIRECT_MATRIX_GIT_SCOPE, ROOT_AUTHORITY_SECTION, ROOT_GIT_SCOPE, ROOT_PROJECT_SCOPE_ENTRY,
-    SELF_MAINTENANCE_AUTO_SECTION,
+    render_workspace_rules_block, strip_legacy_self_maintenance, DefaultContextDynamicValues,
+    WorkspaceRestrictions, DEFAULT_CLI_CONTEXT, DEFAULT_DELEGATED_TASK_REPORTING,
+    DEFAULT_SESSION_CREDENTIALS, DIRECT_MATRIX_GIT_SCOPE, ROOT_AUTHORITY_SECTION, ROOT_GIT_SCOPE,
+    ROOT_PROJECT_SCOPE_ENTRY, SELF_MAINTENANCE_AUTO_SECTION,
 };
 #[cfg(test)]
 use default_context_values::{default_context, default_context_as_root};
@@ -289,12 +289,20 @@ fn ensure_session_context_with_config(
         .map(|p| display_path(&p))
         .unwrap_or_else(|_| agent_root.to_string());
     let matrix_root = resolve_replica_matrix_root(agent_root)?;
+    let restrictions = restrictions_for(
+        repo_mounts.is_some(),
+        crate::config::unleashed_replicas::is_unleashed(agent_root),
+    );
     ensure_replica_shared_locations(agent_root, &canonical_root);
     let skill_owner_root = resolve_skill_owner_root(agent_root, matrix_root.as_deref());
     let skill_index = discover_skill_index(skill_owner_root.as_deref());
     let skills_section = render_skills_section(&skill_index);
-    let project_section =
-        project_skills_for_session(agent_root, matrix_root.as_deref(), &skill_index);
+    let project_section = project_skills_for_session(
+        agent_root,
+        matrix_root.as_deref(),
+        &skill_index,
+        restrictions,
+    );
 
     for warning in &skill_index.warnings {
         log::warn!("[skills] {}", warning);
@@ -318,9 +326,14 @@ fn ensure_session_context_with_config(
         config,
         repo_mounts,
         activation,
+        restrictions,
     )?;
     content.push_str(&project_section);
-    content.push_str(&team_skills_for_session(agent_root, matrix_root.as_deref()));
+    content.push_str(&team_skills_for_session(
+        agent_root,
+        matrix_root.as_deref(),
+        restrictions,
+    ));
     crate::filesystem::session_context::write_context_cache(&file_path, content)
         .map_err(|e| format!("Failed to write per-agent AgentsCommanderContext.md: {}", e))?;
     log::info!(
@@ -330,6 +343,15 @@ fn ensure_session_context_with_config(
     );
 
     Ok(file_path.to_string_lossy().to_string())
+}
+
+/// #4752: restrictions are lifted only for a local (non-container) unleashed replica.
+pub(crate) fn restrictions_for(container: bool, unleashed: bool) -> WorkspaceRestrictions {
+    if !container && unleashed {
+        WorkspaceRestrictions::Lifted
+    } else {
+        WorkspaceRestrictions::Enforced
+    }
 }
 
 /// #1795 backstop for a project or a room that predates #1795. Bootstrap

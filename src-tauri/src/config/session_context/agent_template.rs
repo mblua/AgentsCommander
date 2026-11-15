@@ -3,8 +3,8 @@ use super::{
     default_context_dynamic_values, heal_stale_global_recorded, mandatory_placeholder_aliases,
     mandatory_section_present_inline, read_context_local_override, read_or_create_context_recorded,
     render_agent_repos_string, render_host_platform_rules_block,
-    render_inter_agent_messaging_block, render_write_restrictions_block,
-    LegacyRenderedDefaultContext, TemplateTokenSignals, DEFAULT_CLI_CONTEXT,
+    render_inter_agent_messaging_block, render_workspace_rules_block, LegacyRenderedDefaultContext,
+    TemplateTokenSignals, WorkspaceRestrictions, DEFAULT_CLI_CONTEXT,
     DEFAULT_DELEGATED_TASK_REPORTING, DEFAULT_SESSION_CREDENTIALS,
     GLOBAL_CONTEXT_TEMPLATE_FILENAME, LEGACY_AGENT_REPOS_PLACEHOLDER,
     MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS,
@@ -116,6 +116,7 @@ pub fn get_default_coordinator_template() -> &'static str {
      user interacts with your session.\n"
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_agent_context_template(
     template: &str,
     agent_root: &str,
@@ -124,6 +125,7 @@ pub(crate) fn render_agent_context_template(
     cwd_path: &Path,
     config: Option<&serde_json::Value>,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    restrictions: WorkspaceRestrictions,
 ) -> String {
     let is_root_agent = super::super::root_agent::is_root_agent_path(agent_root);
     render_agent_context_template_inner(
@@ -135,6 +137,7 @@ pub(crate) fn render_agent_context_template(
         config,
         repo_mounts,
         is_root_agent,
+        restrictions,
     )
 }
 
@@ -148,7 +151,13 @@ pub(crate) fn render_agent_context_template_inner(
     config: Option<&serde_json::Value>,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     is_root_agent: bool,
+    restrictions: WorkspaceRestrictions,
 ) -> String {
+    let restrictions = if is_root_agent {
+        WorkspaceRestrictions::Enforced
+    } else {
+        restrictions
+    };
     let rendered =
         default_context_dynamic_values(agent_root, matrix_root, skills_section, is_root_agent);
     let mut template = template.to_string();
@@ -234,7 +243,7 @@ pub(crate) fn render_agent_context_template_inner(
         .replace("{{SKILLS_SECTION}}", skills_section)
         .replace(
             "{{WRITE_RESTRICTIONS}}",
-            &render_write_restrictions_block(agent_root, &rendered),
+            &render_workspace_rules_block(agent_root, &rendered, restrictions),
         )
         .replace("{{CLI_CONTEXT}}", DEFAULT_CLI_CONTEXT)
         .replace("{{HOST_PLATFORM_RULES}}", &host_platform_rules)
@@ -251,6 +260,7 @@ pub(crate) fn render_agent_context_template_inner(
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_default_agent_context(
     agent_root: &str,
     matrix_root: Option<&str>,
@@ -258,6 +268,7 @@ pub(crate) fn render_default_agent_context(
     cwd_path: &Path,
     config: Option<&serde_json::Value>,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    restrictions: WorkspaceRestrictions,
 ) -> String {
     render_agent_context_template(
         get_default_agent_template(),
@@ -267,6 +278,7 @@ pub(crate) fn render_default_agent_context(
         cwd_path,
         config,
         repo_mounts,
+        restrictions,
     )
 }
 
@@ -287,9 +299,11 @@ pub(crate) fn resolve_agent_context(
         config,
         repo_mounts,
         None,
+        WorkspaceRestrictions::Enforced,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_agent_context_with_activation(
     agent_root: &str,
     matrix_root: Option<&str>,
@@ -298,6 +312,7 @@ pub(crate) fn resolve_agent_context_with_activation(
     config: Option<&serde_json::Value>,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
+    restrictions: WorkspaceRestrictions,
 ) -> Result<String, String> {
     // #979 load-bearing guard 2 of 2. This MUST remain the FIRST executable
     // statement of this function. It sits ahead of `read_or_create_context_template`
@@ -362,6 +377,7 @@ pub(crate) fn resolve_agent_context_with_activation(
                 cwd_path,
                 config,
                 repo_mounts,
+                restrictions,
             ))
         }
         LegacyRenderedDefaultContext::NotLegacy => Ok(render_agent_context_template(
@@ -372,6 +388,7 @@ pub(crate) fn resolve_agent_context_with_activation(
             cwd_path,
             config,
             repo_mounts,
+            restrictions,
         )),
     };
     match read_context_local_override(agent_root, GLOBAL_CONTEXT_TEMPLATE_FILENAME) {
@@ -383,6 +400,7 @@ pub(crate) fn resolve_agent_context_with_activation(
             cwd_path,
             config,
             repo_mounts,
+            restrictions,
         )),
         None => base_result,
     }

@@ -239,6 +239,7 @@ fn exact_current_legacy_rendered_default_remains_verbatim_compatibility() {
         None,
         None,
         None,
+        WorkspaceRestrictions::Enforced,
     )
     .expect("resolve exact-current legacy context");
     let current = default_context(&agent_root, Some(&matrix_root), &skills);
