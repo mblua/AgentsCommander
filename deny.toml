@@ -11,30 +11,14 @@ all-features = true
 [advisories]
 yanked = "deny"
 ignore = [
-  { id = "RUSTSEC-2026-0204", reason = "crossbeam-epoch 0.9.18 via rayon/image; needs bump" },
-  { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained, via tauri-utils build deps" },
   { id = "RUSTSEC-2024-0429", reason = "glib 0.18 unsound, Linux GTK stack of tauri/wry" },
-  { id = "RUSTSEC-2026-0258", reason = "h2 0.4.13 via hyper/axum/reqwest; needs bump" },
   { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys 0.30.1 via rusqlite 0.32; needs upgrade" },
-  { id = "RUSTSEC-2026-0463", reason = "openssl 0.10.76 via native-tls (Linux); needs bump" },
-  { id = "RUSTSEC-2026-0473", reason = "openssl 0.10.76 via native-tls (Linux); needs bump" },
-  { id = "RUSTSEC-2026-0474", reason = "openssl 0.10.76 via native-tls (Linux); needs bump" },
-  { id = "RUSTSEC-2026-0475", reason = "openssl 0.10.76 via native-tls (Linux); needs bump" },
-  { id = "RUSTSEC-2026-0476", reason = "openssl 0.10.76 via native-tls (Linux); needs bump" },
-  { id = "RUSTSEC-2026-0477", reason = "openssl 0.10.76 via native-tls (Linux); needs bump" },
-  { id = "RUSTSEC-2026-0478", reason = "openssl 0.10.76 via native-tls (Linux); needs bump" },
-  { id = "RUSTSEC-2026-0479", reason = "openssl 0.10.76 via native-tls (Linux); needs bump" },
   { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, proc-macro via rav1e/image" },
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained, via gtk3-macros (Linux)" },
-  { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.30/0.38/0.39 transitive; needs upgrades" },
-  { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.30/0.38/0.39 transitive; needs upgrades" },
-  { id = "RUSTSEC-2026-0386", reason = "tokio 1.51.0 AsyncFd unsound; needs bump" },
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, via fontdue (snapshot renderer)" },
   { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, via zbus (Linux)" },
   { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, via zbus (Linux)" },
   { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, via zbus (Linux)" },
-  { crate = "async-executor@1.14.0", reason = "yanked version in Cargo.lock; needs lock update" },
-  { crate = "clipboard-win@5.4.1", reason = "yanked version in Cargo.lock; needs lock update" },
 ]
 
 [licenses]
