@@ -120,6 +120,7 @@
   "voiceAutoExecute": true,
   "voiceAutoExecuteDelay": 15,
   "voiceToTextEnabled": false,
+  "webBrowserEnabled": false,
   "webServerBind": "127.0.0.1",
   "webServerEnabled": false
 }
