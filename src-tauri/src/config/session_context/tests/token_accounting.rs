@@ -187,6 +187,15 @@ const NEW_TASK_VERBS: &str =
     "only through the `task-set-title`, `task-append-body` and `task-set-body` CLI verbs";
 const TASK_SET_BODY_RULE_DELTA_BYTES: usize = 17;
 
+// #4752 P01: entry 6 keeps this sentence; it no longer ends the task rules.
+const MOVED_PEER_ACCESS: &str = " No peer-memory/other-room access.";
+// #4752 P01: 20 + "C:/fake/.ac/wg-1-team/TASK.md".len()
+const ROOM_TASK_RULES_GLUE_BYTES: usize = 49;
+// #4752 P01: 79 + messaging (31) + task (29)
+const INTEGRITY_SPLIT_CURRENT_DELTA_BYTES: usize = 139;
+// #4752 P01: 59 + messaging (27)
+const INTEGRITY_SPLIT_PRE_1795_DELTA_BYTES: usize = 86;
+
 struct CurrentProfile {
     touched_owners: usize,
     full_wg: String,
@@ -218,6 +227,11 @@ fn summarized_default_context_meets_size_budget() {
     let current = measure_current_profile(&values, &write_restrictions, &skills, host_allowance);
     let pre = measure_pre_1795_profile(&skills, current.selected_host_rules, host_allowance);
     assert_v5_delta_oracle(&values, &current, &pre);
+    // #4752 P01: the 20-byte heading plus both rules, minus the trimmed final 2 bytes.
+    assert_eq!(
+        super::super::render_integrity_rules_block(&values).len(),
+        20 + values.messaging_integrity_rule.len() + values.room_task_rules.len() - 2
+    );
     assert_budget_ladder_constants();
     assert_full_wg_required_text(&current.full_wg);
     assert_write_restriction_bodies(&write_restrictions);
@@ -258,8 +272,14 @@ fn assert_memory_layout_and_task_verbs(
         NEW_TASK_VERBS.len() - OLD_TASK_VERBS.len(),
         TASK_SET_BODY_RULE_DELTA_BYTES
     );
-    assert_eq!(values.room_shared_entry.matches(NEW_TASK_VERBS).count(), 1);
-    assert!(!values.room_shared_entry.contains(OLD_TASK_VERBS));
+    assert_eq!(values.room_task_rules.matches(NEW_TASK_VERBS).count(), 1);
+    assert!(!values.room_task_rules.contains(OLD_TASK_VERBS));
+    assert_eq!(MOVED_PEER_ACCESS.len(), 34);
+    assert_eq!(
+        values.room_shared_entry.matches(MOVED_PEER_ACCESS).count(),
+        1
+    );
+    assert!(!values.room_task_rules.contains("No peer-memory"));
 }
 
 fn measure_current_profile(
@@ -270,11 +290,11 @@ fn measure_current_profile(
 ) -> CurrentProfile {
     let messaging = super::super::render_inter_agent_messaging_block(values);
     let status_grant_offset = values
-        .room_shared_entry
+        .room_task_rules
         .find("Room status is at")
         .expect("P2 status grant");
     assert_eq!(
-        values.room_shared_entry.len() - status_grant_offset,
+        values.room_task_rules.len() - status_grant_offset + MOVED_PEER_ACCESS.len(),
         P2_STATUS_GRANT_BYTES,
         "the P2 grant must contribute exactly its measured bytes"
     );
@@ -286,6 +306,7 @@ fn measure_current_profile(
     let touched_owners = raw_touched_owners
         - P2_STATUS_GRANT_BYTES
         - MEMORY_LAYOUT_DELTA_BYTES
+        - INTEGRITY_SPLIT_CURRENT_DELTA_BYTES
         - TASK_SET_BODY_RULE_DELTA_BYTES;
     let full_wg = super::super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), skills);
     let selected_host_rules = super::super::host_platform_rules_default();
@@ -296,10 +317,12 @@ fn measure_current_profile(
     let historical_full_wg_bytes = full_wg.len()
         - P2_STATUS_GRANT_BYTES
         - MEMORY_LAYOUT_DELTA_BYTES
+        - INTEGRITY_SPLIT_CURRENT_DELTA_BYTES
         - TASK_SET_BODY_RULE_DELTA_BYTES
         - host_allowance;
     assert!(
-        raw_touched_owners <= V5_MAX_TOUCHED_OWNERS_BYTES + MEMORY_LAYOUT_DELTA_BYTES,
+        raw_touched_owners - INTEGRITY_SPLIT_CURRENT_DELTA_BYTES
+            <= V5_MAX_TOUCHED_OWNERS_BYTES + MEMORY_LAYOUT_DELTA_BYTES,
         "P2 actual touched owners: {} bytes, existing ceiling {}; full WG: {} bytes, existing \
             ceiling {}",
         raw_touched_owners,
@@ -312,7 +335,7 @@ fn measure_current_profile(
         "P2 rendered full={} raw_owner={} status={}",
         full_wg.len(),
         raw_touched_owners,
-        values.room_shared_entry.len() - status_grant_offset
+        values.room_task_rules.len() - status_grant_offset + MOVED_PEER_ACCESS.len()
     );
     CurrentProfile {
         touched_owners,
@@ -345,15 +368,18 @@ fn measure_pre_1795_profile(
         + super::super::DEFAULT_CLI_CONTEXT.len()
         + super::super::DEFAULT_SESSION_CREDENTIALS.len()
         + super::super::DEFAULT_DELEGATED_TASK_REPORTING.len()
-        - MEMORY_LAYOUT_DELTA_BYTES;
+        - MEMORY_LAYOUT_DELTA_BYTES
+        - INTEGRITY_SPLIT_PRE_1795_DELTA_BYTES;
     let pre_full_wg =
         super::super::default_context(PRE_1795_FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), skills);
     assert_eq!(pre_full_wg.matches(selected_host_rules).count(), 1);
     if cfg!(target_os = "windows") {
         assert_eq!(selected_host_rules, NEW_WINDOWS_HOST_RULES);
     }
-    let historical_pre_full_wg_bytes =
-        pre_full_wg.len() - MEMORY_LAYOUT_DELTA_BYTES - host_allowance;
+    let historical_pre_full_wg_bytes = pre_full_wg.len()
+        - MEMORY_LAYOUT_DELTA_BYTES
+        - INTEGRITY_SPLIT_PRE_1795_DELTA_BYTES
+        - host_allowance;
     Pre1795Profile {
         pre_values,
         pre_touched_owners,
@@ -382,9 +408,12 @@ fn assert_v5_delta_oracle(
     );
     assert_eq!(
         SHARED_LOCATIONS_ENTRY_DELTA_BYTES,
-        values.project_shared_entry.len() + values.room_shared_entry.len()
+        values.project_shared_entry.len()
+            + values.room_shared_entry.len()
+            + values.room_task_rules.len()
             - P2_STATUS_GRANT_BYTES
-            - TASK_SET_BODY_RULE_DELTA_BYTES,
+            - TASK_SET_BODY_RULE_DELTA_BYTES
+            - ROOM_TASK_RULES_GLUE_BYTES,
         "the entry half of the V5 delta must be exactly the two new entries"
     );
     assert!(
@@ -556,7 +585,8 @@ fn assert_final_budgets(current: &CurrentProfile, host_allowance: usize) {
         V5_TOUCHED_OWNERS_BYTES - touched_owners
     );
     assert!(
-        full_wg.len() <= V6_MAX_FULL_WG_PROFILE_BYTES + MEMORY_LAYOUT_DELTA_BYTES + host_allowance,
+        full_wg.len() - INTEGRITY_SPLIT_CURRENT_DELTA_BYTES
+            <= V6_MAX_FULL_WG_PROFILE_BYTES + MEMORY_LAYOUT_DELTA_BYTES + host_allowance,
         "WG profile is {} bytes; v6 baseline {V6_FULL_WG_PROFILE_BYTES}, effective ceiling {}, \
             host allowance {host_allowance}",
         full_wg.len(),

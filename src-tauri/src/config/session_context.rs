@@ -29,6 +29,8 @@ use builders::{
     build_root_agent_context_at, render_root_skills_list, render_root_template_text,
     root_conditions, root_runtime_values,
 };
+#[cfg(test)]
+use default_context::render_integrity_rules_block;
 #[cfg(all(test, target_os = "windows"))]
 use default_context::WINDOWS_SHELL_ROUTING;
 #[cfg(all(test, not(target_os = "windows")))]
@@ -40,10 +42,10 @@ use default_context::{
 };
 use default_context::{
     render_host_platform_rules_block, render_inter_agent_messaging_block,
-    render_project_shared_entry, render_room_shared_entry, render_write_restrictions_block,
-    strip_legacy_self_maintenance, DefaultContextDynamicValues, DEFAULT_CLI_CONTEXT,
-    DEFAULT_DELEGATED_TASK_REPORTING, DEFAULT_SESSION_CREDENTIALS, DIRECT_MATRIX_GIT_SCOPE,
-    ROOT_AUTHORITY_SECTION, ROOT_GIT_SCOPE, ROOT_PROJECT_SCOPE_ENTRY,
+    render_project_shared_entry, render_room_shared_entry, render_room_task_rules,
+    render_write_restrictions_block, strip_legacy_self_maintenance, DefaultContextDynamicValues,
+    DEFAULT_CLI_CONTEXT, DEFAULT_DELEGATED_TASK_REPORTING, DEFAULT_SESSION_CREDENTIALS,
+    DIRECT_MATRIX_GIT_SCOPE, ROOT_AUTHORITY_SECTION, ROOT_GIT_SCOPE, ROOT_PROJECT_SCOPE_ENTRY,
     SELF_MAINTENANCE_AUTO_SECTION,
 };
 #[cfg(test)]
