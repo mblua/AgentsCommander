@@ -207,7 +207,7 @@ fn issue_2868_team_aggregate_budget_does_not_grant_omitted_roots() {
             )
         })
         .collect();
-    let content = render_team_skills_section(&sources);
+    let content = render_team_skills_section(&sources, WorkspaceRestrictions::Enforced);
     assert!(content.len() <= 65536);
     assert!(content.contains("Omitted roots gain no read permission"));
     assert!(content.contains("### Team team-000"));
@@ -375,7 +375,13 @@ fn issue_2868_invalid_identity_unrecognized_nested_and_root_have_no_project_sour
         std::fs::create_dir_all(&root).unwrap();
         assert!(resolve_project_skill_root(&display_path(&root), None).is_none());
         let empty = discover_skill_index(None);
-        assert!(project_skills_for_session(&display_path(&root), None, &empty).is_empty());
+        assert!(project_skills_for_session(
+            &display_path(&root),
+            None,
+            &empty,
+            WorkspaceRestrictions::Enforced
+        )
+        .is_empty());
     }
     assert!(!ac.join("project-skills").exists());
     let replica = ac.join("room-4-dev").join("__agent_dev");

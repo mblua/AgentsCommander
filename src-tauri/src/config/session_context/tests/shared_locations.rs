@@ -214,6 +214,7 @@ fn golden_rule_room_replica_renders_entries_five_and_six_on_disk() {
         None,
         None,
         None,
+        WorkspaceRestrictions::Enforced,
     )
     .expect("resolve the materialized template");
 
@@ -506,6 +507,7 @@ fn materialized_template_without_write_restrictions_token_keeps_its_inline_block
         None,
         None,
         None,
+        WorkspaceRestrictions::Enforced,
     )
     .expect("resolve the token-less template");
 

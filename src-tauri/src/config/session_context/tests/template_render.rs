@@ -232,6 +232,7 @@ fn summarized_fine_placeholder_fixture_renders_supported_shapes() {
         None,
         None,
         false,
+        WorkspaceRestrictions::Enforced,
     );
     let plain = render_agent_context_template_inner(
         SUMMARIZED_FINE_PLACEHOLDER_FIXTURE,
@@ -242,6 +243,7 @@ fn summarized_fine_placeholder_fixture_renders_supported_shapes() {
         None,
         None,
         false,
+        WorkspaceRestrictions::Enforced,
     );
 
     for out in [&wg, &plain] {
@@ -295,6 +297,7 @@ fn summarized_fine_placeholder_fixture_renders_supported_shapes() {
         None,
         None,
         false,
+        WorkspaceRestrictions::Enforced,
     );
     assert!(write_restrictions_only.contains("4. **Messaging access:**"));
     assert!(!write_restrictions_only.contains("Narrow exception — room messaging directory"));

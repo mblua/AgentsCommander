@@ -4,7 +4,9 @@ use super::{
     ROOT_AUTHORITY_SECTION, ROOT_GIT_SCOPE, ROOT_PROJECT_SCOPE_ENTRY, WORKGROUP_GIT_SCOPE,
 };
 #[cfg(test)]
-use super::{render_default_agent_context, render_root_runtime_prologue_inner};
+use super::{
+    render_default_agent_context, render_root_runtime_prologue_inner, WorkspaceRestrictions,
+};
 #[cfg(test)]
 use std::path::Path;
 
@@ -397,6 +399,7 @@ pub(crate) fn default_context(
         Path::new(agent_root),
         None,
         None,
+        WorkspaceRestrictions::Enforced,
     )
 }
 

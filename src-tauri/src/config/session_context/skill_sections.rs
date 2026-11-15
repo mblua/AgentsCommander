@@ -1,7 +1,7 @@
 use super::{
     collect_skill_index, display_path, is_canonical_agent_matrix_dir, root_context_candidate,
     sanitize_skill_metadata_for_context, truncate_chars, SkillIndex, SkillMetadata,
-    GENERATED_SKILLS_SECTION_INTRO, GENERATED_SKILLS_SECTION_REPLICA_LINE,
+    WorkspaceRestrictions, GENERATED_SKILLS_SECTION_INTRO, GENERATED_SKILLS_SECTION_REPLICA_LINE,
     SKILL_INDEX_TOTAL_MAX_BYTES, SKILL_TRIGGER_TEXT_MAX_CHARS,
 };
 use std::path::{Path, PathBuf};
@@ -28,6 +28,7 @@ pub(crate) fn project_skills_for_session(
     agent_root: &str,
     matrix_root: Option<&str>,
     agent_index: &SkillIndex,
+    restrictions: WorkspaceRestrictions,
 ) -> String {
     let Some(ac_root) = resolve_project_skill_root(agent_root, matrix_root) else {
         return String::new();
@@ -51,7 +52,7 @@ pub(crate) fn project_skills_for_session(
             }
         }
     };
-    render_project_skills_section(&root, &index, agent_index)
+    render_project_skills_section(&root, &index, agent_index, restrictions)
 }
 
 /// Rejection is exclusive to the skill consumer; global discovery stays unchanged.
@@ -106,7 +107,11 @@ pub(crate) fn canonical_skill_member(path: &Path, matrix: &Path) -> bool {
     }
 }
 
-pub(crate) fn team_skills_for_session(agent_root: &str, matrix_root: Option<&str>) -> String {
+pub(crate) fn team_skills_for_session(
+    agent_root: &str,
+    matrix_root: Option<&str>,
+    restrictions: WorkspaceRestrictions,
+) -> String {
     let Some(ac_root) = resolve_project_skill_root(agent_root, matrix_root) else {
         return String::new();
     };
@@ -172,10 +177,32 @@ pub(crate) fn team_skills_for_session(agent_root: &str, matrix_root: Option<&str
             collect_skill_index(Some(&display_path(&root)), "team-skills"),
         ));
     }
-    render_team_skills_section(&sources)
+    render_team_skills_section(&sources, restrictions)
 }
 
-pub(crate) fn render_team_skills_section(sources: &[(String, SkillIndex)]) -> String {
+const AMENDMENT_START: &str = "Filesystem authorization amendment: You MAY READ";
+const AMENDMENT_END: &str =
+    "This read authorization also applies when no preceding filesystem rule exists.\n\n";
+
+// #4752: with Lifted, drop the amendment sentence group and keep the text around it.
+fn apply_amendment_policy(text: String, restrictions: WorkspaceRestrictions) -> String {
+    if restrictions == WorkspaceRestrictions::Enforced {
+        return text;
+    }
+    let Some(start) = text.find(AMENDMENT_START) else {
+        return text;
+    };
+    let Some(len) = text[start..].find(AMENDMENT_END) else {
+        return text;
+    };
+    let end = start + len + AMENDMENT_END.len();
+    format!("{}{}", &text[..start], &text[end..])
+}
+
+pub(crate) fn render_team_skills_section(
+    sources: &[(String, SkillIndex)],
+    restrictions: WorkspaceRestrictions,
+) -> String {
     if sources.is_empty() {
         return String::new();
     }
@@ -201,8 +228,9 @@ pub(crate) fn render_team_skills_section(sources: &[(String, SkillIndex)]) -> St
     let (mut omitted_roots, mut omitted_skills, mut omitted_warnings) = (0, 0, 0);
     for (position, (team, index)) in sources.iter().enumerate() {
         let root = index.skills_root.as_deref().expect("collected team root");
-        let grant = format!(
-            "### Team {team}\n\nFilesystem authorization amendment: You MAY READ \
+        let grant = apply_amendment_policy(
+            format!(
+                "### Team {team}\n\nFilesystem authorization amendment: You MAY READ \
             {root} and its descendants, including skill bodies and supporting resources. This is \
             an explicit additional exception to every preceding filesystem restriction in this \
             context, including the GOLDEN RULE absolute/exclusive entry ranges, the forbidden-read \
@@ -212,6 +240,8 @@ pub(crate) fn render_team_skills_section(sources: &[(String, SkillIndex)]) -> St
             require an existing independent permission. Private agent state and TASK.md write \
             protection remain unchanged. This read authorization also applies when no preceding \
             filesystem rule exists.\n\nCanonical team skills root: `{root}`\n\n"
+            ),
+            restrictions,
         );
         if output.len().saturating_add(grant.len()) > limit {
             omitted_roots = sources.len() - position;
@@ -278,8 +308,10 @@ pub(crate) fn render_project_skills_section(
     root: &str,
     index: &SkillIndex,
     agent_index: &SkillIndex,
+    restrictions: WorkspaceRestrictions,
 ) -> String {
-    let mut output = format!(
+    let mut output = apply_amendment_policy(
+        format!(
         "\n\n## Project Skills\n\nFilesystem authorization amendment: You MAY READ {root} and its \
             descendants, including skill bodies and supporting resources. This is an explicit \
             additional exception to every preceding filesystem restriction in this context, \
@@ -298,6 +330,8 @@ pub(crate) fn render_project_skills_section(
             next session/context refresh; no live reload.\n\nSelect `project:<name>` for the \
             project version. An unqualified name selects a valid agent skill first, otherwise the \
             valid project skill. Both sources remain available on a name collision.\n\n"
+        ),
+        restrictions,
     );
     // Reserve the entire omission notice before adding any optional entries.
     let summary_reserve = format!(
