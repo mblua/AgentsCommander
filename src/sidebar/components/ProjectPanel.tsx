@@ -43,6 +43,7 @@ export {
   type ProjectPanelCollapseSection,
 } from "../stores/project-collapse";
 import { sessionsStore } from "../stores/sessions";
+import { unleashedReplicasStore } from "../stores/unleashed-replicas";
 import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { toastStore } from "../../shared/stores/toasts";
@@ -3010,10 +3011,8 @@ const ProjectPanel: Component = () => {
           return (
             <div
               class="replica-item"
-              classList={{
-                active: session()?.id === sessionsStore.activeId,
-                working: rowIsWorking(),
-              }}
+              classList={{ active: session()?.id === sessionsStore.activeId,
+                working: rowIsWorking(), unleashed: unleashedReplicasStore.isUnleashed(replica) }}
               data-ac-testid={rowTestId()}
               onClick={() => handleReplicaClick(replica, wg)}
               onKeyDown={onRowKey(() => void handleReplicaClick(replica, wg))}
