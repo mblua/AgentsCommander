@@ -24,6 +24,7 @@ pub mod spec_board;
 pub(crate) mod task;
 pub(crate) mod telegram;
 pub(crate) mod testability;
+pub(crate) mod unleashed_replicas;
 pub(crate) mod voice;
 pub(crate) mod web;
 pub(crate) mod web_browser;

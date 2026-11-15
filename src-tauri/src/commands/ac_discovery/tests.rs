@@ -240,6 +240,32 @@ fn floor_names() -> Vec<String> {
     vec!["CLAUDE.md".into(), "AGENTS.md".into()]
 }
 
+// #4752 P04: discovery sends the Unleash flag as camelCase `unleashed`.
+#[test]
+fn p04_replica_wire_has_unleashed_field() {
+    let replica = AcAgentReplica {
+        name: "dev".into(),
+        path: "C:/p/.ac/room-1-t/__agent_dev".into(),
+        identity_path: None,
+        origin_project: None,
+        preferred_agent_id: None,
+        current_coding_agent_id: None,
+        current_profile: None,
+        repo_paths: Vec::new(),
+        repo_branch: None,
+        is_coordinator: false,
+        last_user_message_at: None,
+        auto_closed_at: None,
+        manually_closed_at: None,
+        saved_pair: None,
+        selection_state: None,
+        selection_error: None,
+        unleashed: true,
+    };
+    let value = serde_json::to_value(&replica).expect("serialize replica");
+    assert_eq!(value["unleashed"], true);
+}
+
 mod archive;
 mod discovery;
 mod discovery_payload;

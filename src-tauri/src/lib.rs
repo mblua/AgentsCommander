@@ -392,7 +392,7 @@ fn invoke_handler(
         commands::session::create_session,
         commands::session::destroy_session,
         commands::session::close_coordinator,
-        commands::session::restart_session,
+        commands::session::restart_session, commands::unleashed_replicas::set_replica_unleashed,
         commands::session::resolve_blocking_menu,
         commands::session::switch_session,
         commands::session::rename_session,
