@@ -39,3 +39,5 @@ mod launch_witness;
 /// no `tauri::App` is built, so no GTK is needed on a display-less runner.
 #[cfg(unix)]
 mod spawn_sync_search_path;
+/// #4752 P02: Git brakes are skipped only for an unleashed replica.
+mod unleash_git_brakes;
