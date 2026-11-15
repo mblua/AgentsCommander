@@ -95,7 +95,6 @@ pub(crate) fn is_unleashed(replica_root: &str) -> bool {
 }
 
 // Inserts or removes the replica key in `path` (locked read-modify-write, atomic publish).
-#[cfg_attr(not(test), allow(dead_code, reason = "#4752 P04 adds the UI command"))]
 pub(crate) fn set_unleashed_in(
     path: &Path,
     replica_root: &str,
@@ -134,7 +133,6 @@ pub(crate) fn set_unleashed_in(
 }
 
 // Sets the flag in the app config directory store.
-#[allow(dead_code, reason = "#4752 P04 adds the UI command")]
 pub(crate) fn set_unleashed(replica_root: &str, unleashed: bool) -> Result<(), String> {
     let Some(path) = store_path() else {
         return Err("unleashNoConfigDir".to_string());
