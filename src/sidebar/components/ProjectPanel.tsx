@@ -65,6 +65,7 @@ import LoopTargetMissingModal from "./LoopTargetMissingModal";
 import AgentPickerModal, { type AgentPickerScopeContext, LockIcon } from "./AgentPickerModal";
 import RestartPromptModal from "./RestartPromptModal";
 import AgentMatrixNoticeModal from "./AgentMatrixNoticeModal";
+import ReplicaSessionActions, { UnleashPromptHost } from "./ReplicaSessionActions";
 import EditTeamModal from "./EditTeamModal";
 import { TelegramIcon } from "./TelegramIcon";
 import DetachIcon from "./DetachIcon";
@@ -4443,14 +4444,11 @@ const ProjectPanel: Component = () => {
                           )}
                         </Show>
                         <Show when={activeReplicaMenuSession()}>
-                          <button
-                            class="session-context-option context-option-danger"
-                            onClick={(event) =>
-                              handleReplicaContextClose(event, menu().sessionId)
-                            }
-                          >
-                            <span class="session-context-option-icon" aria-hidden="true">&#x2715;</span> Close Session (Ctrl+Shift+W)
-                          </button>
+                          {(session) => (
+                            <ReplicaSessionActions session={session()} replica={menu().replica}
+                              close={closeReplicaCtxMenu} closeSession={handleReplicaContextClose}
+                              restart={restartReplicaSessionCore} />
+                          )}
                         </Show>
                         <div class="context-separator" />
                         <button
@@ -5105,6 +5103,7 @@ const ProjectPanel: Component = () => {
         />
       </Portal>
     )}
+    <UnleashPromptHost restart={restartReplicaSessionCore} />
 
     {/* #537: post-assign "Restart now?" prompt, rendered here at the stable
         ProjectPanel root (outside the projects <For>) so a background discovery
