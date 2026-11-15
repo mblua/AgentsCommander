@@ -288,7 +288,8 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
                 r#"provide that "#,
                 r#"exact file "#,
                 r#"path without directory discovery, and the filename must match the canonical "#,
-                r#"pattern in Integrity Rules. This authorization is read-only and limited to that file. "#,
+                r#"pattern in Integrity Rules. "#,
+                r#"This authorization is read-only and limited to that file. "#,
                 r#"Do NOT list or explore the other workspace or room, read a second "#,
                 r#"external file or any other file or content there, or create, "#,
                 r#"write, modify, or delete anything in its `messaging` directory.
