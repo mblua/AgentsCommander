@@ -128,7 +128,7 @@ fn default_context_room_authorizes_only_instructed_cross_workspace_canonical_mes
     for required in [
         "C:/fake/room-7-dev-team/messaging",
         "`messaging`",
-        "YYYYMMDD-HHMMSS-<roomN>-<you>-to-<roomN>-<peer>-<slug>.md",
+        "the filename must match the canonical pattern in Integrity Rules",
         "the user directly instructs you in the active conversation to read or process that file",
         "`[Message from <peer>] Process this inter-agent message: <path>`",
         "without directory discovery",
