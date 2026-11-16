@@ -17,19 +17,32 @@ pub enum Probe {
     Blank,
     Stale,
     Cancel,
+    StallModule,
+    StallRaf,
 }
 
 impl Probe {
-    pub const ALL: [(&str, Self); 4] = [
+    pub const ALL: [(&str, Self); 6] = [
         ("none", Self::None),
         ("blank", Self::Blank),
         ("stale", Self::Stale),
         ("cancel", Self::Cancel),
+        ("stall-module", Self::StallModule),
+        ("stall-raf", Self::StallRaf),
     ];
 
     pub fn token(self) -> &'static str {
         let found = Self::ALL.iter().find(|(_, probe)| *probe == self);
         found.map_or("none", |(name, _)| name)
+    }
+
+    // Live AC-4248-008 stall probes: script run before the fixture call.
+    pub fn script_prefix(self) -> &'static str {
+        match self {
+            Self::StallModule => "delete window.ac4248Frame; delete window.ac4248Beacon; ",
+            Self::StallRaf => "window.requestAnimationFrame = () => 0; ",
+            Self::None | Self::Blank | Self::Stale | Self::Cancel => "",
+        }
     }
 }
 

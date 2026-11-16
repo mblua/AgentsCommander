@@ -152,3 +152,19 @@ fn stale_rejected() {
         Err(PixelError::Checker)
     );
 }
+
+#[test]
+fn stall_probe_steps() {
+    for probe in [Probe::StallModule, Probe::StallRaf] {
+        let steps = plan_steps(probe);
+        assert_eq!(steps.len(), 1);
+        assert_eq!((steps[0].label, steps[0].frame), ("control", "control"));
+        assert_eq!(steps[0], plan_steps(Probe::None)[0]);
+    }
+    for (name, probe) in Probe::ALL {
+        assert_eq!(probe.token(), name);
+    }
+    let prefix = Probe::StallModule.script_prefix();
+    assert!(prefix.contains("window.ac4248Frame"));
+    assert!(prefix.contains("window.ac4248Beacon"));
+}

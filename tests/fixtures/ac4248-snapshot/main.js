@@ -3,6 +3,18 @@ import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
+// AC-4248-008 beacon: proves the module ran; the harness reads it after a deadline.
+const beacon = {
+  version: 1,
+  moduleUtc: new Date().toISOString(),
+  phase: "module",
+  frameCalls: 0,
+  lastGeneration: null,
+  rafRequested: 0,
+  rafTicks: 0,
+};
+window.ac4248Beacon = beacon;
+
 const COLS = 40;
 const ROWS = 12;
 const BLOCK_CELLS = 10;
@@ -28,6 +40,7 @@ let webglAddon = null;
 
 function setErrorTitle(generation, message, actualRenderer) {
   if (generation !== null && generation !== currentGeneration) return;
+  beacon.phase = "error-title-set";
   document.title = `ac4248:error:${JSON.stringify({ generation, message, actualRenderer })}`;
 }
 
@@ -37,10 +50,19 @@ function rectOf(element) {
 }
 
 function nextFrames(count) {
+  beacon.phase = "waiting-frames";
   return new Promise((resolve) => {
     const step = (remaining) => {
-      if (remaining === 0) resolve();
-      else requestAnimationFrame(() => step(remaining - 1));
+      if (remaining === 0) {
+        beacon.phase = "frames-done";
+        resolve();
+        return;
+      }
+      beacon.rafRequested += 1;
+      requestAnimationFrame(() => {
+        beacon.rafTicks += 1;
+        step(remaining - 1);
+      });
     };
     step(count);
   });
@@ -145,10 +167,15 @@ async function showControl(generation) {
     scriptExecuted: true,
     ...viewportInfo(),
   };
+  beacon.phase = "ready-title-set";
   document.title = `ac4248:${JSON.stringify(ready)}`;
 }
 
 async function ac4248Frame(request) {
+  beacon.frameCalls += 1;
+  beacon.phase = "frame-called";
+  beacon.lastGeneration =
+    typeof request?.generation === "string" ? request.generation.slice(0, 32) : null;
   let parsed;
   try {
     parsed = validate(request);
@@ -189,6 +216,7 @@ async function ac4248Frame(request) {
         terminal: terminalBlockRect(),
       },
     };
+    beacon.phase = "ready-title-set";
     document.title = `ac4248:${JSON.stringify(ready)}`;
   } catch (error) {
     if (renderer === "webgl") actualRenderer = "none";

@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use tauri::{RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use webkit2gtk::{LoadEvent, SettingsExt, SnapshotOptions, SnapshotRegion, WebViewExt};
 
+use crate::diagnosis::{classify, read_probe, TitleLog, PROBE_SCRIPT};
 use crate::receipt::{
     BoundedWriter, Outcome, PixelVerdict, Probe, ProbeRejection, Readiness, Receipt, RequestGate,
     Snapshot, StepSpec, MAX_PNG_BYTES,
@@ -51,6 +52,17 @@ struct Progress {
     script_executed: bool,
     snapshot_taken: bool,
     exit: Option<u8>,
+    titles: TitleLog,
+    expired: Option<Expired>,
+}
+
+// A deadline that fired and now waits for the page probe (or its grace timer).
+struct Expired {
+    stage: Value,
+    outcome: Outcome,
+    label: Option<&'static str>,
+    waiting_readiness: bool,
+    grace: Option<glib::SourceId>,
 }
 
 struct Harness {
@@ -204,7 +216,8 @@ fn on_loaded(shared: &Shared, label: &'static str) {
     let Ok(mut harness) = shared.try_borrow_mut() else {
         return;
     };
-    if harness.state.exit.is_some() || harness.state.loaded.contains(&label) {
+    let ended = harness.state.exit.is_some() || harness.state.expired.is_some();
+    if ended || harness.state.loaded.contains(&label) {
         return;
     }
     harness.state.loaded.push(label);
@@ -235,7 +248,8 @@ fn start_step(harness: &mut Harness) {
         "zoom": step.zoom,
         "renderer": step.renderer,
     });
-    if let Err(error) = window.eval(format!("window.ac4248Frame({request});")) {
+    let prefix = harness.spec.probe.script_prefix();
+    if let Err(error) = window.eval(format!("{prefix}window.ac4248Frame({request});")) {
         finish(harness, &Outcome::Incomplete(format!("eval: {error}")));
     }
 }
@@ -244,6 +258,7 @@ fn handle_title(shared: &Shared, label: &'static str, title: &str) {
     let Ok(mut harness) = shared.try_borrow_mut() else {
         return;
     };
+    harness.state.titles.record(label, title);
     let generation = harness.state.gate.current().map(str::to_owned);
     let (Some(step), Some(generation)) = (harness.step(), generation) else {
         return;
@@ -491,6 +506,48 @@ fn on_timeout(shared: &Shared) {
         return;
     };
     harness.state.deadline = None;
+    let (waiting, mut stage, outcome) = timeout_stage(&harness);
+    // A late title or snapshot can no longer advance the run.
+    harness.state.gate.cancel();
+    if let Some(cancellable) = harness.state.cancellable.take() {
+        cancellable.cancel();
+    }
+    let label = harness.step().map(|step| step.label);
+    let Some(window) = label.and_then(|label| harness.window(label)) else {
+        stage["diagnostics"] = json!({ "status": "no_view" });
+        stage["hypothesis"] = Value::Null;
+        if let Some(receipt) = harness.receipt.as_mut() {
+            receipt.set("timeoutStage", stage);
+        }
+        return finish(&mut harness, &outcome);
+    };
+    let on_grace = Rc::clone(shared);
+    let grace = glib::timeout_add_local_once(Duration::from_secs(5), move || {
+        on_diagnostics(&on_grace, None);
+    });
+    harness.state.expired = Some(Expired {
+        stage,
+        outcome,
+        label,
+        waiting_readiness: waiting == Some("readiness"),
+        grace: Some(grace),
+    });
+    // wry runs the callback on the GTK main thread, so the guard is never foreign.
+    let guard = ThreadGuard::new(Rc::clone(shared));
+    let probe = window.eval_with_callback(PROBE_SCRIPT, move |raw| {
+        on_diagnostics(guard.get_ref(), Some(raw));
+    });
+    if let Err(error) = probe {
+        if let Some(expired) = harness.state.expired.as_mut() {
+            expired.stage["evalError"] = json!(error.to_string());
+        }
+        drop(harness);
+        on_diagnostics(shared, Some(String::new()));
+    }
+}
+
+// Today's timeout stage and outcome, before the page probe is read.
+fn timeout_stage(harness: &Harness) -> (Option<&'static str>, Value, Outcome) {
     let all_loaded = harness.state.loaded.len() == harness.windows.len();
     let in_request = harness.state.gate.current().is_some();
     let waiting = if !all_loaded || !in_request {
@@ -509,9 +566,6 @@ fn on_timeout(shared: &Shared) {
         "stepLabel": step.map(|step| step.label),
         "waiting": waiting,
     });
-    if let Some(receipt) = harness.receipt.as_mut() {
-        receipt.set("timeoutStage", stage);
-    }
     // The feasibility token is only for the current generation's readiness or
     // snapshot deadline after every own load finished; anything else is INCOMPLETE.
     let qualified = waiting.is_some() && harness.spec.off_workspace;
@@ -520,7 +574,42 @@ fn on_timeout(shared: &Shared) {
     } else {
         Outcome::Incomplete("deadline_30s".to_owned())
     };
-    finish(&mut harness, &outcome);
+    (waiting, stage, outcome)
+}
+
+// Ends an expired run once: from the probe callback (Some) or the grace timer (None).
+fn on_diagnostics(shared: &Shared, raw: Option<String>) {
+    let Ok(mut harness) = shared.try_borrow_mut() else {
+        return;
+    };
+    if harness.state.exit.is_some() {
+        return;
+    }
+    let Some(mut expired) = harness.state.expired.take() else {
+        return;
+    };
+    if raw.is_some() {
+        if let Some(grace) = expired.grace.take() {
+            grace.remove();
+        }
+    }
+    let diagnostics = read_probe(raw.as_deref());
+    let hypothesis = if expired.waiting_readiness {
+        let titles = &harness.state.titles;
+        let seen = expired
+            .label
+            .map(|label| titles.seen(label))
+            .unwrap_or_default();
+        json!(classify(&diagnostics, &seen, titles.complete()))
+    } else {
+        Value::Null
+    };
+    expired.stage["diagnostics"] = diagnostics;
+    expired.stage["hypothesis"] = hypothesis;
+    if let Some(receipt) = harness.receipt.as_mut() {
+        receipt.set("timeoutStage", expired.stage);
+    }
+    finish(&mut harness, &expired.outcome);
 }
 
 fn on_web_process_terminated(shared: &Shared, label: &'static str) {
@@ -570,8 +659,21 @@ fn finish(harness: &mut Harness, outcome: &Outcome) {
         }
     }
     harness.state.stale_frame = None;
+    // Another event ended the run during the probe grace period.
+    let superseded = harness.state.expired.take().map(|mut expired| {
+        if let Some(grace) = expired.grace.take() {
+            grace.remove();
+        }
+        expired.stage["diagnostics"] = json!({ "status": "superseded" });
+        expired.stage["hypothesis"] = Value::Null;
+        expired.stage
+    });
     let mut exit = outcome.exit();
     if let Some(mut receipt) = harness.receipt.take() {
+        if let Some(stage) = superseded {
+            receipt.set("timeoutStage", stage);
+        }
+        receipt.set("titleLog", harness.state.titles.to_json());
         receipt.set("scriptExecuted", json!(harness.state.script_executed));
         receipt.set("snapshotTaken", json!(harness.state.snapshot_taken));
         exit = receipt.finish(outcome);

@@ -2,6 +2,8 @@
 // locked Tauri/WebKitGTK WebView on Linux. This file owns the CLI, composition and
 // the portable validators; native.rs owns the GTK/WebKit harness. Example only: it
 // is not an app module and changes no production behavior.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod diagnosis;
 #[cfg(target_os = "linux")]
 mod native;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -239,15 +241,17 @@ fn plan_steps(probe: Probe) -> Vec<StepSpec> {
         renderer,
     };
     let (a, b) = (target("A", 1.0, "default"), target("B", 1.0, "default"));
+    let control = StepSpec {
+        label: "control",
+        frame: "control",
+        ..a
+    };
     match probe {
         Probe::Blank | Probe::Cancel => vec![a],
         Probe::Stale => vec![a, b],
+        Probe::StallModule | Probe::StallRaf => vec![control],
         Probe::None => {
-            let mut steps = vec![StepSpec {
-                label: "control",
-                frame: "control",
-                ..a
-            }];
+            let mut steps = vec![control];
             for renderer in ["default", "webgl"] {
                 for zoom in [1.0, 1.1] {
                     steps.push(target("A", zoom, renderer));
