@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import { render } from "solid-js/web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScreenshotHotkeyStatus } from "../../shared/types";
 
@@ -106,6 +105,7 @@ const mountTitlebar = async ({
   }
 
   vi.resetModules();
+  const { render } = await import("solid-js/web");
   const { default: Titlebar } = await import("./Titlebar");
   const root = document.createElement("div");
   document.body.append(root);
