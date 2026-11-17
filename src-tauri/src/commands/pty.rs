@@ -224,8 +224,9 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
 
     // (#630/#631 + #698) Apply both user-input state transitions and persist them
     // atomically. On the FIRST substantive post-boundary submission we re-arm the
-    // resume intent, and every user write still lowers any visible raise-hand
-    // communication. This is the unified user-input choke point
+    // resume intent, and a submitted line (Enter) lowers any visible raise-hand
+    // communication; other writes persist nothing (#4778). This is the unified
+    // user-input choke point
     // (xterm/Telegram/web); injection and auto-resume never call it, and it runs
     // before the coordinator-only early return below so non-coordinator members
     // re-arm too when the write is substantive.
@@ -248,8 +249,11 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         manager.arm_agent_turn(session_id).await;
         clear_control_write_mark(app, session_id);
     }
-    let cleared =
-        persist_user_input_transitions(&manager, session_id, substantive, source_class).await;
+    let cleared = if persists_session_state(&source) {
+        persist_user_input_transitions(&manager, session_id, substantive, source_class).await
+    } else {
+        crate::config::sessions_persistence::ClearedUserInputTransitions::default()
+    };
 
     if cleared.cleared_raise_hand {
         crate::session::selection::publish_session_communication(app, session_id, None);
@@ -368,6 +372,18 @@ async fn persist_user_input_transitions(
 /// existing `classify_substantive` criterion, not a second one.
 fn recharges_capture_budget(substantive: bool, source: &UserInputSource<'_>) -> bool {
     substantive && matches!(source, UserInputSource::Terminal(_))
+}
+
+/// #4778 - does this user input persist session state (lower the hand, clear the
+/// fresh intent)? Only a submitted line does (user decision, #4778). A complete
+/// message is always a submitted line.
+fn persists_session_state(source: &UserInputSource<'_>) -> bool {
+    match source {
+        UserInputSource::Terminal(data) | UserInputSource::Web(data) => {
+            crate::pty::input_activity::chunk_submits_line(data)
+        }
+        UserInputSource::CompleteMessage => true,
+    }
 }
 
 /// (#2232 phase 3) The room root of the orchestrator terminal `session_id` was

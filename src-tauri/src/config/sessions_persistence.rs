@@ -86,9 +86,9 @@ pub(crate) use write::{save_sessions_to_dir_for_test, FixturePublicationActionKi
 use carrier::{publication_slot, ProtectionPhase, PublicationCheckpoint};
 #[cfg(test)]
 use live_update::{
-    clear_blocked_menu_and_persist_to_dir, clear_user_input_transitions_and_persist_to_dir_result,
-    raise_hand_and_persist_to_dir_result, set_blocked_menu_and_persist_to_dir,
-    write_start_fresh_and_persist_to_dir_result,
+    clear_blocked_menu_and_persist_to_dir, clear_user_input_transitions_and_persist_lazy_result,
+    clear_user_input_transitions_and_persist_to_dir_result, raise_hand_and_persist_to_dir_result,
+    set_blocked_menu_and_persist_to_dir, write_start_fresh_and_persist_to_dir_result,
 };
 #[cfg(test)]
 use orphan::{prepare_persist_snapshot, OrphanSweepCounts, ORPHAN_ARCHIVE_FILENAME};

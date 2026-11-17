@@ -629,3 +629,25 @@ fn typing_hold_counts_unique_ids_and_snapshot_is_read_only() {
     assert_eq!(tracker.snapshot(id, window).held_count, 0);
     assert!(!tracker.is_hold_active(id, window));
 }
+
+/// #4778 - only a CR or LF outside an ESC sequence submits a line; a bare
+/// Enter counts, wheel/arrow/focus reports and Alt+Enter do not.
+#[test]
+fn chunk_submits_line_only_for_cr_or_lf_outside_escapes() {
+    for chunk in [b"\r".as_slice(), b"\n", b"abc\r", b"x\ny"] {
+        assert!(chunk_submits_line(chunk), "{chunk:?} should submit");
+    }
+    for chunk in [
+        b"".as_slice(),
+        b"abc",
+        b"\x1b[A",
+        b"\x1b[<65;10;5M",
+        b"\x1b[<64;120;33M",
+        b"\x1b[I",
+        b"\x1b\r",
+        b"\x1b]11;rgb:0/0/0\x07",
+        b"\x1b",
+    ] {
+        assert!(!chunk_submits_line(chunk), "{chunk:?} should not submit");
+    }
+}
