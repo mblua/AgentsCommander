@@ -63,3 +63,18 @@ fn temp_room_path_uses_config_dir() {
     let project = base.join("project").join(".ac").join("temp-room-tr01");
     assert!(!is_temp_room_path(&project.to_string_lossy()));
 }
+
+#[test]
+fn temp_room_artifact_rows_use_the_writer_prefix() {
+    use crate::config::instance_artifacts::{Disposition, INSTANCE_ARTIFACTS};
+    for name in [
+        format!("{TEMP_ROOM_PREFIX}*"),
+        format!(".deleting-{TEMP_ROOM_PREFIX}*"),
+    ] {
+        let rows = INSTANCE_ARTIFACTS
+            .iter()
+            .filter(|row| row.name == name && row.disposition == Disposition::Ignore)
+            .count();
+        assert_eq!(rows, 1, "missing Ignore row {name}");
+    }
+}

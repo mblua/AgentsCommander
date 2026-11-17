@@ -239,6 +239,13 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: stable PAIR reservation locks; never deleted",
     },
     InstanceArtifact {
+        name: ".deleting-temp-room-tr*",
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: orphan of a temp room whose delete failed half-way; never \
+        committed",
+    },
+    InstanceArtifact {
         name: NAMING_MIGRATION_LOCK_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
@@ -758,6 +765,13 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: Telegram bridge log",
+    },
+    InstanceArtifact {
+        name: "temp-room-tr*",
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: temporary rooms of bare agents (#4779); disposable, never \
+        committed",
     },
     InstanceArtifact {
         name: UI_AUTOMATION_DIR_NAME,
