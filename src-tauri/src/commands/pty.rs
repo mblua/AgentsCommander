@@ -225,7 +225,8 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
     // (#630/#631 + #698) Apply both user-input state transitions and persist them
     // atomically. On the FIRST substantive post-boundary submission we re-arm the
     // resume intent, and a submitted line (Enter) lowers any visible raise-hand
-    // communication; other writes persist nothing (#4778). This is the unified user-input choke point
+    // communication; other writes persist nothing (#4778). This is the unified
+    // user-input choke point
     // (xterm/Telegram/web); injection and auto-resume never call it, and it runs
     // before the coordinator-only early return below so non-coordinator members
     // re-arm too when the write is substantive.

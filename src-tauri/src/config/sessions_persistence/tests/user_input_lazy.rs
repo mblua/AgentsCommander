@@ -30,6 +30,12 @@ async fn lazy_clear_skips_settings_when_nothing_changes() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mgr = SessionManager::new();
     let id = lazy_session(&mgr).await;
+    assert!(
+        !mgr.get_session(id)
+            .await
+            .expect("session")
+            .start_fresh_on_restore
+    );
     let calls = Cell::new(0);
     let load = || {
         calls.set(calls.get() + 1);
