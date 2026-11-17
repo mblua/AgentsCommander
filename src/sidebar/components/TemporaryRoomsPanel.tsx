@@ -144,7 +144,10 @@ const TemporaryRoomsPanel: Component = () => {
   };
 
   const pickAgent = (room: TempRoomInfo, session: Session | undefined) =>
-    new Promise<AgentPickerSelection | null>((resolve) => setPicker({ room, session, resolve }));
+    new Promise<AgentPickerSelection | null>((resolve) => {
+      picker()?.resolve(null); // a replaced request counts as cancelled
+      setPicker({ room, session, resolve });
+    });
 
   const resolveChoice = async (room: TempRoomInfo): Promise<TempRoomAgentChoice | null> => {
     const settings = await readSettings();
