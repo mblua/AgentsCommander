@@ -304,6 +304,15 @@ pub(crate) fn validate_session_creation_cwd(
     if crate::config::root_agent::is_root_agent_path(cwd) {
         return Ok(());
     }
+    // 1b. Temp room (#4779): exempt from project membership, but it must exist.
+    if crate::config::temp_rooms::is_temp_room_path(cwd) {
+        if crate::filesystem::directories::persisted_session_cwd_exists(Path::new(cwd)) {
+            return Ok(());
+        }
+        return Err(format!(
+            "sessionCreateBlocked: cwd '{cwd}' does not exist on disk"
+        ));
+    }
     // 2. Archived root (structural membership; existence deliberately waived for
     //    unmount/drive-down, so a missing cwd under an archived root is Ok).
     if archived_root_containing_raw(cwd, archived_project_paths).is_some() {

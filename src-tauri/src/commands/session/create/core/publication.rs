@@ -371,47 +371,46 @@ async fn publish_tooling<R: tauri::Runtime>(
     } = ctx;
     let id = session.id;
     // Save lastCodingAgent + codingAgents (skip for temp sessions)
-    if !skip_tooling_save {
-        if let Some(aid) = agent_id {
-            // Resolve label: use provided agent_label, or look up from settings by agent_id.
-            // Without this fallback, callers that pass agent_id but no label (session-requests,
-            // web remote) would write app: "Unknown" into the per-instance config.json.
-            // #2433 - computed under the settings read lock, written after it drops.
-            let write = {
-                let settings = app.state::<SettingsState>();
-                let write = match settings.current_read().await {
-                    Ok(cfg) => Some(prepare_last_coding_agent_write(
-                        aid,
-                        agent_label.as_deref(),
-                        &cfg,
-                    )),
-                    Err(error) => {
-                        log::debug!("[session] skipping lastCodingAgent publication: {error}");
-                        None
-                    }
-                };
-                write
+    if skip_tooling_save || crate::config::temp_rooms::is_temp_room_path(cwd) {
+        return;
+    }
+    if let Some(aid) = agent_id {
+        // Resolve label: use provided agent_label, or look up from settings by agent_id.
+        // Without this fallback, callers that pass agent_id but no label (session-requests,
+        // web remote) would write app: "Unknown" into the per-instance config.json.
+        // #2433 - computed under the settings read lock, written after it drops.
+        let write = {
+            let settings = app.state::<SettingsState>();
+            let write = match settings.current_read().await {
+                Ok(cfg) => Some(prepare_last_coding_agent_write(
+                    aid,
+                    agent_label.as_deref(),
+                    &cfg,
+                )),
+                Err(error) => {
+                    log::debug!("[session] skipping lastCodingAgent publication: {error}");
+                    None
+                }
             };
-            if let Some(write) = write {
-                if let Err(e) = save_last_coding_agent(cwd, &id.to_string(), &write) {
-                    log::warn!("Failed to save lastCodingAgent: {e}");
-                }
+            write
+        };
+        if let Some(write) = write {
+            if let Err(e) = save_last_coding_agent(cwd, &id.to_string(), &write) {
+                log::warn!("Failed to save lastCodingAgent: {e}");
             }
-            // #592 - persist the loaded profile content-hash so drift survives an
-            // AC restart. Best-effort; never aborts the spawn. No-op off-replica.
-            if let Some(hash) = session.profile_content_hash.as_deref() {
-                log::debug!(
-                    "[profile-hash] spawn-persist: session={id} agent={aid} hash={hash} \
-                     cwd={cwd:?}",
-                );
-                if let Err(e) =
-                    crate::config::coding_agent_profiles::set_replica_profile_content_hash(
-                        std::path::Path::new(&cwd),
-                        hash,
-                    )
-                {
-                    log::warn!("Failed to persist profileContentHash: {e}");
-                }
+        }
+        // #592 - persist the loaded profile content-hash so drift survives an
+        // AC restart. Best-effort; never aborts the spawn. No-op off-replica.
+        if let Some(hash) = session.profile_content_hash.as_deref() {
+            log::debug!(
+                "[profile-hash] spawn-persist: session={id} agent={aid} hash={hash} \
+                 cwd={cwd:?}",
+            );
+            if let Err(e) = crate::config::coding_agent_profiles::set_replica_profile_content_hash(
+                std::path::Path::new(&cwd),
+                hash,
+            ) {
+                log::warn!("Failed to persist profileContentHash: {e}");
             }
         }
     }

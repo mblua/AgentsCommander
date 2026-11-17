@@ -660,6 +660,12 @@ fn resolve_container_launch(
         release_resource_launch_permit(resource_monitor, resource_permit);
         return Err("root-agent cannot use container transport".to_string());
     }
+    if backend_kind == SessionBackendKind::ContainerTransport
+        && crate::config::temp_rooms::is_temp_room_path(cwd)
+    {
+        release_resource_launch_permit(resource_monitor, resource_permit);
+        return Err("temp rooms cannot use container transport".to_string());
+    }
     let container_path_context = if backend_kind == SessionBackendKind::ContainerTransport {
         match container_path_context_for_cwd(cwd) {
             Ok(context) => Some(context),

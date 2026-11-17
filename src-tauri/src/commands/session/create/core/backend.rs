@@ -650,6 +650,18 @@ struct SpawnEnvironmentInput<'a> {
     session_env_warnings: &'a mut Vec<crate::pty::container_paths::ContainerEnvWarning>,
 }
 
+/// Credential env for a spawn: none for plain shells and temp rooms (#4779).
+fn credential_env_for(
+    agent_id: Option<&str>,
+    token: &uuid::Uuid,
+    cwd: &str,
+) -> Vec<(String, String)> {
+    if agent_id.is_none() || crate::config::temp_rooms::is_temp_room_path(cwd) {
+        return Vec::new();
+    }
+    crate::pty::credentials::build_credentials_env(token, cwd)
+}
+
 fn prepare_environment<R: tauri::Runtime>(
     ctx: &CreateBodyContext<'_, R>,
     input: SpawnEnvironmentInput<'_>,
@@ -671,11 +683,7 @@ fn prepare_environment<R: tauri::Runtime>(
         ..
     } = ctx;
     let id = session.id;
-    let extra_env = if agent_id.is_some() {
-        crate::pty::credentials::build_credentials_env(&session.token, cwd)
-    } else {
-        Vec::new()
-    };
+    let extra_env = credential_env_for(agent_id.as_deref(), &session.token, cwd);
     let configured_env = child_environment(
         resolved_spawn.map(|spawn| spawn.child_env.as_slice()),
         injected_claude_config_dir,

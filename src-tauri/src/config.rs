@@ -41,6 +41,7 @@ pub mod sessions_persistence;
 pub mod settings;
 pub(crate) mod shared_locations;
 pub(crate) mod teams;
+pub(crate) mod temp_rooms;
 pub(crate) mod unleashed_replicas;
 
 use crate::filesystem::config_write_probe;
