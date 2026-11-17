@@ -60,16 +60,41 @@ fn debug_prints_temp_room_agent() {
     assert!(format!("{:?}", AppSettings::default()).contains("temp_room_agent"));
 }
 
+fn disk_object(path: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
+    let raw = std::fs::read_to_string(path).expect("read settings.json");
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("parse settings.json");
+    value.as_object().expect("settings object").clone()
+}
+
 #[test]
-fn choice_round_trips_through_serde() {
-    let s = AppSettings {
-        temp_room_agent: Some(TempRoomAgentChoice {
-            agent_id: "codex".to_string(),
-            requested_profile: Some("A".to_string()),
-        }),
-        ..AppSettings::default()
+fn choice_round_trips_through_save_and_load() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("settings.json");
+    let seed = serde_json::json!({
+        "defaultShell": "test-shell",
+        "defaultShellArgs": [],
+        "agents": [],
+        "rootToken": "fixed-token",
+    });
+    std::fs::write(&path, seed.to_string()).expect("seed settings.json");
+
+    let mut loaded = load_settings_from_path(&path);
+    assert_eq!(loaded.temp_room_agent, None);
+    let choice = TempRoomAgentChoice {
+        agent_id: "codex".to_string(),
+        requested_profile: Some("A".to_string()),
     };
-    let value = serde_json::to_value(&s).expect("serialize");
-    let back: AppSettings = serde_json::from_value(value).expect("round trip");
-    assert_eq!(back.temp_room_agent, s.temp_room_agent);
+    loaded.temp_room_agent = Some(choice.clone());
+    save_settings_to_path_preserving_project_paths(&loaded, &path).expect("save some");
+    assert_eq!(
+        disk_object(&path)["tempRoomAgent"],
+        serde_json::json!({"agentId": "codex", "requestedProfile": "A"})
+    );
+    let mut reloaded = load_settings_from_path(&path);
+    assert_eq!(reloaded.temp_room_agent, Some(choice));
+
+    reloaded.temp_room_agent = None;
+    save_settings_to_path_preserving_project_paths(&reloaded, &path).expect("save none");
+    assert!(!disk_object(&path).contains_key("tempRoomAgent"));
+    assert_eq!(load_settings_from_path(&path).temp_room_agent, None);
 }
