@@ -115,18 +115,26 @@ export interface EditTaskTitleSpec {
   onCancel: () => void;
 }
 
+/** A row shown dimmed and inert, with a `title` that says why. */
+export interface DisabledItemSpec {
+  disabled: true;
+  title: string;
+}
+
 export type SessionRowMenuCaps = {
   restart?: false | ActionSpec;
   codingAgent?: false | ActionSpec;
   openFolder?: false | OpenFolderSpec;
   repos?: false | ReposSpec;
   matrixFolder?: false | ActionSpec;
+  /** #4779 - shown only by hosts that pass it. */
+  unleash?: false | ActionSpec;
   close?: false | ActionSpec;
   deleteAgent?: false | DeleteAgentSpec;
   detach?: false | ToggleSpec;
   telegram?: false | TelegramSpec;
-  addToGroup?: false | AddToGroupSpec;
-  editTaskTitle?: false | EditTaskTitleSpec;
+  addToGroup?: false | AddToGroupSpec | DisabledItemSpec;
+  editTaskTitle?: false | EditTaskTitleSpec | DisabledItemSpec;
   clearTaskTitle?: false | ActionSpec;
 };
 

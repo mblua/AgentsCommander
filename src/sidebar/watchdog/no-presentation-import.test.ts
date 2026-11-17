@@ -17,6 +17,7 @@ const ALLOWED: Record<PresentationModule, string[]> = {
     "sidebar/components/ProjectPanel.tsx",
     "sidebar/components/RootAgentBanner.tsx",
     "sidebar/components/SessionItem.tsx",
+    "sidebar/components/TemporaryRoomsPanel.tsx",
     "sidebar/components/replica-dot.ts",
     "sidebar/components/session-status.test.ts",
   ],
