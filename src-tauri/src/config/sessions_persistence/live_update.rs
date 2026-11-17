@@ -4,7 +4,7 @@ use super::write::run_owned_persist_core;
 use crate::session::manager::{
     acquire_carrier_mutation_permit, RaiseCarrierOutcome, SessionManager,
 };
-use crate::session::session::SessionCommunication;
+use crate::session::session::{SessionCommunication, SessionCommunicationKind};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -345,16 +345,54 @@ pub async fn clear_user_input_transitions_and_persist_result(
     clear_fresh: bool,
 ) -> Result<ClearedUserInputTransitions, String> {
     let dir = super::super::config_dir();
-    let settings = crate::config::settings::load_settings_for_cli();
-    let project_paths = session_retention_project_paths(&settings)?;
-    clear_user_input_transitions_and_persist_to_dir_result(
+    clear_user_input_transitions_and_persist_lazy_result(
         mgr,
         session_id,
         clear_fresh,
         dir.as_deref(),
+        || session_retention_project_paths(&crate::config::settings::load_settings_for_cli()),
+    )
+    .await
+}
+
+/// #4778 - load settings only when a transition will apply. A write that
+/// changes nothing reads no settings and takes no settings lock.
+pub(super) async fn clear_user_input_transitions_and_persist_lazy_result(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    clear_fresh: bool,
+    dir: Option<&Path>,
+    load_project_paths: impl FnOnce() -> Result<Vec<String>, String>,
+) -> Result<ClearedUserInputTransitions, String> {
+    if !user_input_transitions_pending(mgr, session_id, clear_fresh).await {
+        return Ok(ClearedUserInputTransitions::default());
+    }
+    let project_paths = load_project_paths()?;
+    clear_user_input_transitions_and_persist_to_dir_result(
+        mgr,
+        session_id,
+        clear_fresh,
+        dir,
         Some(&project_paths),
     )
     .await
+}
+
+/// #4778 - same predicate as `clear_user_input_transitions_with_carrier_permit`,
+/// read-only. A stale `true` costs one settings read and no save (the mutation
+/// then reports nothing); a stale `false` means the change arrived after this
+/// write, so leaving it is the correct order.
+async fn user_input_transitions_pending(
+    mgr: &SessionManager,
+    session_id: Uuid,
+    clear_fresh: bool,
+) -> bool {
+    mgr.get_session(session_id).await.is_some_and(|s| {
+        (clear_fresh && s.start_fresh_on_restore)
+            || s.communication
+                .as_ref()
+                .is_some_and(|c| c.kind == SessionCommunicationKind::RaiseHand && c.visible)
+    })
 }
 
 pub(super) async fn clear_user_input_transitions_and_persist_to_dir_result(
