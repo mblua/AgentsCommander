@@ -180,7 +180,9 @@ pub(crate) fn partition_orphaned_sessions(
     let mut kept = Vec::with_capacity(total);
     let mut drops = Vec::new();
     for session in sessions {
-        if is_root_persisted_session(&session) {
+        if is_root_persisted_session(&session)
+            || crate::config::temp_rooms::is_temp_room_path(&session.working_directory)
+        {
             kept.push(session);
             continue;
         }
@@ -303,6 +305,15 @@ pub(crate) fn validate_session_creation_cwd(
     // 1. Root-agent path is exempt (the archive-gate exceptions cover it too).
     if crate::config::root_agent::is_root_agent_path(cwd) {
         return Ok(());
+    }
+    // 1b. Temp room (#4779): exempt from project membership, but it must exist.
+    if crate::config::temp_rooms::is_temp_room_path(cwd) {
+        if crate::filesystem::directories::persisted_session_cwd_exists(Path::new(cwd)) {
+            return Ok(());
+        }
+        return Err(format!(
+            "sessionCreateBlocked: cwd '{cwd}' does not exist on disk"
+        ));
     }
     // 2. Archived root (structural membership; existence deliberately waived for
     //    unmount/drive-down, so a missing cwd under an archived root is Ok).

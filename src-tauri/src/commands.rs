@@ -23,6 +23,7 @@ pub(crate) mod session_warnings;
 pub mod spec_board;
 pub(crate) mod task;
 pub(crate) mod telegram;
+pub(crate) mod temp_rooms;
 pub(crate) mod testability;
 pub(crate) mod unleashed_replicas;
 pub(crate) mod voice;

@@ -28,6 +28,7 @@ mod save_backups_and_diagnostics;
 mod save_failures_and_terminal_gate;
 mod serde_field_defaults;
 mod sidecar_export_and_mark;
+mod temp_room_agent;
 
 use e2432_n1_and_round7::assert_o2_stable_full_load;
 use e2432_round7_o2_fallback::assert_selected_project_decode_fallback_case;

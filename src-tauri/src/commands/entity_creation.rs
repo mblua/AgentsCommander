@@ -26,6 +26,7 @@ pub use agent_matrix::{
     create_agent_matrix, delete_agent_matrix,
 };
 pub(crate) use creation_trace::{CreationTrace, Origin, Outcome, Reason, Stage, StageGuard};
+pub(crate) use delete_guard::ensure_no_live_sessions_under_manager;
 #[cfg(test)]
 pub(crate) use delete_guard::is_file_in_use_error;
 pub(crate) use delete_guard::{

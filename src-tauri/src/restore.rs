@@ -260,7 +260,10 @@ pub(crate) fn load_startup_sessions(
     load: impl FnOnce(&[String]) -> Vec<sessions_persistence::PersistedSession>,
 ) -> Result<Vec<sessions_persistence::PersistedSession>, String> {
     let paths = sessions_persistence::session_retention_project_paths(settings)?;
-    Ok(load(&paths))
+    let mut sessions = load(&paths);
+    // #4779 A1=B: temp rooms are never restored.
+    sessions.retain(|s| !config::temp_rooms::is_temp_room_path(&s.working_directory));
+    Ok(sessions)
 }
 
 pub(crate) trait RestoreStartupTask:

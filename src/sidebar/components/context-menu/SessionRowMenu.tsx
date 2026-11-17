@@ -26,6 +26,7 @@ import ContextMenuSurface, { type ContextMenuSurfaceApi } from "./ContextMenuSur
 import type {
   ActionSpec,
   AddToGroupSpec,
+  DisabledItemSpec,
   EditTaskTitleSpec,
   ReposSpec,
   SessionRowMenuCaps,
@@ -102,6 +103,33 @@ const ActionItem: Component<{
   </button>
 );
 
+/** #4779 - the dimmed, inert form of a flyout or editor item. */
+const isDisabledItem = (
+  spec: AddToGroupSpec | EditTaskTitleSpec | DisabledItemSpec,
+): spec is DisabledItemSpec =>
+  "disabled" in spec && !("choices" in spec) && !("draft" in spec);
+
+/** #4779 - one dimmed row with the item's label and icon; no flyout, no editor. */
+const DisabledItem: Component<{
+  spec: DisabledItemSpec;
+  testId: string;
+  label: string;
+  children: JSX.Element;
+}> = (props) => (
+  <button
+    class={optionClass(false, true)}
+    disabled={true}
+    title={props.spec.title}
+    data-ac-testid={props.testId}
+    data-ac-role="menuitem"
+  >
+    <span class="session-context-option-icon" aria-hidden="true">
+      {props.children}
+    </span>{" "}
+    {props.label}
+  </button>
+);
+
 interface CatalogueBodyProps {
   surface: ContextMenuSurfaceApi;
   caps: SessionRowMenuCaps;
@@ -122,6 +150,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
         props.caps.openFolder ||
         props.caps.repos ||
         props.caps.matrixFolder ||
+        props.caps.unleash ||
         props.caps.close
       ),
   );
@@ -139,8 +168,25 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
     const telegram = props.caps.telegram;
     return !!(telegram && telegram.bots);
   });
+  // #4779 - addToGroup / editTaskTitle split into their live and dimmed forms.
+  const liveGroup = createMemo(() => {
+    const spec = props.caps.addToGroup;
+    return spec && !isDisabledItem(spec) ? spec : false;
+  });
+  const dimGroup = createMemo(() => {
+    const spec = props.caps.addToGroup;
+    return spec && isDisabledItem(spec) ? spec : false;
+  });
+  const liveTitle = createMemo(() => {
+    const spec = props.caps.editTaskTitle;
+    return spec && !isDisabledItem(spec) ? spec : false;
+  });
+  const dimTitle = createMemo(() => {
+    const spec = props.caps.editTaskTitle;
+    return spec && isDisabledItem(spec) ? spec : false;
+  });
   const editorShown = createMemo(() => {
-    const editor = props.caps.editTaskTitle;
+    const editor = liveTitle();
     return !!(editor && editor.editing);
   });
   createEffect(on([botsShown, editorShown], () => props.surface.reclamp(), { defer: true }));
@@ -562,6 +608,20 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
           </ActionItem>
         )}
       </Show>
+      <Show when={props.caps.unleash}>
+        {(spec) => (
+          <ActionItem
+            spec={spec()}
+            testId={id(".menu.unleash")}
+            label="Unleash"
+            danger={true}
+            dim={true}
+            onDismiss={props.onDismiss}
+          >
+            {"\u26D3"}
+          </ActionItem>
+        )}
+      </Show>
       <Show when={props.caps.close}>
         {(spec) => (
           <ActionItem
@@ -629,13 +689,27 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
       <Show when={sepBefore4()}>
         <div class="context-separator" />
       </Show>
-      <Show when={props.caps.addToGroup}>{(spec) => addToGroupItem(spec)}</Show>
+      <Show when={liveGroup()}>{(spec) => addToGroupItem(spec)}</Show>
+      <Show when={dimGroup()}>
+        {(spec) => (
+          <DisabledItem spec={spec()} testId={id(".menu.addToGroup")} label="Add to Group">
+            <UserPlusIcon class="session-context-group-add-icon" />
+          </DisabledItem>
+        )}
+      </Show>
 
       {/* G5 */}
       <Show when={sepBefore5()}>
         <div class="context-separator" />
       </Show>
-      <Show when={props.caps.editTaskTitle}>{(spec) => editTaskTitleItem(spec)}</Show>
+      <Show when={liveTitle()}>{(spec) => editTaskTitleItem(spec)}</Show>
+      <Show when={dimTitle()}>
+        {(spec) => (
+          <DisabledItem spec={spec()} testId={id(".menu.editTaskTitle")} label="Edit TASK title">
+            {"✎"}
+          </DisabledItem>
+        )}
+      </Show>
       <Show when={props.caps.clearTaskTitle}>
         {(spec) => (
           <ActionItem
