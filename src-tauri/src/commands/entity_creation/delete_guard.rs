@@ -17,7 +17,7 @@ pub(crate) fn validate_delete_root_not_link_or_reparse(path: &Path) -> Result<()
     crate::config::entity_creation::directories::validate_delete_root(path)
 }
 
-pub(super) async fn ensure_no_live_sessions_under_manager(
+pub(crate) async fn ensure_no_live_sessions_under_manager(
     root: &Path,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
 ) -> Result<(), String> {
