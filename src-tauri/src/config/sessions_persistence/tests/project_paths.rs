@@ -600,3 +600,30 @@ fn load_sessions_from_path_normalizes_windows_verbatim_paths() {
     assert_eq!(loaded[0].working_directory, r"C:\repo\.ac\wg-1\__agent_a");
     assert_eq!(loaded[0].git_repos[0].source_path, r"\\server\share\repo");
 }
+
+#[test]
+fn partition_orphaned_sessions_keeps_temp_room_rows() {
+    let base = crate::config::config_dir().expect("config dir");
+    let sessions = vec![
+        PersistedSession {
+            name: "temp".into(),
+            working_directory: base.join("temp-room-tr01").to_string_lossy().into_owned(),
+            status: Some(SessionStatus::Exited(0)),
+            ..Default::default()
+        },
+        PersistedSession {
+            name: "unrelated".into(),
+            working_directory: "C:/projects/removed/.ac/wg-1/__agent_dev-rust".into(),
+            status: Some(SessionStatus::Exited(0)),
+            ..Default::default()
+        },
+    ];
+    let (kept, drops) =
+        crate::config::sessions_persistence::project_scope::partition_orphaned_sessions(
+            sessions,
+            &["C:/projects/current".to_string()],
+        );
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].name, "temp");
+    assert_eq!(drops.len(), 1);
+}

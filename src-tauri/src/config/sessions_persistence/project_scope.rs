@@ -180,7 +180,9 @@ pub(crate) fn partition_orphaned_sessions(
     let mut kept = Vec::with_capacity(total);
     let mut drops = Vec::new();
     for session in sessions {
-        if is_root_persisted_session(&session) {
+        if is_root_persisted_session(&session)
+            || crate::config::temp_rooms::is_temp_room_path(&session.working_directory)
+        {
             kept.push(session);
             continue;
         }
