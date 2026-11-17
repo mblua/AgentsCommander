@@ -316,6 +316,15 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(fake.callsFor("restart_session")).toHaveLength(0);
   });
 
+  it("9c. Enter on the row's key proxy does what a click does", async () => {
+    const { fake } = track(setup({ saved: SAVED }));
+    await waitFor(() => expect(roomRow()).not.toBeNull());
+    const proxy = roomRow()!.querySelector(".ac-row-key-proxy")!;
+    proxy.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await waitFor(() => expect(fake.callsFor("create_session")).toHaveLength(1));
+    expect(fake.lastCall("create_session")!.args).toMatchObject({ cwd: ROOM_1.path });
+  });
+
   it("9b. an exited session: row click restarts it", async () => {
     const { fake } = track(setup({ sessions: [liveSession({ status: { exited: 0 } })] }));
     await waitFor(() => expect(roomRow()).not.toBeNull());

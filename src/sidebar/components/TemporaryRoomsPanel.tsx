@@ -17,6 +17,7 @@ import { bridgesStore } from "../stores/bridges";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
 import { requestCoordinatorClose } from "../stores/coordinator-close";
 import { sessionDotClass } from "./session-status";
+import { RowKeyProxy, onRowKey } from "./RowKeyProxy";
 import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 import SessionRowMenu from "./context-menu/SessionRowMenu";
 import {
@@ -123,6 +124,8 @@ const TemporaryRoomsPanel: Component = () => {
     closeAgentMenu();
     open({ x: e.clientX, y: e.clientY });
     const dismiss = (ev?: Event) => {
+      const target = ev?.target as Element | null | undefined;
+      if (ev?.type === "click" && target?.closest?.(".session-context-menu")) return;
       if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
       closeMenus();
     };
@@ -386,6 +389,7 @@ const TemporaryRoomsPanel: Component = () => {
                   title={room.path}
                   data-ac-testid={`tempRoom.${room.name}.row`}
                   onClick={() => void rowClick(room)}
+                  onKeyDown={onRowKey(() => void rowClick(room))}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -394,6 +398,7 @@ const TemporaryRoomsPanel: Component = () => {
                     setAgentMenu({ x: e.clientX, y: e.clientY, room });
                   }}
                 >
+                  <RowKeyProxy label={room.name} />
                   <div class={`session-item-status ${sessionDotClass(session())}`} />
                   <div class="replica-item-info">
                     <span class="replica-item-name">{room.name}</span>
@@ -411,7 +416,6 @@ const TemporaryRoomsPanel: Component = () => {
             <div
               class="session-context-menu"
               style={{ left: `${pos().x}px`, top: `${pos().y}px` }}
-              onClick={(e) => e.stopPropagation()}
               data-ac-testid="tempRooms.menu"
             >
               <button
@@ -432,7 +436,6 @@ const TemporaryRoomsPanel: Component = () => {
             <div
               class="session-context-menu"
               style={{ left: `${menu().x}px`, top: `${menu().y}px` }}
-              onClick={(e) => e.stopPropagation()}
               data-ac-testid="tempRoom.headerMenu"
             >
               <button
