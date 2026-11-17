@@ -868,3 +868,67 @@ fn substantive_terminal_input_progresses_while_the_room_lock_is_held() {
         );
     });
 }
+
+// ---- #4778: persist session state only on a submitted line (Enter) ----
+
+#[test]
+fn persists_session_state_only_for_submitted_lines() {
+    for chunk in [b"\x1b[<65;10;5M".as_slice(), b"\x1b[A", b"abc"] {
+        assert!(!persists_session_state(&UserInputSource::Terminal(chunk)));
+        assert!(!persists_session_state(&UserInputSource::Web(chunk)));
+    }
+    for chunk in [b"\r".as_slice(), b"do it\r"] {
+        assert!(persists_session_state(&UserInputSource::Terminal(chunk)));
+        assert!(persists_session_state(&UserInputSource::Web(chunk)));
+    }
+    assert!(persists_session_state(&UserInputSource::CompleteMessage));
+}
+
+async fn raised_hand_fixture() -> FreshIntentFixture {
+    let f = fresh_intent_fixture().await;
+    f.session_mgr
+        .read()
+        .await
+        .raise_hand(f.session_id, chrono::Utc::now())
+        .await
+        .expect("raise_hand should succeed");
+    assert!(
+        hand_visible(&f).await,
+        "hand must be visible before the write"
+    );
+    f
+}
+
+async fn hand_visible(f: &FreshIntentFixture) -> bool {
+    let session = f.session_mgr.read().await.get_session(f.session_id).await;
+    session.and_then(|s| s.communication).is_some_and(|c| {
+        c.kind == crate::session::session::SessionCommunicationKind::RaiseHand && c.visible
+    })
+}
+
+#[tokio::test]
+async fn a_wheel_write_keeps_a_raised_hand() {
+    let f = raised_hand_fixture().await;
+    note_user_message_to_session(
+        f.app.handle(),
+        f.session_id,
+        UserInputSource::Terminal(b"\x1b[<65;10;5M"),
+    )
+    .await;
+    assert!(
+        hand_visible(&f).await,
+        "a wheel write must not lower the hand"
+    );
+}
+
+#[tokio::test]
+async fn a_bare_enter_lowers_a_raised_hand() {
+    let f = raised_hand_fixture().await;
+    note_user_message_to_session(
+        f.app.handle(),
+        f.session_id,
+        UserInputSource::Terminal(b"\r"),
+    )
+    .await;
+    assert!(!hand_visible(&f).await, "a bare Enter must lower the hand");
+}

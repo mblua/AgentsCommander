@@ -213,6 +213,26 @@ fn classify_chunk(pending: &mut bool, data: &[u8]) -> ChunkEffect {
     }
 }
 
+/// #4778 - does this chunk submit a line? True iff a CR or LF byte appears outside
+/// an ESC-introduced sequence. Same ESC rules as `classify_chunk`, so Alt+Enter,
+/// mouse reports and focus reports are not Enter. Pending text is not required:
+/// a bare Enter submits too. Stateless; never touches the #871 tracker.
+pub fn chunk_submits_line(data: &[u8]) -> bool {
+    let mut i = 0;
+    while i < data.len() {
+        match data[i] {
+            0x1b => match skip_escape_sequence(data, i) {
+                Some(end) => i = end,
+                None => return false,
+            },
+            0x0d | 0x0a => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
 /// #2336 - the typing-hold snapshot returned to the frontend padlock. `closed`
 /// is the EFFECTIVE hold (manual OR the natural window, suppression included),
 /// which is exactly the state the click toggles. `held_count` is the number of

@@ -1,5 +1,6 @@
 use super::{
     append_orphan_archive_record, clear_blocked_menu_and_persist_to_dir,
+    clear_user_input_transitions_and_persist_lazy_result,
     clear_user_input_transitions_and_persist_to_dir_result, filter_sessions_for_normalized_roots,
     filter_sessions_for_project_paths, filter_sessions_for_project_paths_blocking,
     is_under_normalized_archived_roots, load_sessions_purging_outside_project_paths_in_dir,
@@ -33,6 +34,7 @@ mod project_paths;
 mod replacement;
 mod serde_snapshot;
 mod strip_args;
+mod user_input_lazy;
 
 /// §1295 — held for the WHOLE of any test that counts orphan sweeps or
 /// reads/writes the shared archive, so a concurrently-running test cannot
