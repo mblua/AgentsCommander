@@ -471,7 +471,12 @@ fn resolve_claude_projects_dir_uses_home_for_bare_claude() {
 fn resolve_claude_projects_dir_uses_home_for_direct_claude_exe_path() {
     // Direct executable path with file_stem == "claude" → still default base.
     let cwd = "C:\\Users\\Test\\repo";
-    let resolved = super::super::resolve_claude_projects_dir("C:\\Tools\\claude.exe", &[], cwd);
+    let shell = if cfg!(windows) {
+        "C:\\Tools\\claude.exe"
+    } else {
+        "/opt/tools/claude"
+    };
+    let resolved = super::super::resolve_claude_projects_dir(shell, &[], cwd);
     let Some(home) = dirs::home_dir() else {
         return;
     };
@@ -550,11 +555,12 @@ fn resolve_claude_projects_dir_falls_back_when_wrapper_lacks_directive() {
 
 #[test]
 fn resolve_claude_projects_dir_falls_back_when_wrapper_missing() {
-    let resolved = super::super::resolve_claude_projects_dir(
-        "C:\\definitely\\not\\there\\claude-mb.cmd",
-        &[],
-        "C:\\x",
-    );
+    let shell = if cfg!(windows) {
+        "C:\\definitely\\not\\there\\claude-mb.cmd"
+    } else {
+        "/definitely/not/there/claude-mb.sh"
+    };
+    let resolved = super::super::resolve_claude_projects_dir(shell, &[], "C:\\x");
     let Some(home) = dirs::home_dir() else {
         return;
     };
