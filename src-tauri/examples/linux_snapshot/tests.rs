@@ -164,7 +164,11 @@ fn stall_probe_steps() {
     for (name, probe) in Probe::ALL {
         assert_eq!(probe.token(), name);
     }
-    let prefix = Probe::StallModule.script_prefix();
-    assert!(prefix.contains("window.ac4248Frame"));
-    assert!(prefix.contains("window.ac4248Beacon"));
+    let module = Probe::StallModule.init_script().unwrap_or_default();
+    assert!(module.contains("ac4248Frame") && module.contains("ac4248Beacon"));
+    let raf = Probe::StallRaf.init_script().unwrap_or_default();
+    assert!(raf.contains("requestAnimationFrame") && raf.contains("DOMContentLoaded"));
+    for probe in [Probe::None, Probe::Blank, Probe::Stale, Probe::Cancel] {
+        assert_eq!(probe.init_script(), None);
+    }
 }

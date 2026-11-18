@@ -1,16 +1,36 @@
-// #4248 AC-4248-008 timeout diagnosis: the page probe script, the per-view title
-// log and the hypothesis classifier. Pure: it imports no GTK and no crate module.
+// #4248 AC-4248-008 timeout diagnosis: the page probe and frame scripts, the
+// per-view title log, the hypothesis classifier and the link-break reader.
+// Pure: it imports no GTK and no crate module.
 use chrono::Utc;
 use serde_json::{json, Map, Value};
+
+// Log target of the frame-call link trace; the recipe enables it at trace level.
+pub const LINK_TARGET: &str = "ac4248::link";
 
 // Read from the stalled view after the deadline; names match the fixture main.js.
 pub const PROBE_SCRIPT: &str = concat!(
     "(() => { const b = window.ac4248Beacon; return { ",
-    "title: String(document.title).slice(0, 512), ",
+    "title: String(document.title).slice(0, 512), href: String(location.href), ",
     "readyState: document.readyState, visibilityState: document.visibilityState, ",
     "hasFocus: document.hasFocus(), frameType: typeof window.ac4248Frame, ",
     "beacon: b === undefined ? null : b }; })()",
 );
+
+// The fixture call wrapped so the page answers: document, call result, counters.
+// It returns a plain object (never the Promise), so the eval callback gets JSON.
+pub fn frame_script(request: &Value) -> String {
+    format!(
+        concat!(
+            "(() => {{ const b = window.ac4248Beacon; const r = {{ ",
+            "href: String(location.href), docId: b ? b.docId : null, ",
+            "frameType: typeof window.ac4248Frame, before: b ? b.frameCalls : null, ",
+            "called: false }}; try {{ window.ac4248Frame({request}); r.called = true; }} ",
+            "catch (e) {{ r.error = String(e).slice(0, 256); }} ",
+            "r.after = b ? b.frameCalls : null; return r; }})()",
+        ),
+        request = request,
+    )
+}
 
 pub const MAX_ENTRIES: usize = 128;
 pub const MAX_TITLE_CHARS: usize = 512;
@@ -107,6 +127,37 @@ pub fn classify(diagnostics: &Value, seen: &[&str], log_complete: bool) -> &'sta
         return "H-b";
     }
     "undetermined"
+}
+
+// First broken link of the frame call, from its answer (`ack`) and the probe.
+pub fn link_break(ack: Option<&Value>, diagnostics: &Value) -> &'static str {
+    let Some(ack) = ack else {
+        return "ack_missing";
+    };
+    if ack["status"] == "eval_failed" {
+        return "ack_eval_failed";
+    }
+    if ack["status"] != "ok" {
+        return "ack_unparsed";
+    }
+    let answer = &ack["page"];
+    if answer["frameType"] != "function" {
+        return "ack_frame_missing";
+    }
+    if answer["called"] != true {
+        return "ack_call_threw";
+    }
+    if diagnostics["status"] != "ok" {
+        return "probe_unanswered";
+    }
+    let beacon = &diagnostics["page"]["beacon"];
+    if answer["docId"].is_null() || answer["docId"] != beacon["docId"] {
+        return "ack_other_document";
+    }
+    if beacon["frameCalls"].as_u64() == Some(0) {
+        return "page_lost_call";
+    }
+    "called"
 }
 
 #[cfg(test)]

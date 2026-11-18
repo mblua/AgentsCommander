@@ -116,3 +116,60 @@ fn probe_names_match_fixture() {
     assert!(PROBE_SCRIPT.contains("window.ac4248Beacon"));
     assert!(PROBE_SCRIPT.contains("window.ac4248Frame"));
 }
+
+#[test]
+fn frame_script_shape() {
+    let request = json!({ "generation": "g1n0", "frame": "control" });
+    let script = frame_script(&request);
+    assert!(script.contains(&format!("window.ac4248Frame({request})")));
+    for part in ["docId", "called", "try"] {
+        assert!(script.contains(part), "missing {part}");
+    }
+    assert!(!script.contains("delete"));
+    let fixture = include_str!("../../../../tests/fixtures/ac4248-snapshot/main.js");
+    assert!(fixture.contains("docId:"));
+}
+
+fn ack(frame_type: &str, called: bool, doc_id: &str) -> Value {
+    let page = json!({ "frameType": frame_type, "called": called, "docId": doc_id });
+    json!({ "status": "ok", "page": page })
+}
+
+#[test]
+fn link_break_tokens() {
+    let mut probe = page("function", beacon(1, 1, 0), "ac4248:loading");
+    probe["page"]["beacon"]["docId"] = json!("d1");
+    let mut lost = probe.clone();
+    lost["page"]["beacon"]["frameCalls"] = json!(0);
+    let good = ack("function", true, "d1");
+    let (failed, unparsed) = (read_probe(Some("")), read_probe(Some("[1]")));
+    let (missing, threw) = (ack("undefined", false, "d1"), ack("function", false, "d1"));
+    let (other, unanswered) = (ack("function", true, "d2"), read_probe(None));
+    let cases = [
+        (None, &probe, "ack_missing"),
+        (Some(&failed), &probe, "ack_eval_failed"),
+        (Some(&unparsed), &probe, "ack_unparsed"),
+        (Some(&missing), &probe, "ack_frame_missing"),
+        (Some(&threw), &probe, "ack_call_threw"),
+        (Some(&good), &unanswered, "probe_unanswered"),
+        (Some(&other), &probe, "ack_other_document"),
+        (Some(&good), &lost, "page_lost_call"),
+        (Some(&good), &probe, "called"),
+    ];
+    for (ack, diagnostics, token) in cases {
+        assert_eq!(link_break(ack, diagnostics), token);
+    }
+    let mut no_doc = probe.clone();
+    no_doc["page"]["beacon"]["docId"] = Value::Null;
+    assert_eq!(link_break(Some(&good), &no_doc), "ack_other_document");
+}
+
+#[test]
+fn trace_target_matches_recipe() {
+    let recipe = include_str!("../../../../scripts/ac4248-linux-p03.sh");
+    assert!(recipe.contains(&format!("RUST_LOG={LINK_TARGET}=trace")));
+    assert!(recipe.contains("RUST_LOG=$RUST_LOG"));
+    assert!(recipe.contains("'link=load'"));
+    let main = include_str!("../main.rs");
+    assert!(main.contains(r#"default_filter_or("off")"#));
+}
