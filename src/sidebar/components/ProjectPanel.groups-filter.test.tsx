@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectPanel from "./ProjectPanel";
+import SidebarRegexFilter, { SidebarRegexFilterError } from "./SidebarRegexFilter";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   click,
@@ -255,7 +256,14 @@ describe("ProjectPanel workgroup groups", () => {
     const fake = new FakeTransport();
     setupProjectTransport(fake);
 
-    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    const view = () => (
+      <>
+        <SidebarRegexFilter />
+        <SidebarRegexFilterError />
+        <ProjectPanel />
+      </>
+    );
+    const rendered = renderWithFakeTransport(view, fake);
     try {
       await workgroupGroupsStore.save(projectPath, groupsConfig());
       workgroupGroupsStore.select(projectPath, { kind: "group", id: "frontend" });
@@ -266,9 +274,9 @@ describe("ProjectPanel workgroup groups", () => {
         expect(rendered.root.textContent).not.toContain("wg-2-rust-team");
       });
 
-      const toggle = panelTarget<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      const toggle = panelTarget<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = panelTarget<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+      const filterInput = panelTarget<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
 
       input(filterInput, "rust-team");
       await waitFor(() => {

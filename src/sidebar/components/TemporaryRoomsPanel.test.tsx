@@ -2,12 +2,15 @@
 // #4779 P04 - the "Temporary Rooms" sidebar category, driven over FakeTransport.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TemporaryRoomsPanel from "./TemporaryRoomsPanel";
+import ProjectPanel from "./ProjectPanel";
 import SidebarApp from "../App";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   baseSettings,
   click,
   contextMenu,
+  discovery,
+  input,
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
@@ -16,6 +19,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import { installReconcileIntervalSpy, setupAppTransport } from "../testing/app-harness";
 import { sessionsStore } from "../stores/sessions";
+import { projectStore } from "../stores/project";
 import { toastStore } from "../../shared/stores/toasts";
 import type { AgentConfig, Session } from "../../shared/types";
 import type { TempRoomAgentChoice, TempRoomInfo } from "../../shared/temp-rooms";
@@ -38,9 +42,28 @@ interface Setup {
   rooms?: TempRoomInfo[];
   saved?: TempRoomAgentChoice;
   sessions?: Session[];
+  withProject?: boolean;
 }
 
-function setup({ rooms = [ROOM_1], saved, sessions = [] }: Setup = {}) {
+const PROJECT = "/proj";
+const WG = `${PROJECT}/.ac/wg-2-dev-team`;
+const wgAgent = (name: string, isCoordinator: boolean) =>
+  ({ name, path: `${WG}/__agent_${name}`, repoPaths: [], isCoordinator });
+const projectDiscovery = () =>
+  discovery({
+    agents: [],
+    teams: [],
+    workgroups: [
+      {
+        name: "wg-2-dev-team",
+        path: WG,
+        task: null,
+        agents: [wgAgent("dev-webpage-ui", true), wgAgent("dev-rust", false)],
+      },
+    ],
+  });
+
+function setup({ rooms = [ROOM_1], saved, sessions = [], withProject }: Setup = {}) {
   const fake = new FakeTransport();
   let listed = [...rooms];
   const settings = { ...baseSettings({ agents: [agent("claude")] }), tempRoomAgent: saved };
@@ -67,8 +90,16 @@ function setup({ rooms = [ROOM_1], saved, sessions = [] }: Setup = {}) {
   fake.resolve("switch_session", null);
   fake.resolve("destroy_session", null);
   fake.resolve("open_in_explorer", null);
+  fake.resolve("new_project", { path: PROJECT, registered: true, created: false });
+  fake.resolve("discover_project", projectDiscovery());
   sessionsStore.setSessions(sessions);
-  const rendered = renderWithFakeTransport(() => <TemporaryRoomsPanel />, fake);
+  const view = () => (
+    <>
+      <TemporaryRoomsPanel />
+      {withProject && <ProjectPanel />}
+    </>
+  );
+  const rendered = renderWithFakeTransport(view, fake);
   return { fake, rendered };
 }
 
@@ -367,5 +398,120 @@ describe("#4779 TemporaryRoomsPanel", () => {
     );
     expect(byId("tempRoom.deleteModal")).not.toBeNull();
     expect(roomRow()).not.toBeNull();
+  });
+
+  const filterInput = () => byId("sidebar.regexFilter.input") as HTMLInputElement;
+  const escape = () =>
+    filterInput().dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+  const openFilter = async () => {
+    await waitFor(() => expect(byId("sidebar.regexFilter.toggle")).not.toBeNull());
+    click(byId("sidebar.regexFilter.toggle")!);
+    await waitFor(() =>
+      expect(byId("sidebar.regexFilter.toggle")!.getAttribute("aria-expanded")).toBe("true"),
+    );
+  };
+  const openHeaders = () =>
+    Array.from(document.querySelectorAll(".project-header.open")).map((h) =>
+      h.getAttribute("data-ac-testid"),
+    );
+
+  it("11. regex filter on the header filters temp rooms", async () => {
+    track(setup({ rooms: [ROOM_1, ROOM_2] }));
+    await waitFor(() => expect(roomRow(ROOM_2)).not.toBeNull());
+    const header = byId("tempRooms.header")!;
+    expect(header.classList.contains("project-header--has-indicator")).toBe(true);
+    expect(byId("tempRooms.count")!.classList.contains("project-header-indicator--last")).toBe(
+      true,
+    );
+    expect(header.contains(byId("sidebar.regexFilter.toggle"))).toBe(true);
+    await openFilter();
+    expect(header.contains(filterInput())).toBe(true);
+    expect(openHeaders()).toEqual(["tempRooms.header"]);
+
+    input(filterInput(), "tr02");
+    await waitFor(() => expect(roomRow(ROOM_1)).toBeNull());
+    expect(roomRow(ROOM_2)).not.toBeNull();
+    expect(byId("tempRooms.count")!.textContent).toBe("1");
+
+    input(filterInput(), "Temporary");
+    await waitFor(() => expect(roomRow(ROOM_1)).not.toBeNull());
+    expect(roomRow(ROOM_2)).not.toBeNull();
+
+    input(filterInput(), "(");
+    await waitFor(() =>
+      expect(byId("sidebar.regexFilter.error")?.textContent).toBe("Invalid regex"),
+    );
+    expect(header.classList.contains("invalid")).toBe(true);
+    expect(roomRow(ROOM_1)).not.toBeNull();
+    expect(roomRow(ROOM_2)).not.toBeNull();
+
+    escape();
+    await waitFor(() => expect(filterInput().value).toBe(""));
+    expect(header.classList.contains("invalid")).toBe(false);
+    escape();
+    await waitFor(() =>
+      expect(byId("sidebar.regexFilter.toggle")!.getAttribute("aria-expanded")).toBe("false"),
+    );
+    expect(header.classList.contains("open")).toBe(false);
+  });
+
+  it("11b. collapsed and empty: the control stays in the header and toggles", async () => {
+    track(setup({ rooms: [] }));
+    await waitFor(() => expect(byId("tempRooms.count")?.textContent).toBe("0"));
+    const header = byId("tempRooms.header")!;
+    expect(header.contains(byId("sidebar.regexFilter.toggle"))).toBe(true);
+    await openFilter();
+    click(byId("sidebar.regexFilter.toggle")!);
+    await waitFor(() => expect(header.classList.contains("open")).toBe(false));
+    click(header.querySelector(".project-header-main")!);
+    await waitFor(() =>
+      expect(header.querySelector(".project-header-main")!.getAttribute("aria-expanded")).toBe(
+        "false",
+      ),
+    );
+    expect(header.contains(byId("sidebar.regexFilter.toggle"))).toBe(true);
+    await openFilter();
+    expect(header.classList.contains("open")).toBe(true);
+  });
+
+  it("11c. one filter for temp rooms and projects", async () => {
+    const { rendered } = track(setup({ rooms: [ROOM_1], withProject: true }));
+    await projectStore.createAndLoad(PROJECT);
+    const text = () => rendered.root.textContent ?? "";
+    await waitFor(() => expect(text()).toContain("dev-rust"));
+    expect(text()).toContain("dev-webpage-ui");
+    await waitFor(() => expect(roomRow()).not.toBeNull());
+
+    await openFilter();
+    expect(openHeaders()).toEqual(["tempRooms.header"]);
+    input(filterInput(), "webpage");
+    await waitFor(() => expect(text()).not.toContain("dev-rust"));
+    expect(text()).toContain("dev-webpage-ui");
+    expect(roomRow()).toBeNull();
+
+    click(byId("sidebar.regexFilter.clear")!);
+    await waitFor(() => expect(text()).toContain("dev-rust"));
+    expect(roomRow()).not.toBeNull();
+
+    const headers = Array.from(document.querySelectorAll(".project-header"));
+    expect(headers.length).toBeGreaterThan(1);
+    for (const h of headers) {
+      if (h === byId("tempRooms.header")) continue;
+      expect(h.querySelector(".project-filter-row")).toBeNull();
+      expect(h.classList.contains("open")).toBe(false);
+      expect(h.classList.contains("invalid")).toBe(false);
+    }
+  });
+
+  it("11d. right-click in the filter input keeps the native menu", async () => {
+    track(setup());
+    await openFilter();
+    const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    filterInput().dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(false);
+    expect(byId("tempRooms.menu")).toBeNull();
+    await openCategoryMenu();
   });
 });

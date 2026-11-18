@@ -41,7 +41,10 @@ afterEach(() => {
 });
 
 describe("Project root file difference", () => {
-  it("positive control: renders the actual 7 response outside the collapse button before the filter", async () => {
+  it(
+    "positive control: renders the actual 7 response outside the collapse button " +
+      "as the last header item",
+    async () => {
     const fake = new FakeTransport();
     fake.onInvoke(command, (args) => {
       expect(args).toEqual({ path });
@@ -59,7 +62,8 @@ describe("Project root file difference", () => {
     const button = root.querySelector<HTMLButtonElement>(".project-header-main")!;
     expect(button.textContent).toContain("Project: " + projectStore.projects[0].folderName);
     expect(button.textContent).not.toContain("7");
-    expect(badge.nextElementSibling).toBe(root.querySelector(".project-filter-row"));
+    expect(root.querySelector(".project-filter-row")).toBeNull();
+    expect(badge.parentElement!.lastElementChild).toBe(badge);
     click(button);
     expect(button.getAttribute("aria-expanded")).toBe("false");
     expect(pill(root)?.textContent).toBe("7");
@@ -67,12 +71,8 @@ describe("Project root file difference", () => {
     expect(fake.callsFor(command)).toHaveLength(2);
     click(button);
     expect(button.getAttribute("aria-expanded")).toBe("true");
-    const filter = root.querySelector<HTMLButtonElement>(".project-filter-toggle")!;
-    click(filter);
-    expect(filter.getAttribute("aria-expanded")).toBe("true");
-    click(filter);
-    expect(filter.getAttribute("aria-expanded")).toBe("false");
-  });
+    },
+  );
 
   it("hides only verified zero and keeps independent exact unabridged counts for two projects", async () => {
     const fake = new FakeTransport();

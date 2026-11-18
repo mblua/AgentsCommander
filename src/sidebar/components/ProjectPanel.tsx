@@ -24,6 +24,7 @@ import { focusOnMount } from "../../shared/focus-on-mount";
 import BlockedMenuIcon from "./BlockedMenuIcon";
 import RaiseHandIcon from "./RaiseHandIcon";
 import { projectStore } from "../stores/project";
+import { joinSearchText, sidebarFilter } from "../stores/sidebar-filter";
 import {
   effectiveAutoClosedAt,
   effectiveLastUserMessageAt,
@@ -116,12 +117,6 @@ interface PendingLaunch {
 
 export const isTaskClean = (t?: string | null): boolean =>
   !t?.trim() || t.trim() === "Clean";
-
-function joinSearchText(...parts: Array<string | null | undefined | false>): string {
-  return parts
-    .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
-    .join(" ");
-}
 
 function agentDisplayName(name: string): string {
   const normalized = name.replaceAll("\\", "/");
@@ -873,9 +868,6 @@ const ProjectPanel: Component = () => {
         const [wgRetryInProgress, setWgRetryInProgress] = createSignal(false);
         const [wgLastForceUsed, setWgLastForceUsed] = createSignal(false);
         let retryGen = 0;
-        const [filterOpen, setFilterOpen] = createSignal(false);
-        const [filterPattern, setFilterPattern] = createSignal("");
-        let filterInputEl: HTMLInputElement | undefined;
         const [groupCreateWgPath, setGroupCreateWgPath] = createSignal<string | null>(null);
         const [groupCreateName, setGroupCreateName] = createSignal("");
         const [groupMenuError, setGroupMenuError] = createSignal("");
@@ -1087,33 +1079,8 @@ const ProjectPanel: Component = () => {
           const wg = deletingWg();
           return wg ? getActiveReplicasForWg(wg) : [];
         });
-        const filterState = createMemo(() => {
-          const pattern = filterPattern().trim();
-          if (!pattern) return { pattern, regex: null, error: "" };
-          try {
-            return { pattern, regex: new RegExp(pattern, "i"), error: "" };
-          } catch {
-            return { pattern, regex: null, error: "Invalid regex" };
-          }
-        });
-        const filterActive = () => filterState().regex !== null;
-        const filterError = () => filterState().error;
-        const focusFilterInput = () => {
-          if (filterInputEl) focusOnMount(filterInputEl, { select: true });
-        };
-        const toggleFilter = () => {
-          if (filterOpen()) {
-            setFilterOpen(false);
-            setFilterPattern("");
-            return;
-          }
-          setFilterOpen(true);
-          focusFilterInput();
-        };
-        const clearFilter = () => {
-          setFilterPattern("");
-          focusFilterInput();
-        };
+        const filterActive = sidebarFilter.active;
+        const matchesFilterText = sidebarFilter.matches;
         const cancelGroupFlyoutClose = () => {
           if (groupFlyoutCloseTimer === undefined) return;
           window.clearTimeout(groupFlyoutCloseTimer);
@@ -1144,21 +1111,6 @@ const ProjectPanel: Component = () => {
         const resetGroupMenuState = () => {
           resetGroupCreateState();
           closeGroupFlyout();
-        };
-        const handleFilterKeyDown = (e: KeyboardEvent) => {
-          if (e.key !== "Escape") return;
-          e.stopPropagation();
-          if (filterPattern()) {
-            setFilterPattern("");
-            focusFilterInput();
-            return;
-          }
-          setFilterOpen(false);
-        };
-        const matchesFilterText = (...parts: Array<string | null | undefined | false>) => {
-          const regex = filterState().regex;
-          if (!regex) return true;
-          return regex.test(joinSearchText(...parts));
         };
         const sessionSearchText = (session: Session | undefined) => {
           if (!session) return "";
@@ -3285,7 +3237,10 @@ const ProjectPanel: Component = () => {
             <div
               class="project-header"
               data-ac-testid={`project.header.${projectAutomationId()}`}
-              classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError(), "project-header--has-indicator": fileDifference() !== 0 || proj.workgroups.some(roomHasBlockedMenu) }}
+              classList={{
+                "project-header--has-indicator":
+                  fileDifference() !== 0 || proj.workgroups.some(roomHasBlockedMenu),
+              }}
               title={proj.path}
               onContextMenu={handleProjectContextMenu}
             >
@@ -3329,59 +3284,7 @@ const ProjectPanel: Component = () => {
                   {fileDifference() === null ? "—" : String(fileDifference())}
                 </span>
               </Show>
-              <div
-                class="project-filter-row"
-                classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError() }}
-                data-ac-testid="project.regexFilter.row"
-              >
-                <div class="project-filter-field" classList={{ open: filterOpen() }}>
-                  <input
-                    ref={filterInputEl}
-                    class="project-filter-input"
-                    value={filterPattern()}
-                    placeholder="room-2.*"
-                    aria-label="Sidebar regex filter"
-                    aria-invalid={!!filterError()}
-                    data-ac-testid="project.regexFilter.input"
-                    onInput={(e) => setFilterPattern(e.currentTarget.value)}
-                    onKeyDown={handleFilterKeyDown}
-                  />
-                  <Show when={filterPattern()}>
-                    <button
-                      type="button"
-                      class="project-filter-clear"
-                      title="Clear regex filter"
-                      aria-label="Clear regex filter"
-                      data-ac-testid="project.regexFilter.clear"
-                      onClick={clearFilter}
-                    >
-                      &#x2715;
-                    </button>
-                  </Show>
-                </div>
-                <button
-                  type="button"
-                  class="project-filter-toggle"
-                  title={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
-                  aria-label={filterOpen() ? "Hide regex filter" : "Filter sidebar (regex)"}
-                  aria-expanded={filterOpen()}
-                  data-ac-testid="project.regexFilter.toggle"
-                  onClick={toggleFilter}
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <circle cx="11" cy="11" r="7" />
-                    <path d="m20 20-4.2-4.2" />
-                  </svg>
-                </button>
-              </div>
             </div>
-            <Show when={filterError()}>
-              {(error) => (
-                <div class="project-filter-error" role="alert" data-ac-testid="project.regexFilter.error">
-                  {error()}
-                </div>
-              )}
-            </Show>
 
             {/* Project context menu */}
             {showCtxMenu() && (
