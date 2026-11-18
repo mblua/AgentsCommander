@@ -128,6 +128,8 @@ type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 // #4788 adds two TestOnly rows (lock holder child, wrapper child), for 103
 // classified rows.
 const FAKE_SHELL_RS: &str = "src-tauri/src/process/host/login/fake_shell.rs";
+const PROFILE_TESTS_RS: &str = "src-tauri/src/config/profile/tests.rs";
+const LOCK_TESTS_RS: &str = "src-tauri/src/filesystem/single_instance_lock/tests.rs";
 const INVENTORY: &[Row] = &[
     ("src-tauri/src/events/pty/tests.rs", 1, 0, &[(TestOnly, 1)]),
     (
@@ -383,12 +385,7 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    (
-        "src-tauri/src/config/profile/tests.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
+    (PROFILE_TESTS_RS, 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/config/environment/tests.rs",
         1,
@@ -469,12 +466,7 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     ("src-tauri/src/filesystem/tests.rs", 1, 0, &[(TestOnly, 1)]),
-    (
-        "src-tauri/src/filesystem/single_instance_lock/tests.rs",
-        1,
-        0,
-        &[(TestOnly, 1)],
-    ),
+    (LOCK_TESTS_RS, 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/filesystem/context_history/tests.rs",
         1,
