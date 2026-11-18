@@ -167,7 +167,10 @@ describe("ProjectPanel regex filter", () => {
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
 
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
       await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
       await waitFor(() => expect(document.activeElement).toBe(filterInput));
 
@@ -214,7 +217,10 @@ describe("ProjectPanel regex filter", () => {
       const title = header!.querySelector<HTMLElement>(".project-title");
       const row = findByTestId<HTMLDivElement>(rendered.root, "sidebar.regexFilter.row");
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       expect(title?.textContent).toBe("Project: Project");
       expect(header!.querySelector(".project-filter-row")).toBeNull();
@@ -278,7 +284,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       input(filterInput, "AgentsCommander_ac");
       await waitFor(() => {
@@ -340,7 +349,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       input(filterInput, "standup");
       await waitFor(() => {
@@ -388,7 +400,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       input(filterInput, "ops-team");
       await waitFor(() => {
@@ -413,7 +428,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
       await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
 
       input(filterInput, "webpage");
@@ -477,7 +495,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       // A filter that hides the non-matching rows.
       input(filterInput, "webpage");
@@ -533,7 +554,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       // The non-coordinator's branch badge is never rendered, so its branch is
       // not matchable — dev-rust must NOT be surfaced (the bug).
@@ -578,7 +602,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       // `shell` is never rendered on a row, so filtering by it surfaces nothing.
       input(filterInput, "bash");
@@ -627,7 +654,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       input(filterInput, "waiting");
       await waitFor(() => expect(rendered.root.textContent).not.toContain("dev-rust"));
@@ -659,7 +689,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       // promptPreview renders only as the row's hover title, so it is not matchable.
       input(filterInput, "secretpreviewtoken");
@@ -700,7 +733,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       // Filtering by the shown badge keeps the row visible (no "false hide").
       input(filterInput, "A->B");
@@ -776,7 +812,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       // The badge on the label-less, repo-less row is matchable, and surfaces only
       // that row. This is the assertion ProjectPanel.tsx's deleted `metaVisible`
@@ -822,7 +861,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
       await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
       expect(filterInput.value).toBe("");
 
@@ -890,7 +932,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       // The coding-agent badge is now matchable — and only on the row that shows
       // it (the name "alpha" never contains "Claude Code", so the match is the badge).
@@ -959,7 +1004,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       // The shown profile letter matches the row.
       input(filterInput, "Z");
@@ -1006,7 +1054,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       // "telemetry" appears only in the task title, yet the coordinator row that
       // displays it stays visible — the task title is matchable.
@@ -1081,7 +1132,10 @@ describe("ProjectPanel regex filter", () => {
 
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
 
       // (a) filter by the persisted Coding Agent label — matchable only via the badge.
       input(filterInput, "codex");

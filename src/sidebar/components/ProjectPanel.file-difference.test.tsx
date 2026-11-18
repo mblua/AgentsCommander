@@ -41,7 +41,10 @@ afterEach(() => {
 });
 
 describe("Project root file difference", () => {
-  it("positive control: renders the actual 7 response outside the collapse button as the last header item", async () => {
+  it(
+    "positive control: renders the actual 7 response outside the collapse button " +
+      "as the last header item",
+    async () => {
     const fake = new FakeTransport();
     fake.onInvoke(command, (args) => {
       expect(args).toEqual({ path });
@@ -68,7 +71,8 @@ describe("Project root file difference", () => {
     expect(fake.callsFor(command)).toHaveLength(2);
     click(button);
     expect(button.getAttribute("aria-expanded")).toBe("true");
-  });
+    },
+  );
 
   it("hides only verified zero and keeps independent exact unabridged counts for two projects", async () => {
     const fake = new FakeTransport();

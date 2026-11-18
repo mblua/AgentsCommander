@@ -523,7 +523,10 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     try {
       const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(
+        rendered.root,
+        "sidebar.regexFilter.input",
+      );
       await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
 
       // With the sidecar flag threaded into sessionEffectiveStatusSearchText,
