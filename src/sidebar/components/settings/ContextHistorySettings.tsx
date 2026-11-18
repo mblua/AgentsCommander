@@ -115,7 +115,7 @@ const ContextHistorySettings: Component<ContextHistorySettingsProps> = (props) =
       )}
     </Show>
     <label class="settings-field">
-      <span class="settings-label">Período para el color de la media de contexto</span>
+      <span class="settings-label">Period for the context average color</span>
       <select
         class="settings-input"
         value={props.colorSessions === null ? "" : String(props.colorSessions)}
@@ -131,9 +131,9 @@ const ContextHistorySettings: Component<ContextHistorySettingsProps> = (props) =
         </For>
       </select>
       <div class="settings-hint" data-ac-testid="settings.contextHistory.colorSessions.hint">
-        Colorea la media de contexto del agente o del team en esa ventana de sesiones, no
-        el CTX vivo; el hover muestra todas las ventanas de sesiones. No cambia la captura
-        ni el período del historial.
+        Colors the agent or team context average over that session window, not the live
+        CTX; hover shows every session window. It does not change capture or the history
+        period.
       </div>
     </label>
   </div>

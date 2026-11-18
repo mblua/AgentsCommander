@@ -49,8 +49,8 @@ export interface ContextHistoryHandle {
 
 const UNAVAILABLE: SidebarHistoryState = { status: "unavailable" };
 const NEUTRAL_TEXT: Record<"ambiguous" | "unknown", string> = {
-  ambiguous: "Sin media: el agente pertenece a más de un team.",
-  unknown: "Sin media: no se pudo identificar el agente o su team.",
+  ambiguous: "No average: the agent belongs to more than one team.",
+  unknown: "No average: the agent or its team could not be identified.",
 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

@@ -1647,7 +1647,7 @@ const MainApp: Component = () => {
             <div class="main-rm-pane" data-ac-testid="main.contextHistoryPane">
               <Show
                 when={selectedHistoryProject()}
-                fallback={<p>Elegí un proyecto para consultar su historial.</p>}
+                fallback={<p>Choose a project to view its history.</p>}
                 keyed
               >
                 {(projectPath) => (
