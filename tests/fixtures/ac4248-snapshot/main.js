@@ -4,6 +4,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 // AC-4248-008 beacon: proves the module ran; the harness reads it after a deadline.
+// docId tells documents apart; trace is the bounded page-side link log.
 const beacon = {
   version: 1,
   moduleUtc: new Date().toISOString(),
@@ -12,8 +13,28 @@ const beacon = {
   lastGeneration: null,
   rafRequested: 0,
   rafTicks: 0,
+  docId: Math.random().toString(36).slice(2, 10),
+  href: String(location.href),
+  trace: [],
+  traceDropped: 0,
 };
 window.ac4248Beacon = beacon;
+
+// Page trace mark: kept in the beacon (at most 64) and written to the console.
+function mark(event, detail = null) {
+  const t = Math.round(performance.now());
+  if (beacon.trace.length < 64) beacon.trace.push({ t, event, detail });
+  else beacon.traceDropped += 1;
+  console.log("ac4248trace " + JSON.stringify({ docId: beacon.docId, t, event, detail }));
+}
+
+mark("module", beacon.href);
+document.addEventListener("DOMContentLoaded", () => mark("domcontentloaded"));
+window.addEventListener("load", () => mark("load"));
+window.addEventListener("pagehide", () => mark("pagehide"));
+document.addEventListener("visibilitychange", () => {
+  mark("visibilitychange", document.visibilityState);
+});
 
 const COLS = 40;
 const ROWS = 12;
@@ -40,6 +61,7 @@ let webglAddon = null;
 
 function setErrorTitle(generation, message, actualRenderer) {
   if (generation !== null && generation !== currentGeneration) return;
+  mark("error-title", message);
   beacon.phase = "error-title-set";
   document.title = `ac4248:error:${JSON.stringify({ generation, message, actualRenderer })}`;
 }
@@ -51,6 +73,7 @@ function rectOf(element) {
 
 function nextFrames(count) {
   beacon.phase = "waiting-frames";
+  mark("frames-wait", count);
   return new Promise((resolve) => {
     const step = (remaining) => {
       if (remaining === 0) {
@@ -61,6 +84,7 @@ function nextFrames(count) {
       beacon.rafRequested += 1;
       requestAnimationFrame(() => {
         beacon.rafTicks += 1;
+        mark("raf-tick", beacon.rafTicks);
         step(remaining - 1);
       });
     };
@@ -167,11 +191,13 @@ async function showControl(generation) {
     scriptExecuted: true,
     ...viewportInfo(),
   };
+  mark("ready-title");
   beacon.phase = "ready-title-set";
   document.title = `ac4248:${JSON.stringify(ready)}`;
 }
 
 async function ac4248Frame(request) {
+  mark("frame-enter", String(request?.generation).slice(0, 32));
   beacon.frameCalls += 1;
   beacon.phase = "frame-called";
   beacon.lastGeneration =
@@ -180,6 +206,7 @@ async function ac4248Frame(request) {
   try {
     parsed = validate(request);
   } catch (error) {
+    mark("frame-invalid", error.message);
     currentGeneration = null;
     setErrorTitle(null, error.message, "none");
     return;
@@ -216,6 +243,7 @@ async function ac4248Frame(request) {
         terminal: terminalBlockRect(),
       },
     };
+    mark("ready-title");
     beacon.phase = "ready-title-set";
     document.title = `ac4248:${JSON.stringify(ready)}`;
   } catch (error) {

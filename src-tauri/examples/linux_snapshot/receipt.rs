@@ -36,12 +36,22 @@ impl Probe {
         found.map_or("none", |(name, _)| name)
     }
 
-    // Live AC-4248-008 stall probes: script run before the fixture call.
-    pub fn script_prefix(self) -> &'static str {
+    // Live AC-4248-008 stall probes: WebView initialization script, run at
+    // document start, so neither probe depends on the Rust frame eval.
+    pub fn init_script(self) -> Option<&'static str> {
         match self {
-            Self::StallModule => "delete window.ac4248Frame; delete window.ac4248Beacon; ",
-            Self::StallRaf => "window.requestAnimationFrame = () => 0; ",
-            Self::None | Self::Blank | Self::Stale | Self::Cancel => "",
+            Self::StallModule => Some(concat!(
+                "for (const n of [\"ac4248Frame\", \"ac4248Beacon\"]) ",
+                "Object.defineProperty(window, n, ",
+                "{ get: () => undefined, set: () => {}, configurable: true });",
+            )),
+            Self::StallRaf => Some(concat!(
+                "window.requestAnimationFrame = () => 0; ",
+                "document.addEventListener(\"DOMContentLoaded\", () => { ",
+                "window.ac4248Frame?.({ generation: \"stallraf\", frame: \"control\", ",
+                "zoom: 1, renderer: \"default\" }); });",
+            )),
+            Self::None | Self::Blank | Self::Stale | Self::Cancel => None,
         }
     }
 }

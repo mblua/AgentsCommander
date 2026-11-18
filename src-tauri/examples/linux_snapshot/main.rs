@@ -582,6 +582,7 @@ fn main() -> ExitCode {
 
 #[cfg(target_os = "linux")]
 fn main() -> ExitCode {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("off")).init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config = match parse_args(&args) {
         Ok(config) => config,

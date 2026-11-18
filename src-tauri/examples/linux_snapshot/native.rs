@@ -1,7 +1,12 @@
 // Linux-only GTK/WebKit harness for the #4248 snapshot experiment: windows,
 // callbacks, timers, capture and cleanup. It uses only std and receipt types;
 // main supplies the validators as plain fn hooks.
-use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    rc::{Rc, Weak},
+    time::Duration,
+};
 
 use gio::prelude::CancellableExt;
 use glib::{prelude::ObjectExt, thread_guard::ThreadGuard};
@@ -9,7 +14,9 @@ use serde_json::{json, Value};
 use tauri::{RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use webkit2gtk::{LoadEvent, SettingsExt, SnapshotOptions, SnapshotRegion, WebViewExt};
 
-use crate::diagnosis::{classify, read_probe, TitleLog, PROBE_SCRIPT};
+use crate::diagnosis::{
+    classify, frame_script, link_break, read_probe, TitleLog, LINK_TARGET, PROBE_SCRIPT,
+};
 use crate::receipt::{
     BoundedWriter, Outcome, PixelVerdict, Probe, ProbeRejection, Readiness, Receipt, RequestGate,
     Snapshot, StepSpec, MAX_PNG_BYTES,
@@ -54,6 +61,8 @@ struct Progress {
     exit: Option<u8>,
     titles: TitleLog,
     expired: Option<Expired>,
+    // One answer per frame call: {label, generation, utc, answer}.
+    frame_acks: Vec<Value>,
 }
 
 // A deadline that fired and now waits for the page probe (or its grace timer).
@@ -61,11 +70,14 @@ struct Expired {
     stage: Value,
     outcome: Outcome,
     label: Option<&'static str>,
+    generation: Option<String>,
     waiting_readiness: bool,
     grace: Option<glib::SourceId>,
 }
 
 struct Harness {
+    // Weak self handle, so start_step can give the frame callback the shared state.
+    this: Weak<RefCell<Harness>>,
     spec: RunSpec,
     receipt: Option<Receipt>,
     app: tauri::AppHandle,
@@ -90,7 +102,8 @@ pub fn run(mut receipt: Receipt, spec: RunSpec) -> u8 {
         if !spec.steps.iter().any(|step| step.label == label) {
             continue;
         }
-        match build_window(&app, label, receipt.webkit_dir(label)) {
+        let init_script = spec.probe.init_script();
+        match build_window(&app, label, receipt.webkit_dir(label), init_script) {
             Ok(window) => windows.push((label, window)),
             Err(error) => {
                 return receipt.finish(&Outcome::Incomplete(format!("window {label}: {error}")))
@@ -101,15 +114,17 @@ pub fn run(mut receipt: Receipt, spec: RunSpec) -> u8 {
     let elapsed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
     let nonce = format!("{:x}", elapsed.map_or(0, |elapsed| elapsed.as_nanos()));
     let (receipt, app_handle, state) = (Some(receipt), app.handle().clone(), Progress::default());
-    let harness = Harness {
-        spec,
-        receipt,
-        app: app_handle,
-        windows,
-        nonce,
-        state,
-    };
-    let shared = Rc::new(RefCell::new(harness));
+    let shared = Rc::new_cyclic(|this| {
+        RefCell::new(Harness {
+            this: this.clone(),
+            spec,
+            receipt,
+            app: app_handle,
+            windows,
+            nonce,
+            state,
+        })
+    });
     for label in labels {
         if let Err(error) = attach(&shared, label) {
             let outcome = Outcome::Incomplete(format!("with_webview {label}: {error}"));
@@ -128,14 +143,40 @@ pub fn run(mut receipt: Receipt, spec: RunSpec) -> u8 {
     harness.state.exit.unwrap_or(2)
 }
 
-fn build_window(app: &tauri::App, label: &str, data_dir: PathBuf) -> tauri::Result<WebviewWindow> {
-    WebviewWindowBuilder::new(app, label, WebviewUrl::App("ac4248/index.html".into()))
-        .title(format!("ac4248 {label}"))
-        .data_directory(data_dir)
-        .focused(false)
-        .inner_size(1024.0, 768.0)
-        .resizable(false)
-        .build()
+fn build_window(
+    app: &tauri::App,
+    label: &str,
+    data_dir: PathBuf,
+    init_script: Option<&'static str>,
+) -> tauri::Result<WebviewWindow> {
+    let builder =
+        WebviewWindowBuilder::new(app, label, WebviewUrl::App("ac4248/index.html".into()))
+            .title(format!("ac4248 {label}"))
+            .data_directory(data_dir)
+            .focused(false)
+            .inner_size(1024.0, 768.0)
+            .resizable(false);
+    match init_script {
+        Some(script) => builder.initialization_script(script),
+        None => builder,
+    }
+    .build()
+}
+
+// AC-4248-008 link trace: one line per link, only with RUST_LOG=ac4248::link=trace.
+fn trace_link(link: &str, label: &str, detail: std::fmt::Arguments<'_>) {
+    if !log::log_enabled!(target: LINK_TARGET, log::Level::Trace) {
+        return;
+    }
+    let utc = chrono::Utc::now().to_rfc3339();
+    log::trace!(target: LINK_TARGET, "utc={utc} link={link} label={label} {detail}");
+}
+
+// Page values are cut to their first 512 chars before they are logged.
+fn first_chars(text: &str) -> &str {
+    text.char_indices()
+        .nth(512)
+        .map_or(text, |(end, _)| &text[..end])
 }
 
 impl Harness {
@@ -168,10 +209,21 @@ fn attach(shared: &Shared, label: &'static str) -> tauri::Result<()> {
         let shared = guard.into_inner();
         let view = platform.inner();
         let on_load = Rc::clone(&shared);
-        let load = view.connect_load_changed(move |_, event| {
+        let load = view.connect_load_changed(move |view, event| {
+            let uri = view.uri();
+            let uri = uri.as_deref().unwrap_or_default();
+            trace_link("load", label, format_args!("event={event:?} uri={uri}"));
             if event == LoadEvent::Finished {
                 on_loaded(&on_load, label);
             }
+        });
+        let failed = view.connect_load_failed(move |_, _, uri, error| {
+            trace_link(
+                "load",
+                label,
+                format_args!("event=failed uri={uri} error={error}"),
+            );
+            false
         });
         let on_title = Rc::clone(&shared);
         let title = view.connect_title_notify(move |view| {
@@ -187,10 +239,17 @@ fn attach(shared: &Shared, label: &'static str) -> tauri::Result<()> {
             on_web_process_terminated(&on_crash, label);
             None
         });
+        let settings = view.settings();
+        // WebKit writes page console.log lines to stdout/stderr only with trace on.
+        if log::log_enabled!(target: LINK_TARGET, log::Level::Trace) {
+            if let Some(settings) = settings.as_ref() {
+                settings.set_enable_write_console_messages_to_stdout(true);
+            }
+        }
         let Ok(mut harness) = shared.try_borrow_mut() else {
             return;
         };
-        let agent = view.settings().and_then(|settings| settings.user_agent());
+        let agent = settings.and_then(|settings| settings.user_agent());
         if let (Some(agent), Some(receipt)) = (agent, harness.receipt.as_mut()) {
             receipt.set(
                 &format!("webkitUserAgent.{label}"),
@@ -200,7 +259,7 @@ fn attach(shared: &Shared, label: &'static str) -> tauri::Result<()> {
         harness.state.views.push(NativeView {
             label,
             view,
-            handlers: vec![load, title, crash],
+            handlers: vec![load, failed, title, crash],
         });
         if harness.state.deadline.is_none() {
             let on_deadline = Rc::clone(&shared);
@@ -214,20 +273,30 @@ fn attach(shared: &Shared, label: &'static str) -> tauri::Result<()> {
 
 fn on_loaded(shared: &Shared, label: &'static str) {
     let Ok(mut harness) = shared.try_borrow_mut() else {
-        return;
+        return trace_link("loaded", label, format_args!("decision=busy"));
     };
-    let ended = harness.state.exit.is_some() || harness.state.expired.is_some();
-    if ended || harness.state.loaded.contains(&label) {
+    let decision = if harness.state.exit.is_some() || harness.state.expired.is_some() {
+        "ended"
+    } else if harness.state.loaded.contains(&label) {
+        "duplicate"
+    } else {
+        harness.state.loaded.push(label);
+        "accepted"
+    };
+    let (loaded, windows) = (harness.state.loaded.len(), harness.windows.len());
+    let detail = format_args!("decision={decision} loaded={loaded}/{windows}");
+    trace_link("loaded", label, detail);
+    if decision != "accepted" {
         return;
     }
-    harness.state.loaded.push(label);
-    if harness.state.index.is_none() && harness.state.loaded.len() == harness.windows.len() {
+    if harness.state.index.is_none() && loaded == windows {
         harness.state.index = Some(0);
         start_step(&mut harness);
     }
 }
 
-// Native zoom first, then the single fixture function with a fresh generation.
+// Native zoom first, then the single fixture function with a fresh generation;
+// the page answers the call (frame_script), and the answer becomes a frame ack.
 fn start_step(harness: &mut Harness) {
     let (Some(step), Some(index)) = (harness.step(), harness.state.index) else {
         return;
@@ -248,15 +317,52 @@ fn start_step(harness: &mut Harness) {
         "zoom": step.zoom,
         "renderer": step.renderer,
     });
-    let prefix = harness.spec.probe.script_prefix();
-    if let Err(error) = window.eval(format!("{prefix}window.ac4248Frame({request});")) {
-        finish(harness, &Outcome::Incomplete(format!("eval: {error}")));
+    let url = window
+        .url()
+        .map_or_else(|error| format!("error:{error}"), |url| url.to_string());
+    let probe = harness.spec.probe.token();
+    let detail = format_args!("index={index} generation={generation} probe={probe} url={url}");
+    trace_link("call", step.label, detail);
+    let Some(shared) = harness.this.upgrade() else {
+        return finish(harness, &Outcome::Incomplete("harness_dropped".to_owned()));
+    };
+    // wry runs the callback on the GTK main thread, so the guard is never foreign.
+    let guard = ThreadGuard::new(shared);
+    let label = step.label;
+    let dispatched = window.eval_with_callback(frame_script(&request), move |raw| {
+        on_frame_ack(guard.get_ref(), label, &generation, &raw);
+    });
+    match dispatched {
+        Ok(()) => trace_link("dispatch", label, format_args!("ok")),
+        Err(error) => {
+            trace_link("dispatch", label, format_args!("error={error}"));
+            finish(harness, &Outcome::Incomplete(format!("eval: {error}")));
+        }
     }
 }
 
-fn handle_title(shared: &Shared, label: &'static str, title: &str) {
+// The page's answer to one frame call: logged always, kept while the run is open.
+fn on_frame_ack(shared: &Shared, label: &'static str, generation: &str, raw: &str) {
+    let detail = format_args!("generation={generation} raw={}", first_chars(raw));
+    trace_link("ack", label, detail);
     let Ok(mut harness) = shared.try_borrow_mut() else {
+        return trace_link("ack", label, format_args!("generation={generation} busy"));
+    };
+    if harness.state.exit.is_some() {
         return;
+    }
+    harness.state.frame_acks.push(json!({
+        "label": label,
+        "generation": generation,
+        "utc": chrono::Utc::now().to_rfc3339(),
+        "answer": read_probe(Some(raw)),
+    }));
+}
+
+fn handle_title(shared: &Shared, label: &'static str, title: &str) {
+    trace_link("title", label, format_args!("title={}", first_chars(title)));
+    let Ok(mut harness) = shared.try_borrow_mut() else {
+        return trace_link("title", label, format_args!("busy"));
     };
     harness.state.titles.record(label, title);
     let generation = harness.state.gate.current().map(str::to_owned);
@@ -507,12 +613,19 @@ fn on_timeout(shared: &Shared) {
     };
     harness.state.deadline = None;
     let (waiting, mut stage, outcome) = timeout_stage(&harness);
+    let label = harness.step().map(|step| step.label);
+    let generation = harness.state.gate.current().map(str::to_owned);
+    let (step, acks) = (label.unwrap_or("none"), harness.state.frame_acks.len());
+    let detail = format_args!(
+        "waiting={} step={step} acks={acks}",
+        waiting.unwrap_or("none")
+    );
+    trace_link("timeout", step, detail);
     // A late title or snapshot can no longer advance the run.
     harness.state.gate.cancel();
     if let Some(cancellable) = harness.state.cancellable.take() {
         cancellable.cancel();
     }
-    let label = harness.step().map(|step| step.label);
     let Some(window) = label.and_then(|label| harness.window(label)) else {
         stage["diagnostics"] = json!({ "status": "no_view" });
         stage["hypothesis"] = Value::Null;
@@ -529,6 +642,7 @@ fn on_timeout(shared: &Shared) {
         stage,
         outcome,
         label,
+        generation,
         waiting_readiness: waiting == Some("readiness"),
         grace: Some(grace),
     });
@@ -594,6 +708,15 @@ fn on_diagnostics(shared: &Shared, raw: Option<String>) {
         }
     }
     let diagnostics = read_probe(raw.as_deref());
+    let link = expired.waiting_readiness.then(|| {
+        let generation = expired.generation.as_deref();
+        let own = |ack: &&Value| generation.is_some_and(|current| ack["generation"] == current);
+        let ack = harness.state.frame_acks.iter().find(own);
+        link_break(ack.map(|ack| &ack["answer"]), &diagnostics)
+    });
+    let raw_text = raw.as_deref().map_or("none", first_chars);
+    let detail = format_args!("raw={raw_text} linkBreak={}", link.unwrap_or("null"));
+    trace_link("probe", expired.label.unwrap_or("none"), detail);
     let hypothesis = if expired.waiting_readiness {
         let titles = &harness.state.titles;
         let seen = expired
@@ -606,6 +729,7 @@ fn on_diagnostics(shared: &Shared, raw: Option<String>) {
     };
     expired.stage["diagnostics"] = diagnostics;
     expired.stage["hypothesis"] = hypothesis;
+    expired.stage["linkBreak"] = json!(link);
     if let Some(receipt) = harness.receipt.as_mut() {
         receipt.set("timeoutStage", expired.stage);
     }
@@ -676,6 +800,7 @@ fn finish(harness: &mut Harness, outcome: &Outcome) {
         receipt.set("titleLog", harness.state.titles.to_json());
         receipt.set("scriptExecuted", json!(harness.state.script_executed));
         receipt.set("snapshotTaken", json!(harness.state.snapshot_taken));
+        receipt.set("frameAcks", json!(harness.state.frame_acks));
         exit = receipt.finish(outcome);
     }
     harness.state.exit = Some(exit);

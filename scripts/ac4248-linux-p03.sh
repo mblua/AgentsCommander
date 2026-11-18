@@ -71,6 +71,13 @@ check_stall_probes() {
   done
   readout detector_verified
 }
+# Trace logs must be on in each visible run; page console lines are a readout only.
+check_trace() {
+  local tag=$1
+  rg -q 'link=load' "$E/$tag.stderr" || incomplete "$tag" trace_logs_missing
+  readout "pagetrace $(cat "$E/$tag.stdout" "$E/$tag.stderr" | rg -c \
+    'CONSOLE LOG ac4248trace ' || echo 0)"
+}
 node --version
 npm --version
 npm ci --ignore-scripts
@@ -119,16 +126,23 @@ cargo +1.98.1 test --locked -p agentscommander --example linux_snapshot -- --lis
 for name in image_bounds encoded_size_limit receipt_no_clobber late_generation \
   blank_rejected stale_rejected title_log_bounded probe_unanswered read_probe_unparsed \
   h_a_signature fixture_inconsistent_shapes frame_not_called h_b_signature h_c_signature \
-  probe_names_match_fixture stall_probe_steps; do rg "$name: test" "$E/example-tests.list"; done
+  probe_names_match_fixture stall_probe_steps frame_script_shape link_break_tokens \
+  trace_target_matches_recipe; do rg "$name: test" "$E/example-tests.list"; done
 cargo +1.98.1 test --locked -p agentscommander --example linux_snapshot \
   > "$E/example-tests.log" 2>&1
 git rev-parse HEAD > "$E/source-sha.txt"
 hyprctl version > "$E/hyprland.txt"
 pkg-config --modversion webkit2gtk-4.1 > "$E/webkit.txt"
+export RUST_LOG=ac4248::link=trace
 visible_run visible
 write_baseline_readout
+readout "link $(jq -r '.timeoutStage.linkBreak // "none"' "$E/visible/receipt.json" \
+  2>/dev/null || echo visible_receipt_missing)"
+check_trace visible
 visible_run stall-module --probe stall-module
+check_trace stall-module
 visible_run stall-raf --probe stall-raf
+check_trace stall-raf
 check_stall_probes
 test "$(cat "$E/visible.exit")" -eq 0
 jq -e '.verdict == "pass"' "$E/visible/receipt.json"
@@ -161,7 +175,7 @@ mv -- "$E/off.exit.tmp" "$E/off.exit"
 exit "$code"
 RUN
 # Explicit environment survives compositor launch; paths validated above.
-off_cmd="env REPO=$REPO E=$E bash $E/off-run.sh"
+off_cmd="env REPO=$REPO E=$E RUST_LOG=$RUST_LOG bash $E/off-run.sh"
 hyprctl eval "hl.exec_cmd('$off_cmd', { workspace = 'special:ac4248 silent' })" \
   > "$E/lua.stdout" 2> "$E/lua.stderr"
 set +e
