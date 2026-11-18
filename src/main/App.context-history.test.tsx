@@ -191,7 +191,7 @@ describe("MainApp context history host (#3532 P07)", () => {
     await mountMain();
     centralViewStore.showContextHistory();
     await flush();
-    expect(pane()?.textContent).toBe("Elegí un proyecto para consultar su historial.");
+    expect(pane()?.textContent).toBe("Choose a project to view its history.");
     expect(h.mounts).toEqual([]);
   });
 

@@ -240,11 +240,11 @@ export function isHistoryIpcError(value: unknown): value is HistoryIpcError {
   return typeof candidate.code === "string" && typeof candidate.message === "string";
 }
 
-/** #4091 "Últimas N sesiones" ("Última sesión" for 1), noting fewer available. */
+/** #4091 "Last N sessions" ("Last session" for 1), noting fewer available. */
 export function sessionWindowLabel(requested: number, available?: number | null): string {
-  const base = requested === 1 ? "Última sesión" : `Últimas ${requested} sesiones`;
+  const base = requested === 1 ? "Last session" : `Last ${requested} sessions`;
   if (available === undefined || available === null || available >= requested) return base;
-  return `${base} (${available} ${available === 1 ? "disponible" : "disponibles"})`;
+  return `${base} (${available} available)`;
 }
 
 /**
