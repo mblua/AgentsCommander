@@ -128,7 +128,7 @@ describe("SettingsModal Context Heat Map section (#4049)", () => {
         expect(m.$<HTMLInputElement>(WINDOWS)!.value).toBe("25, 100, 300");
         const select = m.$<HTMLSelectElement>(COLOR)!;
         expect([...select.options].map((o) => o.textContent)).toEqual([
-          "Últimas 25 sesiones", "Últimas 100 sesiones", "Últimas 300 sesiones",
+          "Last 25 sessions", "Last 100 sessions", "Last 300 sessions",
         ]);
         expect(select.value).toBe(String(sessions));
       } finally { m.rendered.cleanup(); }
@@ -143,7 +143,7 @@ describe("SettingsModal Context Heat Map section (#4049)", () => {
     try {
       await waitFor(() => expect(m.$(COLOR)).toBeTruthy());
       expect(m.$<HTMLSelectElement>(COLOR)!.value).toBe("10");
-      expect(m.$<HTMLSelectElement>(COLOR)!.options[0].textContent).toBe("Última sesión");
+      expect(m.$<HTMLSelectElement>(COLOR)!.options[0].textContent).toBe("Last session");
     } finally { m.rendered.cleanup(); }
   });
 

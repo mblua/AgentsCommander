@@ -263,9 +263,9 @@ describe("ContextHistoryApp", () => {
     expect(view.root.textContent).toContain(TEXT.periodNote);
     expect(view.root.textContent).toContain(TEXT.launchNote);
     const row = must(view.root, "[data-agent-key='dev']");
-    expect(must(row, "[data-metric='count']").textContent).toBe("7 registros");
+    expect(must(row, "[data-metric='count']").textContent).toBe("7 records");
     expect(must(row, "[data-metric='mean']").textContent).toBe(`${TEXT.meanLabel}: 42.3`);
-    expect(must(view.root, "[data-metric='total-agents']").textContent).toBe("1 agentes");
+    expect(must(view.root, "[data-metric='total-agents']").textContent).toBe("1 agents");
   });
 
   it("shows empty and error distinctly and retries", async () => {
@@ -281,7 +281,7 @@ describe("ContextHistoryApp", () => {
     expect(fake.calls.filter((c) => c.cmd === "get_settings")).toHaveLength(2);
   });
 
-  it("offers Todos and Desconocido distinctly and sends the chosen filter", async () => {
+  it("offers All and Unknown distinctly and sends the chosen filter", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_context_history_report", reportResponse([agent]));
     const view = mount(fake);
@@ -308,8 +308,8 @@ describe("ContextHistoryApp", () => {
     click(must(view.root, "[data-agent-key='dev']"));
     await waitFor(() => void must(view.root, `[data-session-id='${L}']`));
     const row = must(view.root, `[data-session-id='${L}']`);
-    expect(must(row, "[data-metric='initial']").textContent).toBe(`Inicial: ${TEXT.unknown}`);
-    expect(must(row, "[data-metric='max']").textContent).toBe("Máximo: 20%");
+    expect(must(row, "[data-metric='initial']").textContent).toBe(`Initial: ${TEXT.unknown}`);
+    expect(must(row, "[data-metric='max']").textContent).toBe("Max: 20%");
     expect(row.textContent).toContain(TEXT.incomplete);
     expect(row.textContent).toContain(BOUNDARY_TEXT.observed_zero);
     expect(row.textContent).toContain("room-1");
@@ -337,7 +337,7 @@ describe("ContextHistoryApp", () => {
     const options = [...(select as HTMLSelectElement).options];
     expect(options.map((o) => o.value)).toEqual(["3", "40"]);
     expect(options.map((o) => o.textContent))
-      .toEqual(["Últimas 3 sesiones", "Últimas 40 sesiones"]);
+      .toEqual(["Last 3 sessions", "Last 40 sessions"]);
     expect((select as HTMLSelectElement).value).toBe("40");
     (select as HTMLSelectElement).value = "3";
     select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -438,11 +438,11 @@ describe("ContextHistoryApp", () => {
     const perSession = (key: string) =>
       must(must(view.root, `[data-agent-key='${key}']`), "[data-metric='records-per-session']")
         .textContent;
-    expect(perSession("a")).toBe("15.6 registros/sesión");
-    expect(perSession("b")).toBe("10.5 registros/sesión");
-    expect(perSession("c")).toBe("— registros/sesión");
-    expect(perSession("d")).toBe("0.0 registros/sesión");
-    expect(perSession("e")).toBe("9.9 registros/sesión");
+    expect(perSession("a")).toBe("15.6 records/session");
+    expect(perSession("b")).toBe("10.5 records/session");
+    expect(perSession("c")).toBe("— records/session");
+    expect(perSession("d")).toBe("0.0 records/session");
+    expect(perSession("e")).toBe("9.9 records/session");
     const metrics = [...must(view.root, "[data-agent-key='a']").querySelectorAll("[data-metric]")]
       .map((el) => el.getAttribute("data-metric"));
     expect(metrics.slice(0, 3)).toEqual(["count", "records-per-session", "mean"]);
@@ -450,7 +450,7 @@ describe("ContextHistoryApp", () => {
     await waitFor(() => void must(view.root, '[data-ac-testid="contextHistory.detailTotals"]'));
     const totals = must(view.root, '[data-ac-testid="contextHistory.detailTotals"]');
     expect(must(totals, "[data-metric='records-per-session']").textContent)
-      .toBe("15.6 registros/sesión");
+      .toBe("15.6 records/session");
     expect(must(totals, "[data-metric='mean']").textContent).toBe(`${TEXT.meanLabel}: 42.3`);
   });
 
@@ -482,10 +482,10 @@ describe("ContextHistoryApp", () => {
     const texts = (root: Element) =>
       [...root.querySelectorAll("[data-metric='scope-window']")].map((el) => el.textContent);
     const expected = [
-      "team-a: Últimas 300 sesiones",
-      "team-b: Últimas 300 sesiones (2 disponibles)",
-      `${TEXT.unknown}: Últimas 300 sesiones (1 disponible)`,
-      `${TEXT.ambiguous}: Últimas 300 sesiones (0 disponibles)`,
+      "team-a: Last 300 sessions",
+      "team-b: Last 300 sessions (2 available)",
+      `${TEXT.unknown}: Last 300 sessions (1 available)`,
+      `${TEXT.ambiguous}: Last 300 sessions (0 available)`,
     ];
     expect(texts(must(view.root, "[data-agent-key='dev']"))).toEqual(expected);
     click(must(view.root, "[data-agent-key='dev']"));

@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::context_history::{BoundaryReason, HistoryRecord, RecordKind, TeamAttribution};
 
 /// Label of a session whose retained data is known to be incomplete.
-pub(crate) const INCOMPLETE_SESSION_LABEL: &str = "Datos conservados de sesión incompleta";
+pub(crate) const INCOMPLETE_SESSION_LABEL: &str = "Data kept from an incomplete session";
 
 /// The positive value of a `change` record; zero, null and boundaries never count.
 pub(crate) fn positive(record: &HistoryRecord) -> Option<u8> {

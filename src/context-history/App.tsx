@@ -31,7 +31,7 @@ import {
 } from "./state";
 import "./styles.css";
 
-// #3532 P06 - "Contexto por agente": agents on the left, the selected agent's
+// #3532 P06 - "Context by agent": agents on the left, the selected agent's
 // sessions and one session's timeline on the right. Every number shown comes
 // from the backend; refresh is manual and there is no polling.
 
@@ -44,36 +44,36 @@ export interface ContextHistoryAppProps {
 }
 
 export const TEXT = {
-  title: "Contexto por agente",
-  loading: "Cargando historial…",
-  empty: "No hay registros para estos filtros.",
-  error: "No se pudo leer el historial.",
-  retry: "Reintentar",
-  refresh: "Actualizar",
-  close: "Cerrar",
-  back: "Volver a agentes",
-  periodNote: "Últimas sesiones de cada agente y team; métricas de la sesión entera",
-  launchNote: "Modelo y esfuerzo del comando de lanzamiento. Pueden ser desconocidos.",
+  title: "Context by agent",
+  loading: "Loading history…",
+  empty: "No records for these filters.",
+  error: "Could not read the history.",
+  retry: "Retry",
+  refresh: "Refresh",
+  close: "Close",
+  back: "Back to agents",
+  periodNote: "Latest sessions of each agent and team; whole-session metrics",
+  launchNote: "Model and effort from the launch command. They can be unknown.",
   coverageNote:
-    "Observación cada 5 s; puede haber huecos de observación y registros " +
-    "retirados por retención. Root no se lista.",
-  meanLabel: "Contexto medio por registro",
-  perSession: "registros/sesión",
-  ambiguous: "Ambiguo",
-  settingsError: "No se pudo leer la configuración de ventanas de sesiones.",
-  unknown: "Desconocido",
-  all: "Todos",
-  incomplete: "Datos conservados de sesión incompleta",
-  desktopOnly: "El historial de contexto solo está disponible en la app de escritorio.",
-  moreAgents: "Más agentes",
-  moreSessions: "Más sesiones",
-  moreRecords: "Más registros",
+    "Observed every 5 s; there can be observation gaps and records removed by " +
+    "retention. Root is not listed.",
+  meanLabel: "Average context per record",
+  perSession: "records/session",
+  ambiguous: "Ambiguous",
+  settingsError: "Could not read the session window settings.",
+  unknown: "Unknown",
+  all: "All",
+  incomplete: "Data kept from an incomplete session",
+  desktopOnly: "Context history is only available in the desktop app.",
+  moreAgents: "More agents",
+  moreSessions: "More sessions",
+  moreRecords: "More records",
 } as const;
 
 export const BOUNDARY_TEXT: Record<BoundaryReason, string> = {
-  observed_zero: "Reinicio observado",
-  lifecycle: "Intento de reinicio de AC",
-  observation_gap: "Observación interrumpida",
+  observed_zero: "Observed restart",
+  lifecycle: "AC restart attempt",
+  observation_gap: "Observation interrupted",
 };
 
 export function formatMean(mean: number | null): string {
@@ -305,7 +305,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
       >
         <span class="ch-agent-name">{agent.agentName}</span>
         <span class="ch-metric" data-metric="count">
-          {formatCount(agent.recordsCount)} registros
+          {formatCount(agent.recordsCount)} records
         </span>
         <span class="ch-metric" data-metric="records-per-session">
           {formatRecordsPerSession(agent.recordsPerSession)} {TEXT.perSession}
@@ -337,16 +337,16 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
         <span>{formatTime(session.logicalStartedAtUtcMs)}</span>
         <span class="ch-provenance">{session.room ?? session.instanceFqn}</span>
         <span class="ch-metric" data-metric="count">
-          {formatCount(session.recordsCount)} registros
+          {formatCount(session.recordsCount)} records
         </span>
         <span class="ch-metric" data-metric="mean">
           {TEXT.meanLabel}: {formatMean(session.mean)}
         </span>
         <span class="ch-metric" data-metric="initial">
-          Inicial: {session.initialValue === null ? TEXT.unknown : `${session.initialValue}%`}
+          Initial: {session.initialValue === null ? TEXT.unknown : `${session.initialValue}%`}
         </span>
         <span class="ch-metric" data-metric="max">
-          Máximo: {session.max === null ? TEXT.unknown : `${session.max}%`}
+          Max: {session.max === null ? TEXT.unknown : `${session.max}%`}
         </span>
         <span class="ch-metric" data-metric="launch">
           {session.codingAgentId ?? TEXT.unknown} · {session.model ?? TEXT.unknown} ·{" "}
@@ -415,7 +415,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
               </select>
             </label>
             <label class="ch-filter">
-              <span>Sesiones</span>
+              <span>Sessions</span>
               <select
                 value={String(state.filters().sessionCount ?? "")}
                 onChange={(event) =>
@@ -428,9 +428,9 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
                 </For>
               </select>
             </label>
-            {launchSelect("Agente de programación", "codingAgentId")}
-            {launchSelect("Modelo al iniciar", "model")}
-            {launchSelect("Esfuerzo al iniciar", "effort")}
+            {launchSelect("Coding agent", "codingAgentId")}
+            {launchSelect("Model at launch", "model")}
+            {launchSelect("Effort at launch", "effort")}
           </div>
           <div class="ch-notes">
             <p>{TEXT.periodNote}</p>
@@ -446,11 +446,11 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
             </button>
           </Show>
           <div class="ch-body">
-            <section ref={listRef} class="ch-list" aria-label="Agentes" tabIndex={-1}>
+            <section ref={listRef} class="ch-list" aria-label="Agents" tabIndex={-1}>
               <Show when={state.report().data}>
                 {(report) => (
                   <p data-metric="total-agents">
-                    {formatCount(report().totalAgents)} agentes
+                    {formatCount(report().totalAgents)} agents
                   </p>
                 )}
               </Show>
@@ -467,7 +467,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
               <section
                 ref={detailRef}
                 class="ch-detail"
-                aria-label="Detalle del agente"
+                aria-label="Agent detail"
                 tabIndex={-1}
               >
                 <button
@@ -487,7 +487,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
                   {(detail) => (
                     <div data-ac-testid="contextHistory.detailTotals">
                       <span data-metric="count">
-                        {formatCount(detail().recordsCount)} registros
+                        {formatCount(detail().recordsCount)} records
                       </span>
                       {" · "}
                       <span data-metric="records-per-session">
@@ -510,7 +510,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
                   </button>
                 </Show>
                 <Show when={state.selectedSession()}>
-                  <section aria-label="Línea de tiempo">
+                  <section aria-label="Timeline">
                     <Show when={state.changes().loading}>
                       <p class="ch-status">{TEXT.loading}</p>
                     </Show>

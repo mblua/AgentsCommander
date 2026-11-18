@@ -46,6 +46,8 @@ export function rampColor(mean: number, theme: "dark" | "light"): string {
 
 /** Grace period to move the pointer from the badge to the card. */
 export const CLOSE_DELAY_MS = 150;
+/** #4796 Mouse hover must stay on the badge this long before the card opens. */
+export const OPEN_DELAY_MS = 2000;
 
 const UNAVAILABLE: SidebarHistoryState = { status: "unavailable" };
 
@@ -102,7 +104,15 @@ const ContextBadge: Component<{
     if (closeTimer !== undefined) clearTimeout(closeTimer);
     closeTimer = undefined;
   };
+  let openTimer: ReturnType<typeof setTimeout> | undefined;
+  // Set by a touch press so the compat mouseenter that follows cannot reopen the card.
+  let touchPress = false;
+  const cancelOpen = () => {
+    if (openTimer !== undefined) clearTimeout(openTimer);
+    openTimer = undefined;
+  };
   const close = () => {
+    cancelOpen();
     cancelClose();
     cardHovered = false;
     setOpen(false);
@@ -112,12 +122,25 @@ const ContextBadge: Component<{
     closeTimer = setTimeout(close, CLOSE_DELAY_MS);
   };
   onCleanup(cancelClose);
+  onCleanup(cancelOpen);
 
   const show = () => {
+    cancelOpen();
     cancelClose();
     setOpen(true);
     const s = props.historyScope;
     if (s) refreshContextHistoryOnHover(s);
+  };
+  const scheduleOpen = () => {
+    if (touchPress) return;
+    // A close pending from the last leave would cancel this open, so drop it first.
+    cancelClose();
+    if (open()) return;
+    cancelOpen();
+    openTimer = setTimeout(() => {
+      openTimer = undefined;
+      show();
+    }, OPEN_DELAY_MS);
   };
   const inside = (node: EventTarget | null) =>
     node instanceof Node && (trigger?.contains(node) || card?.contains(node));
@@ -145,8 +168,10 @@ const ContextBadge: Component<{
   const historyHandlers = (): Record<string, unknown> => ({
     tabIndex: 0,
     "aria-describedby": cardId,
-    onMouseEnter: show,
+    onMouseEnter: scheduleOpen,
     onMouseLeave: (e: MouseEvent) => {
+      touchPress = false;
+      cancelOpen();
       if (!inside(e.relatedTarget)) scheduleClose();
     },
     onFocus: show,
@@ -163,10 +188,14 @@ const ContextBadge: Component<{
     },
     "on:pointerdown": (e: PointerEvent) => {
       e.stopPropagation();
-      if (e.pointerType === "touch") {
-        if (open()) setOpen(false);
-        else show();
+      if (e.pointerType !== "touch") {
+        touchPress = false;
+        return;
       }
+      cancelOpen();
+      touchPress = true;
+      if (open()) setOpen(false);
+      else show();
     },
     "on:click": (e: MouseEvent) => e.stopPropagation(),
   });

@@ -23,7 +23,9 @@ vi.mock("../context-history", async (importOriginal) => {
   };
 });
 
-import ContextBadge, { CLOSE_DELAY_MS, CONTEXT_BADGE_TOOLTIP, rampColor } from "./ContextBadge";
+import ContextBadge, {
+  CLOSE_DELAY_MS, CONTEXT_BADGE_TOOLTIP, OPEN_DELAY_MS, rampColor,
+} from "./ContextBadge";
 
 const TESTID = "session.s1.contextBadge";
 
@@ -250,7 +252,7 @@ describe("ContextBadge history scope (#3532 P11)", () => {
       renderScoped(10, ready(55, 10), { colorSessions });
       const badge = target(TESTID);
       expect(badge.style.getPropertyValue("--ctx-history-tone-dark")).toBe(rampColor(55, "dark"));
-      expect(cardOf(badge).textContent).toContain("Color basado en: últimas 300 sesiones");
+      expect(cardOf(badge).textContent).toContain("Color based on: last 300 sessions");
     }
   });
 
@@ -303,10 +305,11 @@ describe("ContextBadge history scope (#3532 P11)", () => {
     }
     expect(cardOf(badge).hidden).toBe(true);
 
+    vi.useFakeTimers();
     badge.dispatchEvent(new MouseEvent("mouseenter"));
+    vi.advanceTimersByTime(OPEN_DELAY_MS);
     expect(cardOf(badge).hidden).toBe(false);
     expect(history.refresh).toHaveBeenCalledWith(SCOPE);
-    vi.useFakeTimers();
     badge.dispatchEvent(new MouseEvent("mouseleave", { relatedTarget: document.body }));
     expect(cardOf(badge).hidden).toBe(false);
     vi.advanceTimersByTime(CLOSE_DELAY_MS);
@@ -336,6 +339,7 @@ describe("ContextBadge history scope (#3532 P11)", () => {
       const badge = target(TESTID);
       const card = cardOf(badge);
       badge.dispatchEvent(new MouseEvent("mouseenter"));
+      vi.advanceTimersByTime(OPEN_DELAY_MS);
       // The pointer leaves the badge into the gap: relatedTarget is neither area.
       badge.dispatchEvent(new MouseEvent("mouseleave", { relatedTarget: document.body }));
       vi.advanceTimersByTime(CLOSE_DELAY_MS / 2);
@@ -361,7 +365,10 @@ describe("ContextBadge history scope (#3532 P11)", () => {
     document.body.append(root);
     render(() => <ContextBadge percent={35} testId={TESTID} historyScope={SCOPE} />, root);
     const badge = target(TESTID);
+    vi.useFakeTimers();
     badge.dispatchEvent(new MouseEvent("mouseenter"));
+    vi.advanceTimersByTime(OPEN_DELAY_MS);
+    vi.useRealTimers();
     expect(cardOf(badge).textContent).toContain("55.0%");
     setState({
       ...ready(20),
@@ -420,6 +427,102 @@ describe("ContextBadge history scope (#3532 P11)", () => {
     expect(cardOf(badge).hidden).toBe(false);
     touch();
     expect(cardOf(badge).hidden).toBe(true);
+  });
+
+  describe("#4796 hover delay", () => {
+    const touchAt = (badge: HTMLElement) => {
+      const e = new Event("pointerdown", { bubbles: true });
+      Object.defineProperty(e, "pointerType", { value: "touch" });
+      badge.dispatchEvent(e);
+    };
+    const leave = (badge: HTMLElement) =>
+      badge.dispatchEvent(new MouseEvent("mouseleave", { relatedTarget: document.body }));
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("does not open when the pointer leaves before the delay", () => {
+      vi.useFakeTimers();
+      renderScoped(35, ready(55));
+      const badge = target(TESTID);
+      badge.dispatchEvent(new MouseEvent("mouseenter"));
+      vi.advanceTimersByTime(OPEN_DELAY_MS - 1);
+      expect(cardOf(badge).hidden).toBe(true);
+      leave(badge);
+      vi.advanceTimersByTime(OPEN_DELAY_MS * 2);
+      expect(cardOf(badge).hidden).toBe(true);
+      expect(history.refresh).not.toHaveBeenCalled();
+    });
+
+    it("opens after the pointer stays the full delay", () => {
+      vi.useFakeTimers();
+      renderScoped(35, ready(55));
+      const badge = target(TESTID);
+      badge.dispatchEvent(new MouseEvent("mouseenter"));
+      vi.advanceTimersByTime(OPEN_DELAY_MS);
+      expect(cardOf(badge).hidden).toBe(false);
+      expect(history.refresh).toHaveBeenCalledWith(SCOPE);
+    });
+
+    it("opens at once on focus, without timers", () => {
+      renderScoped(35, ready(55));
+      const badge = target(TESTID);
+      badge.dispatchEvent(new FocusEvent("focus"));
+      expect(cardOf(badge).hidden).toBe(false);
+    });
+
+    it("opens at once on touch and a compat mouseenter does not reopen it", () => {
+      vi.useFakeTimers();
+      renderScoped(35, ready(55));
+      const badge = target(TESTID);
+      touchAt(badge);
+      expect(cardOf(badge).hidden).toBe(false);
+      touchAt(badge);
+      expect(cardOf(badge).hidden).toBe(true);
+      badge.dispatchEvent(new MouseEvent("mouseenter"));
+      vi.advanceTimersByTime(OPEN_DELAY_MS);
+      expect(cardOf(badge).hidden).toBe(true);
+    });
+
+    it("restarts the count on each enter", () => {
+      vi.useFakeTimers();
+      renderScoped(35, ready(55));
+      const badge = target(TESTID);
+      badge.dispatchEvent(new MouseEvent("mouseenter"));
+      vi.advanceTimersByTime(1500);
+      leave(badge);
+      badge.dispatchEvent(new MouseEvent("mouseenter"));
+      vi.advanceTimersByTime(1500);
+      expect(cardOf(badge).hidden).toBe(true);
+      vi.advanceTimersByTime(500);
+      expect(cardOf(badge).hidden).toBe(false);
+    });
+
+    it("drops a pending open on dispose", () => {
+      vi.useFakeTimers();
+      const { dispose } = renderScoped(35, ready(55));
+      const badge = target(TESTID);
+      badge.dispatchEvent(new MouseEvent("mouseenter"));
+      dispose();
+      vi.advanceTimersByTime(OPEN_DELAY_MS);
+      expect(history.refresh).not.toHaveBeenCalled();
+    });
+
+    it("drops a pending open when history becomes unavailable", () => {
+      vi.useFakeTimers();
+      const [state, setState] = createSignal<SidebarHistoryState>(ready(55));
+      history.state = state;
+      const root = document.createElement("div");
+      document.body.append(root);
+      render(() => <ContextBadge percent={35} testId={TESTID} historyScope={SCOPE} />, root);
+      const badge = target(TESTID);
+      badge.dispatchEvent(new MouseEvent("mouseenter"));
+      setState({ status: "unavailable" });
+      vi.advanceTimersByTime(OPEN_DELAY_MS);
+      expect(document.querySelector('[id^="ctx-history-"]:not([hidden])')).toBeNull();
+      expect(history.refresh).not.toHaveBeenCalled();
+    });
   });
 
   it("releases the handle on dispose and before a new scope", () => {

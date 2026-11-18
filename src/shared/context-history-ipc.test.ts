@@ -207,19 +207,19 @@ describe("ContextHistoryAPI wire contract", () => {
 
 describe("context-history helpers", () => {
   it("labels session windows and notes fewer available sessions", () => {
-    expect(sessionWindowLabel(1)).toBe("Última sesión");
-    expect(sessionWindowLabel(25)).toBe("Últimas 25 sesiones");
-    expect(sessionWindowLabel(100, 42)).toBe("Últimas 100 sesiones (42 disponibles)");
-    expect(sessionWindowLabel(100, 100)).toBe("Últimas 100 sesiones");
-    expect(sessionWindowLabel(100, null)).toBe("Últimas 100 sesiones");
-    expect(sessionWindowLabel(25, 1)).toBe("Últimas 25 sesiones (1 disponible)");
-    expect(sessionWindowLabel(25, 2)).toBe("Últimas 25 sesiones (2 disponibles)");
-    expect(sessionWindowLabel(25, 0)).toBe("Últimas 25 sesiones (0 disponibles)");
-    expect(sessionWindowLabel(25, 25)).toBe("Últimas 25 sesiones");
-    expect(sessionWindowLabel(25, 26)).toBe("Últimas 25 sesiones");
-    expect(sessionWindowLabel(1, 0)).toBe("Última sesión (0 disponibles)");
-    expect(sessionWindowLabel(1, 1)).toBe("Última sesión");
-    expect(sessionWindowLabel(1)).toBe("Última sesión");
+    expect(sessionWindowLabel(1)).toBe("Last session");
+    expect(sessionWindowLabel(25)).toBe("Last 25 sessions");
+    expect(sessionWindowLabel(100, 42)).toBe("Last 100 sessions (42 available)");
+    expect(sessionWindowLabel(100, 100)).toBe("Last 100 sessions");
+    expect(sessionWindowLabel(100, null)).toBe("Last 100 sessions");
+    expect(sessionWindowLabel(25, 1)).toBe("Last 25 sessions (1 available)");
+    expect(sessionWindowLabel(25, 2)).toBe("Last 25 sessions (2 available)");
+    expect(sessionWindowLabel(25, 0)).toBe("Last 25 sessions (0 available)");
+    expect(sessionWindowLabel(25, 25)).toBe("Last 25 sessions");
+    expect(sessionWindowLabel(25, 26)).toBe("Last 25 sessions");
+    expect(sessionWindowLabel(1, 0)).toBe("Last session (0 available)");
+    expect(sessionWindowLabel(1, 1)).toBe("Last session");
+    expect(sessionWindowLabel(1)).toBe("Last session");
   });
 
   it("selects the configured colour window, falling back to the last member", () => {
@@ -241,7 +241,7 @@ describe("context-history helpers", () => {
     expect(selectSessionWindow(counts, undefined, null))
       .toEqual({ requestedSessions: 5, bucket: null });
     expect(selectSessionWindow([], 2, [two])).toBeNull();
-    expect(sessionWindowLabel(5)).toBe("Últimas 5 sesiones");
+    expect(sessionWindowLabel(5)).toBe("Last 5 sessions");
   });
 
   it("formats backend records per session with one decimal or an em dash", () => {

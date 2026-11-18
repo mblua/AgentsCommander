@@ -74,52 +74,52 @@ describe("ContextHistoryCard (#3532 P11)", () => {
   it("shows the current reading, identity, three bars and the basis", () => {
     const { card } = renderCard(ready());
     const text = card.textContent ?? "";
-    expect(text).toContain("Contexto actual de esta sesión: 35%");
+    expect(text).toContain("Current context of this session: 35%");
     expect(text).toContain("dev-rust");
     expect(text).toContain("team-a");
     expect(text).toContain("C:/proj");
     const rows = card.querySelectorAll(".ctx-history-row");
     expect(rows).toHaveLength(3);
-    expect(rows[0].textContent).toContain("Últimas 25 sesiones (0 disponibles)");
-    expect(rows[0].textContent).toContain("Sin datos · 0 registros · — registros/sesión");
+    expect(rows[0].textContent).toContain("Last 25 sessions (0 available)");
+    expect(rows[0].textContent).toContain("No data · 0 records · — records/session");
     expect(rows[0].querySelector(".ctx-history-fill")).toBeNull();
-    expect(rows[1].textContent).toContain("Últimas 100 sesiones (2 disponibles)");
-    expect(rows[1].textContent).toContain("35.0% · 2 registros · 1.0 registros/sesión");
-    expect(rows[2].textContent).toContain("Últimas 300 sesiones (3 disponibles)");
-    expect(rows[2].textContent).toContain("55.0% · 9 registros · 3.0 registros/sesión");
-    expect(rows[2].textContent).toContain("cobertura parcial");
+    expect(rows[1].textContent).toContain("Last 100 sessions (2 available)");
+    expect(rows[1].textContent).toContain("35.0% · 2 records · 1.0 records/session");
+    expect(rows[2].textContent).toContain("Last 300 sessions (3 available)");
+    expect(rows[2].textContent).toContain("55.0% · 9 records · 3.0 records/session");
+    expect(rows[2].textContent).toContain("partial coverage");
     expect(rows[2].classList.contains("selected")).toBe(true);
-    expect(text).toContain("Color basado en: últimas 300 sesiones");
-    expect(text).toContain("Sesiones más recientes de este agente y team; sesión entera.");
+    expect(text).toContain("Color based on: last 300 sessions");
+    expect(text).toContain("Most recent sessions of this agent and team; whole session.");
     expect(text).toContain("Live warning.");
-    expect(text).toContain("una media alta no ordena reiniciar");
+    expect(text).toContain("a high average does not mean you must restart");
   });
 
   it("marks the saved count and says when the reading is missing", () => {
     const { card } = renderCard(ready(), null, 25);
-    expect(card.textContent).toContain("Contexto actual de esta sesión: no disponible");
-    expect(card.textContent).toContain("Color basado en: últimas 25 sesiones");
+    expect(card.textContent).toContain("Current context of this session: unavailable");
+    expect(card.textContent).toContain("Color based on: last 25 sessions");
     const rows = card.querySelectorAll(".ctx-history-row");
     expect(rows[0].classList.contains("selected")).toBe(true);
     expect(rows[2].classList.contains("selected")).toBe(false);
   });
 
   it.each([
-    [{ status: "loading" } as SidebarHistoryState, "Cargando medias de contexto…"],
-    [{ status: "error", message: "x" } as SidebarHistoryState, "No se pudieron leer las medias"],
+    [{ status: "loading" } as SidebarHistoryState, "Loading context averages…"],
+    [{ status: "error", message: "x" } as SidebarHistoryState, "Could not read context averages"],
     [
       {
         status: "ambiguous", scope: { kind: "ambiguous", agentKey: null, teamIds: [] },
         generatedAtUtcMs: 1, text: "",
       } as SidebarHistoryState,
-      "Datos sin atribución segura a este team",
+      "Data without a reliable attribution to this team",
     ],
     [
       {
         status: "unknown", scope: { kind: "unknown", agentKey: null, teamIds: [] },
         generatedAtUtcMs: 1, text: "",
       } as SidebarHistoryState,
-      "Identidad histórica no disponible",
+      "Historical identity unavailable",
     ],
   ])("renders the %s state without bars", (state, expected) => {
     const { card } = renderCard(state);
@@ -132,11 +132,11 @@ describe("ContextHistoryCard (#3532 P11)", () => {
     const { card } = renderCard(readyWith([bucket(2, 40, 4, 2), bucket(5, 30, 10, 5)]), 35, 5);
     const rows = card.querySelectorAll(".ctx-history-row");
     expect(rows).toHaveLength(2);
-    expect(rows[0].textContent).toContain("Últimas 2 sesiones");
-    expect(rows[0].textContent).not.toContain("disponibles");
+    expect(rows[0].textContent).toContain("Last 2 sessions");
+    expect(rows[0].textContent).not.toContain("available");
     expect(rows[1].getAttribute("data-ac-sessions")).toBe("5");
     expect(rows[1].classList.contains("selected")).toBe(true);
-    expect(card.textContent).toContain("Color basado en: últimas 5 sesiones");
+    expect(card.textContent).toContain("Color based on: last 5 sessions");
   });
 
   it("shows backend records per session after the record count (criterion 8)", () => {
@@ -147,12 +147,12 @@ describe("ContextHistoryCard (#3532 P11)", () => {
       bucket(300, null, 0, 1),
     ]), 35, 25);
     const rows = card.querySelectorAll(".ctx-history-row");
-    expect(rows[0].textContent).toContain("20.0% · 1560 registros · 15.6 registros/sesión");
-    expect(rows[1].textContent).toContain("Últimas 100 sesiones (2 disponibles)");
-    expect(rows[1].textContent).toContain("30.0% · 21 registros · 10.5 registros/sesión");
-    expect(rows[2].textContent).toContain("Sin datos · 0 registros · — registros/sesión");
+    expect(rows[0].textContent).toContain("20.0% · 1560 records · 15.6 records/session");
+    expect(rows[1].textContent).toContain("Last 100 sessions (2 available)");
+    expect(rows[1].textContent).toContain("30.0% · 21 records · 10.5 records/session");
+    expect(rows[2].textContent).toContain("No data · 0 records · — records/session");
     // A boundary-only session: zero records, null context mean, 0.0 per session.
-    expect(rows[3].textContent).toContain("Sin datos · 0 registros · 0.0 registros/sesión");
+    expect(rows[3].textContent).toContain("No data · 0 records · 0.0 records/session");
     expect(rows[3].querySelector(".ctx-history-fill")).toBeNull();
   });
 
@@ -252,12 +252,12 @@ describe("ContextHistoryCard placement (#3532 P11)", () => {
   it("updates label, mean and records per session on ready -> ready", () => {
     viewport(800, 600);
     const { card, setState } = mount(100, readyWith([bucket(100, 35, 21, 2)]));
-    expect(card.textContent).toContain("Últimas 100 sesiones (2 disponibles)");
-    expect(card.textContent).toContain("35.0% · 21 registros · 10.5 registros/sesión");
+    expect(card.textContent).toContain("Last 100 sessions (2 available)");
+    expect(card.textContent).toContain("35.0% · 21 records · 10.5 records/session");
     setState(readyWith([bucket(100, 50, 1560, 100)]));
-    expect(card.textContent).toContain("Últimas 100 sesiones");
-    expect(card.textContent).not.toContain("disponibles");
-    expect(card.textContent).toContain("50.0% · 1560 registros · 15.6 registros/sesión");
+    expect(card.textContent).toContain("Last 100 sessions");
+    expect(card.textContent).not.toContain("available");
+    expect(card.textContent).toContain("50.0% · 1560 records · 15.6 records/session");
   });
 
   it("removes its window listeners when it closes", () => {
@@ -349,10 +349,10 @@ describe("ContextHistoryCard P18 native listeners", () => {
   it("separates each legend swatch from its label", () => {
     const { card } = mountWithParent();
     const legend = card.querySelector(".ctx-history-legend")!;
-    expect(legend.textContent).toBe(" menor media mayor media");
+    expect(legend.textContent).toBe(" lower average higher average");
     expect(legend.querySelector(".ctx-history-swatch.low")!.nextSibling?.textContent)
-      .toMatch(/^ menor media/);
+      .toMatch(/^ lower average/);
     expect(legend.querySelector(".ctx-history-swatch.high")!.nextSibling?.textContent)
-      .toMatch(/^ mayor media/);
+      .toMatch(/^ higher average/);
   });
 });

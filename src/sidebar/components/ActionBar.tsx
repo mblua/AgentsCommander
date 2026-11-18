@@ -348,8 +348,8 @@ const ActionBar: Component = () => {
               <button
                 class={`toolbar-gear-btn ${activeClass(centralViewStore.isContextHistory)}`}
                 onClick={() => centralViewStore.toggleContextHistory()}
-                title="Historial de contexto"
-                aria-label="Historial de contexto"
+                title="Context history"
+                aria-label="Context history"
                 aria-pressed={centralViewStore.isContextHistory}
                 data-ac-testid="actionBar.contextHistory"
                 data-ac-role="button"

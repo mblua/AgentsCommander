@@ -36,11 +36,11 @@ function basisLabel(sessions: number | null): string {
   return sessions === null ? "—" : sessionWindowLabel(sessions).toLowerCase();
 }
 
-/** Record count, then backend records per session: "1560 registros · 15.6 registros/sesión". */
+/** Record count, then backend records per session: "1560 records · 15.6 records/session". */
 function records(bucket: SessionWindowBucket): string {
   const count = bucket.recordsCount;
   const perSession = formatRecordsPerSession(bucket.recordsPerSession);
-  return `${count} ${count === 1 ? "registro" : "registros"} · ${perSession} registros/sesión`;
+  return `${count} ${count === 1 ? "record" : "records"} · ${perSession} records/session`;
 }
 
 const Bar: Component<{ bucket: SessionWindowBucket; selected: boolean }> = (props) => (
@@ -61,12 +61,12 @@ const Bar: Component<{ bucket: SessionWindowBucket; selected: boolean }> = (prop
     <span class="ctx-history-value">
       <Show
         when={props.bucket.mean !== null && props.bucket.recordsCount > 0}
-        fallback={`Sin datos · ${records(props.bucket)}`}
+        fallback={`No data · ${records(props.bucket)}`}
       >
         {`${formatMean(props.bucket.mean ?? 0)} · ${records(props.bucket)}`}
       </Show>
       <Show when={props.bucket.incomplete}>
-        <span class="ctx-history-partial"> · cobertura parcial</span>
+        <span class="ctx-history-partial"> · partial coverage</span>
       </Show>
     </span>
   </div>
@@ -142,8 +142,8 @@ const ContextHistoryCard: Component<{
 
   const current = () =>
     props.percent === null
-      ? "Contexto actual de esta sesión: no disponible"
-      : `Contexto actual de esta sesión: ${props.percent}%`;
+      ? "Current context of this session: unavailable"
+      : `Current context of this session: ${props.percent}%`;
 
   return (
     <Portal>
@@ -163,16 +163,16 @@ const ContextHistoryCard: Component<{
         <p class="ctx-history-current">{current()}</p>
         <Switch>
           <Match when={props.state.status === "loading"}>
-            <p class="ctx-history-note">Cargando medias de contexto…</p>
+            <p class="ctx-history-note">Loading context averages…</p>
           </Match>
           <Match when={props.state.status === "error"}>
-            <p class="ctx-history-note">No se pudieron leer las medias de contexto.</p>
+            <p class="ctx-history-note">Could not read context averages.</p>
           </Match>
           <Match when={props.state.status === "ambiguous"}>
-            <p class="ctx-history-note">Datos sin atribución segura a este team</p>
+            <p class="ctx-history-note">Data without a reliable attribution to this team</p>
           </Match>
           <Match when={props.state.status === "unknown"}>
-            <p class="ctx-history-note">Identidad histórica no disponible</p>
+            <p class="ctx-history-note">Historical identity unavailable</p>
           </Match>
           <Match when={props.state.status === "ready" && props.state}>
             {(ready) => {
@@ -181,11 +181,11 @@ const ContextHistoryCard: Component<{
               return (
                 <>
                   <dl class="ctx-history-identity">
-                    <dt>Agente</dt>
+                    <dt>Agent</dt>
                     <dd>{s().scope.agentKey ?? "—"}</dd>
                     <dt>Team</dt>
                     <dd>{s().scope.teamIds.join(", ") || "—"}</dd>
-                    <dt>Proyecto</dt>
+                    <dt>Project</dt>
                     <dd>{props.projectPath}</dd>
                   </dl>
                   <For each={s().sessionWindows}>
@@ -196,13 +196,13 @@ const ContextHistoryCard: Component<{
                       />
                     )}
                   </For>
-                  <p class="ctx-history-note">Color basado en: {basisLabel(props.colorSessions)}</p>
+                  <p class="ctx-history-note">Color based on: {basisLabel(props.colorSessions)}</p>
                   <p class="ctx-history-note">
-                    Sesiones más recientes de este agente y team; sesión entera.
+                    Most recent sessions of this agent and team; whole session.
                   </p>
                   <p class="ctx-history-legend">
-                    <span class="ctx-history-swatch low" />{" "}menor media
-                    <span class="ctx-history-swatch high" />{" "}mayor media
+                    <span class="ctx-history-swatch low" />{" "}lower average
+                    <span class="ctx-history-swatch high" />{" "}higher average
                   </p>
                 </>
               );
@@ -210,8 +210,8 @@ const ContextHistoryCard: Component<{
           </Match>
         </Switch>
         <p class="ctx-history-warning">
-          {props.warning} La lectura viva puede faltar o desactualizarse; una media alta
-          no ordena reiniciar. Modelo y esfuerzo no se infieren aquí.
+          {props.warning} The live reading can be missing or stale; a high average
+          does not mean you must restart. Model and effort are not inferred here.
         </p>
       </div>
     </Portal>
