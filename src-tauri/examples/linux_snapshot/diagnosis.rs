@@ -18,13 +18,18 @@ pub const PROBE_SCRIPT: &str = concat!(
 
 // The fixture call wrapped so the page answers: document, call result, counters.
 // It returns a plain object (never the Promise), so the eval callback gets JSON.
+// Before the module runs, the request is parked in ac4248Pending (`queued`); the
+// module drains it when it runs.
 pub fn frame_script(request: &Value) -> String {
     format!(
         concat!(
             "(() => {{ const b = window.ac4248Beacon; const r = {{ ",
             "href: String(location.href), docId: b ? b.docId : null, ",
             "frameType: typeof window.ac4248Frame, before: b ? b.frameCalls : null, ",
-            "called: false }}; try {{ window.ac4248Frame({request}); r.called = true; }} ",
+            "called: false, queued: false }}; try {{ ",
+            "if (r.frameType === \"function\") {{ ",
+            "window.ac4248Frame({request}); r.called = true; }} ",
+            "else {{ window.ac4248Pending = {request}; r.queued = true; }} }} ",
             "catch (e) {{ r.error = String(e).slice(0, 256); }} ",
             "r.after = b ? b.frameCalls : null; return r; }})()",
         ),
@@ -141,20 +146,28 @@ pub fn link_break(ack: Option<&Value>, diagnostics: &Value) -> &'static str {
         return "ack_unparsed";
     }
     let answer = &ack["page"];
-    if answer["frameType"] != "function" {
+    // A parked call (`queued`) is a healthy link; the module drains it. A stall-module
+    // ack can say queued:true even after the module ran, because the init-script
+    // getter hides the function. Only one parked request is kept (last wins); fine,
+    // the harness sends one frame call per step.
+    let queued = answer["queued"] == true;
+    if !queued && answer["frameType"] != "function" {
         return "ack_frame_missing";
     }
-    if answer["called"] != true {
+    if !queued && answer["called"] != true {
         return "ack_call_threw";
     }
     if diagnostics["status"] != "ok" {
         return "probe_unanswered";
     }
     let beacon = &diagnostics["page"]["beacon"];
-    if answer["docId"].is_null() || answer["docId"] != beacon["docId"] {
+    let other_doc = answer["docId"].is_null() || answer["docId"] != beacon["docId"];
+    if !queued && other_doc {
         return "ack_other_document";
     }
-    if beacon["frameCalls"].as_u64() == Some(0) {
+    // For a parked call, a missing or null count also means the drain never ran.
+    let frame_calls = beacon["frameCalls"].as_u64();
+    if frame_calls == Some(0) || (queued && frame_calls.is_none()) {
         return "page_lost_call";
     }
     "called"

@@ -125,9 +125,16 @@ fn frame_script_shape() {
     for part in ["docId", "called", "try"] {
         assert!(script.contains(part), "missing {part}");
     }
+    assert!(script.contains(&format!("window.ac4248Pending = {request}")));
+    assert!(script.contains("queued"));
+    assert!(script.contains(r#"r.frameType === "function""#));
     assert!(!script.contains("delete"));
     let fixture = include_str!("../../../../tests/fixtures/ac4248-snapshot/main.js");
     assert!(fixture.contains("docId:"));
+    assert!(fixture.contains("window.ac4248Pending"));
+    let drain = fixture.find("window.ac4248Frame?.(pending)");
+    let assign = fixture.find("window.ac4248Frame = ac4248Frame;");
+    assert!(drain.is_some() && assign.is_some() && drain > assign);
 }
 
 fn ack(frame_type: &str, called: bool, doc_id: &str) -> Value {
@@ -145,6 +152,10 @@ fn link_break_tokens() {
     let (failed, unparsed) = (read_probe(Some("")), read_probe(Some("[1]")));
     let (missing, threw) = (ack("undefined", false, "d1"), ack("function", false, "d1"));
     let (other, unanswered) = (ack("function", true, "d2"), read_probe(None));
+    let mut parked = ack("undefined", false, "d1");
+    parked["page"]["docId"] = Value::Null;
+    parked["page"]["queued"] = json!(true);
+    let no_beacon = page("undefined", Value::Null, "ac4248:loading");
     let cases = [
         (None, &probe, "ack_missing"),
         (Some(&failed), &probe, "ack_eval_failed"),
@@ -155,6 +166,10 @@ fn link_break_tokens() {
         (Some(&other), &probe, "ack_other_document"),
         (Some(&good), &lost, "page_lost_call"),
         (Some(&good), &probe, "called"),
+        (Some(&parked), &probe, "called"),
+        (Some(&parked), &lost, "page_lost_call"),
+        (Some(&parked), &unanswered, "probe_unanswered"),
+        (Some(&parked), &no_beacon, "page_lost_call"),
     ];
     for (ack, diagnostics, token) in cases {
         assert_eq!(link_break(ack, diagnostics), token);

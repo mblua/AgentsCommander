@@ -253,3 +253,13 @@ async function ac4248Frame(request) {
 }
 
 window.ac4248Frame = ac4248Frame;
+
+// AC-4248-008: the native load signal can come before this module runs, so the
+// first frame call may arrive early; frame_script parks it in ac4248Pending.
+// Drain through the window name so the stall-module probe still sees no call.
+const pending = window.ac4248Pending;
+window.ac4248Pending = undefined;
+if (pending !== undefined) {
+  mark("frame-drain", String(pending?.generation).slice(0, 32));
+  window.ac4248Frame?.(pending);
+}
