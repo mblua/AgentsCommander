@@ -1,4 +1,5 @@
 import type { AgentConfig, AppSettings } from "../../shared/types";
+import type { TempRoomAgentChoice } from "../../shared/temp-rooms";
 
 function normalizeAgentInstructionsFilename(agent: AgentConfig): AgentConfig {
   const trimmed = agent.instructionsFilename?.trim();
@@ -65,15 +66,47 @@ function apiServerFields(draft: AppSettings, fresh: AppSettings, modalSeed: AppS
     : {};
 }
 
+// #4783: keys only written outside the modal (verified: no modal edit); fresh disk wins.
+const OUTSIDE_WRITER_KEYS = [
+  "mainSidebarWidth",
+  "mainSidebarSide",
+  "sidebarZoom",
+  "terminalZoom",
+  "mainZoom",
+  "sidebarGeometry",
+  "terminalGeometry",
+  "alwaysShowSelectedWorkgroup",
+  "coordSortByActivity",
+  "onboardingDismissed",
+  "themeLight",
+  "mainResourceMonitorAttached",
+  "watchersGeometry",
+  "autoSelfClearByAgent",
+] as const satisfies readonly (keyof AppSettings)[];
+
+type WithTempRoom = AppSettings & { tempRoomAgent?: TempRoomAgentChoice };
+
+function outsideWriterFields(draft: AppSettings, fresh: AppSettings) {
+  const { tempRoomAgent: _drop, ...rest } = draft as WithTempRoom;
+  const choice = (fresh as WithTempRoom).tempRoomAgent;
+  const picked = Object.fromEntries(OUTSIDE_WRITER_KEYS.map((key) => [key, fresh[key]]));
+  return {
+    rest,
+    picked: { ...picked, ...(choice ? { tempRoomAgent: choice } : {}) } as Partial<WithTempRoom>,
+  };
+}
+
 export function mergeSettingsForSavePreservingProjects(
   draft: AppSettings,
   fresh: AppSettings,
   modalSeed: AppSettings | null = null
 ): AppSettings {
+  const outside = outsideWriterFields(draft, fresh);
   return {
-    ...draft,
+    ...outside.rest,
     ...webServerFields(draft, fresh, modalSeed),
     ...apiServerFields(draft, fresh, modalSeed),
+    ...outside.picked,
     responseCloseEnabled: modalSeed && (draft.responseCloseEnabled ?? true) === (modalSeed.responseCloseEnabled ?? true)
       ? (fresh.responseCloseEnabled ?? true)
       : (draft.responseCloseEnabled ?? true),
