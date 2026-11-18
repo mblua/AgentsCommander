@@ -21,6 +21,7 @@ import { sessionsStore } from "../../sidebar/stores/sessions";
 import { bridgesStore } from "../../sidebar/stores/bridges";
 import { workgroupGroupsStore } from "../../sidebar/stores/workgroup-groups";
 import { projectCollapseStore } from "../../sidebar/stores/project-collapse";
+import { sidebarFilter } from "../../sidebar/stores/sidebar-filter";
 import { resetCiActivityStampForTests } from "../../sidebar/stores/ci-activity-stamp";
 import { railCollapseStore } from "../../sidebar/stores/rail-collapse";
 import { codingAgentsStore } from "../../sidebar/stores/coding-agents";
@@ -228,6 +229,8 @@ export function resetUiStoresForTests(): void {
   replicaVolatileStore.clearAll();
   // #4752 - the unleash overrides are module-level too; reset them the same way.
   unleashedReplicasStore.resetForTests();
+  // #4785 - the one sidebar regex filter is module-level state too.
+  sidebarFilter.resetForTests();
   // #2064 - same hazard, same reason: the remote-activity map is event-fed and out
   // of setSessions' reach, so it would survive into the next test in the same file.
   remoteActivityStore.clearAll();

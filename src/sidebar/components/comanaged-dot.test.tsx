@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import SessionItem from "./SessionItem";
 import RootAgentBanner from "./RootAgentBanner";
 import ProjectPanel from "./ProjectPanel";
+import SidebarRegexFilter from "./SidebarRegexFilter";
 import RoomGroupRail from "./RoomGroupRail";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
@@ -102,7 +103,13 @@ async function renderPanel() {
   const fake = new FakeTransport();
   fake.resolve("new_project", { path: projectPath, registered: true, created: false });
   fake.resolve("discover_project", projectDiscovery());
-  const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+  const view = () => (
+    <>
+      <SidebarRegexFilter />
+      <ProjectPanel />
+    </>
+  );
+  const rendered = renderWithFakeTransport(view, fake);
   await projectStore.createAndLoad(projectPath);
   await waitFor(() => {
     replicaRow(rendered.root);
@@ -514,9 +521,9 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
 
     const rendered = await renderPanel();
     try {
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "project.regexFilter.toggle");
+      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
       click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "project.regexFilter.input");
+      const filterInput = findByTestId<HTMLInputElement>(rendered.root, "sidebar.regexFilter.input");
       await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
 
       // With the sidecar flag threaded into sessionEffectiveStatusSearchText,

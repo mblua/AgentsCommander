@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import ProjectPanel from "./ProjectPanel";
+import SidebarRegexFilter from "./SidebarRegexFilter";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   baseSettings,
@@ -120,7 +121,13 @@ async function mountProject(workgroups: AcWorkgroup[], sessions: Session[]) {
   fake.resolve("get_settings", baseSettings());
   fake.resolve("discover_project", discovery({ workgroups }));
   sessionsStore.setSessions(sessions);
-  const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+  const view = () => (
+    <>
+      <SidebarRegexFilter />
+      <ProjectPanel />
+    </>
+  );
+  const rendered = renderWithFakeTransport(view, fake);
   await settingsStore.load();
   await projectStore.createAndLoad(projectPath);
   await waitFor(() => expect(rendered.root.querySelector(".replica-item")).not.toBeNull());
@@ -389,7 +396,7 @@ describe("ProjectPanel blocked-menu rollup badges (#1859)", () => {
 
     input(
       rendered.root.querySelector<HTMLInputElement>(
-        '[data-ac-testid="project.regexFilter.input"]'
+        '[data-ac-testid="sidebar.regexFilter.input"]'
       )!,
       workerName
     );

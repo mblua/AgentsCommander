@@ -18,6 +18,8 @@ import { normalizeProjectPathForCompare } from "../stores/project-refresh";
 import { requestCoordinatorClose } from "../stores/coordinator-close";
 import { sessionDotClass } from "./session-status";
 import { RowKeyProxy, onRowKey } from "./RowKeyProxy";
+import SidebarRegexFilter, { SidebarRegexFilterError } from "./SidebarRegexFilter";
+import { sidebarFilter } from "../stores/sidebar-filter";
 import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 import SessionRowMenu from "./context-menu/SessionRowMenu";
 import {
@@ -345,12 +347,27 @@ const TemporaryRoomsPanel: Component = () => {
     };
   };
 
+  // #4785 - the one sidebar filter; a match on the label keeps every room.
+  const visibleRooms = () =>
+    !sidebarFilter.active() || sidebarFilter.matches("Temporary Rooms")
+      ? rooms()
+      : rooms().filter((r) => sidebarFilter.matches(r.name));
+
   return (
     <div class="project-panel" data-ac-testid="tempRooms.panel">
       <div
         class="project-header"
+        classList={{
+          "project-header--has-indicator": true,
+          open: sidebarFilter.open(),
+          active: sidebarFilter.active(),
+          invalid: !!sidebarFilter.error(),
+        }}
         data-ac-testid="tempRooms.header"
-        onContextMenu={(e) => openPortalMenu(e, setCategoryMenu)}
+        onContextMenu={(e) => {
+          if ((e.target as HTMLElement).closest(".project-filter-row")) return;
+          openPortalMenu(e, setCategoryMenu);
+        }}
       >
         <button
           type="button"
@@ -363,12 +380,17 @@ const TemporaryRoomsPanel: Component = () => {
           </span>
           <span class="project-title">Temporary Rooms</span>
         </button>
-        <span class="project-file-difference" data-ac-testid="tempRooms.count">
-          {String(rooms().length)}
+        <span
+          class="project-file-difference project-header-indicator--last"
+          data-ac-testid="tempRooms.count"
+        >
+          {String(visibleRooms().length)}
         </span>
+        <SidebarRegexFilter />
       </div>
+      <SidebarRegexFilterError />
       <Show when={!collapsed()}>
-        <For each={rooms()}>
+        <For each={visibleRooms()}>
           {(room) => {
             const session = () => findTempRoomSession(room);
             return (
