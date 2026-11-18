@@ -15,6 +15,8 @@ vi.mock("../shared/shortcuts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../shared/shortcuts")>();
   return { ...actual, registerShortcuts: vi.fn(actual.registerShortcuts) };
 });
+// #4786 - the panel reads settings itself; this test watches only SidebarApp's mount phases.
+vi.mock("./components/TemporaryRoomsPanel", () => ({ default: () => null }));
 
 const LATE_LISTENERS = [
   "mousedown",
