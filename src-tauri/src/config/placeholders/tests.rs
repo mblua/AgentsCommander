@@ -361,3 +361,61 @@ fn non_replica_inside_ac_resolves_ac_root_only() {
         AC_MATRIX_ROOT_ERROR
     );
 }
+
+/// #4786: a `config_dir()/temp-room-trNN` launch root.
+#[test]
+fn temp_room_context_has_replica_root_only() {
+    let base = crate::config::config_dir().expect("config dir");
+    let dir = base.join(crate::config::temp_rooms::temp_room_dir_name(95));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp room");
+    let context = placeholder_context_for_launch_root(&dir);
+    let expected = canonical_stripped(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let context = context.expect("temp-room context");
+    assert_eq!(context.root_kind, PlaceholderRootKind::TempRoom);
+    assert_eq!(context.ac_root, None);
+    assert_eq!(context.matrix_root, None);
+    assert_eq!(context.replica_root, expected);
+    let value = format!(
+        "{AC_REPLICA_ROOT_PLACEHOLDER}{}x",
+        std::path::MAIN_SEPARATOR
+    );
+    assert_eq!(
+        expand_placeholders(&value, &context).unwrap(),
+        format!(
+            "{}{}x",
+            expected.to_string_lossy(),
+            std::path::MAIN_SEPARATOR
+        )
+    );
+}
+
+#[test]
+fn temp_room_rejects_workspace_and_matrix_with_clear_error() {
+    let context = PlaceholderContext {
+        replica_root: PathBuf::from("temp-room-tr01"),
+        root_kind: PlaceholderRootKind::TempRoom,
+        ac_root: None,
+        matrix_root: None,
+    };
+    assert_eq!(
+        expand_placeholders(AC_WORKSPACE_ROOT_PLACEHOLDER, &context).unwrap_err(),
+        AC_WORKSPACE_ROOT_TEMP_ROOM_ERROR
+    );
+    assert_eq!(
+        expand_placeholders(AC_MATRIX_ROOT_PLACEHOLDER, &context).unwrap_err(),
+        AC_MATRIX_ROOT_TEMP_ROOM_ERROR
+    );
+}
+
+#[test]
+fn temp_room_launch_matches_raw_path_when_base_is_not_canonical() {
+    let base = Path::new("rel-cfg");
+    let raw = Path::new("rel-cfg").join("temp-room-tr01");
+    let canonical = std::env::temp_dir().join("rel-cfg").join("temp-room-tr01");
+    assert!(is_temp_room_launch_in(&raw, &canonical, base));
+    assert!(!is_temp_room_launch_in(&canonical, &canonical, base));
+    let bad_raw = Path::new("rel-cfg").join("temp-room-tr1");
+    assert!(!is_temp_room_launch_in(&bad_raw, &canonical, base));
+}

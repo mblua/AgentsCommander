@@ -29,12 +29,21 @@ const AC_REPLICA_ROOT_ERROR: &str =
 const AC_WORKSPACE_ROOT_ERROR: &str =
     "%AC_WORKSPACE_ROOT% requires a launch root inside an AC (.ac) workspace";
 const AC_MATRIX_ROOT_ERROR: &str = "%AC_MATRIX_ROOT% requires an AC room replica launch root";
+const AC_WORKSPACE_ROOT_TEMP_ROOM_ERROR: &str = concat!(
+    "%AC_WORKSPACE_ROOT% does not apply to Temporary Rooms: ",
+    "they are not inside an AC (.ac) workspace"
+);
+const AC_MATRIX_ROOT_TEMP_ROOM_ERROR: &str =
+    "%AC_MATRIX_ROOT% does not apply to Temporary Rooms: they have no Agent Matrix";
 const AC_PLACEHOLDER_LAUNCH_ROOT_ERROR: &str = "AC path placeholders require an AC launch root";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaceholderRootKind {
     AcReplicaOrRootAgent,
     NormalLaunchCwd,
+    /// A `<config_dir>/temp-room-trNN` launch root (#4786): has a replica root,
+    /// no workspace, no matrix.
+    TempRoom,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,14 +72,23 @@ pub fn placeholder_context_for_launch_root(path: &Path) -> Result<PlaceholderCon
                 e
             )
         })?;
+    let temp_room = is_temp_room_launch(path, &canonical);
     let root_kind = if is_ac_replica_dir(&canonical) || is_root_agent_dir(&canonical) {
         PlaceholderRootKind::AcReplicaOrRootAgent
+    } else if temp_room {
+        PlaceholderRootKind::TempRoom
     } else {
         PlaceholderRootKind::NormalLaunchCwd
     };
 
-    let ac_root = crate::config::ac_root::find_ac_root_ancestor(&canonical);
-    let matrix_root = derive_matrix_root(&canonical, ac_root.as_deref());
+    let (ac_root, matrix_root) = if root_kind == PlaceholderRootKind::TempRoom {
+        // #4786: a temp room belongs to no project, even if an unrelated `.ac` is above it.
+        (None, None)
+    } else {
+        let ac_root = crate::config::ac_root::find_ac_root_ancestor(&canonical);
+        let matrix_root = derive_matrix_root(&canonical, ac_root.as_deref());
+        (ac_root, matrix_root)
+    };
 
     Ok(PlaceholderContext {
         replica_root: canonical,
@@ -78,6 +96,19 @@ pub fn placeholder_context_for_launch_root(path: &Path) -> Result<PlaceholderCon
         ac_root,
         matrix_root,
     })
+}
+
+/// #4786: the RAW path is checked first, like every other temp-room caller, because
+/// `config_dir()` is raw/uncanonicalized; the canonical path is an accepted alternative.
+fn is_temp_room_launch(raw: &Path, canonical: &Path) -> bool {
+    crate::config::config_dir().is_some_and(|base| is_temp_room_launch_in(raw, canonical, &base))
+}
+
+/// Pure seam of [`is_temp_room_launch`]: name + parent equivalence, no filesystem access.
+fn is_temp_room_launch_in(raw: &Path, canonical: &Path, base: &Path) -> bool {
+    use crate::config::temp_rooms::is_temp_room_path_in;
+    is_temp_room_path_in(&raw.to_string_lossy(), base)
+        || is_temp_room_path_in(&canonical.to_string_lossy(), base)
 }
 
 /// Matrix dir for a WG replica launch: `<workspace>/_agent_<name>`.
@@ -107,7 +138,10 @@ pub fn expand_placeholders(value: &str, context: &PlaceholderContext) -> Result<
     let mut expanded = value.to_string();
 
     if expanded.contains(AC_REPLICA_ROOT_PLACEHOLDER) {
-        if context.root_kind != PlaceholderRootKind::AcReplicaOrRootAgent {
+        if !matches!(
+            context.root_kind,
+            PlaceholderRootKind::AcReplicaOrRootAgent | PlaceholderRootKind::TempRoom
+        ) {
             return Err(AC_REPLICA_ROOT_ERROR.to_string());
         }
         expanded = expanded.replace(
@@ -117,23 +151,38 @@ pub fn expand_placeholders(value: &str, context: &PlaceholderContext) -> Result<
     }
 
     if expanded.contains(AC_WORKSPACE_ROOT_PLACEHOLDER) {
-        let ac_root = context
-            .ac_root
-            .as_ref()
-            .ok_or_else(|| AC_WORKSPACE_ROOT_ERROR.to_string())?;
+        let ac_root = context.ac_root.as_ref().ok_or_else(|| {
+            missing_root_error(
+                context,
+                AC_WORKSPACE_ROOT_TEMP_ROOM_ERROR,
+                AC_WORKSPACE_ROOT_ERROR,
+            )
+        })?;
         expanded = expanded.replace(AC_WORKSPACE_ROOT_PLACEHOLDER, &ac_root.to_string_lossy());
     }
 
     if expanded.contains(AC_MATRIX_ROOT_PLACEHOLDER) {
-        let matrix = context
-            .matrix_root
-            .as_ref()
-            .ok_or_else(|| AC_MATRIX_ROOT_ERROR.to_string())?;
+        let matrix = context.matrix_root.as_ref().ok_or_else(|| {
+            missing_root_error(
+                context,
+                AC_MATRIX_ROOT_TEMP_ROOM_ERROR,
+                AC_MATRIX_ROOT_ERROR,
+            )
+        })?;
         expanded = expanded.replace(AC_MATRIX_ROOT_PLACEHOLDER, &matrix.to_string_lossy());
     }
 
     reject_unexpanded_markers(&expanded, "placeholder value", false)?;
     Ok(expanded)
+}
+
+/// #4786: a temp room gets its own clear error; every other kind keeps the old text.
+fn missing_root_error(context: &PlaceholderContext, temp_room: &str, other: &str) -> String {
+    if context.root_kind == PlaceholderRootKind::TempRoom {
+        temp_room.to_string()
+    } else {
+        other.to_string()
+    }
 }
 
 pub fn expand_placeholders_in_args(

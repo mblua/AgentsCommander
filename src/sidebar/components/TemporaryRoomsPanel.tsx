@@ -4,10 +4,12 @@
 import { createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
 import { Portal } from "solid-js/web";
 import { SessionAPI, SettingsAPI, TelegramAPI, TempRoomAPI, WindowAPI } from "../../shared/ipc";
-import type {
-  SettingsWithTempRoom,
-  TempRoomAgentChoice,
-  TempRoomInfo,
+import {
+  tempRoomPlaceholderWarning,
+  tempRoomUnavailablePlaceholders,
+  type SettingsWithTempRoom,
+  type TempRoomAgentChoice,
+  type TempRoomInfo,
 } from "../../shared/temp-rooms";
 import type { Session, TelegramBotConfig } from "../../shared/types";
 import { launchErrorMessage } from "../../shared/launch-errors";
@@ -100,6 +102,18 @@ const TemporaryRoomsPanel: Component = () => {
   const [deleting, setDeleting] = createSignal<TempRoomInfo | null>(null);
   const [deleteError, setDeleteError] = createSignal<string | null>(null);
   const [deleteBusy, setDeleteBusy] = createSignal(false);
+  const [placeholderWarnings, setPlaceholderWarnings] = createSignal<string[]>([]);
+
+  // #4786 - red warning when the saved agent uses a placeholder temp rooms lack.
+  const refreshWarnings = async () => {
+    try {
+      const snapshot = await readSettings();
+      setPlaceholderWarnings(tempRoomUnavailablePlaceholders(snapshot, snapshot.tempRoomAgent));
+    } catch (e) {
+      console.error("[TemporaryRoomsPanel] placeholder check failed:", e);
+      setPlaceholderWarnings([]);
+    }
+  };
 
   const refresh = async () => {
     try {
@@ -107,6 +121,7 @@ const TemporaryRoomsPanel: Component = () => {
     } catch (e) {
       console.error("[TemporaryRoomsPanel] list_temp_rooms failed:", e);
     }
+    await refreshWarnings();
   };
   onMount(() => void refresh());
 
@@ -162,6 +177,7 @@ const TemporaryRoomsPanel: Component = () => {
     if (!selection) return null;
     const choice = choiceOf(selection);
     await saveChoice(choice);
+    await refreshWarnings();
     return choice;
   };
 
@@ -237,6 +253,7 @@ const TemporaryRoomsPanel: Component = () => {
       toastStore.error(launchErrorMessage(e));
       return;
     }
+    await refreshWarnings();
     await restart(room, choice);
   };
 
@@ -390,6 +407,13 @@ const TemporaryRoomsPanel: Component = () => {
       </div>
       <SidebarRegexFilterError />
       <Show when={!collapsed()}>
+        <Show when={placeholderWarnings().length > 0}>
+          <div class="new-agent-error" data-ac-testid="tempRooms.placeholderWarning">
+            <For each={placeholderWarnings()}>
+              {(token) => <div>{tempRoomPlaceholderWarning(token)}</div>}
+            </For>
+          </div>
+        </Show>
         <For each={visibleRooms()}>
           {(room) => {
             const session = () => findTempRoomSession(room);

@@ -23,16 +23,17 @@ import { projectStore } from "../stores/project";
 import { toastStore } from "../../shared/stores/toasts";
 import type { AgentConfig, Session } from "../../shared/types";
 import type { TempRoomAgentChoice, TempRoomInfo } from "../../shared/temp-rooms";
+import { tempRoomPlaceholderWarning } from "../../shared/temp-rooms";
 
 const ROOM_1: TempRoomInfo = { name: "temp-room-tr01", path: "/cfg/temp-room-tr01" };
 const ROOM_2: TempRoomInfo = { name: "temp-room-tr02", path: "/cfg/temp-room-tr02" };
 const CONTAINER_ERR = "temp rooms cannot use container transport";
 const LIVE_ERR = "temp room temp-room-tr01 has a live session";
 
-const agent = (id: string): AgentConfig => ({
+const agent = (id: string, command = id): AgentConfig => ({
   id,
   label: id,
-  command: id,
+  command,
   color: "#d97706",
   envs: [],
   isolatedHome: false,
@@ -43,6 +44,7 @@ interface Setup {
   saved?: TempRoomAgentChoice;
   sessions?: Session[];
   withProject?: boolean;
+  agents?: AgentConfig[];
 }
 
 const PROJECT = "/proj";
@@ -63,10 +65,12 @@ const projectDiscovery = () =>
     ],
   });
 
-function setup({ rooms = [ROOM_1], saved, sessions = [], withProject }: Setup = {}) {
+function setup(opts: Setup = {}) {
+  const { rooms = [ROOM_1], saved, sessions = [], withProject } = opts;
   const fake = new FakeTransport();
   let listed = [...rooms];
-  const settings = { ...baseSettings({ agents: [agent("claude")] }), tempRoomAgent: saved };
+  const agents = opts.agents ?? [agent("claude")];
+  const settings = { ...baseSettings({ agents }), tempRoomAgent: saved };
   fake.onInvoke("get_settings", () => settings);
   fake.onInvoke("update_settings", (args) => {
     Object.assign(settings, args.newSettings as object);
@@ -237,6 +241,42 @@ describe("#4779 TemporaryRoomsPanel", () => {
     click(byId("tempRooms.menu.create")!);
     await waitFor(() => expect(byId("agentPicker.modal")).not.toBeNull());
     expect(second.fake.callsFor("create_session")).toHaveLength(0);
+  });
+
+  it("4c. #4786 a saved agent using %AC_MATRIX_ROOT% shows the red warning", async () => {
+    track(setup({ saved: SAVED, agents: [agent("claude", "claude %AC_MATRIX_ROOT%")] }));
+    await waitFor(() => expect(byId("tempRooms.placeholderWarning")).not.toBeNull());
+    const warning = byId("tempRooms.placeholderWarning")!;
+    expect(warning.className).toBe("new-agent-error");
+    expect(warning.textContent).toBe(tempRoomPlaceholderWarning("%AC_MATRIX_ROOT%"));
+  });
+
+  it("4d. #4786 a clean saved agent shows no warning", async () => {
+    const { fake } = track(setup({ saved: SAVED }));
+    await waitFor(() => expect(fake.callsFor("get_settings").length).toBeGreaterThan(0));
+    await waitFor(() => expect(roomRow()).not.toBeNull());
+    expect(byId("tempRooms.placeholderWarning")).toBeNull();
+  });
+
+  it("4e. #4786 chosen agent with %AC_MATRIX_ROOT%: warning and exactly one toast", async () => {
+    const matrixErr = "%AC_MATRIX_ROOT% does not apply to Temporary Rooms: they have no Agent Matrix";
+    const { fake } = track(
+      setup({ rooms: [], agents: [agent("claude", "claude %AC_MATRIX_ROOT%")] }),
+    );
+    fake.reject("create_session", matrixErr);
+    const toast = vi.spyOn(toastStore, "error");
+    await openCategoryMenu();
+    click(byId("tempRooms.menu.create")!);
+    await waitFor(() => expect(fake.callsFor("create_temp_room")).toHaveLength(1));
+    await applyPicker();
+    await waitFor(() => expect(byId("tempRooms.placeholderWarning")).not.toBeNull());
+    expect(byId("tempRooms.placeholderWarning")!.textContent).toBe(
+      tempRoomPlaceholderWarning("%AC_MATRIX_ROOT%"),
+    );
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(toast).toHaveBeenCalledTimes(1);
+    expect(toast.mock.calls[0]?.[0]).toContain(matrixErr);
   });
 
   it("4b. two quick creates give two rows", async () => {

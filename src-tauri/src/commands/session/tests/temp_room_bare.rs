@@ -210,3 +210,37 @@ async fn temp_room_creation_gate_requires_existing_folder() {
     assert!(error.contains("does not exist on disk"), "{error}");
     close_test_coordinator(&app).await;
 }
+
+/// #4786: `build_configured_agent_spawn_for_cwd` for a temp room with `command`.
+fn spawn_in_temp_room(cwd: &str, command: &str) -> Result<Vec<String>, String> {
+    let mut settings = test_settings();
+    settings.agents[0].command = command.to_string();
+    super::super::build_configured_agent_spawn_for_cwd(&settings, "claude", cwd, None)
+        .map(|spawn| spawn.expect("claude is configured").shell_args)
+}
+
+#[test]
+fn temp_room_expands_replica_root_in_command() {
+    let room = TempRoomDir::create(94);
+    let args = spawn_in_temp_room(&room.cwd(), "claude --add-dir %AC_REPLICA_ROOT%")
+        .expect("replica root expands in a temp room");
+    let canonical = crate::path_utils::normalize_windows_verbatim_path_buf(
+        &std::fs::canonicalize(&room.0).expect("canonicalize temp room"),
+    );
+    let canonical = canonical.to_string_lossy().into_owned();
+    assert!(
+        args.iter().any(|arg| arg.contains(&canonical)),
+        "{args:?} should contain {canonical}"
+    );
+}
+
+#[test]
+fn temp_room_matrix_placeholder_fails_with_clear_error() {
+    let room = TempRoomDir::create(93);
+    let error = spawn_in_temp_room(&room.cwd(), "claude --add-dir %AC_MATRIX_ROOT%")
+        .expect_err("matrix root is refused in a temp room");
+    assert!(
+        error.contains("does not apply to Temporary Rooms"),
+        "{error}"
+    );
+}
