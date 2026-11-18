@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentConfig, AppSettings } from "../../shared/types";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import { baseSettings } from "../../shared/testing/base-settings";
+import type { TempRoomAgentChoice } from "../../shared/temp-rooms";
 
 function agent(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -488,5 +489,131 @@ describe("manual container visibility save ownership", () => {
     expect(mergeSettingsForSavePreservingProjects(
       settings({ roomIdleConfirmationSeconds: draft }), settings({ roomIdleConfirmationSeconds: 60 }), null,
     ).roomIdleConfirmationSeconds).toBe(draft ?? 15);
+  });
+});
+
+type WithTempRoom = AppSettings & { tempRoomAgent?: TempRoomAgentChoice };
+
+describe("mergeSettingsForSavePreservingProjects outside-writer keys (#4783)", () => {
+  it("1. tempRoomAgent: draft none, fresh has one -> fresh's", () => {
+    const draft = settings();
+    const fresh: WithTempRoom = {
+      ...settings(),
+      tempRoomAgent: { agentId: "codex", requestedProfile: "A" },
+    };
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, draft) as WithTempRoom;
+
+    expect(merged.tempRoomAgent).toEqual({ agentId: "codex", requestedProfile: "A" });
+  });
+
+  it("2. tempRoomAgent: draft stale choice, fresh new choice -> fresh's", () => {
+    const draft: WithTempRoom = {
+      ...settings(),
+      tempRoomAgent: { agentId: "claude", requestedProfile: null },
+    };
+    const fresh: WithTempRoom = {
+      ...settings(),
+      tempRoomAgent: { agentId: "codex", requestedProfile: "B" },
+    };
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, draft) as WithTempRoom;
+
+    expect(merged.tempRoomAgent).toEqual({ agentId: "codex", requestedProfile: "B" });
+  });
+
+  it("3. tempRoomAgent: draft has one, fresh none -> key omitted", () => {
+    const draft: WithTempRoom = {
+      ...settings(),
+      tempRoomAgent: { agentId: "claude", requestedProfile: null },
+    };
+    const merged = mergeSettingsForSavePreservingProjects(draft, settings(), draft);
+
+    expect("tempRoomAgent" in merged).toBe(false);
+  });
+
+  it("4. layout: fresh width and side win with, without and with differing seed", () => {
+    const draft = settings({ mainSidebarWidth: 250, mainSidebarSide: "left" });
+    const fresh = settings({ mainSidebarWidth: 420, mainSidebarSide: "right" });
+    const seeds = [draft, null, settings({ mainSidebarWidth: 300, mainSidebarSide: "right" })];
+
+    for (const seed of seeds) {
+      const merged = mergeSettingsForSavePreservingProjects(draft, fresh, seed);
+      expect(merged.mainSidebarWidth).toBe(420);
+      expect(merged.mainSidebarSide).toBe("right");
+    }
+  });
+
+  it("5. zoom: fresh sidebar, terminal and main zoom win", () => {
+    const draft = settings({ sidebarZoom: 1, terminalZoom: 1, mainZoom: 1 });
+    const fresh = settings({ sidebarZoom: 1.2, terminalZoom: 1.3, mainZoom: 1.4 });
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, draft);
+
+    expect(merged.sidebarZoom).toBe(1.2);
+    expect(merged.terminalZoom).toBe(1.3);
+    expect(merged.mainZoom).toBe(1.4);
+  });
+
+  it("6. geometry: fresh geometry wins; fresh without watchersGeometry -> undefined", () => {
+    const geometry = { x: 1, y: 2, width: 300, height: 400 };
+    const draft = settings({
+      sidebarGeometry: null,
+      terminalGeometry: null,
+      watchersGeometry: { x: 9, y: 9, width: 10, height: 10 },
+    });
+    const fresh = settings({
+      sidebarGeometry: geometry,
+      terminalGeometry: geometry,
+      watchersGeometry: geometry,
+    });
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, draft);
+
+    expect(merged.sidebarGeometry).toEqual(geometry);
+    expect(merged.terminalGeometry).toEqual(geometry);
+    expect(merged.watchersGeometry).toEqual(geometry);
+
+    const { watchersGeometry: _drop, ...freshNoWatchers } = fresh;
+    const merged2 = mergeSettingsForSavePreservingProjects(draft, freshNoWatchers, draft);
+    expect(merged2.watchersGeometry).toBeUndefined();
+  });
+
+  it("7. sidebar prefs, onboarding and narrow-setter flags: fresh wins", () => {
+    const draft = settings({
+      alwaysShowSelectedWorkgroup: true,
+      coordSortByActivity: false,
+      onboardingDismissed: false,
+      themeLight: false,
+      mainResourceMonitorAttached: false,
+    });
+    const fresh = settings({
+      alwaysShowSelectedWorkgroup: false,
+      coordSortByActivity: true,
+      onboardingDismissed: true,
+      themeLight: true,
+      mainResourceMonitorAttached: true,
+    });
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, draft);
+
+    expect(merged.alwaysShowSelectedWorkgroup).toBe(false);
+    expect(merged.coordSortByActivity).toBe(true);
+    expect(merged.onboardingDismissed).toBe(true);
+    expect(merged.themeLight).toBe(true);
+    expect(merged.mainResourceMonitorAttached).toBe(true);
+  });
+
+  it("9. autoSelfClearByAgent: deleted agent entry stays deleted", () => {
+    const draft = settings({ autoSelfClearByAgent: { a: true, b: false } });
+    const fresh = settings({ autoSelfClearByAgent: { b: false } });
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, draft);
+
+    expect(merged.autoSelfClearByAgent).toEqual({ b: false });
+  });
+
+  it("8. control: modal-edited agents and responseCloseEnabled still come from draft", () => {
+    const seed = settings({ agents: [agent({ id: "old" })], responseCloseEnabled: true });
+    const draft = settings({ agents: [agent({ id: "new" })], responseCloseEnabled: false });
+    const fresh = settings({ agents: [agent({ id: "disk" })], responseCloseEnabled: true });
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, seed);
+
+    expect(merged.agents.map((a) => a.id)).toEqual(["new"]);
+    expect(merged.responseCloseEnabled).toBe(false);
   });
 });
