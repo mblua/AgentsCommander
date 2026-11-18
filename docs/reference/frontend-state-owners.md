@@ -32,6 +32,7 @@ mapped path no longer exists. Add one line here when you add a store module.
 | `src/sidebar/stores/auto-unarchive.ts` | `autoUnarchiveStore` | auto-unarchive notices |
 | `src/sidebar/stores/bridges.ts` | `bridgesStore` | Telegram bridges list |
 | `src/sidebar/stores/clock.ts` | `clockStore` | shared `nowMs` tick |
+| `src/sidebar/stores/sidebar-filter.ts` | `sidebarFilter` | sidebar regex filter open flag and pattern, not persisted (#4785) |
 | `src/sidebar/stores/project-archive-test-helpers.ts` | (none) | test fixture, no app state |
 | `src/main/stores/centralView.ts` | `centralViewStore` | central view (terminal and others) |
 | `src/main/stores/error-modal.ts` | `errorModalStore` | error log entries, index |

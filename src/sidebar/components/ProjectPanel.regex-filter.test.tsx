@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { render } from "solid-js/web";
 import ProjectPanel from "./ProjectPanel";
 import SidebarRegexFilter, { SidebarRegexFilterError } from "./SidebarRegexFilter";
 import { FakeTransport } from "../../shared/testing/fake-transport";
@@ -99,26 +100,36 @@ function twoWorkgroupDiscovery() {
   });
 }
 
-/** #4785 - the one sidebar filter control renders beside the panel. */
-function renderPanel(fake: FakeTransport) {
-  return renderWithFakeTransport(
-    () => (
-      <>
-        <SidebarRegexFilter />
-        <SidebarRegexFilterError />
-        <ProjectPanel />
-      </>
-    ),
-    fake,
-  );
-}
-
 function findByTestId<T extends Element>(root: ParentNode, testId: string): T {
   const element = root.querySelector(`[data-ac-testid="${testId}"]`);
   if (!element) {
     throw new Error(`Element not found: ${testId}`);
   }
   return element as T;
+}
+
+/** #4785 - the shared filter controls (row, magnifier, input), mounted in `beforeEach`. */
+function filterControls(root: ParentNode = document) {
+  return {
+    row: findByTestId<HTMLDivElement>(root, "sidebar.regexFilter.row"),
+    toggle: findByTestId<HTMLButtonElement>(root, "sidebar.regexFilter.toggle"),
+    filterInput: findByTestId<HTMLInputElement>(root, "sidebar.regexFilter.input"),
+  };
+}
+
+/** #4785 - transport that loads the default test project. */
+function projectFake() {
+  const fake = new FakeTransport();
+  fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+  fake.resolve("discover_project", projectDiscovery());
+  return fake;
+}
+
+/** Opens the shared filter with the magnifier and returns its controls. */
+function openFilter() {
+  const controls = filterControls();
+  click(controls.toggle);
+  return controls;
 }
 
 /** Minimal valid coding-agent config so a session's `agentId` resolves to a
@@ -136,13 +147,27 @@ function agentConfig(
 
 describe("ProjectPanel regex filter", () => {
   let cleanupDom: (() => void) | null = null;
+  let disposeFilter: (() => void) | null = null;
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
+    // #4785 - the one sidebar filter control, mounted beside every panel.
+    const filterRoot = document.body.appendChild(document.createElement("div"));
+    disposeFilter = render(
+      () => (
+        <>
+          <SidebarRegexFilter />
+          <SidebarRegexFilterError />
+        </>
+      ),
+      filterRoot,
+    );
   });
 
   afterEach(() => {
+    disposeFilter?.();
+    disposeFilter = null;
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
@@ -158,19 +183,13 @@ describe("ProjectPanel regex filter", () => {
     });
     fake.resolve("discover_project", projectDiscovery());
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
       expect(rendered.root.textContent).toContain("dev-rust");
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { toggle, filterInput } = openFilter();
       await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
       await waitFor(() => expect(document.activeElement).toBe(filterInput));
 
@@ -182,7 +201,7 @@ describe("ProjectPanel regex filter", () => {
 
       input(filterInput, "(");
       await waitFor(() => {
-        expect(rendered.root.textContent).toContain("Invalid regex");
+        expect(document.body.textContent).toContain("Invalid regex");
         expect(rendered.root.textContent).toContain("dev-webpage-ui");
         expect(rendered.root.textContent).toContain("dev-rust");
       });
@@ -190,7 +209,7 @@ describe("ProjectPanel regex filter", () => {
       filterInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
       await waitFor(() => {
         expect(filterInput.value).toBe("");
-        expect(rendered.root.textContent).not.toContain("Invalid regex");
+        expect(document.body.textContent).not.toContain("Invalid regex");
       });
     } finally {
       rendered.cleanup();
@@ -206,7 +225,7 @@ describe("ProjectPanel regex filter", () => {
     });
     fake.resolve("discover_project", projectDiscovery());
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
@@ -215,12 +234,7 @@ describe("ProjectPanel regex filter", () => {
       expect(header).toBeTruthy();
 
       const title = header!.querySelector<HTMLElement>(".project-title");
-      const row = findByTestId<HTMLDivElement>(rendered.root, "sidebar.regexFilter.row");
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { row, toggle, filterInput } = filterControls();
 
       expect(title?.textContent).toBe("Project: Project");
       expect(header!.querySelector(".project-filter-row")).toBeNull();
@@ -270,7 +284,7 @@ describe("ProjectPanel regex filter", () => {
     ]);
     sessionsStore.setVisibleActiveIdForTests("coord-session");
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("frontend-team"));
@@ -282,12 +296,7 @@ describe("ProjectPanel regex filter", () => {
       }
       click(teamHeader);
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       input(filterInput, "AgentsCommander_ac");
       await waitFor(() => {
@@ -341,18 +350,13 @@ describe("ProjectPanel regex filter", () => {
       ])
     );
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("Weekday standup"));
       expect(rendered.root.textContent).toContain("Nightly backup");
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       input(filterInput, "standup");
       await waitFor(() => {
@@ -384,7 +388,7 @@ describe("ProjectPanel regex filter", () => {
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve("discover_project", twoWorkgroupDiscovery());
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("wg-3-ops-team"));
@@ -398,12 +402,7 @@ describe("ProjectPanel regex filter", () => {
 
       await waitFor(() => expect(workgroupsCount()).toBe("2"));
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       input(filterInput, "ops-team");
       await waitFor(() => {
@@ -417,21 +416,14 @@ describe("ProjectPanel regex filter", () => {
   });
 
   it("closes and clears the active filter when the magnifier is toggled", async () => {
-    const fake = new FakeTransport();
-    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
-    fake.resolve("discover_project", projectDiscovery());
+    const fake = projectFake();
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { toggle, filterInput } = openFilter();
       await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
 
       input(filterInput, "webpage");
@@ -481,7 +473,7 @@ describe("ProjectPanel regex filter", () => {
       }),
     ]);
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-rust"));
@@ -493,12 +485,7 @@ describe("ProjectPanel regex filter", () => {
       const beforeLoops = projectStore.projects[0].loops.map((l) => l.id);
       const beforeTeams = projectStore.projects[0].teams.map((t) => t.name);
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       // A filter that hides the non-matching rows.
       input(filterInput, "webpage");
@@ -547,17 +534,12 @@ describe("ProjectPanel regex filter", () => {
     ]);
     sessionsStore.setVisibleActiveIdForTests("coord-session");
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-rust"));
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       // The non-coordinator's branch badge is never rendered, so its branch is
       // not matchable — dev-rust must NOT be surfaced (the bug).
@@ -595,17 +577,12 @@ describe("ProjectPanel regex filter", () => {
       }),
     ]);
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       // `shell` is never rendered on a row, so filtering by it surfaces nothing.
       input(filterInput, "bash");
@@ -642,7 +619,7 @@ describe("ProjectPanel regex filter", () => {
       }),
     ]);
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-rust"));
@@ -652,12 +629,7 @@ describe("ProjectPanel regex filter", () => {
       );
       expect(staleRow.querySelector(".session-item-status")?.classList.contains("exited")).toBe(true);
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       input(filterInput, "waiting");
       await waitFor(() => expect(rendered.root.textContent).not.toContain("dev-rust"));
@@ -682,17 +654,12 @@ describe("ProjectPanel regex filter", () => {
       ])
     );
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("Weekday standup"));
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       // promptPreview renders only as the row's hover title, so it is not matchable.
       input(filterInput, "secretpreviewtoken");
@@ -725,18 +692,13 @@ describe("ProjectPanel regex filter", () => {
     ]);
     sessionsStore.setVisibleActiveIdForTests("coord-session");
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       // The A->B badge is rendered on the coordinator row.
       await waitFor(() => expect(rendered.root.textContent).toContain("A->B"));
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       // Filtering by the shown badge keeps the row visible (no "false hide").
       input(filterInput, "A->B");
@@ -802,7 +764,7 @@ describe("ProjectPanel regex filter", () => {
       }),
     ]);
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("nolabel"));
@@ -810,12 +772,7 @@ describe("ProjectPanel regex filter", () => {
       expect(rendered.root.textContent).toContain("A->B");
       expect(rendered.root.textContent).toContain("C->D");
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       // The badge on the label-less, repo-less row is matchable, and surfaces only
       // that row. This is the assertion ProjectPanel.tsx's deleted `metaVisible`
@@ -850,21 +807,14 @@ describe("ProjectPanel regex filter", () => {
   });
 
   it("closes the filter when Escape is pressed on an empty field", async () => {
-    const fake = new FakeTransport();
-    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
-    fake.resolve("discover_project", projectDiscovery());
+    const fake = projectFake();
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { toggle, filterInput } = openFilter();
       await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
       expect(filterInput.value).toBe("");
 
@@ -921,7 +871,7 @@ describe("ProjectPanel regex filter", () => {
       }),
     ]);
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await settingsStore.load();
       await projectStore.createAndLoad(projectPath);
@@ -930,12 +880,7 @@ describe("ProjectPanel regex filter", () => {
       expect(rendered.root.textContent).toContain("Claude Code");
       expect(rendered.root.textContent).toContain("opencode");
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       // The coding-agent badge is now matchable — and only on the row that shows
       // it (the name "alpha" never contains "Claude Code", so the match is the badge).
@@ -995,19 +940,14 @@ describe("ProjectPanel regex filter", () => {
       }),
     ]);
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await settingsStore.load();
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("charlie"));
       expect(rendered.root.textContent).toContain("Z"); // profile badge shown
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       // The shown profile letter matches the row.
       input(filterInput, "Z");
@@ -1047,17 +987,12 @@ describe("ProjectPanel regex filter", () => {
       })
     );
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("Quasar telemetry rollout"));
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       // "telemetry" appears only in the task title, yet the coordinator row that
       // displays it stays visible — the task title is matchable.
@@ -1121,7 +1056,7 @@ describe("ProjectPanel regex filter", () => {
       })
     );
 
-    const rendered = renderPanel(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await settingsStore.load();
       await projectStore.createAndLoad(projectPath);
@@ -1130,12 +1065,7 @@ describe("ProjectPanel regex filter", () => {
       expect(rendered.root.textContent).toContain("dev-rust");
       expect(rendered.root.textContent).toContain("Codex");
 
-      const toggle = findByTestId<HTMLButtonElement>(rendered.root, "sidebar.regexFilter.toggle");
-      click(toggle);
-      const filterInput = findByTestId<HTMLInputElement>(
-        rendered.root,
-        "sidebar.regexFilter.input",
-      );
+      const { filterInput } = openFilter();
 
       // (a) filter by the persisted Coding Agent label — matchable only via the badge.
       input(filterInput, "codex");
