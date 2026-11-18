@@ -929,3 +929,22 @@ fn startup_summary_clones_preserve_once_none_overwrite_and_poison() {
         None
     );
 }
+
+#[test]
+fn startup_skips_temp_room_sessions() {
+    let base = crate::config::config_dir().expect("config dir");
+    let normal_dir = tempfile::tempdir().unwrap();
+    let temp = crate::config::sessions_persistence::PersistedSession {
+        name: "temp".into(),
+        working_directory: base.join("temp-room-tr01").to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let normal = crate::config::sessions_persistence::PersistedSession {
+        name: "normal".into(),
+        working_directory: normal_dir.path().to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let result = super::load_startup_sessions(&Default::default(), |_| vec![temp, normal]);
+    let names: Vec<_> = result.unwrap().into_iter().map(|s| s.name).collect();
+    assert_eq!(names, vec!["normal".to_string()]);
+}

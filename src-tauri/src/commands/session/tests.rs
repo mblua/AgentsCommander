@@ -57,6 +57,7 @@ mod resume_policy;
 mod root_agent;
 mod samplers;
 mod support;
+mod temp_room_bare;
 
 pub(crate) use backends::ScriptedSpawnBackend;
 use backends::{BarrierDestroyBackend, FailingSpawnBackend, GatedSpawnBackend};

@@ -61,6 +61,7 @@ pub(crate) mod single_instance_lock;
 pub(crate) mod spec_board;
 pub(crate) mod tasks;
 pub(crate) mod telegram_logs;
+pub(crate) mod temp_rooms;
 pub(crate) mod terminal_snapshots;
 pub(crate) mod transcripts;
 pub(crate) mod unleashed_replicas;

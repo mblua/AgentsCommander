@@ -149,6 +149,7 @@ fn fields_3(s: &AppSettings, d: &mut fmt::DebugStruct<'_, '_>) {
     d.field("context_history_retention_days", &s.context_history_retention_days);
     d.field("context_history_session_windows", &s.context_history_session_windows);
     d.field("context_history_color_sessions", &s.context_history_color_sessions);
+    d.field("temp_room_agent", &s.temp_room_agent);
 }
 
 /// Compile-time guard: lists every `AppSettings` field. A new field fails to
@@ -197,5 +198,6 @@ fn all_fields_listed(s: &AppSettings) {
         response_close_idle_seconds: _, room_idle_confirmation_seconds: _,
         context_history_enabled: _, context_history_retention_days: _,
         context_history_session_windows: _, context_history_color_sessions: _,
+        temp_room_agent: _,
     } = s;
 }

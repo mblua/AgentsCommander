@@ -11,6 +11,7 @@ mod owner;
 mod project_path;
 mod save;
 mod source;
+mod temp_room_agent;
 
 #[cfg(test)]
 pub(crate) use naming::INSTANCE_FAMILIES_RENAMES;
@@ -327,6 +328,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+pub use temp_room_agent::TempRoomAgentChoice;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -909,6 +911,9 @@ pub struct AppSettings {
         deserialize_with = "deserialize_context_history_color_sessions"
     )]
     pub context_history_color_sessions: Option<u32>,
+    /// #4779: agent remembered for temp rooms; `None` writes no key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temp_room_agent: Option<TempRoomAgentChoice>,
 }
 
 impl AppSettings {

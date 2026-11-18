@@ -126,10 +126,15 @@ const REQUIRED_PATHS: &[&str] = &[
     "update-check.json",
     "update-check.json.tmp",
     "web-token.txt",
+    "temp-room-tr01/notes.md",
+    ".deleting-temp-room-tr01-0f0e/notes.md",
 ];
 
 /// Paths the generated instance `.gitignore` must leave visible to git.
 const CONTROL_PATHS: &[&str] = &[
+    // #4779: the temp-room rules are anchored and the prefix is literal.
+    "sub/temp-room-tr01/notes.md",
+    "temp-room-x/notes.md",
     "cache/entry.bin",
     "state.sqlite",
     "ac-root-agent/unrelated/config.json",

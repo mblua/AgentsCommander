@@ -77,6 +77,7 @@ import Titlebar from "./components/Titlebar";
 import ActionBar from "./components/ActionBar";
 import RootAgentBanner from "./components/RootAgentBanner";
 import ProjectPanel from "./components/ProjectPanel";
+import TemporaryRoomsPanel from "./components/TemporaryRoomsPanel";
 import RoomGroupRail from "./components/RoomGroupRail";
 import OnboardingModal from "./components/OnboardingModal";
 import ContextTemplateUpdateModal from "./components/ContextTemplateUpdateModal";
@@ -99,9 +100,7 @@ interface SidebarAppProps {
   embedded?: boolean;
   railSide?: MainSidebarSide;
 }
-
 const HYDRATION_RETRY_DELAYS = [50, 100, 250, 500, 1000] as const;
-
 /// #1857: the ONE tag the aggregated blocked-menu toast is pushed under. The
 /// per-session tags keyed by session id are gone: N sticky toasts could bury
 /// one another past MAX_VISIBLE, and only one of them can be acted on at a time.
@@ -1131,6 +1130,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
             <RoomGroupRail projects={projectStore.projects} surface={props.embedded ? "embedded" : "sidebar"} />
           </Show>
           <div class="sidebar-scrollable" ref={sidebarScrollableEl}>
+            <TemporaryRoomsPanel />
             <ProjectPanel />
           </div>
           <Show when={railSide() === "right"}>
