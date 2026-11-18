@@ -9,6 +9,12 @@
       "reason": "Pre-gate (main 160c3e92); accepted by #4490 D1A; fix in D3 follow-up."
     },
     {
+      "id": "GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "severity": "high",
+      "reason": "#4787: no fixed release (<= 4.0.7); dev-only via vite, vitest, dependency-cruiser."
+    },
+    {
       "id": "GHSA-g3hv-75wg-m249",
       "package": "minimatch",
       "severity": "moderate",

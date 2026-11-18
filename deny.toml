@@ -1,6 +1,7 @@
 # cargo-deny configuration (issue #4315). Checked on every PR by
 # .github/workflows/cargo-deny.yml. Every ignore/exception below
-# existed on main ced5070d when this gate was added. Fixing them needs
+# existed on main ced5070d when this gate was added, unless its reason
+# names a later issue. Fixing the ced5070d ones needs
 # Cargo.toml/Cargo.lock changes, which are out of scope for #4315; the
 # follow-up issue linked from the #4315 PR tracks their removal.
 # A NEW advisory, license, ban or source finding fails the PR.
@@ -19,6 +20,7 @@ ignore = [
   { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, via zbus (Linux)" },
   { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, via zbus (Linux)" },
   { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, via zbus (Linux)" },
+  { id = "RUSTSEC-2026-0543", reason = "#4787: chrono unmaintained, no fixed release" },
 ]
 
 [licenses]
