@@ -146,6 +146,63 @@ fn artifact_cleanup_reclaims_once_only_after_witness_confirmed_removal() {
 
 #[cfg(unix)]
 #[test]
+fn artifact_cleanup_ignores_stale_identity_that_reuses_a_tracked_inode() {
+    let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
+    let directory = tempfile::TempDir::new().unwrap();
+    let directory_identity = crate::path_identity::verify_directory(directory.path()).unwrap();
+    let reservation = state
+        .reserve_artifact(directory.path(), &directory_identity)
+        .unwrap();
+    let path = directory.path().join("published.json");
+    std::fs::write(&path, b"published response").unwrap();
+    let identity = crate::path_identity::verify_regular_file(&path).unwrap();
+    reservation.commit(path.clone(), identity.clone()).unwrap();
+    // Same object id under another path simulates a reused inode.
+    let stale_path = directory.path().join(".req.terminal-snapshot-processing");
+    let stale = crate::path_identity::VerifiedPathIdentity {
+        canonical_path: stale_path.clone(),
+        ..identity.clone()
+    };
+
+    assert_eq!(
+        state.cleanup_artifact(&stale_path, &stale),
+        TerminalSnapshotArtifactCleanupOutcome::Conflict
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"published response");
+    assert_eq!(state.test_artifact_counts(), (1, 1, 0));
+    assert_eq!(
+        state.cleanup_artifact(&path, &identity),
+        TerminalSnapshotArtifactCleanupOutcome::Removed
+    );
+    assert!(!path.exists());
+    assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+}
+
+#[cfg(unix)]
+#[test]
+fn artifact_cleanup_with_other_path_reclaims_only_an_unlinked_entry() {
+    let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
+    let directory = tempfile::TempDir::new().unwrap();
+    let directory_identity = crate::path_identity::verify_directory(directory.path()).unwrap();
+    let reservation = state
+        .reserve_artifact(directory.path(), &directory_identity)
+        .unwrap();
+    let path = directory.path().join("published.json");
+    std::fs::write(&path, b"published response").unwrap();
+    let identity = crate::path_identity::verify_regular_file(&path).unwrap();
+    reservation.commit(path.clone(), identity.clone()).unwrap();
+    std::fs::remove_file(&path).unwrap();
+
+    let other = directory.path().join("destination.json");
+    assert_eq!(
+        state.cleanup_artifact(&other, &identity),
+        TerminalSnapshotArtifactCleanupOutcome::AlreadyAbsent
+    );
+    assert_eq!(state.test_artifact_counts(), (0, 0, 0));
+}
+
+#[cfg(unix)]
+#[test]
 fn artifact_cleanup_claim_collision_retains_entry_and_capacity() {
     let state = TerminalSnapshotState::new(crate::shutdown::ShutdownSignal::new());
     let directory = tempfile::TempDir::new().unwrap();
