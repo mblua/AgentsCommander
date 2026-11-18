@@ -19,6 +19,25 @@ fn encoded_size_limit() {
 }
 
 #[test]
+fn rejected_saved_once() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let out = root.path().join("out");
+    let mut receipt = Receipt::create(&out).expect("new receipt");
+
+    let digest = receipt
+        .save_rejected("r.png", b"first")
+        .expect("first save");
+    assert_eq!(digest, sha256_hex(b"first"));
+    assert!(receipt.save_rejected("r.png", b"second").is_err());
+    assert_eq!(fs::read(out.join("r.png")).expect("read back"), b"first");
+
+    let oversized = vec![0_u8; MAX_PNG_BYTES + 1];
+    assert!(receipt.save_rejected("big.png", &oversized).is_err());
+    assert!(!out.join("big.png").exists());
+    assert_eq!(receipt.png_count(), 0);
+}
+
+#[test]
 fn receipt_no_clobber() {
     let root = tempfile::tempdir().expect("temp dir");
     let out = root.path().join("out");

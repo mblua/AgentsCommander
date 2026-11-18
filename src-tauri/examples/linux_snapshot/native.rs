@@ -527,9 +527,61 @@ fn handle_image(
         },
         _ => match check(&rgba) {
             PixelVerdict::Accept(case) => accept(harness, surface, &step, case),
-            PixelVerdict::Reject(reason) => finish(harness, &Outcome::Fail(reason)),
+            PixelVerdict::Reject(reason) => {
+                keep_rejected(harness, surface, &step, width, height);
+                finish(harness, &Outcome::Fail(reason));
+            }
         },
     }
+}
+
+// Keeps a rejected real-step surface as a new PNG for offline diagnosis.
+// The record and the stderr line are written even when saving fails; the
+// verdict and reason never change.
+fn keep_rejected(
+    harness: &mut Harness,
+    surface: &cairo::ImageSurface,
+    step: &StepSpec,
+    width: u32,
+    height: u32,
+) {
+    let Some(receipt) = harness.receipt.as_mut() else {
+        return;
+    };
+    let format = match surface.format() {
+        cairo::Format::Rgb24 => "RGB24",
+        _ => "ARGB32",
+    };
+    let (label, frame) = (step.label, step.frame);
+    let name = format!("rejected-{label}-{frame}.png");
+    let mut record = json!({
+        "step": label,
+        "frame": frame,
+        "width": width,
+        "height": height,
+        "format": format,
+    });
+    let saved = encode_png(surface).and_then(|bytes| {
+        let digest = receipt
+            .save_rejected(&name, &bytes)
+            .map_err(|error| format!("save {name}: {error}"))?;
+        Ok((bytes.len(), digest))
+    });
+    let result = match saved {
+        Ok((bytes, digest)) => {
+            record["name"] = json!(name);
+            record["bytes"] = json!(bytes);
+            record["sha256"] = json!(digest);
+            format!("sha256={digest}")
+        }
+        Err(error) => {
+            let result = format!("error={error}");
+            receipt.set("rejectedError", json!(error));
+            result
+        }
+    };
+    receipt.set("rejected", record);
+    eprintln!("ac4248 snapshot: rejected {label} {frame} {width}x{height} {format} {result}");
 }
 
 fn probe_verdict(harness: &mut Harness, verdict: &PixelVerdict, error: &'static str, exit: u8) {
@@ -582,15 +634,20 @@ fn publish(
     surface: &cairo::ImageSurface,
     name: &str,
 ) -> Result<String, String> {
+    let bytes = encode_png(surface)?;
+    let receipt = harness.receipt.as_mut().ok_or("receipt_already_finished")?;
+    receipt
+        .publish_png(name, &bytes)
+        .map_err(|error| format!("publish {name}: {error}"))
+}
+
+// Cairo PNG (alpha kept) of the exact surface the checker read, size-bounded.
+fn encode_png(surface: &cairo::ImageSurface) -> Result<Vec<u8>, String> {
     let mut writer = BoundedWriter::new(MAX_PNG_BYTES);
     surface
         .write_to_png(&mut writer)
         .map_err(|error| format!("png_encode: {error}"))?;
-    let receipt = harness.receipt.as_mut().ok_or("receipt_already_finished")?;
-    let bytes = writer.into_bytes();
-    receipt
-        .publish_png(name, &bytes)
-        .map_err(|error| format!("publish {name}: {error}"))
+    Ok(writer.into_bytes())
 }
 
 fn advance(harness: &mut Harness) {

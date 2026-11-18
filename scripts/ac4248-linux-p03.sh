@@ -127,7 +127,7 @@ for name in image_bounds encoded_size_limit receipt_no_clobber late_generation \
   blank_rejected stale_rejected title_log_bounded probe_unanswered read_probe_unparsed \
   h_a_signature fixture_inconsistent_shapes frame_not_called h_b_signature h_c_signature \
   probe_names_match_fixture stall_probe_steps frame_script_shape link_break_tokens \
-  trace_target_matches_recipe; do rg "$name: test" "$E/example-tests.list"; done
+  trace_target_matches_recipe rejected_saved_once; do rg "$name: test" "$E/example-tests.list"; done
 cargo +1.98.1 test --locked -p agentscommander --example linux_snapshot \
   > "$E/example-tests.log" 2>&1
 git rev-parse HEAD > "$E/source-sha.txt"

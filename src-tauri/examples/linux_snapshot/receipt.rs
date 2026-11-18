@@ -285,6 +285,16 @@ impl Receipt {
         Ok(digest)
     }
 
+    // Same bounded new-file write as publish_png, for a rejected surface kept
+    // for diagnosis; it is not listed in `pngs`.
+    pub fn save_rejected(&mut self, name: &str, bytes: &[u8]) -> io::Result<String> {
+        if bytes.len() > MAX_PNG_BYTES {
+            return Err(io::Error::other("encoded_size_limit"));
+        }
+        self.write_new(name, bytes)?;
+        Ok(sha256_hex(bytes))
+    }
+
     pub fn finish(mut self, outcome: &Outcome) -> u8 {
         let mut fields = std::mem::take(&mut self.fields);
         fields.extend(outcome.fields(self.pngs.len()));
