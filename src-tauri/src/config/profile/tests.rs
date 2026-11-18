@@ -114,3 +114,89 @@ fn gui_instance_running_probe_roundtrip() {
         );
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn issue_4788_lock_file_name_keeps_mutex_identity_and_case() {
+    let upper = single_instance_lock_file_name("Local\\AgentsCommander_SingleInstance_FOO\0");
+    let lower = single_instance_lock_file_name("Local\\AgentsCommander_SingleInstance_Foo\0");
+    assert_eq!(upper, "AgentsCommander_SingleInstance_FOO.lock");
+    assert_eq!(lower, "AgentsCommander_SingleInstance_Foo.lock");
+    assert_eq!(
+        single_instance_lock_file_name("Local\\AgentsCommander_SingleInstance_New_Dev\0"),
+        "AgentsCommander_SingleInstance_New_Dev.lock"
+    );
+}
+
+#[cfg(target_os = "linux")]
+const WRAPPER_OUT: &str = "AC_4788_WRAPPER_OUT";
+
+/// #4788 child half: a no-op unless the parent set `AC_4788_WRAPPER_OUT`.
+/// Writes the wrapper result, then keeps any lock it got until killed (≤60 s).
+#[cfg(target_os = "linux")]
+#[test]
+fn issue_4788_wrapper_child() {
+    let Some(out) = std::env::var_os(WRAPPER_OUT) else {
+        return;
+    };
+    let got = try_acquire_single_instance_lock();
+    std::fs::write(out, if got { "1" } else { "0" }).expect("write result");
+    std::thread::sleep(std::time::Duration::from_secs(60));
+}
+
+/// #4788: the `main.rs` wrapper, across processes, with `XDG_RUNTIME_DIR`
+/// set only on the children (private tempdir; parent env untouched).
+#[cfg(target_os = "linux")]
+#[test]
+fn issue_4788_wrapper_refuses_second_process_until_first_dies() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    struct Reaped(Child);
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("chmod 0700");
+    let run = |out: &str| {
+        let child = Command::new(std::env::current_exe().expect("test exe"))
+            .args([
+                "--exact",
+                "config::profile::tests::issue_4788_wrapper_child",
+            ])
+            .env("XDG_RUNTIME_DIR", dir.path())
+            .env(WRAPPER_OUT, dir.path().join(out))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn wrapper child");
+        let child = Reaped(child);
+        let path = dir.path().join(out);
+        let start = Instant::now();
+        let result = loop {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            if !text.is_empty() || start.elapsed() > Duration::from_secs(20) {
+                break text;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        (child, result)
+    };
+    let (first, held) = run("first");
+    assert_eq!(held, "1", "first instance acquires");
+    let lock_file = dir
+        .path()
+        .join(single_instance_lock_file_name(mutex_name()));
+    assert!(lock_file.exists(), "lock lives in XDG_RUNTIME_DIR");
+    let (second, refused) = run("second");
+    assert_eq!(refused, "0", "same identity refused while first runs");
+    drop(second);
+    drop(first);
+    let (_third, again) = run("third");
+    assert_eq!(again, "1", "lock released after the first dies");
+}

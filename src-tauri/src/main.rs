@@ -218,7 +218,13 @@ fn try_acquire_single_instance() -> bool {
     // for the lifetime of the process to hold the mutex.
 }
 
-#[cfg(not(target_os = "windows"))]
+/// #4788: Linux holds a per-identity lock file instead of the mutex.
+#[cfg(target_os = "linux")]
 fn try_acquire_single_instance() -> bool {
-    true // No single-instance enforcement on non-Windows
+    agentscommander_lib::config::profile::try_acquire_single_instance_lock()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+fn try_acquire_single_instance() -> bool {
+    true // No single-instance enforcement on other platforms
 }

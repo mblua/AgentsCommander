@@ -86,7 +86,8 @@ pub fn app_title_suffix() -> &'static str {
     app_title()
 }
 
-/// Windows single-instance mutex name. Each suffix gets a unique mutex
+/// Single-instance identity. Windows uses it as the mutex name; Linux derives
+/// the lock file name from it (#4788). Each suffix gets its own identity
 /// so different instances can run simultaneously.
 pub fn mutex_name() -> &'static str {
     static NAME: OnceLock<String> = OnceLock::new();
@@ -103,14 +104,38 @@ pub fn mutex_name() -> &'static str {
     })
 }
 
+/// #4788: Linux lock file name for a mutex name: no `Local\` prefix, no
+/// trailing NUL, plus `.lock`. Case is kept, so the Linux identity equals the
+/// Windows mutex identity.
+#[cfg(target_os = "linux")]
+fn single_instance_lock_file_name(mutex: &str) -> String {
+    let name = mutex.strip_prefix("Local\\").unwrap_or(mutex);
+    format!("{}.lock", name.trim_end_matches('\0'))
+}
+
+/// #4788: Linux GUI single-instance lock. `false` only when another process
+/// holds this identity's lock; every failure lets the GUI run (fail-open).
+#[cfg(target_os = "linux")]
+pub fn try_acquire_single_instance_lock() -> bool {
+    use crate::filesystem::single_instance_lock as lock;
+    let uid = lock::current_uid();
+    let runtime_dir = super::environment::xdg_runtime_dir().map(std::path::PathBuf::from);
+    lock::try_acquire(
+        &lock::lock_dir(runtime_dir, uid),
+        &single_instance_lock_file_name(mutex_name()),
+        uid,
+    )
+}
+
 /// #786: side-effect-free probe of whether a GUI instance for THIS binary
 /// identity is already running, by OPENING (not creating) the single-instance
 /// mutex. `OpenMutexW` never creates the mutex, so unlike `CreateMutexW` this
 /// cannot race a starting GUI into refusing to launch. The CLI uses it to route
 /// coding-agent mutations: GUI up -> queue through the poller; GUI down ->
-/// direct write. Windows-only; returns false off-Windows (single-instance is
-/// not enforced there, so a running GUI is not detected and callers fall back to
-/// the direct write path - a documented platform gap).
+/// direct write. Windows-only; returns false off-Windows (no probe exists there,
+/// even on Linux where #4788 enforces single-instance with a lock file, so a
+/// running GUI is not detected and callers fall back to the direct write path -
+/// a documented platform gap).
 #[cfg(target_os = "windows")]
 pub fn gui_instance_running() -> bool {
     use windows_sys::Win32::Foundation::CloseHandle;
