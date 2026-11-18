@@ -1659,24 +1659,28 @@ jobs:
           workspaces: . -> target
           key: rust-test-linux
 
-      # #4599: Xvfb gives GTK a display; nextest gives each test its own process.
-      - name: Install xvfb and cargo-nextest
+      # #4599: nextest gives each test its own process. #4656: GTK gets a headless
+      # Wayland display (weston), not Xvfb, so tao never starts its X11 device thread,
+      # which crashed test processes at exit.
+      - name: Install weston and cargo-nextest
         shell: bash
         run: |
-          sudo apt-get install -y --no-install-recommends xvfb
+          sudo apt-get install -y --no-install-recommends weston
           cargo install cargo-nextest --locked --version 0.9.151
 
       # Same targets as rust-regression-windows (#4510), without its one --skip;
       # failures here are real Linux failures and get their own issues. GTK starts on
       # one thread per process and libtest uses one thread per test, so Linux runs
-      # each test in its own process under Xvfb (#4599). The list check below proves
-      # nextest runs the same tests that libtest lists.
+      # each test in its own process under headless weston (#4599, #4656). The list
+      # check below proves nextest runs the same tests that libtest lists.
       - name: cargo test
         working-directory: src-tauri
         shell: bash
         env:
           DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent/ac-4599-no-session-bus
           NO_AT_BRIDGE: "1"
+          GDK_BACKEND: wayland
+          WAYLAND_DISPLAY: ac-4656-wayland
         run: |
           libtest=$(cargo test --locked --lib --bins --tests -- --list --format terse \
             | grep -c ': test$')
@@ -1685,8 +1689,21 @@ jobs:
           echo "libtest=$libtest nextest=$nextest"
           test "$nextest" -gt 0
           test "$libtest" -eq "$nextest"
-          xvfb-run -a cargo nextest run --locked --lib --bins --tests --no-fail-fast \
-            --status-level pass --color never
+          unset DISPLAY
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/ac-4656-xdg"
+          mkdir -m 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless --socket="$WAYLAND_DISPLAY" --idle-time=0 \
+            >"$RUNNER_TEMP/weston.log" 2>&1 &
+          for _ in $(seq 100); do
+            if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then break; fi
+            sleep 0.1
+          done
+          if [ ! -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then cat "$RUNNER_TEMP/weston.log"; false; fi
+          if ! cargo nextest run --locked --lib --bins --tests --no-fail-fast \
+            --status-level pass --color never; then
+            cat "$RUNNER_TEMP/weston.log"
+            false
+          fi
 
   rust-regression-linux:
     name: rust-regression-linux
