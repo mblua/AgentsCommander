@@ -56,6 +56,8 @@ pub(crate) mod session_context;
 pub(crate) mod sessions_persistence_files;
 pub(crate) mod settings_file;
 pub(crate) mod settings_sources;
+#[cfg(target_os = "linux")]
+pub(crate) mod single_instance_lock;
 pub(crate) mod spec_board;
 pub(crate) mod tasks;
 pub(crate) mod telegram_logs;
