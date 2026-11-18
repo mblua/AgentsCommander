@@ -116,6 +116,7 @@ impl TerminalSnapshotState {
     pub(super) fn begin_unix_artifact_operation(
         &self,
         expected: &crate::path_identity::VerifiedPathIdentity,
+        required_path: Option<&Path>,
     ) -> Result<UnixArtifactOperation, TerminalSnapshotArtifactCleanupOutcome> {
         let mut registry = self
             .artifacts
@@ -126,6 +127,14 @@ impl TerminalSnapshotState {
             .get(&expected.object_id)
             .ok_or(TerminalSnapshotArtifactCleanupOutcome::Conflict)?;
         if tracked.identity.object_id != expected.object_id {
+            return Err(TerminalSnapshotArtifactCleanupOutcome::Conflict);
+        }
+        // A reused inode may map a stale identity to another live file. An unlinked
+        // witness never touches the disk during cleanup, so it may still be reclaimed.
+        if required_path.is_some_and(|path| tracked.path != path)
+            && tracked.witness.state(&tracked.identity)
+                != crate::path_identity::UnixFileWitnessState::Unlinked
+        {
             return Err(TerminalSnapshotArtifactCleanupOutcome::Conflict);
         }
         if tracked.operation_owner.is_some() {
@@ -259,9 +268,10 @@ impl TerminalSnapshotState {
     #[cfg(unix)]
     pub(super) fn cleanup_artifact_unix(
         &self,
+        path: &Path,
         expected: &crate::path_identity::VerifiedPathIdentity,
     ) -> TerminalSnapshotArtifactCleanupOutcome {
-        let operation = match self.begin_unix_artifact_operation(expected) {
+        let operation = match self.begin_unix_artifact_operation(expected, Some(path)) {
             Ok(operation) => operation,
             Err(outcome) => return outcome,
         };
@@ -304,8 +314,7 @@ impl TerminalSnapshotState {
     ) -> TerminalSnapshotArtifactCleanupOutcome {
         #[cfg(unix)]
         {
-            let _ = path;
-            self.cleanup_artifact_unix(expected)
+            self.cleanup_artifact_unix(path, expected)
         }
         #[cfg(not(unix))]
         {
@@ -343,8 +352,9 @@ impl TerminalSnapshotState {
         path: &Path,
     ) -> Result<Option<crate::path_identity::VerifiedPathIdentity>, TerminalSnapshotReasonCode>
     {
+        // The caller holds an open handle to this inode, and relocation changes the path.
         let operation = self
-            .begin_unix_artifact_operation(expected)
+            .begin_unix_artifact_operation(expected, None)
             .map_err(|_| TerminalSnapshotReasonCode::ResponseUnavailable)?;
         if operation.witness.state(&operation.identity)
             == crate::path_identity::UnixFileWitnessState::Unlinked

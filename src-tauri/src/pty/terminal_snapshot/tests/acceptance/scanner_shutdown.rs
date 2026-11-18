@@ -132,10 +132,19 @@ async fn run_composed_scanner_shutdown_phase(temporary_root: &Path, phase: Scann
             b"foreign processing replacement"
         );
         assert!(displaced.exists());
-        std::fs::remove_file(replacement_path).expect("remove processing replacement");
+        std::fs::remove_file(&replacement_path).expect("remove processing replacement");
         std::fs::remove_file(displaced).expect("remove displaced scanner-owned file");
         #[cfg(not(unix))]
         fixture.snapshot_state.untrack_artifact(&original_identity);
+        // Unix: the replacement blocked the scanner cleanup; now unnamed, the entry is
+        // reclaimed the same way the product does it.
+        #[cfg(unix)]
+        assert_eq!(
+            fixture
+                .snapshot_state
+                .cleanup_artifact(&replacement_path, &original_identity),
+            TerminalSnapshotArtifactCleanupOutcome::AlreadyAbsent
+        );
     }
     assert_scanner_shutdown_residue(
         &fixture,
@@ -453,9 +462,6 @@ fn assert_scanner_shutdown_response(
     target: &str,
     response_path: &Path,
 ) -> Option<TerminalSnapshotReasonCode> {
-    // The fixture only untracks the response artifact on non-Unix hosts.
-    #[cfg(unix)]
-    let _ = fixture;
     let mut response_reason = None;
     if phase.abortable() {
         assert!(!response_path.exists());
@@ -473,12 +479,22 @@ fn assert_scanner_shutdown_response(
         assert!(decoded.result.is_none());
         response_reason = decoded.error;
         assert!(response_reason.is_some());
-        #[cfg(not(unix))]
         let identity = crate::path_identity::verify_regular_file(response_path)
             .expect("shutdown response identity");
         std::fs::remove_file(response_path).expect("consume shutdown response");
         #[cfg(not(unix))]
         fixture.snapshot_state.untrack_artifact(&identity);
+        #[cfg(unix)]
+        {
+            let outcome = fixture
+                .snapshot_state
+                .cleanup_artifact(response_path, &identity);
+            assert!(matches!(
+                outcome,
+                TerminalSnapshotArtifactCleanupOutcome::AlreadyAbsent
+                    | TerminalSnapshotArtifactCleanupOutcome::Conflict
+            ));
+        }
     }
     response_reason
 }
