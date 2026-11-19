@@ -218,7 +218,8 @@ fn overview_rows_use_the_first_effective_entry_and_skip_empty_winners() {
     let mut installed = InstallState::installed("1.0".to_string(), Path::new("/bin/pi"));
     installed.seq = 7;
     let install_by_command = HashMap::from([("pi".to_string(), installed.clone())]);
-    let rows = build_update_overview_rows(&catalog, &install_by_command);
+    let managed_by_command = HashMap::from([("codex".to_string(), "mise".to_string())]);
+    let rows = build_update_overview_rows(&catalog, &install_by_command, &managed_by_command);
     assert_eq!(
         rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(),
         vec!["claude", "codex", "hermes", "pi", "opencode", "agy"]
@@ -234,6 +235,21 @@ fn overview_rows_use_the_first_effective_entry_and_skip_empty_winners() {
     assert_eq!(pi.install, installed);
     assert_eq!(rows[0].install, InstallState::checking());
     assert_eq!(rows[0].install.seq, 0);
+    // #4804 - only the mapped command carries `managedBy`.
+    for row in &rows {
+        let expected = (row.command == "codex").then(|| "mise".to_string());
+        assert_eq!(row.managed_by, expected, "{}", row.command);
+    }
+    let codex = rows
+        .iter()
+        .find(|row| row.command == "codex")
+        .expect("codex row");
+    assert_eq!(
+        serde_json::to_value(codex).expect("json")["managedBy"],
+        "mise"
+    );
+    let claude = serde_json::to_value(&rows[0]).expect("json");
+    assert!(claude.get("managedBy").is_none(), "unexpected: {claude}");
 
     // An empty FIRST entry suppresses the command entirely: no row at all,
     // even when a later duplicate carries a sequence.
@@ -244,7 +260,39 @@ fn overview_rows_use_the_first_effective_entry_and_skip_empty_winners() {
             ..entry("pi", "Pi (alt)", vec!["pi --custom"])
         },
     ];
-    assert!(build_update_overview_rows(&suppressed, &HashMap::new()).is_empty());
+    assert!(build_update_overview_rows(&suppressed, &HashMap::new(), &HashMap::new()).is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn update_overview_with_marks_mise_rows() {
+    let (app, cache, _frames_rx) = app_with_cache();
+    let handle = app.handle().clone();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (codex, claude) = mise_fixture(dir.path(), "mise/shims/codex", "plain/bin/claude");
+    let settings = bob_settings(dir.path());
+    let gate = AgentUpdateGate::new(); // not finished: every row is deferred, no probe
+    let calls = Arc::new(AtomicUsize::new(0));
+
+    let rows = update_overview_with(
+        &handle,
+        &settings,
+        &gate,
+        &cache,
+        forbidden_probe(Arc::clone(&calls)),
+    )
+    .await
+    .expect("persisted catalog is available");
+    let managed = |command: &str| {
+        rows.iter()
+            .find(|row| row.command == command)
+            .expect("row")
+            .managed_by
+            .clone()
+    };
+    assert_eq!(managed(&codex).as_deref(), Some("mise"));
+    assert_eq!(managed(&claude), None);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

@@ -148,6 +148,30 @@ describe("AgentAutoUpdateStatusList (#1551)", () => {
     }
   });
 
+  it("a mise-managed row shows the Managed by mise line in its installed cell; " +
+    "others do not (#4804)", async () => {
+    const fake = new FakeTransport();
+    fake.onInvoke(CMD, () =>
+      Promise.resolve([
+        { ...row("claude", "claude", installed("2.1.245", 1)), managedBy: "mise" },
+        row("codex", "codex", installed("0.9.0", 1)),
+      ])
+    );
+    const rendered = mount(fake);
+    try {
+      await waitFor(() => expect(cell(rendered.root, "codex", "installed")).toBeTruthy());
+      const note = q(rendered.root, "settings.autoUpdate.row.claude.managedBy");
+      expect(note).toBeTruthy();
+      expect(cell(rendered.root, "claude", "installed")!.contains(note)).toBe(true);
+      expect(note!.textContent).toContain("Managed by mise");
+      expect(note!.querySelector("code")!.textContent).toBe("mise upgrade claude");
+      expect(q(rendered.root, "settings.autoUpdate.row.codex.managedBy")).toBeNull();
+      expect(cell(rendered.root, "codex", "installed")!.textContent).toBe("0.9.0");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it("a fast missing command announced before the response paints Not installed", async () => {
     const fake = new FakeTransport();
     fake.onInvoke(CMD, () => {

@@ -1,7 +1,7 @@
 use super::gate::AgentUpdateGate;
 use super::plan::{
-    build_update_plan, probe_command_install_state_cancellable, production_probe, spawn_probe_task,
-    AgentUpdatePlan, TargetProbeOutcome, UpdateTarget,
+    build_update_plan, mise_managed, probe_command_install_state_cancellable, production_probe,
+    resolve_command_program, spawn_probe_task, AgentUpdatePlan, TargetProbeOutcome, UpdateTarget,
 };
 use super::target::{StepAdmission, TargetWork, TerminalPublish};
 use super::updater::{
@@ -22,7 +22,7 @@ use crate::config::coding_agents_catalog::{
 use futures::FutureExt;
 use serde_json::json;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -458,6 +458,37 @@ pub(crate) struct PassSupervisor<E> {
     pub(crate) gate: Arc<AgentUpdateGate>,
 }
 
+/// #4804 - remove from `registered_commands` every command whose resolved binary is
+/// mise-managed, so it is never prompted nor updated (its vendor update fails on a
+/// mise install). Only commands the plan could update: the FIRST catalog entry with
+/// that command must have non-empty `update_commands`. Sorted order; one info line each.
+fn drop_mise_managed(catalog: &[CodingAgentDefinition], registered_commands: &mut HashSet<String>) {
+    let mut sorted_commands: Vec<String> = registered_commands.iter().cloned().collect();
+    sorted_commands.sort();
+    let mise_data_dir = crate::config::environment::mise_data_dir();
+    for command in sorted_commands {
+        let Some(entry) = catalog.iter().find(|entry| entry.command == command) else {
+            continue;
+        };
+        if entry.update_commands.is_empty() {
+            continue;
+        }
+        let Some(resolved) = resolve_command_program(&command) else {
+            continue;
+        };
+        if !mise_managed(&resolved, mise_data_dir.as_deref().map(Path::new)) {
+            continue;
+        }
+        registered_commands.remove(&command);
+        let label = &entry.label;
+        let path = resolved.display();
+        log::info!(
+            "[agent-update] skipping {label} ({command}): managed by mise ({path}); \
+             update it with 'mise upgrade {command}'"
+        );
+    }
+}
+
 impl<E> PassSupervisor<E>
 where
     E: ManagedBroadcastEvents + AgentUpdateTasks + AgentUpdateState + Clone + 'static,
@@ -501,11 +532,12 @@ where
         let default_cwd = primary_project_root(&settings)
             .or_else(crate::config::config_dir)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let registered_commands: HashSet<String> = settings
+        let mut registered_commands: HashSet<String> = settings
             .agents
             .iter()
             .map(|agent| agent.command.clone())
             .collect();
+        drop_mise_managed(&catalog, &mut registered_commands);
         let plan = build_update_plan(
             &catalog,
             &registered_commands,

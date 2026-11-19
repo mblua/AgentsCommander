@@ -13,11 +13,12 @@ use crate::config::coding_agents_catalog::{
     load_catalog_for_settings, CatalogUnavailable, CodingAgentDefinition,
 };
 use crate::config::settings::SettingsState;
+use crate::filesystem::directories::{dir_entry_paths, dir_has_entry_with_stem};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
@@ -47,6 +48,9 @@ pub struct AgentUpdateOverviewRow {
     pub color: String,
     pub update_commands: Vec<String>,
     pub install: InstallState,
+    /// #4804 - `Some("mise")` when the resolved binary is mise-managed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_by: Option<String>,
 }
 
 /// Pure plan builder. Binding rules:
@@ -111,6 +115,7 @@ pub fn build_update_plan(
 pub fn build_update_overview_rows(
     catalog: &[CodingAgentDefinition],
     install_by_command: &HashMap<String, InstallState>,
+    managed_by_command: &HashMap<String, String>,
 ) -> Vec<AgentUpdateOverviewRow> {
     let mut seen: HashSet<&str> = HashSet::new();
     catalog
@@ -131,8 +136,113 @@ pub fn build_update_overview_rows(
                 .get(&entry.command)
                 .cloned()
                 .unwrap_or_else(InstallState::checking),
+            managed_by: managed_by_command.get(&entry.command).cloned(),
         })
         .collect()
+}
+
+/// #4804 - mise tools whose install dir also holds packages installed by their own
+/// package manager: an agent there was installed by npm/pip/gem/go, not by mise.
+const MISE_RUNTIMES: [&str; 6] = ["node", "bun", "deno", "python", "ruby", "go"];
+
+/// #4804 - where a resolved path sits in a mise data dir. Pure: path components only.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum MiseLayout {
+    /// `<data>/command-wrappers/bin/<name>` or `<data>/shims/<name>`: a mise entry point.
+    Entry { data_dir: PathBuf, name: OsString },
+    /// `<data>/installs/<tool>/<1+ components>`.
+    Install { tool: OsString },
+}
+
+/// #4804 - `rest` is the path relative to the data dir `data_dir`.
+fn mise_in_layout(data_dir: &Path, rest: &Path) -> Option<MiseLayout> {
+    let mut parts: Vec<&OsStr> = Vec::new();
+    for component in rest.components() {
+        let Component::Normal(part) = component else {
+            return None;
+        };
+        parts.push(part);
+    }
+    let entry = |name: &OsStr| MiseLayout::Entry {
+        data_dir: data_dir.to_path_buf(),
+        name: name.to_os_string(),
+    };
+    match parts.as_slice() {
+        [wrappers, bin, name] if *wrappers == "command-wrappers" && *bin == "bin" => {
+            Some(entry(name))
+        }
+        [shims, name] if *shims == "shims" => Some(entry(name)),
+        [installs, tool, _, ..] if *installs == "installs" => Some(MiseLayout::Install {
+            tool: tool.to_os_string(),
+        }),
+        _ => None,
+    }
+}
+
+/// #4804 - (a) relative to `mise_data_dir` when set; if (a) gives None, (b) relative to
+/// the first `mise` component of `resolved` (the default data dir layout).
+pub(crate) fn mise_layout(resolved: &Path, mise_data_dir: Option<&Path>) -> Option<MiseLayout> {
+    let from_env = mise_data_dir.and_then(|data_dir| {
+        let rest = resolved.strip_prefix(data_dir).ok()?;
+        mise_in_layout(data_dir, rest)
+    });
+    from_env.or_else(|| {
+        let mut components = resolved.components();
+        let mut data_dir = PathBuf::new();
+        for component in components.by_ref() {
+            data_dir.push(component);
+            if component == Component::Normal(OsStr::new("mise")) {
+                return mise_in_layout(&data_dir, components.as_path());
+            }
+        }
+        None
+    })
+}
+
+/// #4804 - true when `resolved` is mise-managed (plan v4 P01 rule). Reads only directory
+/// listings under `<data>/installs/<runtime>/`; no process, no config, no canonicalize.
+pub(crate) fn mise_managed(resolved: &Path, mise_data_dir: Option<&Path>) -> bool {
+    match mise_layout(resolved, mise_data_dir) {
+        Some(MiseLayout::Install { tool }) => !MISE_RUNTIMES.iter().any(|r| tool == *r),
+        Some(MiseLayout::Entry { data_dir, name }) => !mise_runtime_has_global(&data_dir, &name),
+        None => false,
+    }
+}
+
+/// #4804 - a runtime global (npm/pip/... bin) named like the entry point exists, so the
+/// owner of the shim or wrapper is unknown. Matches entry NAMES only, of any type.
+fn mise_runtime_has_global(data_dir: &Path, name: &OsStr) -> bool {
+    let Some(stem) = Path::new(name).file_stem() else {
+        return false;
+    };
+    let installs = data_dir.join("installs");
+    MISE_RUNTIMES.iter().any(|runtime| {
+        dir_entry_paths(&installs.join(runtime))
+            .iter()
+            .any(|version| {
+                [
+                    version.join("bin"),
+                    version.join("Scripts"),
+                    version.clone(),
+                ]
+                .iter()
+                .any(|dir| dir_has_entry_with_stem(dir, stem))
+            })
+    })
+}
+
+/// #4804 - first token of a registered command (`normalize_legacy_agent_command(cmd).shell`)
+/// resolved with `resolve_program`. None when empty or not resolvable.
+pub(crate) fn resolve_command_program(command: &str) -> Option<PathBuf> {
+    let normalized = normalize_legacy_agent_command(command).ok()?;
+    resolve_program(&normalized.shell)
+}
+
+/// #4804 - Some("mise") when `command` resolves to a mise-managed binary, else None.
+pub(crate) fn command_managed_by(command: &str) -> Option<&'static str> {
+    let path = resolve_command_program(command)?;
+    let data_dir = crate::config::environment::mise_data_dir();
+    mise_managed(&path, data_dir.as_deref().map(Path::new)).then_some("mise")
 }
 
 /// #1551 - resolve + probe policy for one catalog command. Executes a process ONLY for a
@@ -310,6 +420,7 @@ where
     let pass_finished = gate.is_finished();
     let now = Instant::now();
     let mut install_by_command: HashMap<String, InstallState> = HashMap::new();
+    let mut managed_by_command: HashMap<String, String> = HashMap::new();
     let mut seen: HashSet<&str> = HashSet::new();
 
     for entry in &catalog {
@@ -320,6 +431,9 @@ where
         }
         if entry.update_commands.is_empty() {
             continue;
+        }
+        if let Some(manager) = command_managed_by(&entry.command) {
+            managed_by_command.insert(entry.command.clone(), manager.to_string());
         }
         match cache.lookup_or_begin(&entry.command, now, INSTALL_CACHE_TTL, pass_finished) {
             Scheduling::Fresh(state) => {
@@ -334,7 +448,11 @@ where
         }
     }
 
-    Ok(build_update_overview_rows(&catalog, &install_by_command))
+    Ok(build_update_overview_rows(
+        &catalog,
+        &install_by_command,
+        &managed_by_command,
+    ))
 }
 
 /// #1551 - the ONE spawn site for probe tasks: the Settings-triggered scheduling of
