@@ -197,20 +197,28 @@ where
         // #2475 - release the turn BEFORE logging: the logger writes (and may
         // rotate) app.log synchronously, and that must never extend the turn.
         drop(turn);
-        record_selection_timing(
+        // I4813 - record off the worker: the next turn holder sits in this
+        // worker's LIFO slot and runs once this task yields to the join.
+        let line = selection_timing_line(command, queue_wait, work, result.is_ok());
+        #[cfg(test)]
+        let sample = timing_probe::SelectionTimingSample {
+            invocation: bench.as_ref().map(|bench| bench.invocation),
             command,
-            selection_timing_line(command, queue_wait, work, result.is_ok()),
-            #[cfg(test)]
-            timing_probe::SelectionTimingSample {
-                invocation: bench.as_ref().map(|bench| bench.invocation),
+            submitted,
+            queue_wait,
+            work,
+            ok: result.is_ok(),
+            body_thread: std::thread::current().id(),
+        };
+        let _ = tokio::task::spawn_blocking(move || {
+            record_selection_timing(
                 command,
-                submitted,
-                queue_wait,
-                work,
-                ok: result.is_ok(),
-                body_thread: std::thread::current().id(),
-            },
-        );
+                line,
+                #[cfg(test)]
+                sample,
+            );
+        })
+        .await;
         result
     };
     #[cfg(test)]
