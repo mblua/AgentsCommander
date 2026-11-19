@@ -48,7 +48,8 @@ impl CoordinatorEnvelope {
 
 impl EnvelopeHold {
     /// Capacity first, then the dedup key. Runs before every completion send.
-    /// The create ticket is not released here; it drops with the hold.
+    /// The create ticket is not released here. A finalize result drops it before its send;
+    /// the `None` arm and the non-owned shutdown drain wake first, then drop it with the hold.
     pub(super) fn release(&mut self) {
         drop(self.admission.take());
         drop(self.critical_admission.take());
