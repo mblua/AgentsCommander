@@ -26,6 +26,7 @@ mod self_restart;
 mod self_switch;
 mod shared_pty;
 mod shared_pty_2;
+mod stuck_wake;
 mod support_commands;
 mod support_core;
 mod support_retained_asserts;
