@@ -1,5 +1,7 @@
 //! Temp-room identity (#4779): `temp-room-trNN` folders directly in the app config dir.
-//! Pure: no filesystem access.
+//! Identity is pure; `context` writes the context cache.
+
+pub(crate) mod context;
 
 use std::path::Path;
 

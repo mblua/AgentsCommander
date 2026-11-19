@@ -52,6 +52,11 @@ pub(crate) fn resolve_session_context_content_with_activation(
         }
     } else if is_canonical_agent_matrix_dir(cwd) {
         build_direct_matrix_context(cwd, repo_mounts, activation)?
+    } else if crate::config::temp_rooms::is_temp_room_path(cwd) {
+        crate::config::temp_rooms::context::build_temp_room_context(
+            cwd,
+            super::default_context::host_platform_rules_default(),
+        )?
     } else {
         return Ok(None);
     };
@@ -97,7 +102,8 @@ pub(crate) fn resolve_session_context_content_with_activation(
     if !is_root {
         content = strip_legacy_self_maintenance(&content);
         content.push_str(SELF_CLEAR_MANUAL_SECTION);
-        if auto_self_clear {
+        // #4780: temp rooms have no skills, so no `self-handoff` directive.
+        if auto_self_clear && !crate::config::temp_rooms::is_temp_room_path(cwd) {
             content.push_str(SELF_MAINTENANCE_AUTO_SECTION);
         }
     }
