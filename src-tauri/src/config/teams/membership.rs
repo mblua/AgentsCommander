@@ -36,6 +36,11 @@ pub fn resolve_agent_target(
     if crate::config::root_agent::is_root_agent_target(target) {
         return Ok(target.to_string());
     }
+    // Temp-room address passthrough (#4780). Gating happens in the CLI route
+    // check and the mailbox.
+    if crate::config::temp_rooms::is_temp_room_address(target) {
+        return Ok(target.to_string());
+    }
 
     // Basic shape guard.
     if target.is_empty() || target.contains('\0') {

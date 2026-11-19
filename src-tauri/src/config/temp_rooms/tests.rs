@@ -78,3 +78,58 @@ fn temp_room_artifact_rows_use_the_writer_prefix() {
         assert_eq!(rows, 1, "missing Ignore row {name}");
     }
 }
+
+#[test]
+fn address_for_temp_room_path() {
+    let base = crate::config::config_dir().expect("config dir");
+    let cwd = base.join("temp-room-tr01");
+    assert_eq!(
+        temp_room_address_for_path(&cwd.to_string_lossy()).as_deref(),
+        Some("agentscommander://temp-room/tr01")
+    );
+}
+
+#[test]
+fn address_none_for_other_paths() {
+    let base = crate::config::config_dir().expect("config dir");
+    for cwd in [
+        base.join("temp-room-tr1"),
+        base.join("ac-root-agent"),
+        base.join("project").join(".ac").join("temp-room-tr01"),
+    ] {
+        assert_eq!(temp_room_address_for_path(&cwd.to_string_lossy()), None);
+    }
+}
+
+#[test]
+fn name_for_address_canonical_only() {
+    assert_eq!(
+        temp_room_name_for_address("agentscommander://temp-room/tr01").as_deref(),
+        Some("temp-room-tr01")
+    );
+    assert_eq!(
+        temp_room_name_for_address("agentscommander://temp-room/tr100").as_deref(),
+        Some("temp-room-tr100")
+    );
+    for addr in ["tr1", "tr00", "tr01/x", ""] {
+        let addr = format!("{TEMP_ROOM_ADDRESS_PREFIX}{addr}");
+        assert_eq!(temp_room_name_for_address(&addr), None, "{addr}");
+    }
+}
+
+#[test]
+fn is_temp_room_address_rejects_lookalikes() {
+    assert!(is_temp_room_address("agentscommander://temp-room/tr01"));
+    for addr in [
+        "agentscommander://temp-room/tr1",
+        "agentscommander://temp-room/",
+        "agentscommander://temp-room/temp-room-tr01",
+        "agentscommander://root-agent",
+        "AGENTSCOMMANDER://temp-room/tr01",
+        "agentscommander://temp-room/tr01 ",
+        "temp-room-tr01",
+        "proj:temp-room-tr01/agent",
+    ] {
+        assert!(!is_temp_room_address(addr), "{addr}");
+    }
+}

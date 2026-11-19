@@ -18,14 +18,72 @@ use pty_input::{
     ExpectedPtyArtifact,
 };
 
-fn validate_send_filename(
+/// Who is sending, derived once from `--root` (#4780). `TempRoom` carries the
+/// room's own folder name (`temp-room-trNN`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SenderKind<'a> {
+    RootAgent,
+    TempRoom(&'a str),
+    Agent,
+}
+
+impl<'a> SenderKind<'a> {
+    fn for_root(root: &'a str, root_is_root_agent: bool) -> Self {
+        if root_is_root_agent {
+            return Self::RootAgent;
+        }
+        let name = Path::new(root).file_name().and_then(|name| name.to_str());
+        match name {
+            Some(name) if root_is_temp_room(root) => Self::TempRoom(name),
+            _ => Self::Agent,
+        }
+    }
+}
+
+impl From<bool> for SenderKind<'_> {
+    fn from(root_is_root_agent: bool) -> Self {
+        if root_is_root_agent {
+            Self::RootAgent
+        } else {
+            Self::Agent
+        }
+    }
+}
+
+fn root_is_temp_room(root: &str) -> bool {
+    crate::config::temp_rooms::is_temp_room_path(root)
+}
+
+fn validate_send_filename<'a>(
     filename: &str,
-    root_is_root_agent: bool,
+    kind: impl Into<SenderKind<'a>>,
 ) -> Result<(), crate::phone::messaging::MessagingError> {
-    if root_is_root_agent {
-        crate::phone::messaging::validate_root_notification_filename(filename)
+    match kind.into() {
+        SenderKind::RootAgent => {
+            crate::phone::messaging::validate_root_notification_filename(filename)
+        }
+        SenderKind::TempRoom(_) | SenderKind::Agent => {
+            crate::phone::messaging::validate_filename_only(filename)
+        }
+    }
+}
+
+/// `validate_send_filename` plus, for a temp-room sender, the own-prefix rule:
+/// after `YYYYMMDD-HHMMSS-` the name starts with `<room>-to-` (mirrors `root-to`).
+fn validate_sender_filename(filename: &str, kind: SenderKind<'_>) -> Result<(), String> {
+    validate_send_filename(filename, kind).map_err(|e| e.to_string())?;
+    let SenderKind::TempRoom(room) = kind else {
+        return Ok(());
+    };
+    // The generic shape guarantees an ASCII `YYYYMMDD-HHMMSS-` lead.
+    let rest = filename.get("YYYYMMDD-HHMMSS-".len()..).unwrap_or_default();
+    if rest.starts_with(&format!("{room}-to-")) {
+        Ok(())
     } else {
-        crate::phone::messaging::validate_filename_only(filename)
+        Err(format!(
+            "filename '{filename}': filename must start with YYYYMMDD-HHMMSS-<room>-to- for a \
+            Temporary Room sender"
+        ))
     }
 }
 
@@ -41,6 +99,8 @@ pub(crate) fn agent_name_from_root(root: &str) -> String {
 pub(crate) fn sender_for_root(root: &str, root_is_root_agent: bool) -> String {
     if root_is_root_agent {
         crate::config::root_agent::ROOT_AGENT_SENDER.to_string()
+    } else if let Some(address) = crate::config::temp_rooms::temp_room_address_for_path(root) {
+        address
     } else {
         agent_name_from_root(root)
     }
@@ -54,17 +114,69 @@ fn coordinator_to_root_target_allowed(sender: &str, project_paths: &[String]) ->
     crate::config::teams::verified_wg_coordinator_target(sender, project_paths).is_some()
 }
 
-fn validate_root_agent_delivery_kind(
-    root_is_root_agent: bool,
+fn validate_root_agent_delivery_kind<'a>(
+    kind: impl Into<SenderKind<'a>>,
     command: Option<&str>,
 ) -> Result<(), &'static str> {
-    if root_is_root_agent && command.is_some() {
-        Err(
+    match (kind.into(), command) {
+        (SenderKind::RootAgent, Some(_)) => Err(
             "Root Agent messaging is file-based; use --send with a root-to-orchestrator Markdown \
             file, not --command",
-        )
-    } else {
-        Ok(())
+        ),
+        (SenderKind::TempRoom(_), Some(_)) => Err(
+            "Temporary Room messaging is file-based; use --send with a Markdown file, not \
+            --command",
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// #4780 route pre-check for temp-room senders and targets, evaluated before the
+/// Root, coordinator and team rules (master token included). `None` = not a
+/// temp-room route; the existing rules decide.
+fn temp_room_route(
+    kind: SenderKind<'_>,
+    sender: &str,
+    to: &str,
+    project_paths: &[String],
+) -> Option<Result<(), String>> {
+    let to_temp = crate::config::temp_rooms::is_temp_room_address(to);
+    match kind {
+        SenderKind::TempRoom(_) => Some(
+            if crate::config::root_agent::is_root_agent_target(to)
+                || root_agent_target_allowed(to, project_paths)
+            {
+                Ok(())
+            } else {
+                Err(format!(
+                    "routing rejected — Temporary Room agents may message only the Root Agent \
+                    and verified Room orchestrators; '{to}' is neither"
+                ))
+            },
+        ),
+        SenderKind::RootAgent if to_temp => Some(Ok(())),
+        _ if to_temp => {
+            Some(
+                if coordinator_to_root_target_allowed(sender, project_paths) {
+                    Ok(())
+                } else {
+                    Err("routing rejected — only the Root Agent and verified Room orchestrators may \
+                    message a Temporary Room"
+                    .to_string())
+                },
+            )
+        }
+        _ => None,
+    }
+}
+
+/// #4780: no archive between the Root Agent and a temp room (neither side has
+/// a project room).
+fn archive_skipped(kind: SenderKind<'_>, to: &str) -> bool {
+    match kind {
+        SenderKind::TempRoom(_) => crate::config::root_agent::is_root_agent_target(to),
+        SenderKind::RootAgent => crate::config::temp_rooms::is_temp_room_address(to),
+        SenderKind::Agent => false,
     }
 }
 
@@ -176,15 +288,15 @@ fn wait_for_response(
     }
 }
 
-fn archive_send_file(
+fn archive_send_file<'a>(
     root: &Path,
-    root_is_root_agent: bool,
+    kind: impl Into<SenderKind<'a>>,
     resolved_to: &str,
     project_paths: &[String],
     source: &Path,
     basename: &str,
 ) -> Result<PathBuf, String> {
-    let room = if root_is_root_agent {
+    let room = if kind.into() != SenderKind::Agent {
         crate::config::teams::verified_wg_coordinator_target(resolved_to, project_paths)
             .and_then(|target| target.replica_dir.parent().map(Path::to_path_buf))
             .ok_or("cannot verify destination room for archive")?
@@ -313,9 +425,8 @@ pub fn execute(args: SendArgs) -> i32 {
     }
 
     let root_is_root_agent = crate::config::root_agent::is_root_agent_path(&root);
-    if let Err(reason) =
-        validate_root_agent_delivery_kind(root_is_root_agent, args.command.as_deref())
-    {
+    let kind = SenderKind::for_root(&root, root_is_root_agent);
+    if let Err(reason) = validate_root_agent_delivery_kind(kind, args.command.as_deref()) {
         eprintln!("Error: {reason}");
         return 1;
     }
@@ -344,7 +455,7 @@ pub fn execute(args: SendArgs) -> i32 {
     }
 
     let (resolved_to, effective_project_paths) =
-        match resolve_send_target(&args, &root, &sender, root_is_root_agent, is_root) {
+        match resolve_send_target(&args, &root, &sender, kind, is_root) {
             Ok(target) => target,
             Err(code) => return code,
         };
@@ -358,7 +469,7 @@ pub fn execute(args: SendArgs) -> i32 {
     let message_body = match send_message_body(
         args.send.as_deref(),
         &root,
-        root_is_root_agent,
+        kind,
         &sender,
         &resolved_to,
         &effective_project_paths,
@@ -393,7 +504,7 @@ fn resolve_send_target(
     args: &SendArgs,
     root: &str,
     sender: &str,
-    root_is_root_agent: bool,
+    kind: SenderKind<'_>,
     is_root: bool,
 ) -> Result<(String, Vec<String>), i32> {
     // ── Resolve --to against known projects (Decision 2 / §AR2-shared) ─────
@@ -464,7 +575,12 @@ fn resolve_send_target(
 
     // ── Pre-validate routing ──────────────────────────────────────────────
 
-    if root_is_root_agent {
+    if let Some(route) = temp_room_route(kind, sender, &resolved_to, &effective_project_paths) {
+        if let Err(reason) = route {
+            eprintln!("Error: {reason}");
+            return Err(1);
+        }
+    } else if kind == SenderKind::RootAgent {
         if !root_agent_target_allowed(&resolved_to, &effective_project_paths) {
             eprintln!(
                 "Error: root-agent routing rejected — '{resolved_to}' is not a \
@@ -505,51 +621,42 @@ fn resolve_send_target(
     Ok((resolved_to, effective_project_paths))
 }
 
+/// The messaging dir `--send` reads from: `<root>/messaging/` for the Root
+/// Agent and a temp room (#4780), else the authoritative room's `messaging/`.
+fn sender_messaging_dir(root: &Path, kind: SenderKind<'_>) -> Result<PathBuf, String> {
+    if kind != SenderKind::Agent {
+        return crate::phone::messaging::root_messaging_dir(root)
+            .map_err(|e| format!("failed to resolve root messaging dir: {e}"));
+    }
+    let wg_root = crate::phone::messaging::workgroup_root(root).map_err(|e| {
+        format!(
+            "--send requires --root under a `room-*` or legacy `wg-*` Room directory unless \
+            --root is the canonical Root Agent directory; {e}"
+        )
+    })?;
+    crate::phone::messaging::ensure_workgroup_root_is_authoritative(&wg_root)?;
+    crate::phone::messaging::messaging_dir(&wg_root)
+        .map_err(|e| format!("failed to resolve messaging dir: {e}"))
+}
+
 fn send_message_body(
     filename: Option<&str>,
     root: &str,
-    root_is_root_agent: bool,
+    kind: SenderKind<'_>,
     sender: &str,
     resolved_to: &str,
     effective_project_paths: &[String],
 ) -> Result<String, i32> {
     let message_body = if let Some(filename) = filename {
-        if let Err(e) = validate_send_filename(filename, root_is_root_agent) {
+        if let Err(e) = validate_sender_filename(filename, kind) {
             eprintln!("Error: {e}");
             return Err(1);
         }
-        let agent_root_path = std::path::Path::new(root);
-        let msg_dir = if root_is_root_agent {
-            match crate::phone::messaging::root_messaging_dir(agent_root_path) {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("Error: failed to resolve root messaging dir: {e}");
-                    return Err(1);
-                }
-            }
-        } else {
-            let wg_root = match crate::phone::messaging::workgroup_root(agent_root_path) {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!(
-                        "Error: --send requires --root under a `room-*` or legacy `wg-*` Room \
-                            directory unless --root is the canonical Root Agent directory; {e}"
-                    );
-                    return Err(1);
-                }
-            };
-            if let Err(e) =
-                crate::phone::messaging::ensure_workgroup_root_is_authoritative(&wg_root)
-            {
+        let msg_dir = match sender_messaging_dir(Path::new(root), kind) {
+            Ok(d) => d,
+            Err(e) => {
                 eprintln!("Error: {e}");
                 return Err(1);
-            }
-            match crate::phone::messaging::messaging_dir(&wg_root) {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("Error: failed to resolve messaging dir: {e}");
-                    return Err(1);
-                }
             }
         };
         let abs = match crate::phone::messaging::resolve_existing_message(&msg_dir, filename) {
@@ -592,14 +699,19 @@ fn send_message_body(
             return Err(1);
         }
 
-        if let Err(error) = archive_send_file(
-            Path::new(root),
-            root_is_root_agent,
-            resolved_to,
-            effective_project_paths,
-            &abs,
-            filename,
-        ) {
+        let archived = if archive_skipped(kind, resolved_to) {
+            Ok(PathBuf::new())
+        } else {
+            archive_send_file(
+                Path::new(root),
+                kind,
+                resolved_to,
+                effective_project_paths,
+                &abs,
+                filename,
+            )
+        };
+        if let Err(error) = archived {
             eprintln!(
                 "Message archive warning: {} -> {}: {}",
                 abs.display(),

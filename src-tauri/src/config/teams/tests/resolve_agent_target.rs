@@ -706,3 +706,16 @@ fn resolve_wg_coordinator_replica_repairs_stale_relative_identity() {
         .expect("same-workspace repair should resolve stale relative identity");
     assert_eq!(resolved.agent_name, "test-alpha");
 }
+
+#[test]
+fn resolve_agent_target_passes_temp_room_address_through() {
+    let (_tmp, paths) = make_project_fixture(&[]);
+    let addr = "agentscommander://temp-room/tr01";
+    assert_eq!(resolve_agent_target(addr, &paths).unwrap(), addr);
+}
+
+#[test]
+fn resolve_agent_target_rejects_non_canonical_temp_room_address() {
+    let (_tmp, paths) = make_project_fixture(&[]);
+    assert!(resolve_agent_target("agentscommander://temp-room/tr1", &paths).is_err());
+}

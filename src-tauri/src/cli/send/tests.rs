@@ -778,3 +778,123 @@ fn p04_pty_publication_rejects_replaced_outbox_identity() {
         b"original"
     );
 }
+
+// ── #4780 temp-room sender and target ──
+
+const TEMP_ADDR: &str = "agentscommander://temp-room/tr01";
+const COORDINATOR: &str = "proj-a:wg-1-dev-team/tech-lead";
+const MEMBER: &str = "proj-a:wg-1-dev-team/dev-rust";
+const TEMP: SenderKind<'static> = SenderKind::TempRoom("temp-room-tr01");
+
+fn temp_room_root() -> String {
+    let base = crate::config::config_dir().expect("config dir");
+    base.join("temp-room-tr01").to_string_lossy().into_owned()
+}
+
+fn route(kind: SenderKind<'_>, sender: &str, to: &str, paths: &[String]) -> Option<bool> {
+    temp_room_route(kind, sender, to, paths).map(|r| r.is_ok())
+}
+
+#[test]
+fn temp_room_sender_uses_address() {
+    let root = temp_room_root();
+    assert_eq!(sender_for_root(&root, false), TEMP_ADDR);
+    assert_eq!(SenderKind::for_root(&root, false), TEMP);
+    assert_eq!(
+        SenderKind::for_root("C:/tmp/agentscommander/ac-root-agent", true),
+        SenderKind::RootAgent
+    );
+}
+
+#[test]
+fn temp_room_filename_needs_own_prefix() {
+    let own = "20261119-101500-temp-room-tr01-to-root-hello.md";
+    assert!(validate_sender_filename(own, TEMP).is_ok());
+    let other = "20261119-101500-temp-room-tr02-to-root-hello.md";
+    let error = validate_sender_filename(other, TEMP).unwrap_err();
+    assert!(error.contains("YYYYMMDD-HHMMSS-<room>-to- for a Temporary Room sender"));
+    assert!(validate_sender_filename(other, SenderKind::Agent).is_ok());
+}
+
+#[test]
+fn temp_room_rejects_command() {
+    assert_eq!(
+        validate_root_agent_delivery_kind(TEMP, Some("clear")),
+        Err("Temporary Room messaging is file-based; use --send with a Markdown file, not --command")
+    );
+    assert_eq!(validate_root_agent_delivery_kind(TEMP, None), Ok(()));
+}
+
+#[test]
+fn temp_room_messaging_dir_is_inside_room() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let room = temp.path().join("temp-room-tr01");
+    std::fs::create_dir_all(&room).unwrap();
+    let dir = sender_messaging_dir(&room, TEMP).unwrap();
+    assert_eq!(dir, room.join("messaging"));
+    assert!(dir.is_dir());
+}
+
+#[test]
+fn temp_room_route_temp_to_root_and_orchestrator_accepted() {
+    let (_temp, paths) = make_verified_coordinator_fixture();
+    let root = crate::config::root_agent::ROOT_AGENT_SENDER;
+    assert_eq!(route(TEMP, TEMP_ADDR, root, &paths), Some(true));
+    assert_eq!(route(TEMP, TEMP_ADDR, COORDINATOR, &paths), Some(true));
+}
+
+#[test]
+fn temp_room_route_temp_to_others_rejected() {
+    let (_temp, paths) = make_verified_coordinator_fixture();
+    let other_temp = "agentscommander://temp-room/tr02";
+    for to in [MEMBER, "proj-a/tech-lead", other_temp, TEMP_ADDR] {
+        assert_eq!(route(TEMP, TEMP_ADDR, to, &paths), Some(false), "{to}");
+    }
+    let error = temp_room_route(TEMP, TEMP_ADDR, MEMBER, &paths).unwrap();
+    assert!(error
+        .unwrap_err()
+        .contains("may message only the Root Agent"));
+}
+
+#[test]
+fn temp_room_route_root_and_orchestrator_to_temp_accepted() {
+    let (_temp, paths) = make_verified_coordinator_fixture();
+    let root = crate::config::root_agent::ROOT_AGENT_SENDER;
+    assert_eq!(
+        route(SenderKind::RootAgent, root, TEMP_ADDR, &paths),
+        Some(true)
+    );
+    let agent = SenderKind::Agent;
+    assert_eq!(route(agent, COORDINATOR, TEMP_ADDR, &paths), Some(true));
+}
+
+#[test]
+fn temp_room_route_member_to_temp_rejected() {
+    let (_temp, paths) = make_verified_coordinator_fixture();
+    for sender in [MEMBER, "proj-a/tech-lead"] {
+        let error = temp_room_route(SenderKind::Agent, sender, TEMP_ADDR, &paths).unwrap();
+        assert!(error.unwrap_err().contains("may message a Temporary Room"));
+    }
+}
+
+#[test]
+fn temp_room_route_leaves_other_routes_unchanged() {
+    let (_temp, paths) = make_verified_coordinator_fixture();
+    let root = crate::config::root_agent::ROOT_AGENT_SENDER;
+    assert_eq!(route(SenderKind::Agent, MEMBER, COORDINATOR, &paths), None);
+    assert_eq!(route(SenderKind::Agent, COORDINATOR, root, &paths), None);
+    assert_eq!(
+        route(SenderKind::RootAgent, root, COORDINATOR, &paths),
+        None
+    );
+}
+
+#[test]
+fn temp_room_archive_skipped_only_between_root_and_temp() {
+    let root = crate::config::root_agent::ROOT_AGENT_SENDER;
+    assert!(archive_skipped(TEMP, root));
+    assert!(!archive_skipped(TEMP, COORDINATOR));
+    assert!(archive_skipped(SenderKind::RootAgent, TEMP_ADDR));
+    assert!(!archive_skipped(SenderKind::RootAgent, COORDINATOR));
+    assert!(!archive_skipped(SenderKind::Agent, TEMP_ADDR));
+}
