@@ -13,6 +13,7 @@ use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;
 use crate::config::instructions_filename::{AGENTS_MD_FILE_NAME, CLAUDE_MD_FILE_NAME};
 use agent_template::resolve_agent_context_with_activation;
 pub(crate) use agent_template::PTY_INPUT_COORDINATOR_CONTEXT;
+pub(crate) use agent_template::TEMP_ROOM_COORDINATOR_CONTEXT;
 pub use agent_template::{get_default_agent_template, get_default_coordinator_template};
 #[cfg(test)]
 use agent_template::{

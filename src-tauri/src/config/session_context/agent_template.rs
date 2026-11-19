@@ -74,6 +74,22 @@ Prefer stdin for multiline or sensitive text. `Queued` is not `Injected`. If con
     r#"create a new operation to retry it."#
 );
 
+pub(crate) const TEMP_ROOM_COORDINATOR_CONTEXT: &str = r#"## Temporary Rooms
+
+As a verified room orchestrator you may exchange messages with Temporary Room agents
+(`agentscommander://temp-room/trNN`, listed by `list-peers-lean`). This is an explicit
+additional exception to the GOLDEN RULE entry ranges, the forbidden-read scope, the refusal
+instruction and the Integrity Rules filename patterns above, for these files only. Those
+restrictions remain in force for all other paths and files:
+- When AgentsCommander gives the canonical `[Message from agentscommander://temp-room/trNN]
+  Process this inter-agent message: <path>` notification, you MAY READ exactly that one file.
+  It lies in that Temporary Room's `messaging` folder (`.../temp-room-trNN/messaging/`) and is
+  named `YYYYMMDD-HHMMSS-temp-room-trNN-to-<roomN>-<you>-<slug>.md`. Read-only: do not list or
+  explore the Temporary Room, read any other file there, or write anything there.
+- To reply, write `YYYYMMDD-HHMMSS-<roomN>-<you>-to-temp-room-trNN-<slug>.md` in your own
+  messaging directory and send it with `--to "agentscommander://temp-room/trNN"`. A send
+  fails when the Temporary Room is not running."#;
+
 pub fn get_default_coordinator_template() -> &'static str {
     "You are the orchestrator for your team. You must:\n\
      - Keep your base role; coordination is an additional assignment, not a replacement.\n\

@@ -6,6 +6,7 @@ use super::{
     read_context_local_override, read_or_create_context_recorded, root_context_candidate,
     strip_legacy_self_maintenance, ManagedContextTarget, COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
     MANAGED_CONTEXT_FILENAMES, PTY_INPUT_COORDINATOR_CONTEXT, SELF_MAINTENANCE_AUTO_SECTION,
+    TEMP_ROOM_COORDINATOR_CONTEXT,
 };
 use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;
 use std::path::Path;
@@ -92,6 +93,10 @@ pub(crate) fn resolve_session_context_content_with_activation(
         if crate::config::teams::verify_pty_input_coordinator_root(Path::new(cwd)).is_ok() {
             content.push_str("\n\n");
             content.push_str(PTY_INPUT_COORDINATOR_CONTEXT);
+        }
+        if is_replica_agent_dir(cwd) {
+            content.push_str("\n\n");
+            content.push_str(TEMP_ROOM_COORDINATOR_CONTEXT);
         }
     }
 
