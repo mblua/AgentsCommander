@@ -1,18 +1,23 @@
 # #4248 P03 Linux recipe (Hyprland + WebKitGTK), versioned with the linux_snapshot harness.
-# Source: issue comment 6813009311 (three blocks, in order) plus AC-4248-008 deltas D1-D5.
+# v2 = visible-only: comment 6813009311 + AC-4248-008 D1-D5; plan v3 (.ac-relative path):
+#   project-shared/4248-testable-mode-linux/plan-v3-ac-4248-p03-recipe-v2-visible.md
 # Run: REPO=<abs> E=<new ignored dir> bash -euo pipefail "$REPO/scripts/ac4248-linux-p03.sh" \
 #   > "$E/run.log" 2>&1; echo $? > "$E/run.exit"
 set -euo pipefail
 cd "$REPO"
 sha256sum "$REPO/scripts/ac4248-linux-p03.sh" > "$E/recipe-sha256.txt"
 rustc +1.98.1 --version > "$E/rustc.txt"
+GATE_FOCUS=true  # D1: no_initial_focus rule on, so checker rows 3-4 gate focus.
 sample_visible() {
   while :; do
     jq -cn --arg utc "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" \
-      --argjson ws "$(hyprctl -j activeworkspace)" --argjson cl "$(hyprctl -j clients)" \
-      '{utc: $utc, active: $ws.id, clients: [$cl[]
+      --argjson ws "$(hyprctl -j activeworkspace)" --argjson aw "$(hyprctl -j activewindow)" \
+      --argjson cur "$(hyprctl -j cursorpos)" --argjson cl "$(hyprctl -j clients)" \
+      '{utc: $utc, active: $ws.id, wsName: $ws.name, address: ($aw.address // ""),
+        cursor: ($cur | {x, y}), clients: [$cl[]
         | select(((.initialTitle // .title) // "") | startswith("ac4248 "))
-        | {title, ws: .workspace.id, wsName: .workspace.name, at, size, fullscreen}]}'
+        | {initialTitle, title, address, ws: .workspace.id, wsName: .workspace.name,
+          at, size, fullscreen}]}'
     sleep 0.1
   done
 }
@@ -30,10 +35,17 @@ write_baseline_readout() {
   else h=visible_receipt_missing; fi
   : > "$E/ac4248-008-readout.txt"; readout "baseline $h"
 }
+# Without D1 focus is not gated; the reader gets the count of changed samples.
+focus_readout() {
+  test "$GATE_FOCUS" = true || readout "$1 focus_samples_changed=$(jq -rn \
+    --slurpfile s "$E/$1.samples" --slurpfile a0 "$E/$1-pre-active.json" \
+    '[$s[] | select(.address != ($a0[0].address // ""))] | length')"
+}
 visible_run() {
-  local tag=$1 token code sampler; shift
+  local tag=$1 token code rc sampler; shift
   hyprctl -j activewindow > "$E/$tag-pre-active.json"
   hyprctl -j activeworkspace > "$E/$tag-pre-workspace.json"
+  hyprctl -j cursorpos > "$E/$tag-pre-cursor.json"
   token=$(jq -rn --slurpfile a "$E/$tag-pre-active.json" \
     --slurpfile w "$E/$tag-pre-workspace.json" '$a[0] as $a | $w[0] as $w |
     if ($a.address // "") == "" then "visible_precondition_no_focus"
@@ -50,15 +62,25 @@ visible_run() {
     --placement visible "$@" > "$E/$tag.stdout" 2> "$E/$tag.stderr"
   code=$?
   kill "$sampler"; wait "$sampler"
+  hyprctl -j activewindow > "$E/$tag-post-active.json"
+  hyprctl -j cursorpos > "$E/$tag-post-cursor.json"
+  hyprctl -j activeworkspace > "$E/$tag-post-workspace.json"
   sleep 0.3
   set -e
   printf '%s\n' "$code" > "$E/$tag.exit"
   test ! -s "$E/$tag.sample-errors" || incomplete "$tag" visible_sampler_error
-  token=$(jq -rs 'if any(.[]; . as $s | $s.active < 1
-      or any($s.clients[]; .ws != $s.active)) then "visible_placement_off_active_workspace"
-    elif all(.[]; (.clients | length) == 0) then "visible_placement_unobserved"
-    else "ok" end' "$E/$tag.samples")
+  set +e
+  jq -rn --slurpfile s "$E/$tag.samples" --slurpfile a0 "$E/$tag-pre-active.json" \
+    --slurpfile w0 "$E/$tag-pre-workspace.json" --slurpfile c0 "$E/$tag-pre-cursor.json" \
+    --argjson focus "$GATE_FOCUS" -f "$REPO/scripts/ac4248-visible-check.jq" \
+    > "$E/$tag-check.token"
+  rc=$?
+  set -e
+  test "$rc" -eq 0 && test "$(wc -l < "$E/$tag-check.token")" -eq 1 \
+    || incomplete "$tag" visible_check_error
+  token=$(cat "$E/$tag-check.token")
   test "$token" = ok || incomplete "$tag" "$token"
+  test "$tag" = visible || focus_readout "$tag"
 }
 check_stall_probes() {
   local p tag
@@ -92,15 +114,9 @@ app_inventory() {
 app_inventory > "$E/app-data-before.txt"
 finish() {
   code=$?; trap - EXIT; set +e
-  if test -f "$E/off-rule.stdout" && test ! -f "$E/off-rule-off.stdout"; then
-    hyprctl eval "ac4248_off_rule:set_enabled(false)" > "$E/off-rule-off.stdout" \
-      2> "$E/off-rule-off.stderr"
-  fi
-  if test -n "${socat_pid:-}"; then kill "$socat_pid"; wait "$socat_pid"; fi
-  if test -f "$E/active-before.json"; then
-    hyprctl -j activewindow > "$E/active-after.json"
-    hyprctl -j cursorpos > "$E/cursor-after.json"
-    hyprctl -j activeworkspace > "$E/workspace-after.json"
+  if test -f "$E/vis-rule.stdout" && test ! -f "$E/vis-rule-off.stdout"; then
+    hyprctl eval "ac4248_vis_rule:set_enabled(false)" > "$E/vis-rule-off.stdout" \
+      2> "$E/vis-rule-off.stderr"
   fi
   app_inventory > "$E/app-data-after.txt"
   cmp "$E/app-data-before.txt" "$E/app-data-after.txt" > "$E/app-data.diff" 2>&1
@@ -109,7 +125,6 @@ finish() {
   printf '%s\n' "$code" > "$E/script.exit"
   exit "$code"
 }
-socat_pid=
 trap finish EXIT
 npm run build
 npx --no-install vite build --config scripts/ac4248-fixture.vite.mjs
@@ -137,14 +152,20 @@ for name in image_bounds encoded_size_limit receipt_no_clobber late_generation \
   checker_mutations_rejected; do rg "$name: test" "$E/example-tests.list"; done
 cargo +1.98.1 test --locked -p agentscommander --example linux_snapshot \
   > "$E/example-tests.log" 2>&1
-bash "$REPO/scripts/ac4248-off-check-test.sh" > "$E/off-check-test.log" 2>&1 \
-  || incomplete off-workspace off_check_selftest
+bash "$REPO/scripts/ac4248-visible-check-test.sh" > "$E/visible-check-test.log" 2>&1 \
+  || incomplete visible visible_check_selftest
 git rev-parse HEAD > "$E/source-sha.txt"
 hyprctl version > "$E/hyprland.txt"
 pkg-config --modversion webkit2gtk-4.1 > "$E/webkit.txt"
 export RUST_LOG=ac4248::link=trace
+vis_rule="ac4248_vis_rule = hl.window_rule({ name = 'ac4248-visible',"
+vis_rule+=" match = { initial_title = '^ac4248 (control|target)\$' }, no_initial_focus = true })"
+hyprctl eval "$vis_rule" > "$E/vis-rule.stdout" 2> "$E/vis-rule.stderr" || true
+test "$(cat "$E/vis-rule.stdout")" = ok && test ! -s "$E/vis-rule.stderr" \
+  || incomplete visible vis_rule_not_registered
 visible_run visible
 write_baseline_readout
+focus_readout visible
 readout "link $(jq -r '.timeoutStage.linkBreak // "none"' "$E/visible/receipt.json" \
   2>/dev/null || echo visible_receipt_missing)"
 check_trace visible
@@ -155,112 +176,6 @@ check_trace stall-raf
 check_stall_probes
 test "$(cat "$E/visible.exit")" -eq 0
 jq -e '.verdict == "pass"' "$E/visible/receipt.json"
-# AC-4248-010: compositor event log first (socket2), so no stage event is missed.
-ev_sock="${XDG_RUNTIME_DIR:-}/hypr/${HYPRLAND_INSTANCE_SIGNATURE:-}/.socket2.sock"
-test -S "$ev_sock" || incomplete off-workspace off_events_unavailable
-timeout 75s socat -u UNIX-CONNECT:"$ev_sock" - > "$E/off.events" 2> "$E/off.events-err" &
-socat_pid=$!
-sleep 0.5
-kill -0 "$socat_pid" || incomplete off-workspace off_events_unavailable
-hyprctl -j activewindow > "$E/active-before.json"
-hyprctl -j cursorpos > "$E/cursor-before.json"
-hyprctl -j activeworkspace > "$E/workspace-before.json"
-hyprctl -j monitors > "$E/monitors-before.json"
-# Map-time rule: the exec_cmd rule below covers only the first window of the pid.
-off_rule="ac4248_off_rule = hl.window_rule({ name = 'ac4248-off',"
-off_rule+=" match = { initial_title = '^ac4248 (control|target)\$' },"
-off_rule+=" workspace = 'special:ac4248 silent', no_initial_focus = true })"
-hyprctl eval "$off_rule" > "$E/off-rule.stdout" 2> "$E/off-rule.stderr" || true
-test "$(cat "$E/off-rule.stdout")" = ok && test ! -s "$E/off-rule.stderr" \
-  || incomplete off-workspace off_rule_not_registered
-# One compact JSON line per sample; monitors use the same `mon` text as the checker.
-sample_off() {
-  while :; do
-    jq -cn --arg utc "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" \
-      --argjson ws "$(hyprctl -j activeworkspace)" --argjson aw "$(hyprctl -j activewindow)" \
-      --argjson cur "$(hyprctl -j cursorpos)" --argjson mo "$(hyprctl -j monitors)" \
-      --argjson cl "$(hyprctl -j clients)" \
-      '{utc: $utc, active: $ws.id, address: ($aw.address // ""), cursor: ($cur | {x, y}),
-        monitors: ($mo |
-  [.[] | {name, ws: .activeWorkspace.name, special: .specialWorkspace.name}] | sort_by(.name)),
-        clients: [$cl[] | select(((.initialTitle // .title) // "") | startswith("ac4248 "))
-          | {initialTitle, title, address, ws: .workspace.id, wsName: .workspace.name}]}'
-    sleep 0.1
-  done
-}
-timeout --kill-after=5s 45s bash -c "set -eu; $(declare -f sample_off); sample_off" \
-  > "$E/off.samples" 2> "$E/off.sample-errors" &
-sampler_pid=$!
-# Timeout/streams/exit receipt belong inside the Lua-launched command.
-cat > "$E/off-run.sh" <<'RUN'
-#!/usr/bin/env bash
-set +e
-timeout --kill-after=5s 45s "$REPO/target/debug/examples/linux_snapshot" \
-  --fixture "$REPO/target/ac4248-fixture/index.html" \
-  --out "$E/off-workspace" --placement off-workspace \
-  > "$E/off.stdout" 2> "$E/off.stderr"
-code=$?
-printf '%s\n' "$code" > "$E/off.exit.tmp"
-mv -- "$E/off.exit.tmp" "$E/off.exit"
-exit "$code"
-RUN
-# Explicit environment survives compositor launch; paths validated above.
-off_cmd="env REPO=$REPO E=$E RUST_LOG=$RUST_LOG bash $E/off-run.sh"
-hyprctl eval "hl.exec_cmd('$off_cmd', { workspace = 'special:ac4248 silent' })" \
-  > "$E/lua.stdout" 2> "$E/lua.stderr"
-set +e
-wait "$sampler_pid"
-sampler_exit=$?
-set -e
-printf '%s\n' "$sampler_exit" > "$E/sampler.exit"
-# Wrapper can finish after sampler; bounded wait preserves missing-exit failure.
-timeout 12s bash -c 'until test -f "$E/off.exit"; do sleep 0.1; done'
-hyprctl eval "ac4248_off_rule:set_enabled(false)" > "$E/off-rule-off.stdout" \
-  2> "$E/off-rule-off.stderr" || true
-set +e
-kill -0 "$socat_pid"
-socat_alive=$?
-kill "$socat_pid"; wait "$socat_pid"
-printf '%s\n' "$?" > "$E/off.events-exit"
-set -e
-socat_pid=
-test "$(cat "$E/off-rule-off.stdout")" = ok && test ! -s "$E/off-rule-off.stderr" \
-  || incomplete off-workspace off_rule_not_removed
-test "$socat_alive" -eq 0 || incomplete off-workspace off_events_unavailable
-hyprctl -j activewindow > "$E/active-after.json"
-hyprctl -j cursorpos > "$E/cursor-after.json"
-hyprctl -j activeworkspace > "$E/workspace-after.json"
-jq -S '{address}' "$E/active-before.json" > "$E/focus-before.json"
-jq -S '{address}' "$E/active-after.json" > "$E/focus-after.json"
-jq -S '{x,y}' "$E/cursor-before.json" > "$E/pointer-before.json"
-jq -S '{x,y}' "$E/cursor-after.json" > "$E/pointer-after.json"
-# Retain differences for classification, never short-circuit through errexit.
-set +e
-cmp "$E/focus-before.json" "$E/focus-after.json" > "$E/focus.diff" 2>&1
-printf '%s\n' "$?" > "$E/focus.diff-exit"
-cmp "$E/pointer-before.json" "$E/pointer-after.json" > "$E/pointer.diff" 2>&1
-printf '%s\n' "$?" > "$E/pointer.diff-exit"
-set -e
-test ! -s "$E/off.sample-errors" || incomplete off-workspace off_sampler_error
-test "$sampler_exit" -eq 124 || incomplete off-workspace off_sampler_exit
-# Every sample and every compositor event; class is read from tokens, not exit codes.
-set +e
-jq -rn --slurpfile s "$E/off.samples" --rawfile ev "$E/off.events" \
-  --slurpfile m0 "$E/monitors-before.json" --slurpfile a0 "$E/active-before.json" \
-  --slurpfile c0 "$E/cursor-before.json" -f "$REPO/scripts/ac4248-off-check.jq" \
-  > "$E/off-check.token"
-check_exit=$?
-set -e
-test "$check_exit" -eq 0 && test "$(wc -l < "$E/off-check.token")" -eq 1 \
-  || incomplete off-workspace off_check_error
-token=$(cat "$E/off-check.token")
-test "$token" = ok || incomplete off-workspace "$token"
-test "$(cat "$E/focus.diff-exit")" -eq 0 || incomplete off-workspace off_focus_changed
-test "$(cat "$E/pointer.diff-exit")" -eq 0 || incomplete off-workspace off_pointer_changed
-readout "off placement_verified samples=$(wc -l < "$E/off.samples")" \
-  "events=$(wc -l < "$E/off.events")"
-test "$(cat "$E/off.exit")" -eq 0
-jq -e '.verdict == "pass"' "$E/off-workspace/receipt.json"
 sha256sum --check "$E/binary-sha256.txt"
 for probe in blank stale cancel; do
   case "$probe" in
@@ -278,3 +193,8 @@ for probe in blank stale cancel; do
       .validatorReached == $v and .acceptedPngs == 0' "$E/probe-$probe/receipt.json"
   test -z "$(find "$E/probe-$probe" -type f -iname '*.png' -print)"
 done
+hyprctl eval "ac4248_vis_rule:set_enabled(false)" > "$E/vis-rule-off.stdout" \
+  2> "$E/vis-rule-off.stderr" || true
+test "$(cat "$E/vis-rule-off.stdout")" = ok && test ! -s "$E/vis-rule-off.stderr" \
+  || incomplete visible vis_rule_not_removed
+readout "v2 gates_complete"
