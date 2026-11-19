@@ -437,3 +437,189 @@ async fn run_startup_updates_unavailable_catalog_spawns_nothing_and_finishes_the
     );
     assert_eq!(cache.in_flight_len(), 0);
 }
+
+// ---------------------------------------------------------------------
+// #4804 - mise-managed agents in the startup pass
+// ---------------------------------------------------------------------
+
+#[cfg(unix)]
+fn mise_pass_agent(id: &str, command: &str) -> AgentConfig {
+    AgentConfig {
+        preflight: None,
+        preflight_timeout_seconds: None,
+        id: id.to_string(),
+        id_hash: None,
+        id_hash_debug: None,
+        label: id.to_string(),
+        command: command.to_string(),
+        color: "#000000".to_string(),
+        order: None,
+        envs: Vec::new(),
+        isolated_home: false,
+        instructions_filename: None,
+        config_seed: None,
+        context_regex: None,
+        blocking_menus: None,
+        backend: Default::default(),
+    }
+}
+
+/// #4804 - scripts `<tmp>/<codex_rel>/codex` and `<tmp>/npm/bin/claude` registered by
+/// absolute path; claude answered yes, codex per `codex_answer`. Runs the pass and
+/// returns ((codex, claude), frames up to and including `agent_updates_finished`).
+#[cfg(unix)]
+async fn mise_pass_frames(
+    codex_rel: &str,
+    codex_answer: Option<bool>,
+) -> ((String, String), Vec<Value>) {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    assert!(
+        !root.components().any(|c| c.as_os_str() == "mise"),
+        "temp dir {root:?} has a `mise` component; the fixture needs one without"
+    );
+    let script = |dir: &str, name: &str| {
+        let path = root.join(dir).join(name);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("script dir");
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("script");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        path.to_string_lossy().to_string()
+    };
+    let codex = script(codex_rel, "codex");
+    let claude = script("npm/bin", "claude");
+    let catalog_dir = root.join(".ac").join("coding-agents");
+    std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
+    let agent = |key: &str, label: &str, command: &str| {
+        json!({
+            "key": key,
+            "label": label,
+            "description": "",
+            "color": "#000000",
+            "command": command,
+            "updateCommands": ["true"]
+        })
+    };
+    let manifest = json!({
+        "schemaVersion": 1,
+        "agents": [agent("codex", "Codex", &codex), agent("claude", "Claude", &claude)]
+    });
+    std::fs::write(
+        catalog_dir.join("agents.10.default.json"),
+        serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )
+    .expect("write catalog");
+
+    let mut answers = BTreeMap::from([(claude.clone(), true)]);
+    if let Some(answer) = codex_answer {
+        answers.insert(codex.clone(), answer);
+    }
+    let settings = AppSettings {
+        project_paths: vec![root.to_string_lossy().to_string()],
+        agents: vec![
+            mise_pass_agent("agent-codex", &codex),
+            mise_pass_agent("agent-claude", &claude),
+        ],
+        agent_auto_update_by_command: answers,
+        ..AppSettings::default()
+    };
+    let settings_state: SettingsState = crate::config::settings::new_settings_state(settings);
+    let broadcaster = WsBroadcaster::new();
+    let mut frames_rx = broadcaster.subscribe();
+    let app = build_mock_app(
+        crate::test_support::test_builder()
+            .manage(settings_state)
+            .manage(broadcaster)
+            .manage(Arc::new(AgentInstallCache::new())),
+    );
+    let gate = Arc::new(AgentUpdateGate::new());
+
+    run_startup_updates(app.handle().clone(), Arc::clone(&gate)).await;
+
+    let mut frames = Vec::new();
+    loop {
+        let frame = next_frame(&mut frames_rx).await;
+        let finished = frame["event"] == "agent_updates_finished";
+        frames.push(frame);
+        if finished {
+            break;
+        }
+    }
+    ((codex, claude), frames)
+}
+
+#[cfg(unix)]
+fn mise_pass_nodes(frames: &[Value]) -> Vec<String> {
+    let started = frames
+        .iter()
+        .find(|frame| frame["event"] == "agent_updates_started")
+        .expect("agent_updates_started");
+    started["payload"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .map(|node| node["command"].as_str().expect("node command").to_string())
+        .collect()
+}
+
+#[cfg(unix)]
+fn mise_pass_finished_ok(frames: &[Value], command: &str) -> bool {
+    frames.iter().any(|frame| {
+        frame["event"] == "agent_update_command_finished"
+            && frame["payload"]["command"] == command
+            && frame["payload"]["ok"] == true
+    })
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mise_pass_skips_mise_wrapped_codex_and_updates_npm_claude() {
+    let ((codex, claude), frames) = mise_pass_frames("mise/command-wrappers/bin", Some(true)).await;
+    assert_eq!(mise_pass_nodes(&frames), vec![claude.clone()]);
+    for frame in &frames {
+        assert!(
+            !frame.to_string().contains(&codex),
+            "codex must not appear: {frame}"
+        );
+    }
+    assert!(mise_pass_finished_ok(&frames, &claude), "{frames:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mise_pass_no_prompt_for_unanswered_mise_codex() {
+    let ((_codex, claude), frames) = mise_pass_frames("mise/shims", None).await;
+    assert_eq!(mise_pass_nodes(&frames), vec![claude]);
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| frame["event"] == "agent_update_prompt"),
+        "{frames:?}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mise_pass_control_plain_codex_is_updated() {
+    let ((codex, claude), frames) =
+        mise_pass_frames("plain/command-wrappers/bin", Some(true)).await;
+    let nodes = mise_pass_nodes(&frames);
+    assert!(
+        nodes.contains(&codex) && nodes.contains(&claude),
+        "{nodes:?}"
+    );
+    assert!(mise_pass_finished_ok(&frames, &codex), "{frames:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mise_pass_updates_npm_codex_under_mise_node() {
+    let ((codex, claude), frames) =
+        mise_pass_frames("mise/installs/node/22.11.0/bin", Some(true)).await;
+    let nodes = mise_pass_nodes(&frames);
+    assert!(
+        nodes.contains(&codex) && nodes.contains(&claude),
+        "{nodes:?}"
+    );
+    assert!(mise_pass_finished_ok(&frames, &codex), "{frames:?}");
+}
