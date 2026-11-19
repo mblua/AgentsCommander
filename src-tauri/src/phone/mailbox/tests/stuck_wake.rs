@@ -267,3 +267,66 @@ fn issue_3263_create_retained_error_is_counted() {
     use crate::session::create_contracts::ERR_WAKE_CREATE_RETAINED;
     assert!(!is_permanent_delivery_error(ERR_WAKE_CREATE_RETAINED));
 }
+
+#[tokio::test]
+async fn issue_3263_stalled_wake_delivery_ends_at_deadline() {
+    const NAME: &str = concat!(
+        "phone::mailbox::tests::stuck_wake::",
+        "issue_3263_stalled_wake_delivery_ends_at_deadline"
+    );
+    if std::env::var_os(CHILD).is_none() {
+        run_child(NAME).await;
+        return;
+    }
+    let child = child_fixture(None).await;
+    let app = child.fixture.app.handle();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    *child.control.before_release_gate.lock().unwrap() = Some(gate);
+    let hooks = child.poller.test_hooks.as_ref().unwrap();
+    *hooks.wake_delivery_deadline.lock().unwrap() = Some(Duration::from_secs(5));
+    let msg = wake_message_to_target();
+    let temp = tempfile::tempdir().unwrap();
+    let outbox = temp.path().join("outbox");
+    std::fs::create_dir_all(&outbox).unwrap();
+    let source = outbox.join(format!("{}.json", msg.id));
+    std::fs::write(&source, serde_json::to_vec(&msg).unwrap()).unwrap();
+    let claim = crate::phone::mailbox::handoff::wake_claim_path(&source);
+    std::fs::rename(&source, &claim).unwrap();
+    let validated = crate::phone::mailbox::poller::ValidatedWake {
+        message: msg,
+        response: None,
+    };
+    let (delivered, stalled) = tokio::join!(
+        tokio::time::timeout(
+            WAIT,
+            crate::phone::mailbox::poller::deliver_claimed_wake(
+                &child.poller,
+                app,
+                &claim,
+                &source,
+                &validated,
+            ),
+        ),
+        tokio::time::timeout(
+            WAIT,
+            retained_source_wait_cut(&child.control, Cut::AdapterReturned)
+        )
+    );
+    stalled.expect("owned core reaches AdapterReturned");
+    let error = delivered.expect("delivery ends within 15 s").unwrap_err();
+    assert!(error.starts_with("wake delivery timed out"), "{error}");
+    assert!(error.contains("stage=deadline"), "{error}");
+    assert!(source.exists() && !claim.exists());
+    let cuts: Vec<Cut> = child
+        .control
+        .receipts
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|receipt| receipt.cut)
+        .collect();
+    assert!(!cuts.contains(&Cut::SourceRetainedReturn), "{cuts:?}");
+    assert!(!cuts.contains(&Cut::AfterReleaseBeforeSend), "{cuts:?}");
+    release.send(()).unwrap();
+    close_child(&child.coordinator).await;
+}

@@ -25,6 +25,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use uuid::Uuid;
 
 pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRefreshPollBatch {
@@ -101,6 +102,39 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
     batch
 }
 
+/// #3263 - a claimed wake that never ends still holds its lane, worker slot and claim.
+pub(crate) const WAKE_DELIVERY_DEADLINE: Duration = Duration::from_secs(300);
+pub(crate) const ERR_WAKE_DELIVERY_TIMEOUT: &str = "wake delivery timed out";
+
+/// #3263 - bounds the waiter only; a detached owned core keeps running.
+async fn deliver_within_deadline<S: MailboxHost>(
+    delivery: &MailboxPoller,
+    app: &S,
+    validated: &ValidatedWake,
+) -> Result<OutboxMessage, String> {
+    #[cfg(test)]
+    let deadline = delivery
+        .test_hooks
+        .as_ref()
+        .and_then(|hooks| *hooks.wake_delivery_deadline.lock().unwrap())
+        .unwrap_or(WAKE_DELIVERY_DEADLINE);
+    #[cfg(not(test))]
+    let deadline = WAKE_DELIVERY_DEADLINE;
+    let delivered = delivery.deliver_validated_wake(app, validated, false);
+    match tokio::time::timeout(deadline, delivered).await {
+        Ok(result) => result,
+        Err(_elapsed) => {
+            let error = format!(
+                "{ERR_WAKE_DELIVERY_TIMEOUT}: stage=deadline after {}s",
+                deadline.as_secs()
+            );
+            let msg = &validated.message;
+            log_wake_ended_without_input(&msg.id, &msg.to, None, &error);
+            Err(error)
+        }
+    }
+}
+
 /// (#1399) The detached delivery tail: deliver, archive on success, and on
 /// any failure rename the claim back before the outcome is sent, so by the
 /// time the scanner drains it the origin path is valid again and the
@@ -120,7 +154,7 @@ pub(crate) async fn deliver_claimed_wake<S: MailboxHost>(
         .response
         .as_ref()
         .map(ResponseWakeWork::candidate_disposal);
-    match delivery.deliver_validated_wake(app, validated, false).await {
+    match deliver_within_deadline(delivery, app, validated).await {
         // `claim.parent()` is the outbox dir, so delivered/ is derived exactly
         // as it is today and the destination still comes from `msg.id`. The
         // delivered JSON carries the receipt annotation (#1635-2 D4).

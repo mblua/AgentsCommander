@@ -538,6 +538,8 @@ pub(crate) struct MailboxTestHooks {
     /// (#2411) One-shot error for the test spawn arm, returned after the real
     /// coordinator-create clear runs, mirroring a create that fails after it.
     pub(crate) internal_spawn_error: Arc<Mutex<Option<String>>>,
+    /// #3263 P03 - overrides `WAKE_DELIVERY_DEADLINE` for claimed wake delivery.
+    pub(crate) wake_delivery_deadline: Arc<Mutex<Option<std::time::Duration>>>,
 }
 
 #[cfg(test)]
