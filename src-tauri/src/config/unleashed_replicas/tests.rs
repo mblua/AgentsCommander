@@ -152,3 +152,42 @@ fn forget_under_missing_store_creates_nothing() {
     assert_eq!(forget_under_in(&path, "/w/.ac/room-1-a").unwrap(), 0);
     assert!(!path.exists());
 }
+
+#[test]
+fn temp_room_in_store_dir_can_be_unleashed_and_leashed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = store_in(&dir);
+    let room = dir.path().join("temp-room-tr03");
+    let room = room.to_string_lossy();
+    set_unleashed_in(&path, &room, true).unwrap();
+    assert!(is_unleashed_in(&path, &room));
+    set_unleashed_in(&path, &room, false).unwrap();
+    assert!(!is_unleashed_in(&path, &room));
+}
+
+#[test]
+fn temp_room_under_other_base_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let path = store_in(&dir);
+    let room = other.path().join("temp-room-tr03");
+    let room = room.to_string_lossy();
+    assert_eq!(
+        set_unleashed_in(&path, &room, true).unwrap_err(),
+        "unleashNotAReplica"
+    );
+    let doc = serde_json::json!({ "schemaVersion": 1, "replicas": [replica_key(&room)] });
+    std::fs::write(&path, doc.to_string()).unwrap();
+    assert!(!is_unleashed_in(&path, &room));
+}
+
+#[test]
+fn non_canonical_temp_room_name_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = store_in(&dir);
+    for name in ["temp-room-tr1", "temp-room-tr00"] {
+        let room = dir.path().join(name);
+        let err = set_unleashed_in(&path, &room.to_string_lossy(), true).unwrap_err();
+        assert_eq!(err, "unleashNotAReplica", "{name}");
+    }
+}

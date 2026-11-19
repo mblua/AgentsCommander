@@ -281,3 +281,70 @@ fn other_and_look_alike_names_reach_the_fallback_once() {
         assert_eq!(calls, 1, "{name} delegated exactly once");
     }
 }
+
+fn unleash(base: &Path, name: &str) {
+    let path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&base.join(name));
+    crate::config::unleashed_replicas::set_unleashed_in(&unleash_store(base), &path, true)
+        .expect("unleash");
+}
+
+fn stored_keys(base: &Path) -> Vec<String> {
+    crate::config::unleashed_replicas::load_from(&unleash_store(base))
+}
+
+#[test]
+fn list_reports_unleashed_flag() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(tmp.path().join("temp-room-tr01")).expect("tr01");
+    std::fs::create_dir(tmp.path().join("temp-room-tr02")).expect("tr02");
+    unleash(tmp.path(), "temp-room-tr02");
+    let flags: Vec<(String, bool)> = list_temp_rooms_in(tmp.path())
+        .expect("list")
+        .into_iter()
+        .map(|room| (room.name, room.unleashed))
+        .collect();
+    assert_eq!(
+        flags,
+        vec![
+            ("temp-room-tr01".to_string(), false),
+            ("temp-room-tr02".to_string(), true)
+        ]
+    );
+}
+
+#[test]
+fn create_clears_stale_unleash_key() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    unleash(tmp.path(), "temp-room-tr01");
+    assert_eq!(stored_keys(tmp.path()).len(), 1);
+    let room = create_next_with(tmp.path(), create_dir_exclusive).expect("create");
+    assert_eq!(room.name, "temp-room-tr01");
+    assert!(!room.unleashed);
+    assert!(stored_keys(tmp.path()).is_empty());
+}
+
+#[test]
+fn create_without_store_does_not_create_it() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let room = create_next_with(tmp.path(), create_dir_exclusive).expect("create");
+    assert!(!room.unleashed);
+    assert!(!unleash_store(tmp.path()).exists());
+}
+
+#[tokio::test]
+async fn delete_clears_unleash_key() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(tmp.path().join("temp-room-tr01")).expect("tr01");
+    unleash(tmp.path(), "temp-room-tr01");
+    delete_temp_room_in(tmp.path(), "temp-room-tr01", &manager())
+        .await
+        .expect("delete");
+    assert!(stored_keys(tmp.path()).is_empty());
+}
+
+#[test]
+fn serialized_info_has_unleashed_field() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let value = serde_json::to_value(info(tmp.path(), "temp-room-tr01".to_string())).unwrap();
+    assert_eq!(value["unleashed"], json!(false));
+}
