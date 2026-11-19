@@ -510,6 +510,12 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
+        "src-tauri/src/phone/mailbox/tests/stuck_wake.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
         "src-tauri/src/process.rs",
         3,
         1,
