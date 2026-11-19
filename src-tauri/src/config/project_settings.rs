@@ -329,11 +329,16 @@ fn load_workgroup_groups_in(
     journal_dir: Option<&Path>,
 ) -> Result<WorkgroupGroupsConfig, String> {
     let path = project_settings_path_in(project_path, journal_dir)?;
-    if !documents::config_document_exists(&path) {
+    load_groups_file(&path)
+}
+
+/// #4805 - load, normalize and validate a groups file at `path`; default when absent.
+pub(crate) fn load_groups_file(path: &Path) -> Result<WorkgroupGroupsConfig, String> {
+    if !documents::config_document_exists(path) {
         return Ok(WorkgroupGroupsConfig::default());
     }
 
-    let content = documents::read_config_document(&path)
+    let content = documents::read_config_document(path)
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
     let root: Value = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
@@ -368,13 +373,22 @@ fn save_workgroup_groups_in(
 ) -> Result<WorkgroupGroupsConfig, String> {
     validate_groups_config_structure(&config)?;
     let path = project_settings_path_in(project_path, journal_dir)?;
+    save_groups_file(&path, config)
+}
+
+/// #4805 - validate `config` and persist it into the groups file at `path`.
+pub(crate) fn save_groups_file(
+    path: &Path,
+    config: WorkgroupGroupsConfig,
+) -> Result<WorkgroupGroupsConfig, String> {
+    validate_groups_config_structure(&config)?;
 
     // This is a last-successful-writer-wins update across processes. The shared
     // helper serializes in-process writes and prevents torn JSON, but it is not
     // a merge or compare-and-swap layer. If another process wins a first-create
     // race on Windows after the helper's existence precheck, surfacing that
     // filesystem error is acceptable and the caller keeps its prior state.
-    crate::config::local_config_io::update_config_json_object(&path, true, |obj| {
+    crate::config::local_config_io::update_config_json_object(path, true, |obj| {
         let groups = serde_json::to_value(&config.groups)
             .map_err(|e| format!("Failed to serialize project groups: {e}"))?;
         obj.insert("groups".to_string(), groups);

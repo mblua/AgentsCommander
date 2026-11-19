@@ -90,8 +90,8 @@ pub(crate) use names::{
     SOURCE_CATALOG_PERSONAL_LEDGER_NAME, SOURCE_CATALOG_PROJECT_LEDGER_NAME,
     SOURCE_REGISTERED_INSTANCE_LEDGER_NAME, SOURCE_REGISTERED_INSTANCE_LOCK,
     TELEGRAM_BRIDGE_LOG_FILE_NAME, TELEGRAM_DIAG_RAW_LOG_FILE_NAME,
-    TELEGRAM_DIAG_SENT_LOG_FILE_NAME, UI_AUTOMATION_DIR_NAME, UNLEASHED_REPLICAS_FILE_NAME,
-    UNLEASHED_REPLICAS_LOCK_NAME,
+    TELEGRAM_DIAG_SENT_LOG_FILE_NAME, TEMP_ROOM_GROUPS_FILE_NAME, TEMP_ROOM_GROUPS_LOCK_NAME,
+    UI_AUTOMATION_DIR_NAME, UNLEASHED_REPLICAS_FILE_NAME, UNLEASHED_REPLICAS_LOCK_NAME,
 };
 #[cfg(test)]
 pub(crate) use names::{
@@ -251,6 +251,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: naming-migration journal writer lock; created once and never \
         deleted",
+    },
+    InstanceArtifact {
+        name: TEMP_ROOM_GROUPS_LOCK_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: Temporary Rooms group set write lock (#4805)",
     },
     InstanceArtifact {
         name: UNLEASHED_REPLICAS_LOCK_NAME,
@@ -765,6 +771,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: Telegram bridge log",
+    },
+    InstanceArtifact {
+        name: TEMP_ROOM_GROUPS_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: Temporary Rooms group set (#4805)",
     },
     InstanceArtifact {
         name: "temp-room-tr*",
