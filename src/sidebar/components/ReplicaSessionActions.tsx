@@ -9,7 +9,7 @@ type Restart = (sessionId: string) => Promise<unknown>;
 
 // #4752 - store the flag, then fresh-restart so the new context applies. A failed
 // restart keeps the flag (user decision Q2); the restart function toasts it.
-async function applyUnleash(
+export async function applyUnleash(
   sessionId: string,
   replicaPath: string,
   unleashed: boolean,
