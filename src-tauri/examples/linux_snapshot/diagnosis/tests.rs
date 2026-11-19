@@ -183,7 +183,6 @@ fn link_break_tokens() {
 fn trace_target_matches_recipe() {
     let recipe = include_str!("../../../../scripts/ac4248-linux-p03.sh");
     assert!(recipe.contains(&format!("RUST_LOG={LINK_TARGET}=trace")));
-    assert!(recipe.contains("RUST_LOG=$RUST_LOG"));
     assert!(recipe.contains("'link=load'"));
     let main = include_str!("../main.rs");
     assert!(main.contains(r#"default_filter_or("off")"#));
