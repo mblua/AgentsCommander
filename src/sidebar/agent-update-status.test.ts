@@ -25,6 +25,7 @@ import {
   liveView,
   outcomeState,
   outcomeText,
+  type OverviewRowIn,
 } from "./agent-update-status";
 
 const checking: InstallState = { status: "checking", seq: 0 };
@@ -233,6 +234,15 @@ describe("deriveAutoUpdateRows and its cell derivations (#1551)", () => {
     });
     expect(views.map((view) => view.live.state)).toEqual(["ok", "updating", "idle", "failed", "idle", "idle"]);
     expect(views[3].live.title).toBe("timed out after 300s (killed)");
+  });
+
+  it("copies managedBy from the overview row and defaults a missing field to null (#4804)", () => {
+    const rows: OverviewRowIn[] = overviewRows(DEFAULT_CATALOG).slice(0, 2);
+    rows[0] = { ...rows[0], managedBy: "mise" };
+    const views = deriveAutoUpdateRows(rows, {
+      autoUpdateByCommand: {}, registeredCommands: [], ...NO_LIVE,
+    });
+    expect(views.map((view) => view.managedBy)).toEqual(["mise", null]);
   });
 });
 

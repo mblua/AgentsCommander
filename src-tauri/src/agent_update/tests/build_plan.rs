@@ -442,3 +442,139 @@ fn build_plan_from_a_local_composed_on_disk_catalog_honors_exact_command_consent
     assert_eq!(other.prompts.len(), 1);
     assert_eq!(other.prompts[0].command, "claude");
 }
+
+// ---------------------------------------------------------------------
+// #4804 - mise-managed agents
+// ---------------------------------------------------------------------
+
+#[test]
+fn mise_layout_classifies_paths() {
+    let e = |data_dir: &str, name: &str| {
+        Some(MiseLayout::Entry {
+            data_dir: PathBuf::from(data_dir),
+            name: name.into(),
+        })
+    };
+    let i = |tool: &str| Some(MiseLayout::Install { tool: tool.into() });
+    let data = Some(Path::new("/data/m"));
+    let rows: Vec<(&str, Option<&Path>, Option<MiseLayout>)> = vec![
+        (
+            "/h/.local/share/mise/command-wrappers/bin/codex",
+            None,
+            e("/h/.local/share/mise", "codex"),
+        ),
+        (
+            "/h/.local/share/mise/shims/pi",
+            None,
+            e("/h/.local/share/mise", "pi"),
+        ),
+        (
+            "/h/.local/share/mise/installs/pi/latest/bin/pi",
+            None,
+            i("pi"),
+        ),
+        (
+            "/h/.local/share/mise/installs/node/22.11.0/bin/codex",
+            None,
+            i("node"),
+        ),
+        ("/data/m/shims/pi", data, e("/data/m", "pi")),
+        ("/data/m/shims/pi", None, None),
+        (
+            "/h/.local/share/mise/shims/pi",
+            data,
+            e("/h/.local/share/mise", "pi"),
+        ),
+        ("/data/m/bin/pi", data, None),
+        ("/h/.local/share/mise/shims", None, None),
+        ("/h/.local/share/mise/shims/a/b", None, None),
+        ("/h/.local/share/mise/installs/pi", None, None),
+        ("/h/.npm-global/bin/codex", None, None),
+        ("/usr/bin/codex", None, None),
+        ("/h/mise/bin/codex", None, None),
+        ("/h/mise/command-wrappers/codex", None, None),
+    ];
+    for (path, data_dir, expected) in rows {
+        assert_eq!(
+            mise_layout(Path::new(path), data_dir),
+            expected,
+            "{path} with {data_dir:?}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn mise_layout_classifies_windows_paths() {
+    assert_eq!(
+        mise_layout(
+            Path::new(r"C:\Users\u\AppData\Local\mise\shims\pi.exe"),
+            None
+        ),
+        Some(MiseLayout::Entry {
+            data_dir: PathBuf::from(r"C:\Users\u\AppData\Local\mise"),
+            name: "pi.exe".into(),
+        })
+    );
+    assert_eq!(
+        mise_layout(Path::new(r"C:\Users\u\AppData\Roaming\npm\codex.cmd"), None),
+        None
+    );
+}
+
+#[test]
+fn mise_managed_excludes_runtime_globals() {
+    const NODE_CODEX: &str = "mise/installs/node/22.11.0/bin/codex";
+    // (setup, setup is a directory, resolved path, expected)
+    let rows: [(Option<&str>, bool, &str, bool); 11] = [
+        (None, false, "mise/shims/codex", true),
+        (None, false, "mise/command-wrappers/bin/codex", true),
+        (Some(NODE_CODEX), false, "mise/shims/codex", false),
+        (
+            Some(NODE_CODEX),
+            false,
+            "mise/command-wrappers/bin/codex",
+            false,
+        ),
+        (Some(NODE_CODEX), false, "mise/shims/claude", true),
+        (
+            Some("mise/installs/bun/1.2.0/codex.cmd"),
+            false,
+            "mise/shims/codex",
+            false,
+        ),
+        (Some(NODE_CODEX), true, "mise/shims/codex", false),
+        (
+            Some("mise/installs/python/3.12.0/Scripts/codex.exe"),
+            false,
+            "mise/shims/codex",
+            false,
+        ),
+        (None, false, NODE_CODEX, false),
+        (None, false, "mise/installs/codex/0.170.0/bin/codex", true),
+        (None, false, "npm/bin/codex", false),
+    ];
+    for (setup, setup_is_dir, path, expected) in rows {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        assert!(
+            !root.components().any(|c| c.as_os_str() == "mise"),
+            "temp dir {root:?} has a `mise` component; the fixture needs one without"
+        );
+        if let Some(setup) = setup {
+            let target = root.join(setup);
+            if setup_is_dir {
+                std::fs::create_dir_all(&target).expect("setup dir");
+            } else {
+                std::fs::create_dir_all(target.parent().expect("parent")).expect("parent dir");
+                std::fs::write(&target, b"x").expect("setup file");
+            }
+        }
+        let data_dir = root.join("mise");
+        assert_eq!(
+            mise_managed(&root.join(path), Some(&data_dir)),
+            expected,
+            "{path} with setup {setup:?} (dir: {setup_is_dir})"
+        );
+    }
+}
