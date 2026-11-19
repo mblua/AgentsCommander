@@ -146,6 +146,14 @@ const AgentAutoUpdateStatusList: Component<{
                     title={row().installed.title}
                   >
                     {row().installed.label}
+                    <Show when={row().managedBy === "mise"}>
+                      <div
+                        class="settings-auto-update-note"
+                        data-ac-testid={`settings.autoUpdate.row.${row().key}.managedBy`}
+                      >
+                        Managed by mise - update with <code>mise upgrade {row().command}</code>
+                      </div>
+                    </Show>
                   </td>
                   <td
                     data-ac-testid={`settings.autoUpdate.row.${row().key}.live`}
