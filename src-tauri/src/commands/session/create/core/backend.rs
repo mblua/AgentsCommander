@@ -650,13 +650,13 @@ struct SpawnEnvironmentInput<'a> {
     session_env_warnings: &'a mut Vec<crate::pty::container_paths::ContainerEnvWarning>,
 }
 
-/// Credential env for a spawn: none for plain shells and temp rooms (#4779).
+/// Credential env for a spawn: none for plain shells (#4780: temp rooms get it).
 fn credential_env_for(
     agent_id: Option<&str>,
     token: &uuid::Uuid,
     cwd: &str,
 ) -> Vec<(String, String)> {
-    if agent_id.is_none() || crate::config::temp_rooms::is_temp_room_path(cwd) {
+    if agent_id.is_none() {
         return Vec::new();
     }
     crate::pty::credentials::build_credentials_env(token, cwd)

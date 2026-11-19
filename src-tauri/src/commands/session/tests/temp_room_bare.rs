@@ -1,4 +1,4 @@
-//! #4779 P01: a coding-agent session whose cwd is a temp room launches bare.
+//! #4779 P01 / #4780 P01: a temp-room session gets its limited context and credentials.
 use super::*;
 use crate::config::sessions_persistence::{enforce_creation_gate, CreationGateEnforcement};
 use crate::config::temp_rooms::temp_room_dir_name;
@@ -108,8 +108,36 @@ fn entries_in(cwd: &str) -> usize {
     std::fs::read_dir(cwd).expect("read temp room").count()
 }
 
+/// #4780: all five credentials, with `AGENTSCOMMANDER_ROOT` = cwd.
+fn assert_room_credentials(spec: &crate::pty::backend::BackendSpawnSpec, cwd: &str) {
+    let mut keys = credential_keys_in(spec);
+    keys.sort();
+    let mut expected: Vec<String> = CREDENTIAL_ENV_KEYS.iter().map(|k| k.to_string()).collect();
+    expected.sort();
+    assert_eq!(keys, expected);
+    let root = spec
+        .extra_env
+        .iter()
+        .find(|(key, _)| key == "AGENTSCOMMANDER_ROOT")
+        .map(|(_, value)| value.as_str());
+    assert_eq!(root, Some(cwd));
+}
+
+/// #4780: the cwd holds exactly one entry, the managed limited context file.
+fn assert_only_room_context(cwd: &str) {
+    assert_eq!(
+        entries_in(cwd),
+        1,
+        "temp room should hold only the context file"
+    );
+    let entry = std::fs::read_dir(cwd).unwrap().next().unwrap().unwrap();
+    let content = std::fs::read_to_string(entry.path()).expect("read context file");
+    assert!(content.contains("Temporary Room Access Limit"), "{content}");
+    assert!(content.contains("master-token.txt"), "{content}");
+}
+
 #[tokio::test]
-async fn temp_room_launch_and_restart_stay_bare() {
+async fn temp_room_launch_and_restart_get_room_context() {
     let room = TempRoomDir::create(97);
     let cwd = room.cwd();
     let run = launch_in(&cwd, false).await;
@@ -117,9 +145,9 @@ async fn temp_room_launch_and_restart_stay_bare() {
     {
         let specs = run.backend.specs.lock().unwrap();
         assert_eq!(specs.len(), 1);
-        assert!(credential_keys_in(&specs[0]).is_empty());
+        assert_room_credentials(&specs[0], &cwd);
     }
-    assert_eq!(entries_in(&cwd), 0, "launch wrote into the temp room");
+    assert_only_room_context(&cwd);
 
     let id = Uuid::parse_str(&info.id).unwrap();
     let settings = run.app.state::<crate::config::settings::SettingsState>();
@@ -142,10 +170,44 @@ async fn temp_room_launch_and_restart_stay_bare() {
     {
         let specs = run.backend.specs.lock().unwrap();
         assert_eq!(specs.len(), 2);
-        assert!(credential_keys_in(&specs[1]).is_empty());
+        assert_room_credentials(&specs[1], &cwd);
     }
-    assert_eq!(entries_in(&cwd), 0, "restart wrote into the temp room");
+    assert_only_room_context(&cwd);
     close_test_coordinator(&run.app).await;
+}
+
+/// Removes the context-cache file a temp room wrote, on drop.
+struct CacheFile(PathBuf);
+
+impl Drop for CacheFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[test]
+fn temp_room_context_keeps_manual_clear_omits_auto_section() {
+    let room = TempRoomDir::create(82);
+    let _cache = CacheFile(
+        crate::config::config_dir()
+            .expect("config dir")
+            .join(crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME)
+            .join("ac-context-temp-room-tr82.md"),
+    );
+    let path = crate::config::session_context::materialize_agent_context_file_with_filename(
+        &room.cwd(),
+        "CLAUDE.md",
+        &[],
+        false,
+        true,
+        None,
+    );
+    let Ok(Some(path)) = path else {
+        panic!("temp room should get a context file: {path:?}");
+    };
+    let content = std::fs::read_to_string(&path).expect("read context file");
+    assert!(content.contains("## Manual context clear"), "{content}");
+    assert!(!content.contains("## Self-Maintenance (auto"), "{content}");
 }
 
 #[tokio::test]

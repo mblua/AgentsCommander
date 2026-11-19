@@ -21,12 +21,13 @@ import { installReconcileIntervalSpy, setupAppTransport } from "../testing/app-h
 import { sessionsStore } from "../stores/sessions";
 import { projectStore } from "../stores/project";
 import { toastStore } from "../../shared/stores/toasts";
+import { unleashedReplicasStore } from "../stores/unleashed-replicas";
 import type { AgentConfig, Session } from "../../shared/types";
 import type { TempRoomAgentChoice, TempRoomInfo } from "../../shared/temp-rooms";
 import { tempRoomPlaceholderWarning } from "../../shared/temp-rooms";
 
-const ROOM_1: TempRoomInfo = { name: "temp-room-tr01", path: "/cfg/temp-room-tr01" };
-const ROOM_2: TempRoomInfo = { name: "temp-room-tr02", path: "/cfg/temp-room-tr02" };
+const ROOM_1: TempRoomInfo = { name: "temp-room-tr01", path: "/cfg/temp-room-tr01", unleashed: false };
+const ROOM_2: TempRoomInfo = { name: "temp-room-tr02", path: "/cfg/temp-room-tr02", unleashed: false };
 const CONTAINER_ERR = "temp rooms cannot use container transport";
 const LIVE_ERR = "temp room temp-room-tr01 has a live session";
 
@@ -79,7 +80,11 @@ function setup(opts: Setup = {}) {
   fake.onInvoke("list_temp_rooms", () => listed);
   fake.onInvoke("create_temp_room", () => {
     const n = listed.length + 1;
-    const room = { name: `temp-room-tr0${n}`, path: `/cfg/temp-room-tr0${n}` };
+    const room: TempRoomInfo = {
+      name: `temp-room-tr0${n}`,
+      path: `/cfg/temp-room-tr0${n}`,
+      unleashed: false,
+    };
     listed = [...listed, room];
     return room;
   });
@@ -158,6 +163,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
+    unleashedReplicasStore.resetForTests();
     document.body.replaceChildren();
     vi.restoreAllMocks();
   });
@@ -329,7 +335,6 @@ describe("#4779 TemporaryRoomsPanel", () => {
     }
     expect(menu.querySelector(".session-context-repo-option")).toBeNull();
     const titles: Record<string, string> = {
-      ".menu.unleash": "Not available in Temporary Rooms yet",
       ".menu.addToGroup": "Groups need a project room",
       ".menu.editTaskTitle": "Temp rooms have no TASK.md",
       ".menu.clearTaskTitle": "Temp rooms have no TASK.md",
@@ -344,6 +349,77 @@ describe("#4779 TemporaryRoomsPanel", () => {
     }
     expect(fake.calls.length).toBe(before);
     expect(document.querySelector(".session-context-flyout")).toBeNull();
+  });
+
+  const unleashItem = () => byId(`tempRoom.${ROOM_1.name}.menu.unleash`) as HTMLButtonElement;
+  const confirmBtn = () => byId("unleashConfirm.confirm");
+
+  it("unleash_item_enabled_and_labelled_unleash", async () => {
+    const { fake } = track(setup({ sessions: [liveSession()] }));
+    fake.resolve("set_replica_unleashed", undefined);
+    await openAgentMenu();
+    expect(unleashItem().disabled).toBe(false);
+    expect(unleashItem().textContent).toContain("Unleash");
+  });
+
+  it("unleash_confirm_stores_flag_and_restarts", async () => {
+    const { fake } = track(setup({ sessions: [liveSession()] }));
+    fake.resolve("set_replica_unleashed", undefined);
+    await openAgentMenu();
+    click(unleashItem());
+    await waitFor(() => expect(confirmBtn()).not.toBeNull());
+    click(confirmBtn()!);
+    await waitFor(() => expect(fake.callsFor("restart_session")).toHaveLength(1));
+    expect(fake.lastCall("set_replica_unleashed")!.args).toEqual({
+      replicaPath: ROOM_1.path,
+      unleashed: true,
+    });
+    expect(confirmBtn()).toBeNull();
+    await openAgentMenu();
+    expect(unleashItem().textContent).toContain("Leash");
+    expect(unleashItem().textContent).not.toContain("Unleash");
+  });
+
+  it("unleash_cancel_does_nothing", async () => {
+    const { fake } = track(setup({ sessions: [liveSession()] }));
+    fake.resolve("set_replica_unleashed", undefined);
+    await openAgentMenu();
+    click(unleashItem());
+    await waitFor(() => expect(byId("unleashConfirm.cancel")).not.toBeNull());
+    click(byId("unleashConfirm.cancel")!);
+    await waitFor(() => expect(confirmBtn()).toBeNull());
+    expect(fake.callsFor("set_replica_unleashed")).toHaveLength(0);
+    expect(fake.callsFor("restart_session")).toHaveLength(0);
+  });
+
+  it("unleashed_room_shows_leash_and_leashes_without_modal", async () => {
+    const room = { ...ROOM_1, unleashed: true };
+    const { fake } = track(setup({ rooms: [room], sessions: [liveSession()] }));
+    fake.resolve("set_replica_unleashed", undefined);
+    await openAgentMenu(room);
+    expect(unleashItem().textContent).toContain("Leash");
+    expect(unleashItem().textContent).not.toContain("Unleash");
+    click(unleashItem());
+    await waitFor(() => expect(fake.callsFor("restart_session")).toHaveLength(1));
+    expect(confirmBtn()).toBeNull();
+    expect(fake.lastCall("set_replica_unleashed")!.args).toEqual({
+      replicaPath: ROOM_1.path,
+      unleashed: false,
+    });
+  });
+
+  it("unleash_store_failure_toasts_and_skips_restart", async () => {
+    const { fake } = track(setup({ sessions: [liveSession()] }));
+    fake.reject("set_replica_unleashed", "disk full");
+    const toast = vi.spyOn(toastStore, "error");
+    await openAgentMenu();
+    click(unleashItem());
+    await waitFor(() => expect(confirmBtn()).not.toBeNull());
+    click(confirmBtn()!);
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast.mock.calls[0]?.[0]).toContain("disk full");
+    expect(fake.callsFor("restart_session")).toHaveLength(0);
+    expect(unleashedReplicasStore.isUnleashed(ROOM_1)).toBe(false);
   });
 
   it("7. Open Room's Folder opens the room path", async () => {

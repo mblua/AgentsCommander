@@ -191,6 +191,11 @@ impl MailboxPoller {
                 Some(pair) => (vec![pair], true),
                 None => (Vec::new(), false),
             }
+        } else if crate::config::temp_rooms::is_temp_room_address(&msg.to) {
+            match self.find_temp_room_session_candidate(app, &msg.to).await {
+                Some(pair) => (vec![pair], true),
+                None => (Vec::new(), false),
+            }
         } else {
             self.find_live_candidates(app, &msg.to).await
         }
@@ -690,6 +695,12 @@ impl MailboxPoller {
             "[mailbox] wake: no active session for '{}', spawning persistent session",
             msg.to
         );
+        if crate::config::temp_rooms::is_temp_room_address(&msg.to) {
+            return Err(format!(
+                "Temporary Room '{}' has no running session; start it from the sidebar first",
+                msg.to
+            ));
+        }
         if crate::config::root_agent::is_root_agent_target(&msg.to) {
             let restoring = app
                 .restore_required()

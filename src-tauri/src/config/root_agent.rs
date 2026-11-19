@@ -1,3 +1,4 @@
+mod context_snapshot_temp_rooms;
 mod context_snapshots;
 mod file_io;
 mod legacy_contexts;

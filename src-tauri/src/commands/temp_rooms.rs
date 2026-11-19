@@ -5,7 +5,7 @@
 use crate::commands::entity_creation::{
     ensure_no_live_sessions_under_manager, try_atomic_delete_wg, WgDeleteOutcome,
 };
-use crate::config::temp_rooms::{parse_temp_room_number, temp_room_dir_name};
+use crate::config::temp_rooms::{parse_temp_room_number, temp_room_dir_name, temp_room_names_in};
 use crate::filesystem::temp_rooms::{create_dir_exclusive, list_child_entries};
 use crate::session::manager::SessionManager;
 use serde::Serialize;
@@ -23,13 +23,21 @@ const TEMP_ROOM_COMMANDS: [&str; 3] = ["list_temp_rooms", "create_temp_room", "d
 pub struct TempRoomInfo {
     name: String,
     path: String,
+    unleashed: bool,
+}
+
+// The Unleash store of `base` (the config dir holds both the store and the temp rooms).
+fn unleash_store(base: &Path) -> PathBuf {
+    base.join(crate::config::instance_artifacts::UNLEASHED_REPLICAS_FILE_NAME)
 }
 
 fn info(base: &Path, name: String) -> TempRoomInfo {
-    let dir = base.join(&name);
+    let path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&base.join(&name));
+    let unleashed = crate::config::unleashed_replicas::is_unleashed_in(&unleash_store(base), &path);
     TempRoomInfo {
         name,
-        path: crate::path_utils::path_to_string_without_windows_verbatim_prefix(&dir),
+        path,
+        unleashed,
     }
 }
 
@@ -48,15 +56,9 @@ fn temp_rooms_base() -> Result<PathBuf, String> {
 
 /// Real temp-room folders of `base`, sorted by number.
 pub(crate) fn list_temp_rooms_in(base: &Path) -> Result<Vec<TempRoomInfo>, String> {
-    let mut rooms: Vec<(u32, String)> = list_child_entries(base)?
+    Ok(temp_room_names_in(base)?
         .into_iter()
-        .filter(|entry| entry.real_dir)
-        .filter_map(|entry| parse_temp_room_number(&entry.name).map(|n| (n, entry.name)))
-        .collect();
-    rooms.sort_by_key(|(n, _)| *n);
-    Ok(rooms
-        .into_iter()
-        .map(|(_, name)| info(base, name))
+        .map(|name| info(base, name))
         .collect())
 }
 
@@ -77,7 +79,7 @@ pub(crate) fn create_next_with(
             lowest_free_temp_room_number(listed.iter().chain(reserved.iter()).map(String::as_str));
         let name = temp_room_dir_name(n);
         match create(&base.join(&name)) {
-            Ok(()) => return Ok(info(base, name)),
+            Ok(()) => return clear_stale_unleash(base, name),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 taken.insert(n);
             }
@@ -85,6 +87,19 @@ pub(crate) fn create_next_with(
         }
     }
     Err("Could not create a temp room folder: too many name collisions".to_string())
+}
+
+/// A new or reused number never starts unleashed: drop any old key for the new folder.
+fn clear_stale_unleash(base: &Path, name: String) -> Result<TempRoomInfo, String> {
+    let path = base.join(&name);
+    crate::config::unleashed_replicas::forget_under_in(
+        &unleash_store(base),
+        &path.to_string_lossy(),
+    )
+    .map_err(|e| {
+        format!("Temp room {name} was created but its old Unleash flag could not be cleared: {e}")
+    })?;
+    Ok(info(base, name))
 }
 
 fn delete_outcome_result(outcome: WgDeleteOutcome) -> Result<(), String> {
@@ -109,13 +124,20 @@ pub(crate) async fn delete_temp_room_in(
         return Err("Invalid temp room name".to_string());
     }
     let dir = base.join(name);
+    let key_path = dir.to_string_lossy().into_owned();
     crate::filesystem::projects::entities::deletion::validate_delete_root(&dir)?;
     ensure_no_live_sessions_under_manager(&dir, session_mgr).await?;
     let outcome =
         crate::config::seed_manifest::run_blocking_owned(move || try_atomic_delete_wg(&dir))
             .await
             .map_err(|e| format!("Temp room delete failed to run: {e}"))?;
-    delete_outcome_result(outcome)
+    delete_outcome_result(outcome)?;
+    if let Err(e) =
+        crate::config::unleashed_replicas::forget_under_in(&unleash_store(base), &key_path)
+    {
+        log::warn!("[temp_rooms] cannot clear the Unleash flag of {key_path}: {e}");
+    }
+    Ok(())
 }
 
 #[tauri::command]

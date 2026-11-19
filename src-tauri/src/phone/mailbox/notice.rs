@@ -36,6 +36,10 @@ pub(crate) fn sender_name_for_session_cwd_with_root_flag(
 ) -> String {
     if is_root_agent {
         crate::config::root_agent::ROOT_AGENT_SENDER.to_string()
+    } else if let Some(address) =
+        crate::config::temp_rooms::temp_room_address_for_path(working_directory)
+    {
+        address
     } else {
         crate::config::teams::agent_fqn_from_path(working_directory)
     }
@@ -800,6 +804,9 @@ pub(crate) fn validate_root_sender_route(
         return Err("Root Agent sender requires the live root session token");
     }
 
+    if crate::config::temp_rooms::is_temp_room_address(to) {
+        return Ok(());
+    }
     if crate::config::teams::verified_wg_coordinator_target(to, project_paths).is_none() {
         return Err("Root Agent can only message verified Room orchestrator replicas");
     }

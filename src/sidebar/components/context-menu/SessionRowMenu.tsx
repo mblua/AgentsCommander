@@ -613,7 +613,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
           <ActionItem
             spec={spec()}
             testId={id(".menu.unleash")}
-            label="Unleash"
+            label={spec().label ?? "Unleash"}
             danger={true}
             dim={true}
             onDismiss={props.onDismiss}

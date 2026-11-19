@@ -47,7 +47,8 @@ fn self_handoff_skill_contract_is_shared_by_constant_and_root_template() {
 
 #[test]
 fn root_template_before_self_handoff_skill_remains_recognized() {
-    let current = crate::config::root_agent::default_root_context_template().replace("\r\n", "\n");
+    let current =
+        crate::config::root_agent::frozen_root_context_snapshots()[12].replace("\r\n", "\n");
     let start = current.find("following the `self-handoff` skill").unwrap();
     let end = current[start..].find("\n2. Run:").unwrap() + start;
     let old_step = concat!(

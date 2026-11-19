@@ -582,3 +582,22 @@ fn root_manual_clear_survives_custom_template_and_auto_setting_once() {
         assert!(content.contains("self-clear ON or OFF"));
     }
 }
+
+#[test]
+fn root_rendered_context_has_temp_room_exception() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().join("ac-root-agent");
+    std::fs::create_dir_all(&root).expect("create root");
+    std::fs::write(
+        temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
+        super::super::super::root_agent::default_root_context_template(),
+    )
+    .expect("write template");
+    std::fs::write(root.join("Role.md"), "ROLE").expect("write role");
+    let built = build_root_agent_context_at(&path_string(&root), temp.path(), None, false)
+        .expect("build root context");
+    let content = std::fs::read_to_string(&built).expect("read built context");
+    let folder = format!("{}/temp-room-trNN/messaging/", display_path(temp.path()));
+    assert!(content.contains(&folder), "missing: {folder}");
+    assert!(!content.contains("{{APP_CONFIG_DIR}}/temp-room-trNN"));
+}

@@ -1,6 +1,6 @@
-// #4752 P02: per-replica Unleash flag store. This module is the sole owner of
-// `unleashed-replicas.json` in the app config directory. An unleashed replica spawns
-// without the Git brakes; the flag persists until the user turns it off (D3).
+// #4752 P02: Unleash flag store for replicas and temp rooms (#4780). This module is the
+// sole owner of `unleashed-replicas.json` in the app config directory. An unleashed
+// replica spawns without the Git brakes; the flag persists until the user turns it off (D3).
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -37,6 +37,15 @@ fn is_replica_dir(path: &str) -> bool {
         .rsplit('/')
         .next()
         .is_some_and(|last| last.starts_with(REPLICA_DIR_PREFIX))
+}
+
+// True when `root` may carry a flag in `store`: a replica, or a temp room of the store's
+// directory (the store lives in the config dir, which is the temp-room base).
+fn is_unleash_target(store: &Path, root: &str) -> bool {
+    is_replica_dir(root)
+        || store
+            .parent()
+            .is_some_and(|base| crate::config::temp_rooms::is_temp_room_path_in(root, base))
 }
 
 // The store file in the app config directory.
@@ -86,7 +95,7 @@ fn parse_replicas(text: &str) -> Result<Vec<String>, String> {
 
 // True when `replica_root` is a replica and its key is stored in `path`.
 pub(crate) fn is_unleashed_in(path: &Path, replica_root: &str) -> bool {
-    is_replica_dir(replica_root) && load_from(path).contains(&replica_key(replica_root))
+    is_unleash_target(path, replica_root) && load_from(path).contains(&replica_key(replica_root))
 }
 
 // True when `replica_root` is an unleashed replica; false without a config directory.
@@ -100,7 +109,7 @@ pub(crate) fn set_unleashed_in(
     replica_root: &str,
     unleashed: bool,
 ) -> Result<(), String> {
-    if !is_replica_dir(replica_root) {
+    if !is_unleash_target(path, replica_root) {
         return Err("unleashNotAReplica".to_string());
     }
     let key = replica_key(replica_root);

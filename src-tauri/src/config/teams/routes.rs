@@ -1,4 +1,5 @@
 use super::agent_fqn_from_path;
+use super::discovery::WgReplicaInfo;
 use super::enumerate_project_dirs_strict;
 use super::replica::identity_fingerprint;
 use super::replica::incarnation_fingerprint;
@@ -14,6 +15,7 @@ use super::replica::VerifiedPtyInputIdentity;
 use super::replica::VerifiedPtyInputRoute;
 use super::replica::VerifiedTerminalSnapshotRoute;
 use super::strict_project_ac_root;
+use super::PeerInfo;
 use super::ProjectOrigin;
 use crate::filesystem::ac_discovery;
 use std::path::Path;
@@ -459,4 +461,97 @@ pub(crate) fn verify_terminal_snapshot_route(
         target,
         kind: TerminalSnapshotAuthorityKind::Coordinator,
     })
+}
+
+/// Build a synthetic `PeerInfo` for the canonical Root Agent reply target,
+/// or `None` if the caller is not an identity-verified WG coordinator (the
+/// only relationship that can address the Root Agent — see #293 §3).
+///
+/// `wg` is the caller's WG-replica detection result (already computed by
+/// `discover_peers`); `project_paths` is the effective settings slice the
+/// caller scanned.
+pub(crate) fn build_root_agent_synthetic_peer(
+    wg: &WgReplicaInfo,
+    project_paths: &[String],
+) -> Option<PeerInfo> {
+    // The caller is a coordinator iff `verified_wg_coordinator_target`
+    // accepts its own FQN. Re-uses the same identity-cross-reference path
+    // (#277 §2.3) used by the root-sender side.
+    let my_fqn = format!("{}:{}/{}", wg.my_project, wg.my_wg_name, wg.my_agent_name);
+    crate::config::teams::verified_wg_coordinator_target(&my_fqn, project_paths)?;
+
+    root_agent_peer()
+}
+
+/// The Root Agent row without the coordinator check (temp-room callers, #4780).
+pub(crate) fn root_agent_peer() -> Option<PeerInfo> {
+    let root_dir = crate::config::root_agent::root_agent_dir().ok()?;
+    Some(synthetic_peer(
+        crate::config::root_agent::ROOT_AGENT_SENDER.to_string(),
+        root_dir,
+        "AgentsCommander Root Agent (canonical reply target).",
+    ))
+}
+
+/// One reply-target row per existing temp room of the app config dir (#4780).
+pub(crate) fn temp_room_peers() -> Vec<PeerInfo> {
+    crate::config::config_dir().map_or_else(Vec::new, |base| temp_room_peers_in(&base))
+}
+
+/// One reply-target row per temp room under `base`; a read error is logged and empty.
+pub(crate) fn temp_room_peers_in(base: &Path) -> Vec<PeerInfo> {
+    let names = match crate::config::temp_rooms::temp_room_names_in(base) {
+        Ok(names) => names,
+        Err(e) => {
+            log::warn!("[list-peers] temp rooms unreadable: {e}");
+            return Vec::new();
+        }
+    };
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let suffix = name.strip_prefix("temp-room-")?.to_string();
+            let path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(
+                &base.join(&name),
+            );
+            Some(synthetic_peer(
+                format!(
+                    "{}{suffix}",
+                    crate::config::temp_rooms::TEMP_ROOM_ADDRESS_PREFIX
+                ),
+                path,
+                "AgentsCommander Temporary Room agent (reply target).",
+            ))
+        })
+        .collect()
+}
+
+fn synthetic_peer(name: String, path: String, role: &str) -> PeerInfo {
+    PeerInfo {
+        name,
+        path,
+        // `status`/`session_status` reflect "we don't track it from here".
+        // The root session is in a different working-directory namespace
+        // than this verb scans — its working state is invisible to
+        // `compute_peer_status`.
+        status: "unknown".to_string(),
+        role: role.to_string(),
+        teams: Vec::new(),
+        reachable: true,
+        last_coding_agent: None,
+        working: false,
+        session_status: "none".to_string(),
+        session_id: None,
+        waiting_for_input: false,
+        // Synthetic root-agent peer: no session in this verb's cwd namespace,
+        // so it can never be parked on a blocking terminal menu.
+        blocked_menu: false,
+        blocked_menu_message: None,
+        exit_code: None,
+        // Synthetic root-agent peer: no session in this verb's cwd namespace.
+        context_percent: None,
+        agent: None,
+        profile: None,
+        coding_agents: std::collections::HashMap::new(),
+    }
 }

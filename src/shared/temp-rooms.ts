@@ -11,6 +11,8 @@ import type { SettingsSnapshot } from "./types";
 export interface TempRoomInfo {
   name: string;
   path: string;
+  /** #4780: the stored Unleash flag; the store override wins. */
+  unleashed: boolean;
 }
 
 /** The agent every new temp room launches with; absent until the first choice. */
