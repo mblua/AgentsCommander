@@ -1,5 +1,6 @@
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 use crate::config::agent_command::AgentSpawnCommand;
+use crate::phone::mailbox::host::MailboxSessionCreate;
 use crate::pty::backend::PtyViewport;
 use crate::pty::backend::ResolvedAgentHostShell;
 use crate::pty::manager::PtyManager;
@@ -176,25 +177,27 @@ pub async fn create_session_inner<R: tauri::Runtime>(
 }
 
 // #3263: a mailbox wake must not wait forever on a create that retained without input.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_session_inner_for_wake<R: tauri::Runtime>(
     app: &AppHandle<R>,
-    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
-    pty_mgr: &Arc<Mutex<PtyManager>>,
-    shell: String,
-    shell_args: Vec<String>,
-    cwd: String,
-    session_name: Option<String>,
-    agent_id: Option<String>,
-    agent_label: Option<String>,
-    skip_tooling_save: bool,
-    git_repos: Vec<SessionRepo>,
-    skip_auto_resume: bool,
-    resolved_spawn: Option<AgentSpawnCommand>,
-    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
-    viewport: Option<PtyViewport>,
-    selection_intent: CreateSelectionIntent,
+    request: MailboxSessionCreate<'_>,
 ) -> Result<SessionInfo, String> {
+    let MailboxSessionCreate {
+        session_mgr,
+        pty_mgr,
+        shell,
+        shell_args,
+        cwd,
+        session_name,
+        agent_id,
+        agent_label,
+        skip_tooling_save,
+        git_repos,
+        skip_auto_resume,
+        resolved_spawn,
+        resolved_agent_host_shell,
+        viewport,
+        selection_intent,
+    } = request;
     wake_create_result(
         create_session_inner_impl(
             app,
