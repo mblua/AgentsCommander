@@ -1,4 +1,6 @@
+use super::super::create::{wake_create_result, CreateCompletion};
 use super::*;
+use crate::session::create_contracts::ERR_WAKE_CREATE_RETAINED;
 
 fn spawn_activating_restart(
     app: &tauri::App<tauri::test::MockRuntime>,
@@ -934,4 +936,12 @@ fn note_coordinator_create_on_app_seeds_and_clears_both_markers() {
         .expect("clocks managed")
         .succeeded();
     assert_eq!(clocks.lock().unwrap().manually_closed_at(&fqn), None);
+}
+
+#[test]
+fn issue_3263_wake_create_result_maps_retained() {
+    assert_eq!(
+        wake_create_result(CreateCompletion::Retained).err(),
+        Some(ERR_WAKE_CREATE_RETAINED.to_string())
+    );
 }

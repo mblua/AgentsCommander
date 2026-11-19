@@ -6,6 +6,9 @@ use crate::pty::backend::ResolvedAgentHostShell;
 use crate::session::selection::TrustedCreateIntent;
 use crate::session::session::{SessionInfo, SessionRepo};
 
+/// #3263: a fallback wake create that retained without input; counted and retried.
+pub(crate) const ERR_WAKE_CREATE_RETAINED: &str = "wake create retained without input";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateSelectionIntent {
     User,

@@ -96,6 +96,7 @@ use create::create_owned_response_replacement_in_context;
 pub(crate) use create::create_persisted_root_for_restore;
 pub use create::create_session_inner;
 pub(crate) use create::create_session_inner_for_restore;
+pub(crate) use create::create_session_inner_for_wake;
 use create::create_session_inner_impl;
 pub(crate) use create::create_session_inner_with_pty_target_ownership;
 #[cfg(test)]

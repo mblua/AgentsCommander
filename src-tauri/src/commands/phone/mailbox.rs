@@ -73,25 +73,7 @@ impl<R: tauri::Runtime> MailboxHost for tauri::AppHandle<R> {
         &'a self,
         request: MailboxSessionCreate<'a>,
     ) -> Result<SessionInfo, String> {
-        crate::commands::session::create_session_inner(
-            self,
-            request.session_mgr,
-            request.pty_mgr,
-            request.shell,
-            request.shell_args,
-            request.cwd,
-            request.session_name,
-            request.agent_id,
-            request.agent_label,
-            request.skip_tooling_save,
-            request.git_repos,
-            request.skip_auto_resume,
-            request.resolved_spawn,
-            request.resolved_agent_host_shell,
-            request.viewport,
-            request.selection_intent,
-        )
-        .await
+        crate::commands::session::create_session_inner_for_wake(self, request).await
     }
 
     async fn create_session_inner_with_pty_target_ownership<'a, 'guard>(

@@ -6,7 +6,9 @@ use super::notice::{
     container_body_override_for_delivery, is_container_backend_session, ResolvedWakeAgentCommand,
     WakeDeliveryOrigin,
 };
-use super::poller::{reserve_response_request_at_write, MailboxPoller};
+use super::poller::{
+    log_wake_ended_without_input, reserve_response_request_at_write, MailboxPoller,
+};
 use super::pty_claim::{response_diag_debug_only, ResponseWakeWork};
 #[cfg(test)]
 use super::pty_claim::{MailboxSpawnCall, MailboxTestEvent};
@@ -18,7 +20,7 @@ use crate::phone::mailbox::host::{MailboxHost, MailboxSessionCreate};
 use crate::phone::types::OutboxMessage;
 use crate::pty::inject::SettleReadiness;
 use crate::pty::manager::PtyManager;
-use crate::session::create_contracts::CreateSelectionIntent;
+use crate::session::create_contracts::{CreateSelectionIntent, ERR_WAKE_CREATE_RETAINED};
 use crate::session::session::SessionInfo;
 use crate::session::session::SessionStatus;
 use std::path::Path;
@@ -64,8 +66,6 @@ impl MailboxPoller {
         resolved_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
         resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
     ) -> Result<SessionInfo, String> {
-        #[cfg(not(test))]
-        let _ = msg;
         let skip_auto_resume = wake_spawn_skip_auto_resume(spawn_with_resume);
         let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
 
@@ -112,6 +112,16 @@ impl MailboxPoller {
             selection_intent: CreateSelectionIntent::Background,
         })
         .await
+        .inspect_err(|e| {
+            if e == ERR_WAKE_CREATE_RETAINED {
+                log_wake_ended_without_input(
+                    &msg.id,
+                    &msg.to,
+                    None,
+                    "wake create retained without input: stage=fallback_create_retained",
+                );
+            }
+        })
     }
 
     pub(crate) async fn attach_persisted_telegram_for_wake<S: MailboxHost>(

@@ -4,8 +4,9 @@ use super::notice::{
     OutboxOrigin, WakeDeliveryOrigin, ERR_INVALID_DISPATCH_PROFILE,
 };
 use super::poller::{
-    owned_replacement_launch_recipe, MailboxPoller, OutboxAuthenticationFacts, OutboxStage,
-    OwnedPeerTarget, OwnedPeerWakeExecution, OwnedPeerWakeStep, ValidatedWake,
+    log_wake_ended_without_input, owned_replacement_launch_recipe, MailboxPoller,
+    OutboxAuthenticationFacts, OutboxStage, OwnedPeerTarget, OwnedPeerWakeExecution,
+    OwnedPeerWakeStep, RetainedExit, ValidatedWake, ERR_WAKE_RETAINED,
 };
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
@@ -128,9 +129,9 @@ async fn owned_peer_completion(
     pty: &Arc<Mutex<PtyManager>>,
 ) -> Result<OwnedPeerWakeStep, String> {
     #[cfg(test)]
-    if matches!(&result, Ok(OwnedPeerWakeStep::Retained)) {
+    if matches!(&result, Ok(OwnedPeerWakeStep::Retained(_))) {
         // The accepted core has actually returned; its public wake caller
-        // intentionally remains pending below. This is observation only.
+        // now ends with an error (#3263). This is observation only.
         let _ = completion
             .fixture_reached(crate::session::selection::ReplacementFixtureCut::SourceRetainedReturn)
             .await;
@@ -148,6 +149,25 @@ async fn owned_peer_completion(
         }
     }
     result
+}
+
+fn log_core_end(result: &Result<OwnedPeerWakeStep, String>, id: &str, to: &str, previous: Uuid) {
+    if let Err(error) = result {
+        if error.starts_with(ERR_WAKE_RETAINED) {
+            log_wake_ended_without_input(id, to, Some(previous), error);
+        }
+    }
+}
+
+fn retained_wake_error(msg: &OutboxMessage, previous: Uuid, exit: &RetainedExit) -> String {
+    let error = format!("{ERR_WAKE_RETAINED}: stage={} rollback=none", exit.stage);
+    log_wake_ended_without_input(
+        &msg.id,
+        &msg.to,
+        Some(exit.session.unwrap_or(previous)),
+        &error,
+    );
+    error
 }
 
 impl MailboxPoller {
@@ -504,7 +524,9 @@ impl MailboxPoller {
                             tokio::task::yield_now().await;
                             continue;
                         }
-                        OwnedPeerWakeStep::Retained => return std::future::pending().await,
+                        OwnedPeerWakeStep::Retained(exit) => {
+                            return Err(retained_wake_error(msg, previous, &exit))
+                        }
                     }
                 }
             }
@@ -783,42 +805,26 @@ impl MailboxPoller {
         if plan.configured_spawn.as_ref().is_some_and(|spawn| {
             SessionBackendKind::from(&spawn.backend) != SessionBackendKind::LocalProcess
         }) {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return Ok(RetainedExit::step("backend_not_local", None));
         }
         // #4309 - a replacement is LocalProcess-only, so it writes `msg.body` (no inline
         // override). Judge that exact text, from this plan, before any transfer.
         super::wake_injection::admit_peer_text(msg, &msg.body, delivery.0, delivery.1)?;
         let (request, resolved_command) = owned_replacement_request(plan, dispatch.1);
+        let manager = app.pty_sessions().read().await.clone();
         let Some(target) = self
             .admit_owned_peer_replacement(app, msg, &request, previous)
             .await?
         else {
             return Ok(OwnedPeerWakeStep::Relist);
         };
-        let validation_messages = Arc::clone(&self.messages);
-        let validation_app = app.clone();
-        let validation_message = msg.clone();
-        let validation_request = request.clone();
-        let physical = target.physical;
-        let continuation = target
-            .continuation
-            .with_source_validation(Arc::new(move || {
-                let messages = Arc::clone(&validation_messages);
-                let app = validation_app.clone();
-                let msg = validation_message.clone();
-                let request = validation_request.clone();
-                let physical = physical.clone();
-                Box::pin(async move {
-                    if MailboxPoller::delivery_only(messages)
-                        .owned_peer_source_is_current(&app, &msg, &request, &physical)
-                        .await
-                    {
-                        Ok(())
-                    } else {
-                        Err(crate::session::selection::OwnedSourceStop::AuthorityChanged)
-                    }
-                })
-            }));
+        let continuation = self.with_owned_source_validation(
+            app,
+            msg,
+            &request,
+            target.continuation,
+            target.physical,
+        );
         #[cfg(test)]
         let continuation = match self
             .test_hooks
@@ -843,7 +849,6 @@ impl MailboxPoller {
             stripe: Some(target.stripe),
         };
         let completion = execution.continuation.clone();
-        let manager = app.pty_sessions().read().await.clone();
         let pty = app.pty_routes().clone();
         let app = app.clone();
         let delivery = self.delivery_poller();
@@ -853,19 +858,55 @@ impl MailboxPoller {
         }
         // Relocates the one existing create core around its owned work tail.
         // Common create borrows this lexical proof and never spawns another core.
-        let (result, pty) =
-            crate::config::sessions_persistence::run_owned_persist_core(async move {
-                let mut source = crate::session::selection::SourceExecutorGuard::unbound();
-                if !source.bind(&execution.continuation) {
-                    return (Ok(OwnedPeerWakeStep::Retained), pty);
-                }
+        let (id, to) = (msg.id.clone(), msg.to.clone());
+        let result = crate::config::sessions_persistence::run_owned_persist_core(async move {
+            let mut source = crate::session::selection::SourceExecutorGuard::unbound();
+            let result = if source.bind(&execution.continuation) {
                 let result = delivery
                     .execute_owned_peer_replacement(&app, &pty, &mut execution)
                     .await;
                 source.returned(result.is_err());
-                (result, pty)
+                result
+            } else {
+                Ok(RetainedExit::step("source_unbound", None))
+            };
+            drop((source, execution));
+            let result = owned_peer_completion(result, &completion, &manager, &pty).await;
+            log_core_end(&result, &id, &to, previous);
+            result
+        })
+        .await;
+        result
+    }
+
+    fn with_owned_source_validation<S: MailboxHost>(
+        &self,
+        app: &S,
+        msg: &OutboxMessage,
+        request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
+        continuation: crate::session::selection::OwnedReplacementContinuation,
+        physical: crate::path_identity::VerifiedPathIdentity,
+    ) -> crate::session::selection::OwnedReplacementContinuation {
+        let validation_messages = Arc::clone(&self.messages);
+        let validation_app = app.clone();
+        let validation_message = msg.clone();
+        let validation_request = request.clone();
+        continuation.with_source_validation(Arc::new(move || {
+            let messages = Arc::clone(&validation_messages);
+            let app = validation_app.clone();
+            let msg = validation_message.clone();
+            let request = validation_request.clone();
+            let physical = physical.clone();
+            Box::pin(async move {
+                if MailboxPoller::delivery_only(messages)
+                    .owned_peer_source_is_current(&app, &msg, &request, &physical)
+                    .await
+                {
+                    Ok(())
+                } else {
+                    Err(crate::session::selection::OwnedSourceStop::AuthorityChanged)
+                }
             })
-            .await;
-        owned_peer_completion(result, &completion, &manager, &pty).await
+        }))
     }
 }

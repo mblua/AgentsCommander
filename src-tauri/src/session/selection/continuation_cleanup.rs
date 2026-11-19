@@ -565,6 +565,8 @@ impl OwnedReplacementContinuation {
 
     /// Called only after this executor's setup body returned a real Err.
     /// Waiter loss or ticket Drop never enters this cleanup path.
+    /// Also called by the owned wake core at its two Admitted-stage exits,
+    /// before any create call (#3263).
     pub(crate) async fn rollback_failed_create(
         &self,
         manager: &SessionManager,
