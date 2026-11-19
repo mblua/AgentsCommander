@@ -11,6 +11,7 @@ use super::poller::{MailboxPoller, OutboxAuthenticationFacts, OutboxStage, Valid
 use super::pty_observation::{PtyAuthorityState, PtyReadinessState};
 use super::settle::session_has_current_pty_submission_provenance;
 use crate::config::teams;
+use crate::config::temp_rooms::is_temp_room_address;
 use crate::filesystem::phone_mailbox;
 use crate::phone::mailbox::browser::is_web_browser_action;
 #[cfg(test)]
@@ -790,27 +791,7 @@ impl MailboxPoller {
         authentication: (bool, bool, bool),
     ) -> OutboxStage {
         let (is_master, saw_session_token, token_belongs_to_root_agent) = authentication;
-        let mut paths = {
-            let cfg = app.pty_settings();
-            let c = cfg.read().await;
-            c.project_paths.clone()
-        };
-        if let Some(root_project) = outbox_project.as_ref() {
-            let canon_root_project =
-                phone_mailbox::canonical_mailbox_path(Path::new(root_project)).ok();
-            let already_present = paths.iter().any(|p| match &canon_root_project {
-                Some(canon_target) => {
-                    phone_mailbox::canonical_mailbox_path(Path::new(p))
-                        .ok()
-                        .as_ref()
-                        == Some(canon_target)
-                }
-                None => p == root_project,
-            });
-            if !already_present {
-                paths.push(root_project.clone());
-            }
-        }
+        let paths = outbox_route_project_paths(app, outbox_project).await;
 
         if let Err(reason) = validate_root_sender_route(
             &msg.to,
@@ -849,27 +830,7 @@ impl MailboxPoller {
         // branch uses (settings + the outbox file's WG-replica project
         // walk-up) so verified_wg_coordinator_target sees the project
         // where the outbox lives.
-        let mut paths = {
-            let cfg = app.pty_settings();
-            let c = cfg.read().await;
-            c.project_paths.clone()
-        };
-        if let Some(root_project) = outbox_project.as_ref() {
-            let canon_root_project =
-                phone_mailbox::canonical_mailbox_path(Path::new(root_project)).ok();
-            let already_present = paths.iter().any(|p| match &canon_root_project {
-                Some(canon_target) => {
-                    phone_mailbox::canonical_mailbox_path(Path::new(p))
-                        .ok()
-                        .as_ref()
-                        == Some(canon_target)
-                }
-                None => p == root_project,
-            });
-            if !already_present {
-                paths.push(root_project.clone());
-            }
-        }
+        let paths = outbox_route_project_paths(app, outbox_project).await;
 
         // Master/root token does NOT bypass the verified-coordinator check
         // for root-recipient: the URI is meaningful only when paired with
@@ -917,9 +878,23 @@ impl MailboxPoller {
                     (is_master, saw_session_token, token_belongs_to_root_agent),
                 )
                 .await;
+        } else if is_temp_room_address(&msg.from) {
+            return self
+                .authorize_temp_room_sender_outbox(
+                    app,
+                    path,
+                    msg,
+                    outbox_project,
+                    (is_master, saw_session_token),
+                )
+                .await;
         } else if root_agent_recipient {
             return self
                 .authorize_root_recipient_outbox(app, path, msg, outbox_project)
+                .await;
+        } else if is_temp_room_address(&msg.to) {
+            return self
+                .authorize_temp_room_recipient_outbox(app, path, msg, outbox_project)
                 .await;
         } else if is_master {
             log::debug!(
@@ -949,4 +924,34 @@ impl MailboxPoller {
 
         Ok(std::ops::ControlFlow::Continue(()))
     }
+}
+
+/// Settings project paths plus the outbox file's project, deduplicated by
+/// canonical path, for the verified-coordinator route checks.
+pub(super) async fn outbox_route_project_paths<S: PtyAuthorityState + ?Sized>(
+    app: &S,
+    outbox_project: &Option<String>,
+) -> Vec<String> {
+    let mut paths = {
+        let cfg = app.pty_settings();
+        let c = cfg.read().await;
+        c.project_paths.clone()
+    };
+    if let Some(root_project) = outbox_project.as_ref() {
+        let canon_root_project =
+            phone_mailbox::canonical_mailbox_path(Path::new(root_project)).ok();
+        let already_present = paths.iter().any(|p| match &canon_root_project {
+            Some(canon_target) => {
+                phone_mailbox::canonical_mailbox_path(Path::new(p))
+                    .ok()
+                    .as_ref()
+                    == Some(canon_target)
+            }
+            None => p == root_project,
+        });
+        if !already_present {
+            paths.push(root_project.clone());
+        }
+    }
+    paths
 }

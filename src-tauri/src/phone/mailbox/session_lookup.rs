@@ -239,6 +239,62 @@ impl MailboxPoller {
         Some((id, candidate.status.clone()))
     }
 
+    /// #4780: live session of the temp room at `address`. Same viability rule as
+    /// the Root Agent: a temp room is user-launched and never spawned.
+    pub(crate) async fn find_temp_room_session_candidate<S: PtyAuthorityState + ?Sized>(
+        &self,
+        app: &S,
+        address: &str,
+    ) -> Option<(Uuid, SessionStatus)> {
+        let session_mgr = app.pty_sessions();
+        let pty_mgr = app.pty_routes();
+
+        let mgr = session_mgr.read().await;
+        let sessions = mgr.list_sessions().await;
+
+        let matches: Vec<_> = sessions
+            .iter()
+            .filter(|s| {
+                crate::config::temp_rooms::temp_room_address_for_path(&s.working_directory)
+                    .as_deref()
+                    == Some(address)
+            })
+            .collect();
+        if matches.len() > 1 {
+            log::warn!(
+                "[mailbox] temp-room recipient: {} sessions found for '{}' ({}); routing to first",
+                matches.len(),
+                address,
+                matches
+                    .iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
+        let candidate = matches.into_iter().next()?;
+
+        let id = Uuid::parse_str(&candidate.id).ok()?;
+        let pty = pty_mgr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let has_pty = pty.has_session(id);
+        drop(pty);
+
+        if !is_viable_root_recipient(&candidate.status, has_pty) {
+            log::warn!(
+                "[mailbox] temp-room recipient: not viable (id={} status={:?} has_pty={}); \
+                preserving record, no destroy",
+                id,
+                candidate.status,
+                has_pty
+            );
+            return None;
+        }
+
+        Some((id, candidate.status.clone()))
+    }
+
     /// Find ALL sessions matching an agent name (by working directory).
     /// Returns all matching session UUIDs, not just the "best" one.
     ///

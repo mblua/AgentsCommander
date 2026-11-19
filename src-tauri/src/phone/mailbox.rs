@@ -26,6 +26,7 @@ mod session_lookup;
 mod session_request;
 mod settle;
 mod teardown;
+mod temp_room_outbox;
 mod wake_delivery;
 mod wake_injection;
 mod wake_workers;
