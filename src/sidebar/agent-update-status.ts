@@ -26,6 +26,7 @@ export interface AutoUpdateRowView {
   configured: ConfiguredState;
   installed: { state: InstalledState; label: string; title?: string };
   live: { state: LiveState; label: string; title?: string };
+  managedBy: string | null;
 }
 
 /** round 5 (Option 2 timeline); #1691 adds the two nonterminal states and the cancelled terminal state. */
@@ -127,9 +128,13 @@ export function liveView(
   return { state: "failed", label: LIVE_LABELS.failed, title: result.error ?? UNKNOWN_ERROR_LABEL };
 }
 
+/** #4804 - `get_agent_update_overview` row; `managedBy` is "mise" when the resolved
+ *  binary is mise-managed (AC skips its update). Omitted by older backends. */
+export type OverviewRowIn = AgentUpdateOverviewRow & { managedBy?: string | null };
+
 /** Catalog order and duplicates preserved (one view per overview row). */
 export function deriveAutoUpdateRows(
-  rows: AgentUpdateOverviewRow[],
+  rows: OverviewRowIn[],
   input: {
     autoUpdateByCommand: Record<string, boolean>;
     registeredCommands: string[];
@@ -146,6 +151,7 @@ export function deriveAutoUpdateRows(
     configured: configuredState(input.autoUpdateByCommand, row.command),
     installed: installedView(row.install),
     live: liveView(row.command, input.running, input.results),
+    managedBy: row.managedBy ?? null,
   }));
 }
 

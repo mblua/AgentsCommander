@@ -97,6 +97,8 @@ pub use plan::{
     UpdateTarget,
 };
 #[cfg(test)]
+use plan::{mise_layout, mise_managed, MiseLayout};
+#[cfg(test)]
 use plan::{probe_commit_announce, TargetProbeOutcome};
 #[cfg(test)]
 use target::{

@@ -11,6 +11,11 @@ const ALL = readFileSync(new URL("./sidebar-all.css", import.meta.url), "utf8");
 
 const BASE = ".replica-item.unleashed";
 const ACTIVE = ".replica-item.unleashed.active";
+const DIALOG = ".agent-modal.unleash-confirm";
+const TITLE = ".unleash-confirm .agent-modal-title";
+const CONFIRM = ".unleash-confirm .new-agent-create-btn";
+const HOVER = ".unleash-confirm .new-agent-create-btn:hover:not(:disabled)";
+const RED = "var(--status-exited)";
 const REDUCED = "@media (prefers-reduced-motion: reduce)";
 const squeeze = (v: string): string => v.replace(/\s+/g, "");
 const PEAK = squeeze(
@@ -72,9 +77,9 @@ describe("#4752 unleash halo CSS bytes", () => {
     );
   });
 
-  it("5. no .session-item selector and no rule beyond the halo", () => {
+  it("5. no .session-item selector and no rule beyond the halo and the #4802 dialog", () => {
     expect(CSS).not.toContain(".session-item");
-    const allowed = [BASE, ACTIVE, "0%", "100%", "50%"];
+    const allowed = [BASE, ACTIVE, "0%", "100%", "50%", DIALOG, TITLE, CONFIRM, HOVER];
     for (const r of RULES) {
       for (const s of r.selectors) expect(allowed).toContain(s);
     }
@@ -83,5 +88,16 @@ describe("#4752 unleash halo CSS bytes", () => {
   it("6. sidebar-all.css imports the halo sheet last", () => {
     const imports = ALL.split(/\r?\n/).filter((l) => l.trim().startsWith("@import"));
     expect(imports[imports.length - 1]!.trim()).toBe('@import "./unleash-halo.css";');
+  });
+
+  it("7. #4802 dialog rules paint danger red", () => {
+    expect(declValue(exact(DIALOG), "border-color")).toBe(RED);
+    expect(declValue(exact(TITLE), "color")).toBe(RED);
+    expect(declValue(exact(CONFIRM), "border-color")).toBe(RED);
+    expect(declValue(exact(CONFIRM), "color")).toBe(RED);
+    expect(declValue(exact(HOVER), "border-color")).toBe(RED);
+    expect(declValue(exact(HOVER), "background")).toBe(
+      "color-mix(in srgb, var(--status-exited) 22%, transparent)"
+    );
   });
 });

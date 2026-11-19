@@ -25,6 +25,7 @@ import { sessionDotClass } from "./session-status";
 import { RowKeyProxy, onRowKey } from "./RowKeyProxy";
 import SidebarRegexFilter, { SidebarRegexFilterError } from "./SidebarRegexFilter";
 import { sidebarFilter } from "../stores/sidebar-filter";
+import { createSidebarFilterHost } from "./sidebar-filter-host";
 import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 import SessionRowMenu from "./context-menu/SessionRowMenu";
 import {
@@ -385,15 +386,15 @@ const TemporaryRoomsPanel: Component = () => {
       ? rooms()
       : rooms().filter((r) => sidebarFilter.matches(r.name));
 
+  let panelEl: HTMLDivElement | undefined;
+  createSidebarFilterHost(() => panelEl?.parentElement);
+
   return (
-    <div class="project-panel" data-ac-testid="tempRooms.panel">
+    <div class="project-panel" data-ac-testid="tempRooms.panel" ref={panelEl}>
       <div
         class="project-header"
         classList={{
           "project-header--has-indicator": true,
-          open: sidebarFilter.open(),
-          active: sidebarFilter.active(),
-          invalid: !!sidebarFilter.error(),
         }}
         data-ac-testid="tempRooms.header"
         onContextMenu={(e) => {
@@ -419,8 +420,13 @@ const TemporaryRoomsPanel: Component = () => {
           {String(visibleRooms().length)}
         </span>
         <SidebarRegexFilter />
+        <div
+          class="project-filter-error-slot"
+          data-ac-testid="sidebar.regexFilter.errorSlot"
+        >
+          <SidebarRegexFilterError />
+        </div>
       </div>
-      <SidebarRegexFilterError />
       <Show when={!collapsed()}>
         <Show when={placeholderWarnings().length > 0}>
           <div class="new-agent-error" data-ac-testid="tempRooms.placeholderWarning">

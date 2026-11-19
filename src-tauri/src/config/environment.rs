@@ -78,6 +78,11 @@ pub(crate) fn inherited_path() -> Option<std::ffi::OsString> {
     std::env::var_os("PATH")
 }
 
+/// #4804 `MISE_DATA_DIR`; empty counts as unset.
+pub(crate) fn mise_data_dir() -> Option<std::ffi::OsString> {
+    std::env::var_os("MISE_DATA_DIR").filter(|v| !v.is_empty())
+}
+
 pub(crate) fn codex_home() -> Result<String, std::env::VarError> {
     std::env::var("CODEX_HOME")
 }

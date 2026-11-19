@@ -491,9 +491,7 @@ impl<C: SelectionContext> SelectionTransaction<C> {
             Some(result) => {
                 let observed = result.clone();
                 hold.release();
-                if owned.is_some() {
-                    drop(hold._create_ticket.take());
-                }
+                drop(hold._create_ticket.take());
                 if let Some(owned) = owned {
                     if let Ok(mut state) = owned.owner.state.lock() {
                         state.completion = Some(observed);
