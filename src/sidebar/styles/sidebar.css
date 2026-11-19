@@ -3585,6 +3585,22 @@ html.light-theme .settings-hint-error {
   font-size: 10px;
 }
 
+/* #4810 - the error row follows the filter row under the hosting header. */
+.project-header > .project-filter-error-slot {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: inherit;
+  background-color: var(--sidebar-bg);
+}
+
+/* #4810 - while an error shows, its panel paints over the next sticky header. */
+.project-panel:has(> .project-header > .project-filter-error-slot > .project-filter-error) {
+  position: relative;
+  z-index: 21;
+}
+
 .project-title {
   min-width: 0;
   overflow: hidden;
@@ -3596,7 +3612,7 @@ html.light-theme .settings-hint-error {
   transition: opacity var(--transition-fast);
 }
 
-.project-header.open .project-title {
+.project-header:has(> .project-filter-row.open) .project-title {
   opacity: 0;
 }
 

@@ -453,9 +453,11 @@ describe("#4779 TemporaryRoomsPanel", () => {
     );
   };
   const openHeaders = () =>
-    Array.from(document.querySelectorAll(".project-header.open")).map((h) =>
-      h.getAttribute("data-ac-testid"),
-    );
+    Array.from(document.querySelectorAll(".project-header"))
+      .filter((h) => h.querySelector(".project-filter-row.open"))
+      .map((h) => h.getAttribute("data-ac-testid"));
+  const filterRow = () => byId("sidebar.regexFilter.row")!;
+  const filterError = () => byId("sidebar.regexFilter.error");
 
   it("11. regex filter on the header filters temp rooms", async () => {
     track(setup({ rooms: [ROOM_1, ROOM_2] }));
@@ -483,18 +485,18 @@ describe("#4779 TemporaryRoomsPanel", () => {
     await waitFor(() =>
       expect(byId("sidebar.regexFilter.error")?.textContent).toBe("Invalid regex"),
     );
-    expect(header.classList.contains("invalid")).toBe(true);
+    expect(filterError()).not.toBeNull();
     expect(roomRow(ROOM_1)).not.toBeNull();
     expect(roomRow(ROOM_2)).not.toBeNull();
 
     escape();
     await waitFor(() => expect(filterInput().value).toBe(""));
-    expect(header.classList.contains("invalid")).toBe(false);
+    expect(filterError()).toBeNull();
     escape();
     await waitFor(() =>
       expect(byId("sidebar.regexFilter.toggle")!.getAttribute("aria-expanded")).toBe("false"),
     );
-    expect(header.classList.contains("open")).toBe(false);
+    expect(filterRow().classList.contains("open")).toBe(false);
   });
 
   it("11b. collapsed and empty: the control stays in the header and toggles", async () => {
@@ -504,7 +506,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(header.contains(byId("sidebar.regexFilter.toggle"))).toBe(true);
     await openFilter();
     click(byId("sidebar.regexFilter.toggle")!);
-    await waitFor(() => expect(header.classList.contains("open")).toBe(false));
+    await waitFor(() => expect(filterRow().classList.contains("open")).toBe(false));
     click(header.querySelector(".project-header-main")!);
     await waitFor(() =>
       expect(header.querySelector(".project-header-main")!.getAttribute("aria-expanded")).toBe(
@@ -513,7 +515,12 @@ describe("#4779 TemporaryRoomsPanel", () => {
     );
     expect(header.contains(byId("sidebar.regexFilter.toggle"))).toBe(true);
     await openFilter();
-    expect(header.classList.contains("open")).toBe(true);
+    expect(filterRow().classList.contains("open")).toBe(true);
+    input(filterInput(), "(");
+    await waitFor(() => expect(filterError()).not.toBeNull());
+    expect(header.contains(filterError())).toBe(true);
+    input(filterInput(), "");
+    await waitFor(() => expect(filterError()).toBeNull());
   });
 
   it("11c. one filter for temp rooms and projects", async () => {
@@ -540,8 +547,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     for (const h of headers) {
       if (h === byId("tempRooms.header")) continue;
       expect(h.querySelector(".project-filter-row")).toBeNull();
-      expect(h.classList.contains("open")).toBe(false);
-      expect(h.classList.contains("invalid")).toBe(false);
+      expect(h.querySelector(".project-filter-error")).toBeNull();
     }
   });
 
@@ -553,5 +559,128 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(ev.defaultPrevented).toBe(false);
     expect(byId("tempRooms.menu")).toBeNull();
     await openCategoryMenu();
+  });
+
+  // #4810 - jsdom has no layout: one prototype stub gives the scroll area (the render
+  // container) and each group panel (told apart by its header testid) a rect.
+  let layout: "top" | "project" = "top";
+  const stubLayout = (scroller: HTMLElement) =>
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      const r = (top: number, bottom: number) =>
+        ({ top, bottom, left: 0, right: 0, width: 0, height: bottom - top }) as DOMRect;
+      if (this === scroller) return r(0, 300);
+      if (!this.classList?.contains("project-panel")) return r(0, 0);
+      const id = this.querySelector(":scope > .project-header")?.getAttribute("data-ac-testid");
+      if (id === "tempRooms.header") return layout === "top" ? r(0, 100) : r(-100, -50);
+      if (id?.startsWith("project.header.")) return layout === "top" ? r(100, 400) : r(-50, 400);
+      return r(0, 0);
+    });
+  const projectHeader = () =>
+    document.querySelector<HTMLElement>(
+      '.project-panel > .project-header[data-ac-testid^="project.header."]',
+    );
+
+  async function hostInProject() {
+    layout = "top";
+    const { rendered } = track(setup({ rooms: [ROOM_1], withProject: true }));
+    stubLayout(rendered.root);
+    await projectStore.createAndLoad(PROJECT);
+    await waitFor(() => expect(projectHeader()).not.toBeNull());
+    await openFilter();
+    input(filterInput(), "dev");
+    filterInput().focus();
+    layout = "project";
+    rendered.root.dispatchEvent(new Event("scroll"));
+    await waitFor(() => expect(projectHeader()!.contains(filterRow())).toBe(true));
+    return rendered;
+  }
+
+  it("11e. scrolled into a project the one filter moves there and keeps working", async () => {
+    await hostInProject();
+    expect(document.querySelectorAll(".project-filter-row")).toHaveLength(1);
+    expect(document.activeElement).toBe(filterInput());
+    expect(filterInput().value).toBe("dev");
+    const toggle = () => byId("sidebar.regexFilter.toggle")!;
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(openHeaders()).toEqual([projectHeader()!.getAttribute("data-ac-testid")]);
+
+    click(byId("sidebar.regexFilter.clear")!);
+    await waitFor(() => expect(filterInput().value).toBe(""));
+    escape();
+    await waitFor(() => expect(toggle().getAttribute("aria-expanded")).toBe("false"));
+    click(toggle());
+    await waitFor(() => expect(toggle().getAttribute("aria-expanded")).toBe("true"));
+
+    const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    filterInput().dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(false);
+    expect(document.querySelector(".session-context-menu")).toBeNull();
+
+    const row = filterRow();
+    click(toggle());
+    await waitFor(() => expect(row.classList.contains("open")).toBe(false));
+    click(toggle());
+    await waitFor(() => expect(row.classList.contains("open")).toBe(true));
+    expect(filterRow()).toBe(row);
+    expect(projectHeader()!.contains(row)).toBe(true);
+  });
+
+  it("11g. the invalid-regex error follows the hosting header", async () => {
+    const rendered = await hostInProject();
+    input(filterInput(), "(");
+    await waitFor(() => expect(filterError()?.textContent).toBe("Invalid regex"));
+    const error = filterError()!;
+    expect(projectHeader()!.contains(error)).toBe(true);
+    expect(byId("sidebar.regexFilter.errorSlot")!.contains(error)).toBe(true);
+    expect(document.querySelectorAll('[data-ac-testid="sidebar.regexFilter.error"]')).toHaveLength(
+      1,
+    );
+    expect(byId("tempRooms.header")!.contains(error)).toBe(false);
+
+    const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    error.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+    await waitFor(() =>
+      expect(document.querySelector(".session-context-menu")?.textContent).toContain("New Agent"),
+    );
+    expect(byId("tempRooms.menu")).toBeNull();
+    expect(byId(`tempRoom.${ROOM_1.name}.menu`)).toBeNull();
+
+    layout = "top";
+    rendered.root.dispatchEvent(new Event("scroll"));
+    await waitFor(() => expect(byId("tempRooms.header")!.contains(filterRow())).toBe(true));
+    expect(filterError()).toBe(error);
+    expect(byId("tempRooms.header")!.contains(error)).toBe(true);
+    input(filterInput(), "dev");
+    await waitFor(() => expect(filterError()).toBeNull());
+    expect(byId("tempRooms.header")!.contains(byId("sidebar.regexFilter.errorSlot"))).toBe(true);
+  });
+
+  it("11f. a re-created project panel re-hosts the row with focus and caret", async () => {
+    await hostInProject();
+    filterInput().setSelectionRange(1, 3);
+    const oldHeader = projectHeader()!;
+    projectStore.updateWorkgroupTask(WG, "x", "x");
+    await waitFor(() => expect(oldHeader.isConnected).toBe(false));
+    await waitFor(() => {
+      expect(projectHeader()!.contains(filterRow())).toBe(true);
+      expect(projectHeader()!.contains(byId("sidebar.regexFilter.errorSlot"))).toBe(true);
+    });
+    expect(document.querySelectorAll(".project-filter-row")).toHaveLength(1);
+    expect(document.activeElement).toBe(filterInput());
+    expect(filterInput().value).toBe("dev");
+    expect([filterInput().selectionStart, filterInput().selectionEnd]).toEqual([1, 3]);
+
+    input(filterInput(), "(");
+    await waitFor(() => expect(filterError()).not.toBeNull());
+    const before = projectHeader()!;
+    projectStore.updateWorkgroupTask(WG, "y", "y");
+    await waitFor(() => expect(before.isConnected).toBe(false));
+    await waitFor(() => expect(projectHeader()!.contains(filterError())).toBe(true));
+    expect(document.querySelectorAll('[data-ac-testid="sidebar.regexFilter.error"]')).toHaveLength(
+      1,
+    );
   });
 });
