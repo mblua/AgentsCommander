@@ -1,3 +1,4 @@
+use super::context_snapshot_temp_rooms::ROOT_CONTEXT_BEFORE_TEMP_ROOMS_MD;
 use super::legacy_contexts::ROOT_CONTEXT_BEFORE_SELF_HANDOFF_SKILL_MD;
 use super::{
     OLD_ROOT_CONTEXT_WITH_COORDINATION_MD, OLD_ROOT_ROLE_MD, ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD,
@@ -763,7 +764,7 @@ pub(crate) fn default_root_context_template() -> &'static str {
 }
 
 #[cfg(test)]
-pub(crate) fn frozen_root_context_snapshots() -> [&'static str; 12] {
+pub(crate) fn frozen_root_context_snapshots() -> [&'static str; 13] {
     [
         OLD_ROOT_ROLE_MD,
         OLD_ROOT_CONTEXT_WITH_COORDINATION_MD,
@@ -777,6 +778,7 @@ pub(crate) fn frozen_root_context_snapshots() -> [&'static str; 12] {
         ROOT_CONTEXT_BEFORE_REPORTING_SCOPE_MD,
         ROOT_CONTEXT_BEFORE_MINIMAL_HANDOFF_MD,
         ROOT_CONTEXT_BEFORE_SELF_HANDOFF_SKILL_MD,
+        ROOT_CONTEXT_BEFORE_TEMP_ROOMS_MD,
     ]
 }
 
@@ -794,6 +796,7 @@ pub(crate) fn is_known_generated_root_context_template(content: &str) -> bool {
         ROOT_CONTEXT_BEFORE_REPORTING_SCOPE_MD,
         ROOT_CONTEXT_BEFORE_MINIMAL_HANDOFF_MD,
         ROOT_CONTEXT_BEFORE_SELF_HANDOFF_SKILL_MD,
+        ROOT_CONTEXT_BEFORE_TEMP_ROOMS_MD,
         default_root_context_template(),
     ];
     old_generated.contains(&content)

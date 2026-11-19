@@ -448,7 +448,7 @@ fn read_bullet_matches_messaging_mode_access_model() {
     let root = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
     assert!(
         read_forbidden_bullet(&root).starts_with(
-            "the entries listed above (other than the narrow messaging exception above)"
+            "the entries listed above (other than the narrow messaging exceptions above)"
         ),
         "root read bullet missing the messaging carve-out, got:
 {}",

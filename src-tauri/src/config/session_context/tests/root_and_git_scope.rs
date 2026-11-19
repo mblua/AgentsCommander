@@ -90,7 +90,7 @@ fn root_prologue_renders_every_mandatory_block_exactly_once() {
             report a message as sent without a captured `Queued: <message-id>` line; a missing \
             receipt means NOT enqueued. Wait for the reply.",
         "Use only the JSON `name` values returned by `list-peers-lean`; Root sessions list \
-            verified Room orchestrator replicas only.",
+            verified Room orchestrator replicas and Temporary Rooms only.",
         "`--send` takes the filename ONLY, never a path.",
         "YYYYMMDD-HHMMSS-root-to-<roomN>-<orchestrator>-<slug>.md",
         "\"<AGENTSCOMMANDER_BINARY_PATH>\" send --token <AGENTSCOMMANDER_TOKEN> --root \
