@@ -245,3 +245,25 @@ fn issue_3263_pre_publish_exits_roll_back() {
     assert!(body.contains(r#"retained("create_retained",None)"#));
     assert!(!body.contains(r#"end_before_publish(continuation,&manager,pty,"create_retained")"#));
 }
+
+#[test]
+fn issue_3263_mailbox_host_create_uses_wake_variant() {
+    const SRC: &str = include_str!("../../../commands/phone/mailbox.rs");
+    let start = SRC
+        .find("async fn create_session_inner<'a>(")
+        .expect("MailboxHost create impl");
+    let rest = &SRC[start + "async fn ".len()..];
+    let end = rest.find("async fn ").unwrap_or(rest.len());
+    let body: String = rest[..end]
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(body.contains("crate::commands::session::create_session_inner_for_wake("));
+    assert!(!body.contains("crate::commands::session::create_session_inner("));
+}
+
+#[test]
+fn issue_3263_create_retained_error_is_counted() {
+    use crate::session::create_contracts::ERR_WAKE_CREATE_RETAINED;
+    assert!(!is_permanent_delivery_error(ERR_WAKE_CREATE_RETAINED));
+}

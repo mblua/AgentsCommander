@@ -73,7 +73,7 @@ impl<R: tauri::Runtime> MailboxHost for tauri::AppHandle<R> {
         &'a self,
         request: MailboxSessionCreate<'a>,
     ) -> Result<SessionInfo, String> {
-        crate::commands::session::create_session_inner(
+        crate::commands::session::create_session_inner_for_wake(
             self,
             request.session_mgr,
             request.pty_mgr,

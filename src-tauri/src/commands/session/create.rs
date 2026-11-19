@@ -3,6 +3,7 @@ use crate::config::agent_command::AgentSpawnCommand;
 use crate::pty::backend::PtyViewport;
 use crate::pty::backend::ResolvedAgentHostShell;
 use crate::pty::manager::PtyManager;
+use crate::session::create_contracts::ERR_WAKE_CREATE_RETAINED;
 use crate::session::manager::SessionManager;
 use crate::session::selection::SelectionCause;
 use crate::session::selection::SelectionTransaction;
@@ -140,6 +141,101 @@ pub async fn create_session_inner<R: tauri::Runtime>(
     viewport: Option<PtyViewport>,
     selection_intent: CreateSelectionIntent,
 ) -> Result<SessionInfo, String> {
+    create_session_inner_completion(
+        app,
+        session_mgr,
+        pty_mgr,
+        shell,
+        shell_args,
+        cwd,
+        session_name,
+        agent_id,
+        agent_label,
+        skip_tooling_save,
+        git_repos,
+        skip_auto_resume,
+        resolved_spawn,
+        resolved_agent_host_shell,
+        viewport,
+        selection_intent,
+    )
+    .await?
+    .into_finalized()
+    .await
+}
+
+// #3263: a mailbox wake must not wait forever on a create that retained without input.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_session_inner_for_wake<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    shell: String,
+    shell_args: Vec<String>,
+    cwd: String,
+    session_name: Option<String>,
+    agent_id: Option<String>,
+    agent_label: Option<String>,
+    skip_tooling_save: bool,
+    git_repos: Vec<SessionRepo>,
+    skip_auto_resume: bool,
+    resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
+    viewport: Option<PtyViewport>,
+    selection_intent: CreateSelectionIntent,
+) -> Result<SessionInfo, String> {
+    wake_create_result(
+        create_session_inner_completion(
+            app,
+            session_mgr,
+            pty_mgr,
+            shell,
+            shell_args,
+            cwd,
+            session_name,
+            agent_id,
+            agent_label,
+            skip_tooling_save,
+            git_repos,
+            skip_auto_resume,
+            resolved_spawn,
+            resolved_agent_host_shell,
+            viewport,
+            selection_intent,
+        )
+        .await?,
+    )
+}
+
+pub(super) fn wake_create_result(completion: CreateCompletion) -> Result<SessionInfo, String> {
+    match completion {
+        CreateCompletion::Retained => Err(ERR_WAKE_CREATE_RETAINED.to_string()),
+        CreateCompletion::Finalized(info) => Ok(info),
+        CreateCompletion::Deferred(_) => {
+            Err("create unexpectedly deferred finalization".to_string())
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_session_inner_completion<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    shell: String,
+    shell_args: Vec<String>,
+    cwd: String,
+    session_name: Option<String>,
+    agent_id: Option<String>,
+    agent_label: Option<String>,
+    skip_tooling_save: bool,
+    git_repos: Vec<SessionRepo>,
+    skip_auto_resume: bool,
+    resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
+    viewport: Option<PtyViewport>,
+    selection_intent: CreateSelectionIntent,
+) -> Result<CreateCompletion, String> {
     create_session_inner_impl(
         app,
         session_mgr,
@@ -169,8 +265,6 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         None,
         None,
     )
-    .await?
-    .into_finalized()
     .await
 }
 
