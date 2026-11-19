@@ -256,6 +256,9 @@ impl TempRoomDir {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let base = crate::config::config_dir().expect("config dir");
+        // Root discovery needs a real Root dir; a fresh config dir (CI) has none.
+        let root = crate::config::root_agent::root_agent_dir().expect("root dir");
+        std::fs::create_dir_all(root).expect("create root dir");
         let path = base.join(crate::config::temp_rooms::temp_room_dir_name(n));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create temp room");
