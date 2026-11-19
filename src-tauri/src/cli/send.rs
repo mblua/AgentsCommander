@@ -155,17 +155,15 @@ fn temp_room_route(
             },
         ),
         SenderKind::RootAgent if to_temp => Some(Ok(())),
-        _ if to_temp => {
-            Some(
-                if coordinator_to_root_target_allowed(sender, project_paths) {
-                    Ok(())
-                } else {
-                    Err("routing rejected — only the Root Agent and verified Room orchestrators may \
-                    message a Temporary Room"
-                    .to_string())
-                },
-            )
-        }
+        _ if to_temp => Some(
+            if coordinator_to_root_target_allowed(sender, project_paths) {
+                Ok(())
+            } else {
+                let reason = "routing rejected — only the Root Agent and verified Room \
+                        orchestrators may message a Temporary Room";
+                Err(reason.to_string())
+            },
+        ),
         _ => None,
     }
 }

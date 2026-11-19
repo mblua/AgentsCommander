@@ -820,7 +820,10 @@ fn temp_room_filename_needs_own_prefix() {
 fn temp_room_rejects_command() {
     assert_eq!(
         validate_root_agent_delivery_kind(TEMP, Some("clear")),
-        Err("Temporary Room messaging is file-based; use --send with a Markdown file, not --command")
+        Err(
+            "Temporary Room messaging is file-based; use --send with a Markdown file, not \
+            --command"
+        )
     );
     assert_eq!(validate_root_agent_delivery_kind(TEMP, None), Ok(()));
 }
