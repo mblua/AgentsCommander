@@ -5,7 +5,7 @@
 use crate::commands::entity_creation::{
     ensure_no_live_sessions_under_manager, try_atomic_delete_wg, WgDeleteOutcome,
 };
-use crate::config::temp_rooms::{parse_temp_room_number, temp_room_dir_name};
+use crate::config::temp_rooms::{parse_temp_room_number, temp_room_dir_name, temp_room_names_in};
 use crate::filesystem::temp_rooms::{create_dir_exclusive, list_child_entries};
 use crate::session::manager::SessionManager;
 use serde::Serialize;
@@ -56,15 +56,9 @@ fn temp_rooms_base() -> Result<PathBuf, String> {
 
 /// Real temp-room folders of `base`, sorted by number.
 pub(crate) fn list_temp_rooms_in(base: &Path) -> Result<Vec<TempRoomInfo>, String> {
-    let mut rooms: Vec<(u32, String)> = list_child_entries(base)?
+    Ok(temp_room_names_in(base)?
         .into_iter()
-        .filter(|entry| entry.real_dir)
-        .filter_map(|entry| parse_temp_room_number(&entry.name).map(|n| (n, entry.name)))
-        .collect();
-    rooms.sort_by_key(|(n, _)| *n);
-    Ok(rooms
-        .into_iter()
-        .map(|(_, name)| info(base, name))
+        .map(|name| info(base, name))
         .collect())
 }
 

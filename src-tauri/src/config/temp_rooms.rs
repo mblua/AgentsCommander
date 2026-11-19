@@ -24,6 +24,17 @@ pub(crate) fn parse_temp_room_number(name: &str) -> Option<u32> {
     (n >= 1 && temp_room_dir_name(n) == name).then_some(n)
 }
 
+/// Canonical temp-room folder names under `base` (real dirs only), sorted by number.
+pub(crate) fn temp_room_names_in(base: &Path) -> Result<Vec<String>, String> {
+    let mut rooms: Vec<(u32, String)> = crate::filesystem::temp_rooms::list_child_entries(base)?
+        .into_iter()
+        .filter(|entry| entry.real_dir)
+        .filter_map(|entry| parse_temp_room_number(&entry.name).map(|n| (n, entry.name)))
+        .collect();
+    rooms.sort_by_key(|(n, _)| *n);
+    Ok(rooms.into_iter().map(|(_, name)| name).collect())
+}
+
 /// True iff `cwd` is `<base>/temp-room-trNN`.
 pub(crate) fn is_temp_room_path_in(cwd: &str, base: &Path) -> bool {
     let path = Path::new(cwd);

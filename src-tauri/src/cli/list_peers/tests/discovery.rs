@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::teams::temp_room_peers_in;
 
 #[test]
 fn detect_wg_replica_accepts_ac_root() {
@@ -239,3 +240,121 @@ fn norm_path_lowercases_and_normalizes_slashes() {
 }
 
 // ── compute_peer_status (non-WG, expected_name=None) ─────────────
+
+/// A `temp-room-trNN` folder in the real config dir, removed on drop (#4780: 89, 90).
+/// The lock keeps the tests that share a number from deleting each other's room.
+struct TempRoomDir(
+    PathBuf,
+    #[allow(dead_code)] std::sync::MutexGuard<'static, ()>,
+);
+
+static TEMP_ROOM_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+impl TempRoomDir {
+    fn create(n: u32) -> Self {
+        let guard = TEMP_ROOM_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let base = crate::config::config_dir().expect("config dir");
+        let path = base.join(crate::config::temp_rooms::temp_room_dir_name(n));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("create temp room");
+        Self(path, guard)
+    }
+}
+
+impl Drop for TempRoomDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp_room_path(n: u32) -> String {
+    let base = crate::config::config_dir().expect("config dir");
+    let name = crate::config::temp_rooms::temp_room_dir_name(n);
+    base.join(name).to_string_lossy().into_owned()
+}
+
+fn peer_names(peers: &[PeerInfo]) -> Vec<String> {
+    peers.iter().map(|peer| peer.name.clone()).collect()
+}
+
+fn is_temp_row(name: &str) -> bool {
+    crate::config::temp_rooms::is_temp_room_address(name)
+}
+
+#[test]
+fn temp_room_caller_sees_root_and_coordinators_only() {
+    let names = peer_names(&discover_peers(&temp_room_path(89)).expect("temp-room peers"));
+    assert!(names
+        .iter()
+        .any(|n| n == crate::config::root_agent::ROOT_AGENT_SENDER));
+    assert!(!names.iter().any(|n| is_temp_row(n)));
+
+    let root = crate::config::root_agent::root_agent_dir().expect("root dir");
+    let mut expected: Vec<String> = peer_names(&discover_peers(&root).expect("root peers"))
+        .into_iter()
+        .filter(|n| !is_temp_row(n))
+        .collect();
+    expected.push(crate::config::root_agent::ROOT_AGENT_SENDER.to_string());
+    assert_eq!(names, expected);
+}
+
+#[test]
+fn coordinator_sees_temp_room_peers() {
+    let _room = TempRoomDir::create(90);
+    let (_temp, wg1_tech_lead, _wg1_dev_rust) = make_portable_cross_wg_fixture();
+    let wg = detect_wg_replica(wg1_tech_lead.to_str().unwrap())
+        .unwrap()
+        .expect("portable coordinator replica");
+
+    let names = peer_names(&discover_wg_peers(wg, &[]));
+
+    assert!(names
+        .iter()
+        .any(|n| n == crate::config::root_agent::ROOT_AGENT_SENDER));
+    assert!(names
+        .iter()
+        .any(|n| n == "agentscommander://temp-room/tr90"));
+}
+
+#[test]
+fn member_does_not_see_temp_room_peers() {
+    let _room = TempRoomDir::create(90);
+    let (_temp, _wg1_tech_lead, wg1_dev_rust) = make_portable_cross_wg_fixture();
+    let wg = detect_wg_replica(wg1_dev_rust.to_str().unwrap())
+        .unwrap()
+        .expect("portable non-coordinator replica");
+
+    let names = peer_names(&discover_wg_peers(wg, &[]));
+
+    assert!(!names.iter().any(|n| is_temp_row(n)));
+}
+
+#[test]
+fn root_sees_temp_room_peers() {
+    let _room = TempRoomDir::create(89);
+    let root = crate::config::root_agent::root_agent_dir().expect("root dir");
+
+    let names = peer_names(&discover_peers(&root).expect("root peers"));
+
+    assert!(names
+        .iter()
+        .any(|n| n == "agentscommander://temp-room/tr89"));
+}
+
+#[test]
+fn temp_room_peer_row_shape() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(tmp.path().join("temp-room-tr03")).expect("dir");
+
+    let peers = temp_room_peers_in(tmp.path());
+
+    assert_eq!(peers.len(), 1);
+    let peer = &peers[0];
+    assert_eq!(peer.name, "agentscommander://temp-room/tr03");
+    let expected = tmp.path().join("temp-room-tr03");
+    assert_eq!(peer.path, expected.to_string_lossy());
+    assert!(peer.reachable);
+    assert_eq!(peer.status, "unknown");
+}

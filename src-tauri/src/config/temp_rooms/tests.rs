@@ -133,3 +133,27 @@ fn is_temp_room_address_rejects_lookalikes() {
         assert!(!is_temp_room_address(addr), "{addr}");
     }
 }
+
+#[test]
+fn names_in_lists_real_canonical_dirs_sorted() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    for name in [
+        "temp-room-tr10",
+        "temp-room-tr02",
+        "temp-room-tr1",
+        "temp-room-tr00",
+        "other",
+    ] {
+        std::fs::create_dir(tmp.path().join(name)).expect("dir");
+    }
+    std::fs::write(tmp.path().join("temp-room-tr03"), b"file").expect("file");
+    let names = temp_room_names_in(tmp.path()).expect("names");
+    assert_eq!(names, vec!["temp-room-tr02", "temp-room-tr10"]);
+}
+
+#[test]
+fn names_in_missing_base_is_empty() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let names = temp_room_names_in(&tmp.path().join("missing")).expect("names");
+    assert!(names.is_empty());
+}
