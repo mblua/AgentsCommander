@@ -92,6 +92,11 @@ app_inventory() {
 app_inventory > "$E/app-data-before.txt"
 finish() {
   code=$?; trap - EXIT; set +e
+  if test -f "$E/off-rule.stdout" && test ! -f "$E/off-rule-off.stdout"; then
+    hyprctl eval "ac4248_off_rule:set_enabled(false)" > "$E/off-rule-off.stdout" \
+      2> "$E/off-rule-off.stderr"
+  fi
+  if test -n "${socat_pid:-}"; then kill "$socat_pid"; wait "$socat_pid"; fi
   if test -f "$E/active-before.json"; then
     hyprctl -j activewindow > "$E/active-after.json"
     hyprctl -j cursorpos > "$E/cursor-after.json"
@@ -104,6 +109,7 @@ finish() {
   printf '%s\n' "$code" > "$E/script.exit"
   exit "$code"
 }
+socat_pid=
 trap finish EXIT
 npm run build
 npx --no-install vite build --config scripts/ac4248-fixture.vite.mjs
@@ -131,6 +137,8 @@ for name in image_bounds encoded_size_limit receipt_no_clobber late_generation \
   checker_mutations_rejected; do rg "$name: test" "$E/example-tests.list"; done
 cargo +1.98.1 test --locked -p agentscommander --example linux_snapshot \
   > "$E/example-tests.log" 2>&1
+bash "$REPO/scripts/ac4248-off-check-test.sh" > "$E/off-check-test.log" 2>&1 \
+  || incomplete off-workspace off_check_selftest
 git rev-parse HEAD > "$E/source-sha.txt"
 hyprctl version > "$E/hyprland.txt"
 pkg-config --modversion webkit2gtk-4.1 > "$E/webkit.txt"
@@ -147,21 +155,42 @@ check_trace stall-raf
 check_stall_probes
 test "$(cat "$E/visible.exit")" -eq 0
 jq -e '.verdict == "pass"' "$E/visible/receipt.json"
-timeout --kill-after=5s 45s bash -c '
-  set -eu
-  while :; do
-    date -u +%Y-%m-%dT%H:%M:%S.%NZ
-    hyprctl -j activewindow
-    hyprctl -j cursorpos
-    hyprctl -j activeworkspace
-    hyprctl -j clients
-    sleep 0.1
-  done
-' > "$E/off.samples" 2> "$E/off.sample-errors" &
-sampler_pid=$!
+# AC-4248-010: compositor event log first (socket2), so no stage event is missed.
+ev_sock="${XDG_RUNTIME_DIR:-}/hypr/${HYPRLAND_INSTANCE_SIGNATURE:-}/.socket2.sock"
+test -S "$ev_sock" || incomplete off-workspace off_events_unavailable
+timeout 75s socat -u UNIX-CONNECT:"$ev_sock" - > "$E/off.events" 2> "$E/off.events-err" &
+socat_pid=$!
+sleep 0.5
+kill -0 "$socat_pid" || incomplete off-workspace off_events_unavailable
 hyprctl -j activewindow > "$E/active-before.json"
 hyprctl -j cursorpos > "$E/cursor-before.json"
 hyprctl -j activeworkspace > "$E/workspace-before.json"
+hyprctl -j monitors > "$E/monitors-before.json"
+# Map-time rule: the exec_cmd rule below covers only the first window of the pid.
+off_rule="ac4248_off_rule = hl.window_rule({ name = 'ac4248-off',"
+off_rule+=" match = { initial_title = '^ac4248 (control|target)\$' },"
+off_rule+=" workspace = 'special:ac4248 silent', no_initial_focus = true })"
+hyprctl eval "$off_rule" > "$E/off-rule.stdout" 2> "$E/off-rule.stderr" || true
+test "$(cat "$E/off-rule.stdout")" = ok && test ! -s "$E/off-rule.stderr" \
+  || incomplete off-workspace off_rule_not_registered
+# One compact JSON line per sample; monitors use the same `mon` text as the checker.
+sample_off() {
+  while :; do
+    jq -cn --arg utc "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" \
+      --argjson ws "$(hyprctl -j activeworkspace)" --argjson aw "$(hyprctl -j activewindow)" \
+      --argjson cur "$(hyprctl -j cursorpos)" --argjson mo "$(hyprctl -j monitors)" \
+      --argjson cl "$(hyprctl -j clients)" \
+      '{utc: $utc, active: $ws.id, address: ($aw.address // ""), cursor: ($cur | {x, y}),
+        monitors: ($mo |
+  [.[] | {name, ws: .activeWorkspace.name, special: .specialWorkspace.name}] | sort_by(.name)),
+        clients: [$cl[] | select(((.initialTitle // .title) // "") | startswith("ac4248 "))
+          | {initialTitle, title, address, ws: .workspace.id, wsName: .workspace.name}]}'
+    sleep 0.1
+  done
+}
+timeout --kill-after=5s 45s bash -c "set -eu; $(declare -f sample_off); sample_off" \
+  > "$E/off.samples" 2> "$E/off.sample-errors" &
+sampler_pid=$!
 # Timeout/streams/exit receipt belong inside the Lua-launched command.
 cat > "$E/off-run.sh" <<'RUN'
 #!/usr/bin/env bash
@@ -186,6 +215,18 @@ set -e
 printf '%s\n' "$sampler_exit" > "$E/sampler.exit"
 # Wrapper can finish after sampler; bounded wait preserves missing-exit failure.
 timeout 12s bash -c 'until test -f "$E/off.exit"; do sleep 0.1; done'
+hyprctl eval "ac4248_off_rule:set_enabled(false)" > "$E/off-rule-off.stdout" \
+  2> "$E/off-rule-off.stderr" || true
+set +e
+kill -0 "$socat_pid"
+socat_alive=$?
+kill "$socat_pid"; wait "$socat_pid"
+printf '%s\n' "$?" > "$E/off.events-exit"
+set -e
+socat_pid=
+test "$(cat "$E/off-rule-off.stdout")" = ok && test ! -s "$E/off-rule-off.stderr" \
+  || incomplete off-workspace off_rule_not_removed
+test "$socat_alive" -eq 0 || incomplete off-workspace off_events_unavailable
 hyprctl -j activewindow > "$E/active-after.json"
 hyprctl -j cursorpos > "$E/cursor-after.json"
 hyprctl -j activeworkspace > "$E/workspace-after.json"
@@ -200,8 +241,24 @@ printf '%s\n' "$?" > "$E/focus.diff-exit"
 cmp "$E/pointer-before.json" "$E/pointer-after.json" > "$E/pointer.diff" 2>&1
 printf '%s\n' "$?" > "$E/pointer.diff-exit"
 set -e
-test "$sampler_exit" -eq 124
-test ! -s "$E/off.sample-errors"
+test ! -s "$E/off.sample-errors" || incomplete off-workspace off_sampler_error
+test "$sampler_exit" -eq 124 || incomplete off-workspace off_sampler_exit
+# Every sample and every compositor event; class is read from tokens, not exit codes.
+set +e
+jq -rn --slurpfile s "$E/off.samples" --rawfile ev "$E/off.events" \
+  --slurpfile m0 "$E/monitors-before.json" --slurpfile a0 "$E/active-before.json" \
+  --slurpfile c0 "$E/cursor-before.json" -f "$REPO/scripts/ac4248-off-check.jq" \
+  > "$E/off-check.token"
+check_exit=$?
+set -e
+test "$check_exit" -eq 0 && test "$(wc -l < "$E/off-check.token")" -eq 1 \
+  || incomplete off-workspace off_check_error
+token=$(cat "$E/off-check.token")
+test "$token" = ok || incomplete off-workspace "$token"
+test "$(cat "$E/focus.diff-exit")" -eq 0 || incomplete off-workspace off_focus_changed
+test "$(cat "$E/pointer.diff-exit")" -eq 0 || incomplete off-workspace off_pointer_changed
+readout "off placement_verified samples=$(wc -l < "$E/off.samples")" \
+  "events=$(wc -l < "$E/off.events")"
 test "$(cat "$E/off.exit")" -eq 0
 jq -e '.verdict == "pass"' "$E/off-workspace/receipt.json"
 sha256sum --check "$E/binary-sha256.txt"
