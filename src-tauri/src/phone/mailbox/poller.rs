@@ -509,7 +509,37 @@ pub(crate) type SpawnedPeerWake = (
 pub(crate) enum OwnedPeerWakeStep {
     Delivered(OutboxMessage),
     Relist,
-    Retained,
+    Retained(RetainedExit),
+}
+
+/// #3263 - an owned wake that ends without writing input; the error is counted and retried.
+pub(crate) const ERR_WAKE_RETAINED: &str = "wake retained without input";
+
+pub(crate) struct RetainedExit {
+    pub(crate) stage: &'static str,
+    pub(crate) session: Option<Uuid>,
+}
+
+impl RetainedExit {
+    pub(crate) fn step(stage: &'static str, session: Option<Uuid>) -> OwnedPeerWakeStep {
+        OwnedPeerWakeStep::Retained(Self { stage, session })
+    }
+}
+
+pub(crate) fn log_wake_ended_without_input(
+    message_id: &str,
+    target: &str,
+    session: Option<Uuid>,
+    reason: &str,
+) {
+    let session = session.map_or_else(|| "unknown".to_string(), |id| id.to_string());
+    log::warn!(
+        "[mailbox] #3263 wake ended without input message={} target={} session={} reason={}",
+        message_id,
+        target,
+        session,
+        reason
+    );
 }
 
 pub(crate) struct OwnedPeerWakeExecution {

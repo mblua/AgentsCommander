@@ -377,14 +377,20 @@ pub(super) async fn retained_fixture_ordinary_wake(
     message: &OutboxMessage,
     control: &crate::session::selection::ReplacementFixtureControl,
 ) -> Option<Result<OutboxMessage, String>> {
+    use crate::phone::mailbox::poller::ERR_WAKE_RETAINED;
     tokio::select! {
         biased;
-        actual = poller.deliver_wake(app, message) => Some(actual),
+        actual = poller.deliver_wake(app, message) => match actual {
+            Err(error) if error.starts_with(ERR_WAKE_RETAINED) => None,
+            actual => Some(actual),
+        },
         _ = retained_source_wait_cut(control,
             crate::session::selection::ReplacementFixtureCut::SourceRetainedReturn) => None,
     }
     // None means only that the real core returned Retained and its public
-    // pending waiter was dropped. It is never a product result or success.
+    // waiter ended (#3263) or was dropped. It also covers the two Admitted-stage
+    // rollback exits, which return Err and so never record SourceRetainedReturn.
+    // It is never a product result or success.
 }
 
 pub(super) async fn retained_source_wait_cut(

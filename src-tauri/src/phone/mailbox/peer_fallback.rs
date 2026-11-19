@@ -4,7 +4,8 @@ use super::notice::{
     WakeDeliveryOrigin,
 };
 use super::poller::{
-    MailboxPoller, OwnedPeerWakeExecution, OwnedPeerWakeStep, PeerWakeFallback, SpawnedPeerWake,
+    MailboxPoller, OwnedPeerWakeExecution, OwnedPeerWakeStep, PeerWakeFallback, RetainedExit,
+    SpawnedPeerWake, ERR_WAKE_RETAINED,
 };
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
@@ -48,6 +49,28 @@ async fn prepare_replacement_context(
         }
     }
     Ok(true)
+}
+
+fn retained(stage: &'static str, session: Option<Uuid>) -> Result<OwnedPeerWakeStep, String> {
+    Ok(RetainedExit::step(stage, session))
+}
+
+/// #3263 - Admitted-stage exit before any create call: roll the owner back so a
+/// retry can admit, then end the wake with a counted error.
+async fn end_before_publish(
+    continuation: &crate::session::selection::OwnedReplacementContinuation,
+    manager: &SessionManager,
+    pty: &Arc<Mutex<PtyManager>>,
+    stage: &'static str,
+) -> Result<OwnedPeerWakeStep, String> {
+    let base = format!("{ERR_WAKE_RETAINED}: stage={stage}");
+    let done = continuation
+        .rollback_failed_create(manager, pty, &base)
+        .await;
+    Err(format!(
+        "{base} rollback={}",
+        if done { "done" } else { "refused" }
+    ))
 }
 
 fn replacement_delivery(execution: &OwnedPeerWakeExecution) -> OutboxMessage {
@@ -214,19 +237,19 @@ impl MailboxPoller {
             .fixture_reached(crate::session::selection::ReplacementFixtureCut::SourceCoreEntered)
             .await
         {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return retained("fixture_core_entered", None);
         }
         let manager = app.pty_sessions().read().await.clone();
         if !continuation.validate_source().await {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return end_before_publish(continuation, &manager, pty, "source_invalid").await;
         }
         if !prepare_replacement_context(execution, continuation, &manager, pty).await? {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return end_before_publish(continuation, &manager, pty, "context_not_prepared").await;
         }
         #[cfg(test)]
         let fixture_created =
             match execute_peer_replacement_fixture(app, execution, continuation, fixture).await {
-                PeerReplacementFixture::Retained => return Ok(OwnedPeerWakeStep::Retained),
+                PeerReplacementFixture::Retained => return retained("fixture_retained", None),
                 PeerReplacementFixture::Created(created) => Some(*created),
                 PeerReplacementFixture::NotUsed => None,
             };
@@ -246,12 +269,12 @@ impl MailboxPoller {
         };
 
         if let crate::session::create_contracts::OwnedReplacementCreateStep::Retained = created? {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return retained("create_retained", None);
         }
         let Some((info, id, effect)) =
             begin_replacement_work_transfer(continuation, &manager, pty).await
         else {
-            return Ok(OwnedPeerWakeStep::Retained);
+            return retained("work_transfer_unavailable", None);
         };
         if info.telegram_bot_id.is_some() {
             self.attach_persisted_telegram_for_wake(app, id, info.telegram_bot_id.as_deref())
@@ -261,7 +284,7 @@ impl MailboxPoller {
             Ok(settle) => settle,
             Err(error) => {
                 retain_after_transfer_error(effect, continuation, error);
-                return Ok(OwnedPeerWakeStep::Retained);
+                return retained("settle_failed", Some(id));
             }
         };
         if continuation
@@ -272,7 +295,7 @@ impl MailboxPoller {
             // The bridge/settle calls returned; no input was attempted. Keep
             // their known incomplete-work result instead of an unwind receipt.
             effect.complete(Err("replacement work stopped before input".into()));
-            return Ok(OwnedPeerWakeStep::Retained);
+            return retained("completion_info_lost", Some(id));
         }
         let injected = self
             .inject_wake_into_pty(
@@ -286,7 +309,7 @@ impl MailboxPoller {
             .await;
         if let Err(error) = injected {
             retain_after_transfer_error(effect, continuation, error);
-            return Ok(OwnedPeerWakeStep::Retained);
+            return retained("inject_failed", Some(id));
         }
         drop(execution.exact.take());
         drop(execution.stripe.take());
