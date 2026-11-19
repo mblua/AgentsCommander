@@ -44,13 +44,26 @@ interface Setup {
   rooms?: TempRoomInfo[];
   config?: WorkgroupGroupsConfig;
   failGroupUpdate?: boolean;
+  savedAgent?: boolean;
 }
 
 function setup(opts: Setup = {}) {
   const fake = new FakeTransport();
   let listed = [...(opts.rooms ?? [ROOM_1])];
   const state = { config: opts.config ?? defaultGroupsConfig() };
-  fake.onInvoke("get_settings", () => ({ ...baseSettings(), tempRoomAgent: undefined }));
+  const claude = {
+    id: "claude",
+    label: "claude",
+    command: "claude",
+    color: "#d97706",
+    envs: [],
+    isolatedHome: false,
+  };
+  const saved = opts.savedAgent ? { agentId: "claude", requestedProfile: null } : undefined;
+  fake.onInvoke("get_settings", () => ({
+    ...baseSettings({ agents: [claude] }),
+    tempRoomAgent: saved,
+  }));
   fake.onInvoke("list_temp_rooms", () => listed);
   fake.onInvoke("get_temp_room_groups", () => state.config);
   fake.onInvoke("update_temp_room_groups", (args) => {
@@ -240,17 +253,32 @@ describe("#4805 TemporaryRoomsPanel groups and TASK title", () => {
 
   it("create reusing tr01 removes its stored token before create_session", async () => {
     const { fake } = track(
-      setup({ rooms: [], config: withGroup(TOKEN) }),
+      setup({ rooms: [], config: withGroup(TOKEN), savedAgent: true }),
     );
     await waitFor(() => expect(byId("tempRooms.header")).not.toBeNull());
     contextMenu(byId("tempRooms.header")!);
     await waitFor(() => expect(byId("tempRooms.menu.create")).not.toBeNull());
+    await waitFor(() => expect(fake.callsFor("get_temp_room_groups")).toHaveLength(1));
+    // A slow cleanup read: a launch that does not wait for the cleanup overtakes it.
+    const stored = withGroup(TOKEN);
+    fake.onInvoke(
+      "get_temp_room_groups",
+      () => new Promise((resolve) => setTimeout(() => resolve(stored), 30)),
+    );
+    const listsBefore = fake.callsFor("list_temp_rooms").length;
     click(byId("tempRooms.menu.create")!);
-    await waitFor(() => expect(fake.callsFor("update_temp_room_groups")).toHaveLength(1));
+    await waitFor(() => expect(fake.callsFor("create_session")).toHaveLength(1));
+    expect(fake.callsFor("update_temp_room_groups")).toHaveLength(1);
     expect(lastGroups(fake).groups[0]!.regex).not.toContain(ROOM_1.name);
     const cmds = order(fake);
-    const create = cmds.indexOf("create_session");
-    expect(create === -1 || cmds.indexOf("update_temp_room_groups") < create).toBe(true);
+    const created = cmds.indexOf("create_temp_room");
+    const cleanup = cmds.indexOf("update_temp_room_groups");
+    const relist = cmds.indexOf("list_temp_rooms", created);
+    expect(fake.callsFor("list_temp_rooms").length).toBeGreaterThan(listsBefore);
+    expect(created).toBeGreaterThanOrEqual(0);
+    expect(cleanup).toBeGreaterThan(created);
+    expect(relist).toBeGreaterThan(cleanup);
+    expect(cmds.indexOf("create_session")).toBeGreaterThan(cleanup);
   });
 
   it("a failed cleanup still deletes the row and shows a toast", async () => {
