@@ -15,6 +15,7 @@ mod root_and_git_scope;
 mod root_builder_and_repos;
 mod shared_locations;
 mod skill_index;
+mod temp_room_coordinator_4780;
 mod template_heal;
 mod template_render;
 mod token_accounting;

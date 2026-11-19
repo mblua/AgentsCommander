@@ -5,6 +5,7 @@ mod config_merge;
 mod frozen_snapshots;
 mod provisioning;
 mod skill_snapshots;
+mod temp_room_context;
 mod tracked_state;
 
 #[cfg(unix)]

@@ -18,10 +18,14 @@ import { sessionsStore } from "../stores/sessions";
 import { bridgesStore } from "../stores/bridges";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
 import { requestCoordinatorClose } from "../stores/coordinator-close";
+import { unleashedReplicasStore } from "../stores/unleashed-replicas";
+import { applyUnleash } from "./ReplicaSessionActions";
+import UnleashConfirmModal from "./UnleashConfirmModal";
 import { sessionDotClass } from "./session-status";
 import { RowKeyProxy, onRowKey } from "./RowKeyProxy";
 import SidebarRegexFilter, { SidebarRegexFilterError } from "./SidebarRegexFilter";
 import { sidebarFilter } from "../stores/sidebar-filter";
+import { createSidebarFilterHost } from "./sidebar-filter-host";
 import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 import SessionRowMenu from "./context-menu/SessionRowMenu";
 import {
@@ -34,9 +38,6 @@ import {
   telegramSpec,
 } from "./context-menu/session-row-menu-specs";
 
-const UNLEASH_TITLE =
-  "Not available in Temporary Rooms yet: the agent already runs without " +
-  "AgentsCommander rules (stage 2, #4780)";
 const NO_TASK_TITLE = "Temp rooms have no TASK.md";
 const OPEN_ROOM_FOLDER = "Open Room's Folder";
 
@@ -103,6 +104,7 @@ const TemporaryRoomsPanel: Component = () => {
   const [deleteError, setDeleteError] = createSignal<string | null>(null);
   const [deleteBusy, setDeleteBusy] = createSignal(false);
   const [placeholderWarnings, setPlaceholderWarnings] = createSignal<string[]>([]);
+  const [unleashAsk, setUnleashAsk] = createSignal<TempRoomInfo | null>(null);
 
   // #4786 - red warning when the saved agent uses a placeholder temp rooms lack.
   const refreshWarnings = async () => {
@@ -320,6 +322,10 @@ const TemporaryRoomsPanel: Component = () => {
     }
   };
 
+  // #4780 - the replica Unleash flow (#4752) on the temp-room path; restart relaunches.
+  const unleashed = (room: TempRoomInfo) =>
+    unleashedReplicasStore.isUnleashed({ path: room.path, unleashed: room.unleashed });
+
   const agentCaps = (room: TempRoomInfo) => {
     const session = findTempRoomSession(room);
     const live = isLive(session);
@@ -337,7 +343,17 @@ const TemporaryRoomsPanel: Component = () => {
         onOpenBrowse: () => {},
       }),
       matrixFolder: matrixFolderSpec(undefined),
-      unleash: { disabled: true, title: UNLEASH_TITLE, onSelect: () => {} },
+      unleash: {
+        label: unleashed(room) ? "Leash" : "Unleash",
+        disabled: unleashedReplicasStore.busy(),
+        onSelect: () => {
+          if (unleashed(room)) {
+            void applyUnleash(session?.id ?? "", room.path, false, () => restart(room));
+          } else {
+            setUnleashAsk(room);
+          }
+        },
+      },
       close: closeSpec(session, {
         onSelect: () => {
           if (session) void requestCoordinatorClose(session);
@@ -370,15 +386,15 @@ const TemporaryRoomsPanel: Component = () => {
       ? rooms()
       : rooms().filter((r) => sidebarFilter.matches(r.name));
 
+  let panelEl: HTMLDivElement | undefined;
+  createSidebarFilterHost(() => panelEl?.parentElement);
+
   return (
-    <div class="project-panel" data-ac-testid="tempRooms.panel">
+    <div class="project-panel" data-ac-testid="tempRooms.panel" ref={panelEl}>
       <div
         class="project-header"
         classList={{
           "project-header--has-indicator": true,
-          open: sidebarFilter.open(),
-          active: sidebarFilter.active(),
-          invalid: !!sidebarFilter.error(),
         }}
         data-ac-testid="tempRooms.header"
         onContextMenu={(e) => {
@@ -404,8 +420,13 @@ const TemporaryRoomsPanel: Component = () => {
           {String(visibleRooms().length)}
         </span>
         <SidebarRegexFilter />
+        <div
+          class="project-filter-error-slot"
+          data-ac-testid="sidebar.regexFilter.errorSlot"
+        >
+          <SidebarRegexFilterError />
+        </div>
       </div>
-      <SidebarRegexFilterError />
       <Show when={!collapsed()}>
         <Show when={placeholderWarnings().length > 0}>
           <div class="new-agent-error" data-ac-testid="tempRooms.placeholderWarning">
@@ -512,6 +533,25 @@ const TemporaryRoomsPanel: Component = () => {
             onDismiss={closeAgentMenu}
             caps={agentCaps(menu().room)}
           />
+        )}
+      </Show>
+
+      <Show when={unleashAsk()}>
+        {(r) => (
+          <Portal>
+            <UnleashConfirmModal
+              replicaName={r().name}
+              busy={unleashedReplicasStore.busy()}
+              onCancel={() => setUnleashAsk(null)}
+              onConfirm={() => {
+                const room = r();
+                setUnleashAsk(null);
+                void applyUnleash(findTempRoomSession(room)?.id ?? "", room.path, true, () =>
+                  restart(room),
+                );
+              }}
+            />
+          </Portal>
         )}
       </Show>
 

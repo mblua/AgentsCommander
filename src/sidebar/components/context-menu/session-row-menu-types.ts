@@ -128,7 +128,7 @@ export type SessionRowMenuCaps = {
   repos?: false | ReposSpec;
   matrixFolder?: false | ActionSpec;
   /** #4779 - shown only by hosts that pass it. */
-  unleash?: false | ActionSpec;
+  unleash?: false | (ActionSpec & { label?: string });
   close?: false | ActionSpec;
   deleteAgent?: false | DeleteAgentSpec;
   detach?: false | ToggleSpec;

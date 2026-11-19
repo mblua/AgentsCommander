@@ -1,6 +1,7 @@
 use super::membership::resolve_agent_path;
 use super::membership::resolve_agent_ref;
 use super::note_missing_team_config;
+use super::routes::{build_root_agent_synthetic_peer, root_agent_peer, temp_room_peers};
 use super::DiscoveredTeam;
 use super::{extract_role_section, read_role, PeerInfo};
 use crate::config::ac_root::existing_ac_root;
@@ -460,6 +461,7 @@ pub(crate) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
     let effective_paths = effective_wg_project_paths(&wg, project_paths);
     if let Some(root_peer) = build_root_agent_synthetic_peer(&wg, &effective_paths) {
         peers.push(root_peer);
+        peers.extend(temp_room_peers());
     }
 
     peers
@@ -917,60 +919,19 @@ pub(crate) fn discover_root_coordinator_peers_from_project_paths(
     peers
 }
 
-/// Build a synthetic `PeerInfo` for the canonical Root Agent reply target,
-/// or `None` if the caller is not an identity-verified WG coordinator (the
-/// only relationship that can address the Root Agent — see #293 §3).
-///
-/// `wg` is the caller's WG-replica detection result (already computed by
-/// `discover_peers`); `project_paths` is the effective settings slice the
-/// caller scanned.
-pub(crate) fn build_root_agent_synthetic_peer(
-    wg: &WgReplicaInfo,
-    project_paths: &[String],
-) -> Option<PeerInfo> {
-    // The caller is a coordinator iff `verified_wg_coordinator_target`
-    // accepts its own FQN. Re-uses the same identity-cross-reference path
-    // (#277 §2.3) used by the root-sender side.
-    let my_fqn = format!("{}:{}/{}", wg.my_project, wg.my_wg_name, wg.my_agent_name);
-    crate::config::teams::verified_wg_coordinator_target(&my_fqn, project_paths)?;
-
-    let root_dir = crate::config::root_agent::root_agent_dir().ok()?;
-    Some(PeerInfo {
-        name: crate::config::root_agent::ROOT_AGENT_SENDER.to_string(),
-        path: root_dir,
-        // `status`/`session_status` reflect "we don't track it from here".
-        // The root session is in a different working-directory namespace
-        // than this verb scans — its working state is invisible to
-        // `compute_peer_status`.
-        status: "unknown".to_string(),
-        role: "AgentsCommander Root Agent (canonical reply target).".to_string(),
-        teams: Vec::new(),
-        reachable: true,
-        last_coding_agent: None,
-        working: false,
-        session_status: "none".to_string(),
-        session_id: None,
-        waiting_for_input: false,
-        // Synthetic root-agent peer: no session in this verb's cwd namespace,
-        // so it can never be parked on a blocking terminal menu.
-        blocked_menu: false,
-        blocked_menu_message: None,
-        exit_code: None,
-        // Synthetic root-agent peer: no session in this verb's cwd namespace.
-        context_percent: None,
-        agent: None,
-        profile: None,
-        coding_agents: std::collections::HashMap::new(),
-    })
-}
-
 /// Run the shared discovery — WG-replica path when `root` is a replica, the
 /// origin-agent path otherwise. Factored so `execute` and `execute_lean`
 /// share the dispatch.
 pub(crate) fn discover_peers(root: &str) -> Result<Vec<PeerInfo>, String> {
     let settings = crate::config::settings::load_settings_for_cli_strict()?;
-    if crate::config::root_agent::is_root_agent_path(root) {
-        Ok(discover_root_coordinator_peers(&settings.project_paths))
+    if crate::config::temp_rooms::is_temp_room_path(root) {
+        let mut peers = discover_root_coordinator_peers(&settings.project_paths);
+        peers.extend(root_agent_peer());
+        Ok(peers)
+    } else if crate::config::root_agent::is_root_agent_path(root) {
+        let mut peers = discover_root_coordinator_peers(&settings.project_paths);
+        peers.extend(temp_room_peers());
+        Ok(peers)
     } else if let Some(wg) = detect_wg_replica(root)? {
         Ok(discover_wg_peers(wg, &settings.project_paths))
     } else {

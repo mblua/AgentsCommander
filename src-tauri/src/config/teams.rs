@@ -22,12 +22,11 @@ pub(crate) use discovery::discover_teams_from_project_paths;
 #[cfg(all(test, windows))]
 use discovery::discover_teams_in_project;
 pub(crate) use discovery::discover_teams_in_project_filtered;
+pub(crate) use discovery::{detect_wg_replica, discover_peers};
 #[cfg(test)]
 pub(crate) use discovery::{
-    build_root_agent_synthetic_peer, discover_root_coordinator_peers_from_project_paths,
-    discover_wg_peers, WgReplicaInfo,
+    discover_root_coordinator_peers_from_project_paths, discover_wg_peers, WgReplicaInfo,
 };
-pub(crate) use discovery::{detect_wg_replica, discover_peers};
 pub use membership::can_communicate;
 pub use membership::is_any_coordinator;
 pub use membership::is_coordinator_for_cwd;
@@ -61,6 +60,8 @@ pub use routes::verify_pty_input_route;
 pub(crate) use routes::verify_terminal_snapshot_root_identity;
 pub(crate) use routes::verify_terminal_snapshot_route;
 pub(crate) use routes::SnapshotDiscoverySkips;
+#[cfg(test)]
+pub(crate) use routes::{build_root_agent_synthetic_peer, temp_room_peers_in};
 
 /// #280 §3.4 — record whether the missing-config one-shot INFO has already
 /// fired for a given `(project, team_dir)` pair this process. Returns
