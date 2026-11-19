@@ -39,7 +39,7 @@ const UnleashConfirmModal: Component<{
       />
       <dialog
         open
-        class="agent-modal"
+        class="agent-modal unleash-confirm"
         aria-modal="true"
         aria-labelledby="unleashConfirmTitle"
         aria-describedby="unleashConfirmDescription"

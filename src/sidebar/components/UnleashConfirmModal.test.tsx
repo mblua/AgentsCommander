@@ -38,6 +38,8 @@ describe("UnleashConfirmModal (#4752)", () => {
     mount();
     const dialog = byTestId("unleashConfirm.modal")!;
     expect(dialog.tagName).toBe("DIALOG");
+    expect(dialog.classList.contains("agent-modal")).toBe(true);
+    expect(dialog.classList.contains("unleash-confirm")).toBe(true);
     expect(dialog.hasAttribute("open")).toBe(true);
     expect(dialog.getAttribute("aria-labelledby")).toBe("unleashConfirmTitle");
     expect(dialog.getAttribute("aria-describedby")).toBe("unleashConfirmDescription");
