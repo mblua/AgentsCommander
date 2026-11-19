@@ -263,55 +263,13 @@ fn overview_rows_use_the_first_effective_entry_and_skip_empty_winners() {
     assert!(build_update_overview_rows(&suppressed, &HashMap::new(), &HashMap::new()).is_empty());
 }
 
-/// #4804 - executable scripts at `<root>/mise/shims/codex` and `<root>/plain/bin/claude`
-/// plus a persisted catalog naming both by absolute path; returns (codex, claude).
-#[cfg(unix)]
-fn mise_overview_fixture(root: &Path) -> (String, String) {
-    use std::os::unix::fs::PermissionsExt;
-    let script = |rel: &str| {
-        let path = root.join(rel);
-        std::fs::create_dir_all(path.parent().expect("parent")).expect("script dir");
-        std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("script");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        path.to_string_lossy().to_string()
-    };
-    let (codex, claude) = (script("mise/shims/codex"), script("plain/bin/claude"));
-    let catalog_dir = root.join(".ac").join("coding-agents");
-    std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
-    let agent = |key: &str, label: &str, command: &str| {
-        json!({
-            "key": key,
-            "label": label,
-            "description": "",
-            "color": "#000000",
-            "command": command,
-            "updateCommands": ["true"]
-        })
-    };
-    let manifest = json!({
-        "schemaVersion": 1,
-        "agents": [agent("codex", "Codex", &codex), agent("claude", "Claude", &claude)]
-    });
-    std::fs::write(
-        catalog_dir.join("agents.10.default.json"),
-        serde_json::to_vec_pretty(&manifest).expect("manifest json"),
-    )
-    .expect("write catalog");
-    (codex, claude)
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn update_overview_with_marks_mise_rows() {
     let (app, cache, _frames_rx) = app_with_cache();
     let handle = app.handle().clone();
     let dir = tempfile::tempdir().expect("tempdir");
-    assert!(
-        !dir.path().components().any(|c| c.as_os_str() == "mise"),
-        "temp dir {:?} has a `mise` component; the fixture needs one without",
-        dir.path()
-    );
-    let (codex, claude) = mise_overview_fixture(dir.path());
+    let (codex, claude) = mise_fixture(dir.path(), "mise/shims/codex", "plain/bin/claude");
     let settings = bob_settings(dir.path());
     let gate = AgentUpdateGate::new(); // not finished: every row is deferred, no probe
     let calls = Arc::new(AtomicUsize::new(0));
