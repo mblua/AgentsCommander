@@ -337,6 +337,8 @@ impl Rgba {
     const BLUE: [u8; 3] = [0, 0, 255];
     const MAGENTA: [u8; 3] = [255, 0, 255];
     const BLACK: [u8; 3] = [0, 0, 0];
+    // CSS px; must equal CONTROL_SQUARE in tests/fixtures/ac4248-snapshot/main.js.
+    const CHECKER_CELL: f64 = 32.0;
 
     fn new(width: u32, height: u32, data: Vec<u8>) -> Result<Self, String> {
         check_bounds(width, height)?;
@@ -385,18 +387,31 @@ impl Rgba {
         total > 0 && matching as f64 >= total as f64 * Self::AGREEMENT
     }
 
-    // Control checker: mostly magenta and black, each a large share of the surface.
-    fn shows_checker(&self) -> bool {
-        let (mut total, mut magenta, mut black) = (0_u64, 0_u64, 0_u64);
-        for y in (0..self.height).step_by(4) {
-            for x in (0..self.width).step_by(4) {
+    // Control checker: the right colour at the centre of each full cell.
+    fn shows_checker(&self, viewport: Viewport) -> bool {
+        let (width, height) = (f64::from(self.width), f64::from(self.height));
+        let (scale_x, scale_y) = (width / viewport.width, height / viewport.height);
+        let columns = (viewport.width / Self::CHECKER_CELL) as u32;
+        let rows = (viewport.height / Self::CHECKER_CELL) as u32;
+        let centre =
+            |cell: u32, scale: f64| ((f64::from(cell) + 0.5) * Self::CHECKER_CELL * scale) as u32;
+        let (mut total, mut matching) = (0_u64, 0_u64);
+        for row in 0..rows {
+            for column in 0..columns {
+                let (x, y) = (centre(column, scale_x), centre(row, scale_y));
+                if x >= self.width || y >= self.height {
+                    continue;
+                }
+                let wanted = if (row + column) % 2 == 0 {
+                    Self::MAGENTA
+                } else {
+                    Self::BLACK
+                };
                 total += 1;
-                magenta += u64::from(self.close_to(x, y, Self::MAGENTA));
-                black += u64::from(self.close_to(x, y, Self::BLACK));
+                matching += u64::from(self.close_to(x, y, wanted));
             }
         }
-        let share = |count: u64| count as f64 / total.max(1) as f64;
-        share(magenta) >= 0.25 && share(black) >= 0.25 && share(magenta + black) >= 0.9
+        total > 0 && matching as f64 >= total as f64 * Self::AGREEMENT
     }
 }
 
@@ -426,7 +441,7 @@ fn validate_target(image: &Rgba, ready: &Ready, frame: Frame) -> Result<(), Pixe
     let (Some(rects), Some((canvas, terminal))) = (ready.rects, frame.colors()) else {
         return Err(PixelError::Mismatch("missing_rects_or_frame".to_owned()));
     };
-    if image.shows_checker() {
+    if image.shows_checker(ready.viewport) {
         return Err(PixelError::Checker);
     }
     let agrees = |rect, color| image.patch_agrees(ready.viewport, rect, color);
@@ -467,7 +482,7 @@ fn validate(snapshot: &Snapshot<'_>) -> PixelVerdict {
         Err(reason) => return PixelVerdict::Reject(reason),
     };
     let checked = match Frame::from_token(snapshot.step.frame) {
-        Some(Frame::Control) if image.shows_checker() => Ok(()),
+        Some(Frame::Control) if image.shows_checker(ready.viewport) => Ok(()),
         Some(Frame::Control) => Err("control_checker_missing".to_owned()),
         Some(frame) => validate_target(&image, &ready, frame).map_err(|error| error.token()),
         None => Err(format!("unknown step frame {}", snapshot.step.frame)),
