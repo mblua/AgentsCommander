@@ -1,7 +1,8 @@
 import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { AcWorkgroup, NonStopGroupConfig, WorkgroupGroup, WorkgroupGroupsConfig } from "../../shared/types";
-import { ProjectAPI } from "../../shared/ipc";
+import { ProjectAPI, TempRoomAPI } from "../../shared/ipc";
+import { TEMP_ROOMS_GROUPS_KEY } from "../../shared/temp-rooms";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 
 export const MAX_WORKGROUP_GROUPS = 80;
@@ -459,6 +460,20 @@ function setConfig(
   });
 }
 
+// #4805 - the Temporary Rooms group set lives in the config dir, not in a project.
+function groupsIpc(projectPath: string) {
+  if (keyFor(projectPath) === keyFor(TEMP_ROOMS_GROUPS_KEY)) {
+    return {
+      get: () => TempRoomAPI.getGroups(),
+      update: (c: WorkgroupGroupsConfig) => TempRoomAPI.updateGroups(c),
+    };
+  }
+  return {
+    get: () => ProjectAPI.getGroups(projectPath),
+    update: (c: WorkgroupGroupsConfig) => ProjectAPI.updateGroups(projectPath, c),
+  };
+}
+
 export const workgroupGroupsStore = {
   async ensureLoaded(projectPath: string): Promise<void> {
     const key = keyFor(projectPath);
@@ -471,7 +486,7 @@ export const workgroupGroupsStore = {
     const promise = (async () => {
       setEntries(key, { ...entryFor(projectPath), loading: true, error: null });
       try {
-        const loaded = await ProjectAPI.getGroups(projectPath);
+        const loaded = await groupsIpc(projectPath).get();
         if ((saveVersions.get(key) ?? 0) !== saveVersionAtStart) return;
         const structuralErrors = validateGroupsConfig(loaded, { validateRegexSyntax: false });
         if (structuralErrors.length > 0) {
@@ -588,7 +603,7 @@ export const workgroupGroupsStore = {
 
     setEntries(key, { ...current, saving: true, error: null });
     try {
-      const saved = await ProjectAPI.updateGroups(projectPath, cloneConfig(config));
+      const saved = await groupsIpc(projectPath).update(cloneConfig(config));
       const structuralErrors = validateGroupsConfig(saved, { validateRegexSyntax: false });
       if (structuralErrors.length > 0) {
         throw new Error(structuralErrors.join(" "));
@@ -754,6 +769,26 @@ export const workgroupGroupsStore = {
       throw new Error(message);
     }
     await this.save(projectPath, { ...config, nonStop: { ...current, regex: nextRegex } });
+  },
+
+  /** #4805 - drop `wgName`'s exact tokens from every group and Alert me! in ONE save.
+   *  Reads the stored set fresh, never the cached entry or its old `error`, so a stale
+   *  store error cannot skip the cleanup. A read or save failure REJECTS (the caller
+   *  shows a toast) and writes nothing. A custom regex is left as is. */
+  async forgetWorkgroup(projectPath: string, wgName: string): Promise<void> {
+    const config = await groupsIpc(projectPath).get();
+    let changed = false;
+    const strip = (regex: string): string => {
+      const next = removeExactGroupToken(regex, wgName);
+      if (next === null) return regex;
+      changed = true;
+      return next;
+    };
+    const groups = config.groups.map((g) => ({ ...g, regex: strip(g.regex) }));
+    const nonStop = config.nonStop
+      ? { ...config.nonStop, regex: strip(config.nonStop.regex) }
+      : config.nonStop;
+    if (changed) await this.save(projectPath, { ...config, groups, nonStop });
   },
 
   resetForTests(): void {
