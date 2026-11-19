@@ -367,3 +367,61 @@ async fn issue_2475_read_turn_records_queue_wait_and_work_body() {
         "work covers the body: {line}"
     );
 }
+
+/// I4813: an owned writer already queued on the
+/// turn must enter while the previous holder's timing record is blocked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn i4813_queued_owned_writer_enters_while_record_blocks() {
+    p3_private_turn(i4813_queued_writer_body()).await;
+}
+
+async fn i4813_queued_writer_body() {
+    const PROBE: &str = "i4813_record_release_probe";
+    let (in_sink_tx, in_sink_rx) = std::sync::mpsc::channel::<()>();
+    let (unblock_tx, unblock_rx) = std::sync::mpsc::channel::<()>();
+    let channels = Mutex::new((in_sink_tx, unblock_rx));
+    let _sink = TimingSinkRegistration::new(
+        PROBE,
+        Arc::new(move |_line: &str| {
+            let channels = channels.lock().expect("sink channels");
+            let _ = channels.0.send(());
+            let _ = channels.1.recv_timeout(Duration::from_secs(10));
+        }),
+    );
+    let (first_entered_tx, first_entered_rx) = tokio::sync::oneshot::channel::<()>();
+    let (first_release_tx, first_release_rx) = tokio::sync::oneshot::channel::<()>();
+    let first = p3_spawn(run_owned_selection_read_timed(PROBE, move || async move {
+        let _ = first_entered_tx.send(());
+        let _ = first_release_rx.await;
+        Ok::<(), String>(())
+    }));
+    tokio::time::timeout(P3_PRESENCE, first_entered_rx)
+        .await
+        .expect("the first read enters")
+        .expect("entry sent");
+    let (second_entered_tx, mut second_entered_rx) = tokio::sync::oneshot::channel::<()>();
+    let second = p3_spawn(run_owned_selection_operation(move || async move {
+        let _ = second_entered_tx.send(());
+        Ok::<(), String>(())
+    }));
+    // The writer queues behind the held read.
+    assert!(
+        tokio::time::timeout(P3_ABSENCE, &mut second_entered_rx)
+            .await
+            .is_err(),
+        "the writer must wait for the read"
+    );
+    let _ = first_release_tx.send(());
+    tokio::task::spawn_blocking(move || in_sink_rx.recv_timeout(Duration::from_secs(10)))
+        .await
+        .expect("join")
+        .expect("recording started");
+    // The sink is blocked inside the record of `first`.
+    let entered = tokio::time::timeout(Duration::from_secs(2), &mut second_entered_rx).await;
+    let _ = unblock_tx.send(());
+    assert_eq!(first.await.expect("join"), Ok(()));
+    assert_eq!(second.await.expect("join"), Ok(()));
+    entered
+        .expect("the queued writer must enter while the timing record is blocked")
+        .expect("entry sent");
+}
