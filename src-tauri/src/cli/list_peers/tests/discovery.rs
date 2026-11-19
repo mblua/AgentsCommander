@@ -285,6 +285,7 @@ fn is_temp_row(name: &str) -> bool {
 
 #[test]
 fn temp_room_caller_sees_root_and_coordinators_only() {
+    let _room = TempRoomDir::create(89);
     let names = peer_names(&discover_peers(&temp_room_path(89)).expect("temp-room peers"));
     assert!(names
         .iter()
