@@ -25,8 +25,10 @@ import {
 const projectPath = "C:\\Project";
 const wg1Path = `${projectPath}\\.ac\\wg-1-dev-team`;
 const wg2Path = `${projectPath}\\.ac\\wg-2-rust-team`;
-const coordRowTestId = "replica.row.quick.wg-1-dev-team.dev-webpage-ui";
-const workgroupRowTestId = "replica.row.workgroups.wg-1-dev-team.dev-webpage-ui";
+const coordRowTestId = "replica.row.quick.C-Project-.ac-wg-1-dev-team-__agent_dev-webpage-ui";
+const workgroupRowTestId =
+  "replica.row.workgroups.C-Project-.ac-wg-1-dev-team-__agent_dev-webpage-ui";
+const G = "replica.C-Project-.ac-wg-1-dev-team.groups";
 let cleanupGroupFilteringRenderer: (() => void) | null = null;
 
 function groupsConfig(groups = [{ id: "frontend", name: "Frontend", regex: "^wg-1-" }]) {
@@ -146,9 +148,9 @@ async function openCoordinatorMenu(root: ParentNode): Promise<void> {
 }
 
 async function openGroupFlyout(): Promise<void> {
-  click(target("replica.wg-1-dev-team.groups.trigger"));
+  click(target(`${G}.trigger`));
   await waitFor(() =>
-    expect(target("replica.wg-1-dev-team.groups.flyout")).not.toBeNull()
+    expect(target(`${G}.flyout`)).not.toBeNull()
   );
 }
 
@@ -322,7 +324,7 @@ describe("ProjectPanel workgroup groups", () => {
       expect(document.querySelector(".session-context-menu")?.textContent).toContain("Add to Group");
       expect(document.querySelector(".session-context-menu")?.textContent).not.toContain("Create new group");
       await openGroupFlyout();
-      click(target(`replica.wg-1-dev-team.groups.frontend`));
+      click(target(`${G}.frontend`));
 
       await waitFor(() =>
         expect(fake.lastCall("update_project_groups")?.args.config).toMatchObject({
@@ -352,8 +354,8 @@ describe("ProjectPanel workgroup groups", () => {
       await openCoordinatorMenu(rendered.root);
       await openGroupFlyout();
 
-      const nonStopOption = target<HTMLButtonElement>("replica.wg-1-dev-team.groups.nonstop");
-      const userGroupOption = target<HTMLButtonElement>("replica.wg-1-dev-team.groups.frontend");
+      const nonStopOption = target<HTMLButtonElement>(`${G}.nonstop`);
+      const userGroupOption = target<HTMLButtonElement>(`${G}.frontend`);
 
       expect(nonStopOption.textContent).toContain("Alert me!");
       expect(nonStopOption.classList.contains("session-context-group-option-nonstop")).toBe(true);
@@ -394,8 +396,8 @@ describe("ProjectPanel workgroup groups", () => {
 
       await openCoordinatorMenu(rendered.root);
       await openGroupFlyout();
-      expect(target("replica.wg-1-dev-team.groups.frontend").textContent).toContain("\u2713");
-      click(target("replica.wg-1-dev-team.groups.frontend"));
+      expect(target(`${G}.frontend`).textContent).toContain("\u2713");
+      click(target(`${G}.frontend`));
 
       await waitFor(() =>
         expect(fake.lastCall("update_project_groups")?.args.config).toMatchObject({
@@ -408,7 +410,7 @@ describe("ProjectPanel workgroup groups", () => {
         })
       );
       await waitFor(() =>
-        expect(target("replica.wg-1-dev-team.groups.frontend").textContent).not.toContain("\u2713")
+        expect(target(`${G}.frontend`).textContent).not.toContain("\u2713")
       );
     } finally {
       rendered.cleanup();
@@ -440,7 +442,7 @@ describe("ProjectPanel workgroup groups", () => {
 
       await openCoordinatorMenu(rendered.root);
       await openGroupFlyout();
-      const option = target<HTMLButtonElement>("replica.wg-1-dev-team.groups.custom");
+      const option = target<HTMLButtonElement>(`${G}.custom`);
       expect(option.textContent).toContain("\u2713");
       expect(option.disabled).toBe(true);
       expect(option.title).toContain("custom regex");
@@ -482,20 +484,20 @@ describe("ProjectPanel workgroup groups", () => {
 
       await openCoordinatorMenu(rendered.root);
       await openGroupFlyout();
-      click(target("replica.wg-1-dev-team.groups.frontend"));
+      click(target(`${G}.frontend`));
 
       await waitFor(() => {
         expect(document.querySelector(".session-context-menu")).not.toBeNull();
-        expect(target("replica.wg-1-dev-team.groups.flyout")).not.toBeNull();
-        expect(target("replica.groups.error").textContent).toContain("groups.toml changed on disk");
+        expect(target(`${G}.flyout`)).not.toBeNull();
+        expect(target(`${G}.error`).textContent).toContain("groups.toml changed on disk");
       });
 
       vi.useFakeTimers();
       try {
-        mouse(target("replica.wg-1-dev-team.groups.flyout"), "mouseleave");
+        mouse(target(`${G}.flyout`), "mouseleave");
         vi.advanceTimersByTime(240);
         await Promise.resolve();
-        expect(target("replica.wg-1-dev-team.groups.flyout")).not.toBeNull();
+        expect(target(`${G}.flyout`)).not.toBeNull();
       } finally {
         vi.useRealTimers();
       }
@@ -516,23 +518,23 @@ describe("ProjectPanel workgroup groups", () => {
 
       await openCoordinatorMenu(rendered.root);
       await openGroupFlyout();
-      const trigger = target("replica.wg-1-dev-team.groups.trigger");
-      const flyout = target("replica.wg-1-dev-team.groups.flyout");
+      const trigger = target(`${G}.trigger`);
+      const flyout = target(`${G}.flyout`);
 
       vi.useFakeTimers();
       try {
         mouse(trigger, "mouseleave");
         vi.advanceTimersByTime(120);
-        expect(document.querySelector('[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]')).not.toBeNull();
+        expect(document.querySelector(`[data-ac-testid="${G}.flyout"]`)).not.toBeNull();
 
         mouse(flyout, "mouseenter");
         vi.advanceTimersByTime(240);
-        expect(document.querySelector('[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]')).not.toBeNull();
+        expect(document.querySelector(`[data-ac-testid="${G}.flyout"]`)).not.toBeNull();
 
         mouse(flyout, "mouseleave");
         vi.advanceTimersByTime(180);
         await Promise.resolve();
-        expect(document.querySelector('[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]')).toBeNull();
+        expect(document.querySelector(`[data-ac-testid="${G}.flyout"]`)).toBeNull();
       } finally {
         vi.useRealTimers();
       }
@@ -552,16 +554,16 @@ describe("ProjectPanel workgroup groups", () => {
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
 
       await openCoordinatorMenu(rendered.root);
-      const trigger = target("replica.wg-1-dev-team.groups.trigger");
+      const trigger = target(`${G}.trigger`);
       mouse(trigger, "mouseenter");
       await waitFor(() =>
-        expect(document.querySelector('[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]')).not.toBeNull()
+        expect(document.querySelector(`[data-ac-testid="${G}.flyout"]`)).not.toBeNull()
       );
 
       click(trigger);
 
       await waitFor(() =>
-        expect(document.querySelector('[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]')).not.toBeNull()
+        expect(document.querySelector(`[data-ac-testid="${G}.flyout"]`)).not.toBeNull()
       );
     } finally {
       rendered.cleanup();
@@ -579,17 +581,17 @@ describe("ProjectPanel workgroup groups", () => {
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-webpage-ui"));
 
       await openCoordinatorMenu(rendered.root);
-      const trigger = target("replica.wg-1-dev-team.groups.trigger");
+      const trigger = target(`${G}.trigger`);
       focus(trigger);
       await waitFor(() =>
-        expect(document.querySelector('[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]')).not.toBeNull()
+        expect(document.querySelector(`[data-ac-testid="${G}.flyout"]`)).not.toBeNull()
       );
 
       keydown(trigger, "Enter");
       click(trigger);
 
       await waitFor(() =>
-        expect(document.querySelector('[data-ac-testid="replica.wg-1-dev-team.groups.flyout"]')).not.toBeNull()
+        expect(document.querySelector(`[data-ac-testid="${G}.flyout"]`)).not.toBeNull()
       );
     } finally {
       rendered.cleanup();
@@ -609,16 +611,16 @@ describe("ProjectPanel workgroup groups", () => {
 
       await openCoordinatorMenu(rendered.root);
       await openGroupFlyout();
-      click(target("replica.wg-1-dev-team.groups.create"));
+      click(target(`${G}.create`));
 
       // Resolve the input inside waitFor: a discovery-driven row re-render can
       // re-create the flyout subtree once after the click, and the fresh
       // input's ref re-focuses it — assert the live element ends up focused.
       await waitFor(() =>
-        expect(document.activeElement).toBe(target<HTMLInputElement>("replica.groups.create.input"))
+        expect(document.activeElement).toBe(target<HTMLInputElement>(`${G}.create.input`))
       );
       // The flyout stays open and expanded around the focused input.
-      expect(target("replica.wg-1-dev-team.groups.flyout")).not.toBeNull();
+      expect(target(`${G}.flyout`)).not.toBeNull();
     } finally {
       rendered.cleanup();
     }
@@ -638,15 +640,15 @@ describe("ProjectPanel workgroup groups", () => {
 
       await openCoordinatorMenu(rendered.root);
       await openGroupFlyout();
-      expect(target("replica.wg-1-dev-team.groups.flyout").textContent).toContain("No groups yet");
-      expect(target("replica.wg-1-dev-team.groups.flyout").textContent).toContain("Create new group");
-      click(target("replica.wg-1-dev-team.groups.create"));
-      input(target<HTMLInputElement>("replica.groups.create.input"), "Frontend");
-      click(target("replica.groups.create.save"));
+      expect(target(`${G}.flyout`).textContent).toContain("No groups yet");
+      expect(target(`${G}.flyout`).textContent).toContain("Create new group");
+      click(target(`${G}.create`));
+      input(target<HTMLInputElement>(`${G}.create.input`), "Frontend");
+      click(target(`${G}.create.save`));
 
       await waitFor(() => {
         expect(document.querySelector(".session-context-menu")).not.toBeNull();
-        expect(target("replica.groups.error").textContent).toContain("groups.toml changed on disk");
+        expect(target(`${G}.error`).textContent).toContain("groups.toml changed on disk");
       });
     } finally {
       rendered.cleanup();
@@ -668,7 +670,7 @@ describe("ProjectPanel workgroup groups", () => {
       await openCoordinatorMenu(rendered.root);
       Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
       Object.defineProperty(window, "innerHeight", { configurable: true, value: 220 });
-      const trigger = target<HTMLButtonElement>("replica.wg-1-dev-team.groups.trigger");
+      const trigger = target<HTMLButtonElement>(`${G}.trigger`);
       trigger.getBoundingClientRect = () =>
         ({
           left: 295,
@@ -683,7 +685,7 @@ describe("ProjectPanel workgroup groups", () => {
         }) as DOMRect;
 
       click(trigger);
-      const flyout = target<HTMLDivElement>("replica.wg-1-dev-team.groups.flyout");
+      const flyout = target<HTMLDivElement>(`${G}.flyout`);
       flyout.getBoundingClientRect = () =>
         ({
           left: 0,

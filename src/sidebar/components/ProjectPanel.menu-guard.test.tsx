@@ -18,6 +18,7 @@ import {
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
+import { automationIdPart as AP } from "./replica-repo-badges";
 import type { AcAgentReplica, AcWorkgroup, Session } from "../../shared/types";
 
 const projectPath = "C:\\Project";
@@ -37,7 +38,7 @@ function rowSlotTestId(
   replicaName: string,
   rowContext = "quick"
 ): string {
-  return `replica.row.${rowContext}.${wgName}.${replicaName}.communicationSlot`;
+  return `replica.row.${rowContext}.${AP(replicaPath(wgName, replicaName))}.communicationSlot`;
 }
 
 function replica(wgName: string, replicaName: string, isCoordinator: boolean): AcAgentReplica {

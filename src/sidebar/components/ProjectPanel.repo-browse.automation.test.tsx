@@ -52,8 +52,9 @@ const repoA2 = `${wgAPath}\\repo-docs`;
 const wgBPath = `${projectPath}\\.ac\\wg-3-other-team`;
 const coordBPath = `${wgBPath}\\__agent_dev-rust`;
 
-const rowA = "replica.row.quick.wg-2-dev-team.dev-webpage-ui";
-const rowB = "replica.row.quick.wg-3-other-team.dev-rust";
+const rowA = "replica.row.quick.C-Project-.ac-wg-2-dev-team-__agent_dev-webpage-ui";
+const G = "replica.C-Project-.ac-wg-2-dev-team.groups";
+const rowB = "replica.row.quick.C-Project-.ac-wg-3-other-team-__agent_dev-rust";
 
 const entry0 = "replica.coord-a.menu.repo.0";
 const entry1 = "replica.coord-a.menu.repo.1";
@@ -390,12 +391,12 @@ describe("ProjectPanel repo Browse submenu, driven through the automation bridge
     await setupPanel([coordASession([repo(repoA1, "AgentsCommander", "feature/x")])], discoveryA());
 
     ok(await act("contextClick", rowA));
-    await waitForTarget("replica.wg-2-dev-team.groups.trigger");
+    await waitForTarget(`${G}.trigger`);
 
-    ok(await act("hover", "replica.wg-2-dev-team.groups.trigger"));
+    ok(await act("hover", `${G}.trigger`));
 
-    expect(ok(await act("query", "replica.wg-2-dev-team.groups.flyout")).target.testId).toBe(
-      "replica.wg-2-dev-team.groups.flyout",
+    expect(ok(await act("query", `${G}.flyout`)).target.testId).toBe(
+      `${G}.flyout`,
     );
   });
 

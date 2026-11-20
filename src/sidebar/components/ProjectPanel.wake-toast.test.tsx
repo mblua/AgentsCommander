@@ -13,7 +13,7 @@ const workgroupName = "wg-1-dev-team";
 const workgroupPath = `${projectPath}\\.ac\\${workgroupName}`;
 const replicaName = "dev-webpage-ui";
 const replicaPath = `${workgroupPath}\\__agent_${replicaName}`;
-const rowSelector = `[data-ac-testid="replica.row.quick.${automationIdPart(workgroupName)}.${automationIdPart(replicaName)}"]`;
+const rowSelector = `[data-ac-testid="replica.row.quick.${automationIdPart(replicaPath)}"]`;
 
 describe("ProjectPanel wake-a-stopped-replica toast (#2573)", () => {
   describeRestartToast({

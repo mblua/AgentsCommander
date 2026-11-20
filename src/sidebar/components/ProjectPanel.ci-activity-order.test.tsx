@@ -30,8 +30,8 @@ const ciRepo = `${wg2Path}\\repo-AgentsCommander`;
 
 const SESSION_A = "session-coord-a";
 const SESSION_B = "session-coord-b";
-const rowA = "replica.row.quick.wg-1-dev-team.coord-a";
-const rowB = "replica.row.quick.wg-2-dev-team.coord-b";
+const rowA = "replica.row.quick.C-Project-.ac-wg-1-dev-team-__agent_coord-a";
+const rowB = "replica.row.quick.C-Project-.ac-wg-2-dev-team-__agent_coord-b";
 
 function projectDiscovery() {
   return discovery({

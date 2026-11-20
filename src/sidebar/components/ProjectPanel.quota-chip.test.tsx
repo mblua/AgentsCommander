@@ -27,7 +27,10 @@ const coordSessionId = "coord-session";
 const workerSessionId = "worker-session";
 
 const replicaChip = (root: Element, ctx: "quick" | "workgroups", wg: string, replica: string) =>
-  root.querySelectorAll<HTMLElement>(`[data-ac-testid="replica.row.${ctx}.${wg}.${replica}"] .ac-discovery-badge.agent`);
+  root.querySelectorAll<HTMLElement>(
+    `[data-ac-testid="replica.row.${ctx}.C-Project-.ac-${wg}-__agent_${replica}"]`
+      + " .ac-discovery-badge.agent",
+  );
 
 function oneChip(ctx: "quick" | "workgroups", replica: string): HTMLElement {
   const all = replicaChip(document.body, ctx, wgName, replica);
