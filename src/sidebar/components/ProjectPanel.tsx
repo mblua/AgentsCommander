@@ -369,7 +369,7 @@ function remoteActivityClasses(sourcePath: string): string {
 }
 
 const SidebarTaskLabel: Component<{ text: string; class: string; testId?: string; state?: string }> = (props) => (
-  <span class={props.class + " sidebar-task-label"} tabIndex={0}
+  <span class={props.class + " sidebar-task-label"} tabIndex={0} title={props.text}
     data-ac-testid={props.testId} data-ac-role={props.testId ? "text" : undefined} data-ac-state={props.state}>
     {props.text}
   </span>
