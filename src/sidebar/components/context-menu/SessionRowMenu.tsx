@@ -500,6 +500,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
               })
             }
             class="session-context-title-input"
+            data-ac-testid={id(".menu.editTaskTitle.input")}
             value={spec().draft}
             onInput={(e) => spec().onDraft(e.currentTarget.value)}
             onKeyDown={(e) => {
@@ -519,6 +520,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
           />
           <button
             class="session-context-title-btn save"
+            data-ac-testid={id(".menu.editTaskTitle.save")}
             onClick={(e) => {
               e.stopPropagation();
               spec().onSave();
@@ -530,6 +532,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
           </button>
           <button
             class="session-context-title-btn cancel"
+            data-ac-testid={id(".menu.editTaskTitle.cancel")}
             onClick={(e) => {
               e.stopPropagation();
               spec().onCancel();

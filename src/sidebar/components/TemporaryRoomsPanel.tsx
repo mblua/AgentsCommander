@@ -612,6 +612,7 @@ const TemporaryRoomsPanel: Component = () => {
         <button
           type="button"
           class="project-header-main"
+          data-ac-testid="tempRooms.header.toggle"
           aria-expanded={!collapsed()}
           onClick={() => projectCollapseStore.toggleProjectCollapsed(KEY)}
         >

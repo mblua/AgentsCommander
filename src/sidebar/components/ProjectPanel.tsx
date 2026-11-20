@@ -1890,6 +1890,7 @@ const ProjectPanel: Component = () => {
           bot: TelegramBotConfig,
         ) => (
           <button
+            data-ac-testid={`replica.${choices().sessionId}.menu.telegram.bot.${bot.id}`}
             class="session-context-option"
             onClick={(event) =>
               void handleReplicaTelegramBotSelect(
@@ -2395,13 +2396,20 @@ const ProjectPanel: Component = () => {
         };
 
 
-        const renderReplicaTaskTitleEditor = ({ presentationRole }: { presentationRole?: "presentation" }) => (
+        const renderReplicaTaskTitleEditor = ({
+          presentationRole,
+          testIdPrefix,
+        }: {
+          presentationRole?: "presentation";
+          testIdPrefix: () => string;
+        }) => (
           <div
             class="session-context-title-edit"
             role={presentationRole}
             onClick={(e) => e.stopPropagation()}
           >
             <input
+              data-ac-testid={`${testIdPrefix()}.editTaskTitle.input`}
               ref={(el) => requestAnimationFrame(() => { el.focus(); el.select(); })}
               class="session-context-title-input"
               value={titleDraft()}
@@ -2424,6 +2432,7 @@ const ProjectPanel: Component = () => {
               disabled={titleBusy()}
             />
             <button
+              data-ac-testid={`${testIdPrefix()}.editTaskTitle.save`}
               class="session-context-title-btn save"
               onClick={(e) => { e.stopPropagation(); void saveReplicaTitle(); }}
               disabled={titleBusy() || !titleDraft().trim()}
@@ -2432,6 +2441,7 @@ const ProjectPanel: Component = () => {
               Save
             </button>
             <button
+              data-ac-testid={`${testIdPrefix()}.editTaskTitle.cancel`}
               class="session-context-title-btn cancel"
               onClick={(e) => { e.stopPropagation(); cancelReplicaTitleEdit(); }}
               disabled={titleBusy()}
@@ -3163,7 +3173,16 @@ const ProjectPanel: Component = () => {
               </div>
               <Show when={isLive()}>
                 <Show when={isRecording()}>
-                  <button class="session-item-mic-cancel" onClick={handleCancelRecording} title="Cancel recording">&#x2715;</button>
+                  <button
+                    data-ac-testid={
+                      `replica.micCancel.${automationIdPart(rowContext)}`
+                      + `.${automationIdPart(wg.name)}`
+                      + `.${automationIdPart(replica.name)}`
+                    }
+                    class="session-item-mic-cancel"
+                    onClick={handleCancelRecording}
+                    title="Cancel recording"
+                  >&#x2715;</button>
                 </Show>
                 <Show when={bridge()}>
                   <span
@@ -3245,6 +3264,7 @@ const ProjectPanel: Component = () => {
               onContextMenu={handleProjectContextMenu}
             >
               <button
+                data-ac-testid={`project.header.${projectAutomationId()}.toggle`}
                 type="button"
                 class="project-header-main"
                 title={proj.path}
@@ -3295,12 +3315,14 @@ const ProjectPanel: Component = () => {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
+                    data-ac-testid={`project.action.newAgent.${projectAutomationId()}.projectMenu`}
                     class="session-context-option"
                     onClick={() => { setShowCtxMenu(false); setNewAgentTarget({ projectPath: proj.path }); }}
                   >
                     New Agent
                   </button>
                   <button
+                    data-ac-testid={`project.action.newTeam.${projectAutomationId()}.projectMenu`}
                     class="session-context-option"
                     onClick={() => { setShowCtxMenu(false); setNewTeamTarget({ projectPath: proj.path }); }}
                   >
@@ -3342,6 +3364,7 @@ const ProjectPanel: Component = () => {
                   </button>
                   <div class="context-separator" />
                   <button
+                    data-ac-testid={`project.action.remove.${projectAutomationId()}`}
                     class="session-context-option context-option-danger"
                     onClick={handleRemoveProject}
                   >
@@ -3513,6 +3536,9 @@ const ProjectPanel: Component = () => {
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
+                            data-ac-testid={
+                              `project.action.newRoom.${projectAutomationId()}.roomsHeader`
+                            }
                             class="session-context-option"
                             classList={{ "context-option-disabled": !hasTeams() }}
                             disabled={!hasTeams()}
@@ -3787,6 +3813,10 @@ const ProjectPanel: Component = () => {
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
+                            data-ac-testid={
+                              `agent.action.matrixFolder`
+                              + `.${automationIdPart(agentCtxMenu()!.agent.path)}`
+                            }
                             class="session-context-option"
                             onClick={() => {
                               const menu = agentCtxMenu();
@@ -3821,6 +3851,9 @@ const ProjectPanel: Component = () => {
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
+                            data-ac-testid={
+                              `project.action.newAgent.${projectAutomationId()}.agentsHeader`
+                            }
                             class="session-context-option"
                             onClick={() => {
                               setAgentsHeaderCtxMenu(null);
@@ -4020,6 +4053,9 @@ const ProjectPanel: Component = () => {
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
+                            data-ac-testid={
+                              `project.action.newTeam.${projectAutomationId()}.teamsHeader`
+                            }
                             class="session-context-option"
                             onClick={() => {
                               setTeamsHeaderCtxMenu(null);
@@ -4046,6 +4082,10 @@ const ProjectPanel: Component = () => {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
+                    data-ac-testid={
+                      `team.action.edit.${projectAutomationId()}`
+                      + `.${automationIdPart(teamCtxMenu()!.team.name)}`
+                    }
                     class="session-context-option"
                     onClick={() => {
                       const menu = teamCtxMenu();
@@ -4061,6 +4101,10 @@ const ProjectPanel: Component = () => {
                     Edit Team
                   </button>
                   <button
+                    data-ac-testid={
+                      `team.action.delete.${projectAutomationId()}`
+                      + `.${automationIdPart(teamCtxMenu()!.team.name)}`
+                    }
                     class="session-context-option context-option-danger"
                     onClick={() => {
                       const menu = teamCtxMenu();
@@ -4083,6 +4127,9 @@ const ProjectPanel: Component = () => {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
+                    data-ac-testid={
+                      `workgroup.action.delete.${automationIdPart(wgCtxMenu()!.wg.path)}`
+                    }
                     class="session-context-option context-option-danger"
                     onClick={() => {
                       cleanupCtx();
@@ -4306,6 +4353,7 @@ const ProjectPanel: Component = () => {
                       return (
                       <>
                         <button
+                          data-ac-testid={`replica.${menu().sessionId}.menu.restart`}
                           class="session-context-option context-option-danger"
                           onClick={async () => {
                             await restartReplicaSession(menu().sessionId);
@@ -4327,6 +4375,7 @@ const ProjectPanel: Component = () => {
                           <span class="session-context-option-icon" aria-hidden="true">&#x1F916;</span> Coding Agent
                         </button>
                         <button
+                          data-ac-testid={`replica.${menu().sessionId}.menu.openFolder`}
                           class="session-context-option"
                           title={menu().replica.path}
                           onClick={() => void openReplicaFolder(menu().replica.path)}
@@ -4337,6 +4386,7 @@ const ProjectPanel: Component = () => {
                         <Show when={matrixFolder()}>
                           {(path) => (
                             <button
+                              data-ac-testid={`replica.${menu().sessionId}.menu.matrixFolder`}
                               class="session-context-option"
                               title={path()}
                               onClick={() => void openMatrixFolder(path())}
@@ -4354,6 +4404,7 @@ const ProjectPanel: Component = () => {
                         </Show>
                         <div class="context-separator" />
                         <button
+                          data-ac-testid={`replica.${menu().sessionId}.menu.detachToggle`}
                           class="session-context-option"
                           onClick={() => toggleReplicaDetach(menu().sessionId)}
                         >
@@ -4369,6 +4420,7 @@ const ProjectPanel: Component = () => {
                         </button>
                         <Show when={liveTelegramSession()}>
                           <button
+                            data-ac-testid={`replica.${menu().sessionId}.menu.telegram`}
                             class="session-context-option"
                             onClick={(event) =>
                               void handleReplicaTelegramAction(event, menu().sessionId)
@@ -4394,6 +4446,7 @@ const ProjectPanel: Component = () => {
                         {renderAddToGroupItem(menu().wg, menu().replica)}
                         <div class="context-separator" />
                         <button
+                          data-ac-testid={`replica.${menu().sessionId}.menu.editTaskTitle`}
                           class="session-context-option"
                           title="Edit TASK title"
                           onClick={(e) => {
@@ -4404,12 +4457,16 @@ const ProjectPanel: Component = () => {
                           <span class="session-context-option-icon session-context-task-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
                         </button>
                         <Show when={titleEdit() && titleEdit()!.wgPath === menu().wg.path}>
-                          {renderReplicaTaskTitleEditor({ presentationRole: undefined })}
+                          {renderReplicaTaskTitleEditor({
+                            presentationRole: undefined,
+                            testIdPrefix: () => `replica.${menu().sessionId}.menu`,
+                          })}
                         </Show>
                         <Show when={titleError()}>
                           <div class="session-context-title-error">{titleError()}</div>
                         </Show>
                         <button
+                          data-ac-testid={`replica.${menu().sessionId}.menu.clearTaskTitle`}
                           class="session-context-option"
                           classList={{ "context-option-disabled": broomDisabled() }}
                           disabled={broomDisabled()}
@@ -4450,6 +4507,10 @@ const ProjectPanel: Component = () => {
                             <span class="session-context-option-icon" aria-hidden="true">&#x1F916;</span> Coding Agent
                           </button>
                           <button
+                            data-ac-testid={
+                              `replica.inactive`
+                              + `.${automationIdPart(menu().replica.path)}.menu.openFolder`
+                            }
                             class="session-context-option"
                             title={menu().replica.path}
                             onClick={() => void openReplicaFolder(menu().replica.path)}
@@ -4460,6 +4521,10 @@ const ProjectPanel: Component = () => {
                           <Show when={matrixFolder()}>
                             {(path) => (
                               <button
+                                data-ac-testid={
+                                  `replica.inactive`
+                                  + `.${automationIdPart(menu().replica.path)}.menu.matrixFolder`
+                                }
                                 class="session-context-option"
                                 title={path()}
                                 onClick={() => void openMatrixFolder(path())}
@@ -4470,6 +4535,10 @@ const ProjectPanel: Component = () => {
                           </Show>
                           {renderAddToGroupItem(menu().wg, menu().replica)}
                           <button
+                            data-ac-testid={
+                              `replica.inactive`
+                              + `.${automationIdPart(menu().replica.path)}.menu.editTaskTitle`
+                            }
                             class="session-context-option"
                             title="Edit TASK title"
                             onClick={(e) => {
@@ -4480,12 +4549,20 @@ const ProjectPanel: Component = () => {
                             <span class="session-context-option-icon session-context-task-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
                           </button>
                           <Show when={titleEdit() && titleEdit()!.wgPath === menu().wg.path}>
-                          {renderReplicaTaskTitleEditor({ presentationRole: "presentation" })}
+                          {renderReplicaTaskTitleEditor({
+                            presentationRole: "presentation",
+                            testIdPrefix: () =>
+                              `replica.inactive.${automationIdPart(menu().replica.path)}.menu`,
+                          })}
                         </Show>
                           <Show when={titleError()}>
                             <div class="session-context-title-error">{titleError()}</div>
                           </Show>
                           <button
+                            data-ac-testid={
+                              `replica.inactive`
+                              + `.${automationIdPart(menu().replica.path)}.menu.clearTaskTitle`
+                            }
                             class="session-context-option"
                             classList={{ "context-option-disabled": broomDisabled() }}
                             disabled={broomDisabled()}
@@ -4547,6 +4624,10 @@ const ProjectPanel: Component = () => {
                             To delete anyway, type <strong>{deletingWg()!.name}</strong> below:
                           </label>
                           <input
+                            data-ac-testid={
+                              `workgroup.delete.confirmInput`
+                              + `.${automationIdPart(deletingWg()!.path)}`
+                            }
                             type="text"
                             class="new-agent-input"
                             placeholder={deletingWg()!.name}
@@ -4647,6 +4728,9 @@ const ProjectPanel: Component = () => {
                               </Show>
                               <div style={{ "margin-top": "10px", display: "flex", "justify-content": "flex-end" }}>
                                 <button
+                                  data-ac-testid={
+                                    `workgroup.delete.retry.${automationIdPart(deletingWg()!.path)}`
+                                  }
                                   class="new-agent-create-btn"
                                   style={{ "background": "#fff", "color": "var(--danger, #c0392b)", "min-width": "84px" }}
                                   disabled={wgRetryInProgress() || wgDeleteInProgress()}
@@ -4661,10 +4745,17 @@ const ProjectPanel: Component = () => {
                       </Show>
                     </div>
                     <div class="new-agent-footer">
-                      <button class="new-agent-cancel-btn" onClick={closeWgDeleteModal}>
+                      <button
+                        data-ac-testid={
+                          `workgroup.delete.cancel.${automationIdPart(deletingWg()!.path)}`
+                        }
+                        class="new-agent-cancel-btn" onClick={closeWgDeleteModal}>
                         Cancel
                       </button>
                       <button
+                        data-ac-testid={
+                          `workgroup.delete.confirm.${automationIdPart(deletingWg()!.path)}`
+                        }
                         class="new-agent-create-btn"
                         style={{ "background": "var(--danger, #c0392b)" }}
                         disabled={
@@ -4719,12 +4810,20 @@ const ProjectPanel: Component = () => {
                     </div>
                     <div class="new-agent-footer">
                       <button
+                        data-ac-testid={
+                          `team.delete.cancel.${projectAutomationId()}`
+                          + `.${automationIdPart(deletingTeam()!.name)}`
+                        }
                         class="new-agent-cancel-btn"
                         onClick={closeTeamDeleteModal}
                       >
                         Cancel
                       </button>
                       <button
+                        data-ac-testid={
+                          `team.delete.confirm.${projectAutomationId()}`
+                          + `.${automationIdPart(deletingTeam()!.name)}`
+                        }
                         class="new-agent-create-btn"
                         style={{ "background": "var(--danger, #c0392b)" }}
                         disabled={deleteInProgress()}

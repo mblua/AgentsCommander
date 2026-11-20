@@ -451,6 +451,16 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(roomRow()).not.toBeNull();
   });
 
+  it("8b. #4825 the header collapse button carries tempRooms.header.toggle", async () => {
+    track(setup());
+    await waitFor(() => expect(byId("tempRooms.header.toggle")).not.toBeNull());
+    expect(document.querySelectorAll('[data-ac-testid="tempRooms.header.toggle"]')).toHaveLength(1);
+    const toggle = byId("tempRooms.header.toggle")!;
+    const before = toggle.getAttribute("aria-expanded");
+    click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-expanded")).not.toBe(before));
+  });
+
   it("9. no session: row click and Restart Session both launch with the saved choice", async () => {
     const { fake } = track(setup({ saved: SAVED }));
     await waitFor(() => expect(roomRow()).not.toBeNull());
