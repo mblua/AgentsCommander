@@ -20,6 +20,14 @@
       "reason": "Closure moved to app_run/exit.rs::on_run_event (#bdf7e51c6ff1). Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
       "issue": 3182,
       "since": "2026-10-23"
+    },
+    {
+      "gate": "02",
+      "rule": "file_lines",
+      "path": "src/sidebar/components/ProjectPanel.tsx",
+      "reason": "Temporary: #4825 adds data-ac-testid attributes (~99 lines) to an already oversized file; no in-scope way to stay at the base size. Remove in #4833 right after PR #4829 merges.",
+      "issue": 4825,
+      "since": "2026-11-20"
     }
   ]
 }
