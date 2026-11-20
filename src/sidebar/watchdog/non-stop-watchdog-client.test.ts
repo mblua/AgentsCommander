@@ -15,6 +15,7 @@ import { NonStopAPI, __setTransportForTests } from "../../shared/ipc";
 import { baseSettings, discovery, resetUiStoresForTests, session } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
+import { tempRoomsStore } from "../stores/temp-rooms";
 import { settingsStore } from "../../shared/stores/settings";
 import { defaultGroupsConfig, defaultNonStop, workgroupGroupsStore } from "../stores/workgroup-groups";
 import type { CiState, NonStopGroupConfig } from "../../shared/types";
@@ -347,5 +348,70 @@ describe("confirmed activity report effect", () => {
     vi.advanceTimersByTime(10000); expect(last()).toEqual([]);
     dispose(); const count = report.mock.calls.length;
     vi.advanceTimersByTime(30000); expect(report).toHaveBeenCalledTimes(count);
+  });
+});
+
+// #4805 P03 - the Temporary Rooms group set feeds the watchdog like a project.
+describe("#4805 buildSnapshot - temp rooms", () => {
+  const TEMP_PATH = "agentscommander://temp-rooms";
+  const ROOM = { name: "temp-room-tr01", path: "/cfg/temp-room-tr01", unleashed: false };
+  let restore: (() => void) | null = null;
+
+  async function seedTemp(rooms: (typeof ROOM)[]) {
+    restore = await seed(activeNonStop());
+    const fake = new FakeTransport();
+    fake.resolve("list_temp_rooms", rooms);
+    fake.resolve("get_temp_room_groups", {
+      ...defaultGroupsConfig(),
+      nonStop: {
+        ...defaultNonStop(),
+        show: true,
+        regex: "^(temp-room-tr01)$",
+        sound: { enabled: true, seconds: 5 },
+      },
+    });
+    const prev = restore;
+    const back = __setTransportForTests(fake);
+    restore = () => {
+      back();
+      prev();
+    };
+    await tempRoomsStore.refresh();
+    await workgroupGroupsStore.ensureLoaded(TEMP_PATH);
+  }
+
+  beforeEach(() => {
+    resetUiStoresForTests();
+    workgroupGroupsStore.resetForTests();
+    tempRoomsStore.resetForTests();
+  });
+  afterEach(() => {
+    restore?.();
+    restore = null;
+    resetUiStoresForTests();
+    workgroupGroupsStore.resetForTests();
+    tempRoomsStore.resetForTests();
+  });
+
+  it("a temp room in Alert me! with no session is one not-working entry", async () => {
+    await seedTemp([ROOM]);
+    const temp = buildSnapshot().filter((r) => r.projectPath === TEMP_PATH);
+    expect(temp).toHaveLength(1);
+    expect(temp[0]).toMatchObject({ total: 1, working: 0, notWorkingWorkgroups: [ROOM.name] });
+  });
+
+  it("a working session at the room path counts as working", async () => {
+    await seedTemp([ROOM]);
+    sessionsStore.setSessions([
+      session({ id: "t1", name: ROOM.name, workingDirectory: ROOM.path, status: "running" }),
+    ]);
+    const temp = buildSnapshot().find((r) => r.projectPath === TEMP_PATH);
+    expect(temp).toMatchObject({ total: 1, working: 1, notWorkingWorkgroups: [] });
+  });
+
+  it("no temp rooms: no temp entry, the project entry is unchanged", async () => {
+    await seedTemp([]);
+    const snap = buildSnapshot();
+    expect(snap.map((r) => r.projectPath)).toEqual([projectPath]);
   });
 });

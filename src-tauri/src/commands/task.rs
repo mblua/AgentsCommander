@@ -79,9 +79,22 @@ async fn resolve_wg_root(
 /// would silently fail to update. (This is NOT about the `\\?\` prefix, which is
 /// already stripped both by backend `strip_unc` and by the frontend path
 /// normalizer.) Do not "fix" this by switching the write/emit to canonical.
+/// Gate T (#4805): a canonical `<config dir>/temp-room-trNN` folder passes after gate 2.
 fn validate_wg_root(
     workgroup_root: &str,
     project_paths: &[String],
+) -> Result<std::path::PathBuf, String> {
+    validate_wg_root_in(
+        workgroup_root,
+        project_paths,
+        crate::config::config_dir().as_deref(),
+    )
+}
+
+fn validate_wg_root_in(
+    workgroup_root: &str,
+    project_paths: &[String],
+    temp_base: Option<&Path>,
 ) -> Result<std::path::PathBuf, String> {
     // 1. Canonicalize: proves existence and resolves `..` + symlinks to a real
     //    absolute path. Mirrors open_in_explorer (window.rs). A traversal or a
@@ -92,6 +105,18 @@ fn validate_wg_root(
     // 2. Must be a directory.
     if !project_path_is_dir(&canonical) {
         return Err(format!("room root is not a directory: {workgroup_root}"));
+    }
+
+    // #4805 gate T: a real temp-room folder of this app's config dir. The CANONICAL
+    // path must be `<canonical config dir>/temp-room-trNN`, so a link that resolves
+    // elsewhere fails here and falls through to the project gates (which reject it).
+    let is_temp_room = temp_base
+        .and_then(|base| canonical_project_path(base).ok())
+        .is_some_and(|base| {
+            crate::config::temp_rooms::is_temp_room_path_in(&canonical.to_string_lossy(), &base)
+        });
+    if is_temp_room {
+        return Ok(std::path::PathBuf::from(workgroup_root));
     }
 
     // 3. Leaf name must start with `wg-`. Matches the discovery invariant and the

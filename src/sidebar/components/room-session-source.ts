@@ -11,7 +11,7 @@ import { remoteActivityStore } from "../stores/remote-activity";
 import { configuredReplicaRepoBadges } from "./replica-repo-badges";
 
 export function replicaSessionName(room: AcWorkgroup, replica: AcAgentReplica): string {
-  return `${room.name}/${replica.name}`;
+  return replica.sessionName ?? `${room.name}/${replica.name}`;
 }
 
 function normalizedReplicaSessionPath(path: string | null | undefined): string | null {

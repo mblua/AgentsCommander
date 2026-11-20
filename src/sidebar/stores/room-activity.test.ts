@@ -7,6 +7,7 @@ import { FakeTransport } from "../../shared/testing/fake-transport";
 import { discovery, resetUiStoresForTests, session } from "../../shared/testing/ui-harness";
 import { projectStore } from "./project";
 import { sessionsStore } from "./sessions";
+import { tempRoomsStore, tempRoomWorkgroup } from "./temp-rooms";
 import { remoteActivityStore } from "./remote-activity";
 import { isRoomSessionBusy, roomIsRawActive } from "../components/room-session-source";
 import { acquireRoomActivityObserver, confirmedRoomIsActive, roomActivityKey } from "./room-activity";
@@ -288,5 +289,62 @@ describe("room activity observer actual Solid lifecycle", () => {
     expect(roomActivityKey("/a|/b", "/c")).not.toBe(roomActivityKey("/a", "/b|/c"));
     expect(roomActivityKey("", group.path)).toBeNull();
     expect(roomActivityKey(project, " \t")).toBeNull();
+  });
+});
+
+// #4805 P03 - temp rooms get the same idle confirmation as project rooms.
+describe("room activity - temp rooms", () => {
+  const KEY = "agentscommander://temp-rooms";
+  const ROOM = { name: "temp-room-tr01", path: "/cfg/temp-room-tr01", unleashed: false };
+  let listed = [ROOM];
+  let restore: () => void;
+  let dispose: (() => void) | null = null;
+  const wg = () => tempRoomWorkgroup(ROOM);
+  const set = (status: SessionStatus) =>
+    sessionsStore.setSessions([
+      session({ id: "t1", name: ROOM.name, workingDirectory: ROOM.path, status }),
+    ]);
+  beforeEach(async () => {
+    preference.current = { roomIdleConfirmationSeconds: 15 };
+    resetUiStoresForTests();
+    tempRoomsStore.resetForTests();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    listed = [ROOM];
+    const fake = new FakeTransport();
+    fake.onInvoke("list_temp_rooms", () => listed);
+    restore = __setTransportForTests(fake);
+    await tempRoomsStore.refresh();
+    createRoot((d) => {
+      dispose = d;
+      onCleanup(acquireRoomActivityObserver());
+    });
+  });
+  afterEach(() => {
+    dispose?.();
+    dispose = null;
+    restore();
+    tempRoomsStore.resetForTests();
+    resetUiStoresForTests();
+    vi.useRealTimers();
+  });
+
+  it("confirms idle only after 15 s", () => {
+    set("running");
+    expect(confirmedRoomIsActive(KEY, wg())).toBe(true);
+    set("idle");
+    vi.advanceTimersByTime(14999);
+    expect(confirmedRoomIsActive(KEY, wg())).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(confirmedRoomIsActive(KEY, wg())).toBe(false);
+  });
+
+  it("a temp room removed from the list drops its entry", async () => {
+    set("running");
+    set("idle");
+    expect(confirmedRoomIsActive(KEY, wg())).toBe(true);
+    listed = [];
+    await tempRoomsStore.refresh();
+    expect(confirmedRoomIsActive(KEY, wg())).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

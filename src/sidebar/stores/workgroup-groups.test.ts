@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AcWorkgroup, WorkgroupGroupsConfig } from "../../shared/types";
 import { __setTransportForTests } from "../../shared/ipc";
 import { FakeTransport } from "../../shared/testing/fake-transport";
+import { TEMP_ROOMS_GROUPS_KEY } from "../../shared/temp-rooms";
 import {
   appendExactGroupToken,
   compileWorkgroupGroups,
@@ -547,5 +548,115 @@ describe("#777 Non-stop group", () => {
     await expect(workgroupGroupsStore.setNonStopFavorite(projectPath, true)).rejects.toThrow(
       "Alert me!"
     );
+  });
+});
+
+describe("#4805 Temporary Rooms group set routing and forgetWorkgroup", () => {
+  const KEY = TEMP_ROOMS_GROUPS_KEY;
+  let fake: FakeTransport;
+  let restore: () => void;
+  const echo = (args: Record<string, unknown>) => args.config;
+
+  beforeEach(() => {
+    fake = new FakeTransport();
+    restore = __setTransportForTests(fake);
+    workgroupGroupsStore.resetForTests();
+  });
+
+  afterEach(() => {
+    workgroupGroupsStore.resetForTests();
+    restore();
+  });
+
+  it("the temp-room key uses the temp-room commands only", async () => {
+    fake.resolve("get_temp_room_groups", config());
+    fake.onInvoke("update_temp_room_groups", echo);
+    await workgroupGroupsStore.ensureLoaded(KEY);
+    expect(fake.callsFor("get_temp_room_groups")).toEqual([
+      { cmd: "get_temp_room_groups", args: {} },
+    ]);
+    expect(fake.callsFor("get_project_groups")).toHaveLength(0);
+    const next = config({ groups: [{ id: "a", name: "A", regex: "^(temp-room-tr01)$" }] });
+    await workgroupGroupsStore.save(KEY, next);
+    const writes = fake.callsFor("update_temp_room_groups");
+    expect(writes).toHaveLength(1);
+    expect(Object.keys(writes[0].args)).toEqual(["config"]);
+    expect((writes[0].args.config as WorkgroupGroupsConfig).groups).toEqual(next.groups);
+    expect(fake.callsFor("update_project_groups")).toHaveLength(0);
+  });
+
+  it("a project path still uses the project commands with { path }", async () => {
+    fake.resolve("get_project_groups", config());
+    fake.onInvoke("update_project_groups", echo);
+    await workgroupGroupsStore.ensureLoaded(projectPath);
+    await workgroupGroupsStore.save(projectPath, config());
+    expect(fake.callsFor("get_project_groups")[0].args).toEqual({ path: projectPath });
+    const write = fake.callsFor("update_project_groups")[0].args;
+    expect(Object.keys(write).sort()).toEqual(["config", "path"]);
+    expect(write.path).toBe(projectPath);
+    expect(fake.callsFor("get_temp_room_groups")).toHaveLength(0);
+  });
+
+  const stored = (): WorkgroupGroupsConfig =>
+    config({
+      groups: [
+        { id: "a", name: "A", regex: "^(temp-room-tr01|temp-room-tr02)$" },
+        { id: "b", name: "B", regex: "^(temp-room-tr01)$" },
+        { id: "c", name: "C", regex: "temp-room-.*" },
+      ],
+      nonStop: {
+        ...defaultNonStop(),
+        show: true,
+        favorite: true,
+        regex: "^(temp-room-tr01)$",
+        telegram: { enabled: true, botId: "bot" },
+        sound: { enabled: true, seconds: 7 },
+      },
+    });
+
+  it("forgetWorkgroup strips exact tokens everywhere in one save", async () => {
+    fake.resolve("get_temp_room_groups", stored());
+    fake.onInvoke("update_temp_room_groups", echo);
+    await workgroupGroupsStore.forgetWorkgroup(KEY, "temp-room-tr01");
+    const writes = fake.callsFor("update_temp_room_groups");
+    expect(writes).toHaveLength(1);
+    const sent = writes[0].args.config as WorkgroupGroupsConfig;
+    expect(sent.groups.map((g) => g.regex)).toEqual(["^(temp-room-tr02)$", "(?!)", "temp-room-.*"]);
+    expect(sent.nonStop).toEqual({ ...stored().nonStop, regex: "(?!)" });
+  });
+
+  it("forgetWorkgroup writes nothing when nothing matches", async () => {
+    fake.resolve("get_temp_room_groups", stored());
+    fake.onInvoke("update_temp_room_groups", echo);
+    await workgroupGroupsStore.forgetWorkgroup(KEY, "temp-room-tr09");
+    expect(fake.callsFor("update_temp_room_groups")).toHaveLength(0);
+  });
+
+  it("a stale store error does not block forgetWorkgroup", async () => {
+    fake.resolve("get_temp_room_groups", stored());
+    fake.onInvoke("update_temp_room_groups", echo);
+    const bad = config({
+      groups: [
+        { id: "a1", name: "a", regex: "^x$" },
+        { id: "a2", name: "a", regex: "^y$" },
+      ],
+    });
+    await expect(workgroupGroupsStore.save(KEY, bad)).rejects.toThrow();
+    expect(workgroupGroupsStore.error(KEY)).not.toBeNull();
+    await workgroupGroupsStore.forgetWorkgroup(KEY, "temp-room-tr01");
+    const writes = fake.callsFor("update_temp_room_groups");
+    expect(writes).toHaveLength(1);
+    expect(JSON.stringify(writes[0].args.config)).not.toContain("temp-room-tr01");
+  });
+
+  it("forgetWorkgroup rejects and writes nothing when the read fails", async () => {
+    fake.onInvoke("get_temp_room_groups", () => {
+      throw new Error("read failed");
+    });
+    fake.onInvoke("update_temp_room_groups", echo);
+    await expect(workgroupGroupsStore.forgetWorkgroup(KEY, "temp-room-tr01")).rejects.toThrow(
+      "read failed"
+    );
+    expect(fake.callsFor("update_temp_room_groups")).toHaveLength(0);
   });
 });

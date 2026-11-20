@@ -1,10 +1,18 @@
 // #4779 - the "Temporary Rooms" sidebar category: list, create, launch and delete
 // temp rooms. Markup reuses existing classes only; the agent row's menu is the
 // shared SessionRowMenu catalogue, so this host owns nothing but the data.
-import { createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
 import { Portal } from "solid-js/web";
-import { SessionAPI, SettingsAPI, TelegramAPI, TempRoomAPI, WindowAPI } from "../../shared/ipc";
 import {
+  SessionAPI,
+  SettingsAPI,
+  TaskAPI,
+  TelegramAPI,
+  TempRoomAPI,
+  WindowAPI,
+} from "../../shared/ipc";
+import {
+  TEMP_ROOMS_GROUPS_KEY as KEY,
   tempRoomPlaceholderWarning,
   tempRoomUnavailablePlaceholders,
   type SettingsWithTempRoom,
@@ -15,6 +23,19 @@ import type { Session, TelegramBotConfig } from "../../shared/types";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { toastStore } from "../../shared/stores/toasts";
 import { sessionsStore } from "../stores/sessions";
+import { tempRoomsStore, tempRoomWorkgroup } from "../stores/temp-rooms";
+import {
+  compileGroupRegex,
+  compileWorkgroupGroups,
+  DEFAULT_NON_STOP_NAME,
+  groupMatchesWorkgroup,
+  isUngroupedWorkgroup,
+  nonStopMatchesWorkgroup,
+  removeExactGroupToken,
+  workgroupGroupsStore,
+} from "../stores/workgroup-groups";
+import { projectCollapseStore } from "../stores/project-collapse";
+import { automationIdPart } from "./replica-repo-badges";
 import { bridgesStore } from "../stores/bridges";
 import { normalizeProjectPathForCompare } from "../stores/project-refresh";
 import { requestCoordinatorClose } from "../stores/coordinator-close";
@@ -28,6 +49,7 @@ import { sidebarFilter } from "../stores/sidebar-filter";
 import { createSidebarFilterHost } from "./sidebar-filter-host";
 import AgentPickerModal, { type AgentPickerSelection } from "./AgentPickerModal";
 import SessionRowMenu from "./context-menu/SessionRowMenu";
+import type { AddToGroupSpec } from "./context-menu/session-row-menu-types";
 import {
   closeSpec,
   deleteAgentSpec,
@@ -38,7 +60,7 @@ import {
   telegramSpec,
 } from "./context-menu/session-row-menu-specs";
 
-const NO_TASK_TITLE = "Temp rooms have no TASK.md";
+const NONSTOP_CHOICE = "__nonstop__";
 const OPEN_ROOM_FOLDER = "Open Room's Folder";
 
 type MenuPos = { x: number; y: number };
@@ -70,6 +92,11 @@ async function saveChoice(choice: TempRoomAgentChoice): Promise<void> {
   await SettingsAPI.update(next);
 }
 
+const messageOf = (e: unknown): string =>
+  typeof e === "object" && e !== null && typeof (e as { message?: unknown }).message === "string"
+    ? (e as { message: string }).message
+    : String(e);
+
 const choiceOf = (selection: AgentPickerSelection): TempRoomAgentChoice => ({
   agentId: selection.agent.id,
   requestedProfile: selection.requestedProfile,
@@ -93,8 +120,8 @@ const TrashSvg: Component = () => (
 );
 
 const TemporaryRoomsPanel: Component = () => {
-  const [rooms, setRooms] = createSignal<TempRoomInfo[]>([]);
-  const [collapsed, setCollapsed] = createSignal(false);
+  const rooms = tempRoomsStore.rooms;
+  const collapsed = () => projectCollapseStore.isProjectCollapsed(KEY);
   const [categoryMenu, setCategoryMenu] = createSignal<MenuPos | null>(null);
   const [headerMenu, setHeaderMenu] = createSignal<RoomMenu | null>(null);
   const [agentMenu, setAgentMenu] = createSignal<RoomMenu | null>(null);
@@ -105,6 +132,29 @@ const TemporaryRoomsPanel: Component = () => {
   const [deleteBusy, setDeleteBusy] = createSignal(false);
   const [placeholderWarnings, setPlaceholderWarnings] = createSignal<string[]>([]);
   const [unleashAsk, setUnleashAsk] = createSignal<TempRoomInfo | null>(null);
+  const [groupCreatePath, setGroupCreatePath] = createSignal<string | null>(null);
+  const [groupDraft, setGroupDraft] = createSignal("");
+  const [groupMenuError, setGroupMenuError] = createSignal<string | null>(null);
+  const [titleEditPath, setTitleEditPath] = createSignal<string | null>(null);
+  const [titleDraft, setTitleDraft] = createSignal("");
+  const [titleBusy, setTitleBusy] = createSignal(false);
+  const [titleError, setTitleError] = createSignal<string | null>(null);
+
+  // #4805 - the Temporary Rooms group set (ProjectPanel `groupPredicate` mirror).
+  const groupsConfig = () => workgroupGroupsStore.config(KEY);
+  const compiled = createMemo(() => compileWorkgroupGroups(groupsConfig().groups));
+  const inSelectedGroup = (room: TempRoomInfo): boolean => {
+    const wg = tempRoomWorkgroup(room);
+    const selected = workgroupGroupsStore.selection(KEY);
+    if (selected.kind === "all") return true;
+    if (selected.kind === "ungrouped")
+      return isUngroupedWorkgroup(compiled(), groupsConfig().nonStop, wg);
+    if (selected.kind === "nonstop") {
+      const ns = groupsConfig().nonStop;
+      return !!ns && nonStopMatchesWorkgroup(ns, wg);
+    }
+    return groupMatchesWorkgroup(compiled(), selected.id, wg);
+  };
 
   // #4786 - red warning when the saved agent uses a placeholder temp rooms lack.
   const refreshWarnings = async () => {
@@ -119,13 +169,16 @@ const TemporaryRoomsPanel: Component = () => {
 
   const refresh = async () => {
     try {
-      setRooms(await TempRoomAPI.list());
+      await tempRoomsStore.refresh();
     } catch (e) {
       console.error("[TemporaryRoomsPanel] list_temp_rooms failed:", e);
     }
     await refreshWarnings();
   };
-  onMount(() => void refresh());
+  onMount(() => {
+    void refresh();
+    void workgroupGroupsStore.ensureLoaded(KEY);
+  });
 
   // ProjectPanel handler pattern: dismiss on window click/contextmenu/Escape.
   let removeDismiss: (() => void) | null = null;
@@ -163,6 +216,22 @@ const TemporaryRoomsPanel: Component = () => {
   const closeAgentMenu = () => {
     setAgentMenu(null);
     setMenuBots(null);
+    setGroupCreatePath(null);
+    setGroupDraft("");
+    setGroupMenuError(null);
+    setTitleEditPath(null);
+    setTitleDraft("");
+    setTitleBusy(false);
+    setTitleError(null);
+  };
+
+  // #4805 - stale group entries of a reused trNN number.
+  const forgetGroups = async (name: string) => {
+    try {
+      await workgroupGroupsStore.forgetWorkgroup(KEY, name);
+    } catch (e) {
+      toastStore.error(`Group entries of ${name} could not be removed: ${messageOf(e)}`);
+    }
   };
 
   const pickAgent = (room: TempRoomInfo, session: Session | undefined) =>
@@ -210,6 +279,7 @@ const TemporaryRoomsPanel: Component = () => {
     closeMenus();
     try {
       const room = await TempRoomAPI.create();
+      await forgetGroups(room.name);
       await refresh();
       await launchWithSavedChoice(room);
     } catch (e) {
@@ -313,6 +383,7 @@ const TemporaryRoomsPanel: Component = () => {
     setDeleteError(null);
     try {
       await TempRoomAPI.delete(room.name);
+      await forgetGroups(room.name);
       setDeleting(null);
     } catch (e) {
       setDeleteError(launchErrorMessage(e));
@@ -325,6 +396,123 @@ const TemporaryRoomsPanel: Component = () => {
   // #4780 - the replica Unleash flow (#4752) on the temp-room path; restart relaunches.
   const unleashed = (room: TempRoomInfo) =>
     unleashedReplicasStore.isUnleashed({ path: room.path, unleashed: room.unleashed });
+
+  const groupAction = async (run: () => Promise<void>) => {
+    try {
+      await run();
+    } catch (e) {
+      setGroupMenuError(messageOf(e));
+    }
+  };
+
+  const addToGroupFor = (room: TempRoomInfo): AddToGroupSpec => {
+    const wg = tempRoomWorkgroup(room);
+    const ns = groupsConfig().nonStop;
+    const nonStopChecked = !!ns && nonStopMatchesWorkgroup(ns, wg);
+    const groupChoices = groupsConfig().groups.map((g) => {
+      const valid = !!compileGroupRegex(g);
+      const checked = groupMatchesWorkgroup(compiled(), g.id, wg);
+      const custom = checked && removeExactGroupToken(g.regex, room.name) === null;
+      const title = !valid
+        ? "Fix this group's regex before adding a room"
+        : custom
+          ? "Membership comes from a custom regex. Use Edit groups to change it."
+          : checked
+            ? "Remove this room from the group"
+            : g.regex;
+      return { id: g.id, name: g.name, checked, disabled: !valid || custom, title };
+    });
+    const choices = [
+      {
+        id: NONSTOP_CHOICE,
+        name: DEFAULT_NON_STOP_NAME,
+        checked: nonStopChecked,
+        disabled: false,
+        title: `Watch this room in the ${DEFAULT_NON_STOP_NAME} group`,
+      },
+      ...groupChoices,
+    ];
+    return {
+      choices,
+      onToggle: (id: string) => {
+        setGroupMenuError(null);
+        const checked = choices.find((c) => c.id === id)?.checked ?? false;
+        void groupAction(() => {
+          if (id === NONSTOP_CHOICE) {
+            return checked
+              ? workgroupGroupsStore.removeWorkgroupFromNonStop(KEY, room.name)
+              : workgroupGroupsStore.addWorkgroupToNonStop(KEY, room.name);
+          }
+          return checked
+            ? workgroupGroupsStore.removeWorkgroupFromGroup(KEY, id, room.name)
+            : workgroupGroupsStore.addWorkgroupToGroup(KEY, id, room.name);
+        });
+      },
+      emptyNote: "No groups yet",
+      storeError: workgroupGroupsStore.error(KEY),
+      menuError: groupMenuError(),
+      create: {
+        active: groupCreatePath() === room.path,
+        draft: groupDraft(),
+        onDraft: setGroupDraft,
+        onStart: () => {
+          setGroupCreatePath(room.path);
+          setGroupDraft("");
+          setGroupMenuError(null);
+        },
+        onSave: () => {
+          const name = groupDraft().trim();
+          if (!name) {
+            setGroupMenuError("Group name cannot be blank.");
+            return;
+          }
+          void groupAction(async () => {
+            await workgroupGroupsStore.createGroupForWorkgroup(KEY, name, room.name);
+            setGroupCreatePath(null);
+          });
+        },
+      },
+      testIds: {
+        trigger: `tempRoom.${room.name}.groups.trigger`,
+        flyout: `tempRoom.${room.name}.groups.flyout`,
+        nonstop: `tempRoom.${room.name}.groups.nonstop`,
+        choice: (id) => `tempRoom.${room.name}.groups.${automationIdPart(id)}`,
+        create: `tempRoom.${room.name}.groups.create`,
+        createInput: "tempRoom.groups.create.input",
+        createSave: "tempRoom.groups.create.save",
+        menuError: "tempRoom.groups.error",
+      },
+    };
+  };
+
+  const saveTitle = async (room: TempRoomInfo) => {
+    const title = titleDraft().trim();
+    if (!title) {
+      setTitleError("Title cannot be empty.");
+      return;
+    }
+    setTitleBusy(true);
+    try {
+      await TaskAPI.setTitleAt(room.path, title);
+      await refresh();
+      closeAgentMenu();
+    } catch (e) {
+      setTitleError(String(e));
+    } finally {
+      setTitleBusy(false);
+    }
+  };
+
+  const clearTitle = async (room: TempRoomInfo) => {
+    closeAgentMenu();
+    try {
+      await TaskAPI.cleanAt(room.path);
+    } catch (e) {
+      // A MutationCommitted error means the file already changed: refresh anyway.
+      toastStore.error(messageOf(e));
+    }
+    await refresh();
+  };
 
   const agentCaps = (room: TempRoomInfo) => {
     const session = findTempRoomSession(room);
@@ -374,17 +562,36 @@ const TemporaryRoomsPanel: Component = () => {
           if (session) void selectBot(session, id);
         },
       }),
-      addToGroup: { disabled: true as const, title: "Groups need a project room" },
-      editTaskTitle: { disabled: true as const, title: NO_TASK_TITLE },
-      clearTaskTitle: { disabled: true, title: NO_TASK_TITLE, onSelect: () => {} },
+      addToGroup: addToGroupFor(room),
+      editTaskTitle: {
+        editing: titleEditPath() === room.path,
+        draft: titleDraft(),
+        busy: titleBusy(),
+        error: titleError(),
+        onDraft: setTitleDraft,
+        onStart: () => {
+          setTitleEditPath(room.path);
+          setTitleDraft(room.taskTitle ?? "");
+          setTitleError(null);
+        },
+        onSave: () => void saveTitle(room),
+        onCancel: () => {
+          setTitleEditPath(null);
+          setTitleDraft("");
+          setTitleError(null);
+        },
+      },
+      clearTaskTitle: { onSelect: () => void clearTitle(room) },
     };
   };
 
   // #4785 - the one sidebar filter; a match on the label keeps every room.
   const visibleRooms = () =>
     !sidebarFilter.active() || sidebarFilter.matches("Temporary Rooms")
-      ? rooms()
-      : rooms().filter((r) => sidebarFilter.matches(r.name));
+      ? rooms().filter(inSelectedGroup)
+      : rooms()
+          .filter(inSelectedGroup)
+          .filter((r) => sidebarFilter.matches(r.name));
 
   let panelEl: HTMLDivElement | undefined;
   createSidebarFilterHost(() => panelEl?.parentElement);
@@ -406,7 +613,7 @@ const TemporaryRoomsPanel: Component = () => {
           type="button"
           class="project-header-main"
           aria-expanded={!collapsed()}
-          onClick={() => setCollapsed(!collapsed())}
+          onClick={() => projectCollapseStore.toggleProjectCollapsed(KEY)}
         >
           <span class="ac-discovery-chevron" classList={{ collapsed: collapsed() }}>
             &#x25BE;
@@ -449,6 +656,19 @@ const TemporaryRoomsPanel: Component = () => {
                   }
                 >
                   <span class="ac-wg-name">{room.name}</span>
+                  <Show when={room.taskTitle?.trim()}>
+                    {(text) => (
+                      <span
+                        class="ac-wg-task sidebar-task-label"
+                        tabIndex={0}
+                        data-ac-testid={`tempRoom.${room.name}.taskTitle`}
+                        data-ac-role="text"
+                        data-ac-state={text() === "Clean" ? "clean" : "task"}
+                      >
+                        {text()}
+                      </span>
+                    )}
+                  </Show>
                 </div>
                 <div
                   class="replica-item"

@@ -6,13 +6,15 @@ import type { NonStopReport } from "../../shared/types";
 import { workgroupGroupsStore, nonStopDisplayName, nonStopMatchesWorkgroup } from "../stores/workgroup-groups";
 import { splitRoomsByActive } from "../components/room-session";
 import { projectStore } from "../stores/project";
+import { tempRoomsStore } from "../stores/temp-rooms";
 
 
 const KEEPALIVE_MS = 10_000;
 
 export function buildSnapshot(): NonStopReport[] {
+  void tempRoomsStore.ensureLoaded();
   const reports: NonStopReport[] = [];
-  for (const project of projectStore.projects) {
+  for (const project of [...projectStore.projects, ...tempRoomsStore.railProjects()]) {
     void workgroupGroupsStore.ensureLoaded(project.path);
     const ns = workgroupGroupsStore.config(project.path).nonStop;
     if (!ns?.show) continue;

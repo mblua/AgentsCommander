@@ -5,7 +5,11 @@ import {
   resolveProfilePreview,
 } from "./profile-utils";
 import type { Transport } from "./transport";
-import type { SettingsSnapshot } from "./types";
+import type { SettingsSnapshot, WorkgroupGroupsConfig } from "./types";
+
+// #4805 - mirrors `TEMP_ROOMS_GROUPS_KEY` in `src-tauri/src/config/temp_rooms.rs`;
+// never a real path.
+export const TEMP_ROOMS_GROUPS_KEY = "agentscommander://temp-rooms";
 
 /** One `temp-room-trNN` folder in the config dir, as `list_temp_rooms` returns it. */
 export interface TempRoomInfo {
@@ -13,6 +17,8 @@ export interface TempRoomInfo {
   path: string;
   /** #4780: the stored Unleash flag; the store override wins. */
   unleashed: boolean;
+  /** #4805 - TASK.md title; null or absent without one. */
+  taskTitle?: string | null;
 }
 
 /** The agent every new temp room launches with; absent until the first choice. */
@@ -30,6 +36,9 @@ export function createTempRoomAPI(transport: Pick<Transport, "invoke">) {
     list: () => transport.invoke<TempRoomInfo[]>("list_temp_rooms"),
     create: () => transport.invoke<TempRoomInfo>("create_temp_room"),
     delete: (name: string) => transport.invoke<void>("delete_temp_room", { name }),
+    getGroups: () => transport.invoke<WorkgroupGroupsConfig>("get_temp_room_groups"),
+    updateGroups: (config: WorkgroupGroupsConfig) =>
+      transport.invoke<WorkgroupGroupsConfig>("update_temp_room_groups", { config }),
   };
 }
 

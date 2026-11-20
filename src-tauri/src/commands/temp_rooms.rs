@@ -5,9 +5,16 @@
 use crate::commands::entity_creation::{
     ensure_no_live_sessions_under_manager, try_atomic_delete_wg, WgDeleteOutcome,
 };
+use crate::commands::project_settings::{
+    project_groups_updated_payload, PROJECT_GROUPS_UPDATED_EVENT,
+};
+use crate::config::project_settings::WorkgroupGroupsConfig;
+use crate::config::temp_rooms::TEMP_ROOMS_GROUPS_KEY;
 use crate::config::temp_rooms::{parse_temp_room_number, temp_room_dir_name, temp_room_names_in};
 use crate::filesystem::temp_rooms::{create_dir_exclusive, list_child_entries};
 use crate::session::manager::SessionManager;
+use crate::web::broadcast::WsBroadcaster;
+use crate::web::event_broadcast::broadcast_all;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::io;
@@ -16,7 +23,13 @@ use std::sync::Arc;
 use tauri::State;
 
 const CREATE_ATTEMPTS: usize = 64;
-const TEMP_ROOM_COMMANDS: [&str; 3] = ["list_temp_rooms", "create_temp_room", "delete_temp_room"];
+const TEMP_ROOM_COMMANDS: [&str; 5] = [
+    "list_temp_rooms",
+    "create_temp_room",
+    "delete_temp_room",
+    "get_temp_room_groups",
+    "update_temp_room_groups",
+];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +37,7 @@ pub struct TempRoomInfo {
     name: String,
     path: String,
     unleashed: bool,
+    task_title: Option<String>,
 }
 
 // The Unleash store of `base` (the config dir holds both the store and the temp rooms).
@@ -31,13 +45,26 @@ fn unleash_store(base: &Path) -> PathBuf {
     base.join(crate::config::instance_artifacts::UNLEASHED_REPLICAS_FILE_NAME)
 }
 
+// #4805 - the room's TASK.md title; a read error is logged and shows no title.
+fn task_title_of(dir: &Path) -> Option<String> {
+    crate::cli::task_ops::read_title(dir).unwrap_or_else(|e| {
+        log::warn!(
+            "[temp_rooms] cannot read the TASK title of {}: {e}",
+            dir.display()
+        );
+        None
+    })
+}
+
 fn info(base: &Path, name: String) -> TempRoomInfo {
     let path = crate::path_utils::path_to_string_without_windows_verbatim_prefix(&base.join(&name));
     let unleashed = crate::config::unleashed_replicas::is_unleashed_in(&unleash_store(base), &path);
+    let task_title = task_title_of(&base.join(&name));
     TempRoomInfo {
         name,
         path,
         unleashed,
+        task_title,
     }
 }
 
@@ -161,15 +188,42 @@ pub(crate) async fn delete_temp_room(
     delete_temp_room_in(&temp_rooms_base()?, &name, session_mgr.inner()).await
 }
 
-/// Route the three temp-room commands to their handler; every other command
+#[tauri::command]
+pub(crate) async fn get_temp_room_groups() -> Result<WorkgroupGroupsConfig, String> {
+    crate::config::temp_rooms::load_groups_in(&temp_rooms_base()?)
+}
+
+#[tauri::command]
+pub(crate) async fn update_temp_room_groups<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    broadcaster: State<'_, WsBroadcaster>,
+    config: WorkgroupGroupsConfig,
+) -> Result<WorkgroupGroupsConfig, String> {
+    let saved = crate::config::temp_rooms::save_groups_in(&temp_rooms_base()?, config)?;
+    let payload = project_groups_updated_payload(TEMP_ROOMS_GROUPS_KEY, &saved);
+    broadcast_all(
+        &app,
+        broadcaster.inner(),
+        PROJECT_GROUPS_UPDATED_EVENT,
+        &payload,
+    );
+    Ok(saved)
+}
+
+/// Route the five temp-room commands to their handler; every other command
 /// goes to `fallback` exactly once and keeps its result.
 pub(crate) fn dispatch<R, F>(invoke: tauri::ipc::Invoke<R>, fallback: &F) -> bool
 where
     R: tauri::Runtime,
     F: Fn(tauri::ipc::Invoke<R>) -> bool,
 {
-    let temp_rooms: fn(tauri::ipc::Invoke<R>) -> bool =
-        tauri::generate_handler![list_temp_rooms, create_temp_room, delete_temp_room];
+    let temp_rooms: fn(tauri::ipc::Invoke<R>) -> bool = tauri::generate_handler![
+        list_temp_rooms,
+        create_temp_room,
+        delete_temp_room,
+        get_temp_room_groups,
+        update_temp_room_groups
+    ];
     match invoke.message.command() {
         name if TEMP_ROOM_COMMANDS.contains(&name) => temp_rooms(invoke),
         _ => fallback(invoke),
