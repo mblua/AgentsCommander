@@ -673,7 +673,10 @@ const TemporaryRoomsPanel: Component = () => {
                 </div>
                 <div
                   class="replica-item"
-                  classList={{ active: !!session() && session()?.id === sessionsStore.activeId }}
+                  classList={{
+                    active: !!session() && session()?.id === sessionsStore.activeId,
+                    unleashed: unleashed(room),
+                  }}
                   title={room.path}
                   data-ac-testid={`tempRoom.${room.name}.row`}
                   onClick={() => void rowClick(room)}

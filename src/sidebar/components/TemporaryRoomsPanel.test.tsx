@@ -410,6 +410,28 @@ describe("#4779 TemporaryRoomsPanel", () => {
     });
   });
 
+  it("unleash_confirm_adds_halo_class_to_row", async () => {
+    const { fake } = track(setup({ sessions: [liveSession()] }));
+    fake.resolve("set_replica_unleashed", undefined);
+    await openAgentMenu();
+    expect(roomRow()!.classList.contains("unleashed")).toBe(false);
+    click(unleashItem());
+    await waitFor(() => expect(confirmBtn()).not.toBeNull());
+    click(confirmBtn()!);
+    await waitFor(() => expect(roomRow()!.classList.contains("unleashed")).toBe(true));
+  });
+
+  it("leash_removes_halo_class_from_row", async () => {
+    const room = { ...ROOM_1, unleashed: true };
+    const { fake } = track(setup({ rooms: [room], sessions: [liveSession()] }));
+    fake.resolve("set_replica_unleashed", undefined);
+    await waitFor(() => expect(roomRow(room)).not.toBeNull());
+    expect(roomRow(room)!.classList.contains("unleashed")).toBe(true);
+    await openAgentMenu(room);
+    click(unleashItem());
+    await waitFor(() => expect(roomRow(room)!.classList.contains("unleashed")).toBe(false));
+  });
+
   it("unleash_store_failure_toasts_and_skips_restart", async () => {
     const { fake } = track(setup({ sessions: [liveSession()] }));
     fake.reject("set_replica_unleashed", "disk full");
