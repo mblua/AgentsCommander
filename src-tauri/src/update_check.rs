@@ -165,7 +165,7 @@ fn parse_latest(body: &str) -> Option<String> {
 }
 
 fn upgrade_command() -> String {
-    format!("npm i -g {PACKAGE_NAME}")
+    format!("npm i -g --allow-scripts={PACKAGE_NAME} {PACKAGE_NAME}")
 }
 
 /// Detached startup task. Reads the toggle, applies the 24h throttle, queries

@@ -47,7 +47,9 @@ fn cli_notice_honors_toggle_and_version() {
     // Enabled + newer -> notice carrying the version + upgrade command.
     let notice = cli_notice(&newer, "0.9.16", true).expect("expected a notice");
     assert!(notice.contains("0.9.20"));
-    assert!(notice.contains("npm i -g @mblua/agentscommander"));
+    assert!(
+        notice.contains("npm i -g --allow-scripts=@mblua/agentscommander @mblua/agentscommander")
+    );
     // FIX-1: toggle OFF -> silent even with a newer cache.
     assert_eq!(cli_notice(&newer, "0.9.16", false), None);
     // Enabled but not newer -> silent.
