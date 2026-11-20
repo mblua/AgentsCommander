@@ -40,10 +40,10 @@ const REMOVED_ROW_CONTROL = `[class*="${["replica", "comanaged"].join("-")}"]`;
 const replicaPath = (name: string): string => `${workgroupPath}\\__agent_${name}`;
 
 const rowTestId = (replica: string): string =>
-  `replica.row.workgroups.${automationIdPart(wgName)}.${automationIdPart(replica)}`;
+  `replica.row.workgroups.${automationIdPart(replicaPath(replica))}`;
 
 const coManagedTestId = (kind: MenuKind, suffix: "" | ".reason" | ".error" = ""): string =>
-  `replica.coManaged.${kind}.${automationIdPart(wgName)}.${automationIdPart(ORCHESTRATOR)}${suffix}`;
+  `replica.coManaged.${kind}.${automationIdPart(replicaPath(ORCHESTRATOR))}${suffix}`;
 
 function byTestId<T extends Element = HTMLElement>(testId: string): T | null {
   return document.querySelector<T>(`[data-ac-testid="${testId}"]`);

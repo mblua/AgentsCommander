@@ -42,8 +42,9 @@ const wgBPath = `${projectPath}\\.ac\\wg-3-other-team`;
 const coordBPath = `${wgBPath}\\__agent_dev-rust`;
 const repoB1 = `${wgBPath}\\repo-webpage`;
 
-const rowA = "replica.row.quick.wg-2-dev-team.dev-webpage-ui";
-const rowB = "replica.row.quick.wg-3-other-team.dev-rust";
+const rowA = "replica.row.quick.C-Project-.ac-wg-2-dev-team-__agent_dev-webpage-ui";
+const IREPO = "replica.inactive.C-Project-.ac-wg-2-dev-team-__agent_dev-webpage-ui.menu.repo";
+const rowB = "replica.row.quick.C-Project-.ac-wg-3-other-team-__agent_dev-rust";
 
 const GITHUB_REMOTE = "https://github.com/mblua/AgentsCommander.git";
 
@@ -438,9 +439,9 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
     await openMenuWithArrow(rowA);
     mouseEnter(repoEntries()[0]);
 
-    await waitFor(() => expect(target("replica.inactive.menu.repo.0.browse.flyout")).not.toBeNull());
+    await waitFor(() => expect(target(`${IREPO}.0.browse.flyout`)).not.toBeNull());
     expect(flyoutLabels()).toEqual(["Browse Main", "Browse Branch"]);
-    expect(target("replica.inactive.menu.repo.0.browse.branch")!.getAttribute("title")).toBe(
+    expect(target(`${IREPO}.0.browse.branch`)!.getAttribute("title")).toBe(
       "https://github.com/mblua/AgentsCommander/tree/feature/y"
     );
   });
@@ -453,11 +454,11 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
     mouseEnter(repoEntries()[0]);
     await waitFor(() => expect(flyout()).not.toBeNull());
 
-    mouseEnter(target("replica.wg-2-dev-team.groups.trigger")!);
+    mouseEnter(target("replica.C-Project-.ac-wg-2-dev-team.groups.trigger")!);
 
     await waitFor(() => {
       expect(flyout()).toBeNull();
-      expect(target("replica.wg-2-dev-team.groups.flyout")).not.toBeNull();
+      expect(target("replica.C-Project-.ac-wg-2-dev-team.groups.flyout")).not.toBeNull();
     });
   });
 
@@ -707,10 +708,10 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
     mouseEnter(repoEntries()[0]);
 
     await waitFor(() =>
-      expect(target("replica.inactive.menu.repo.0.browse.branch")).not.toBeNull()
+      expect(target(`${IREPO}.0.browse.branch`)).not.toBeNull()
     );
     expect(flyoutLabels()).toEqual(["Browse Main", "Browse Branch"]);
-    expect(target("replica.inactive.menu.repo.0.browse.branch")!.getAttribute("title")).toBe(
+    expect(target(`${IREPO}.0.browse.branch`)!.getAttribute("title")).toBe(
       "https://github.com/mblua/AgentsCommander/tree/feature/cold"
     );
 
@@ -718,7 +719,7 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
     mouseLeave(repoEntries()[0]);
     mouseEnter(repoEntries()[1]);
     await waitFor(() =>
-      expect(target("replica.inactive.menu.repo.1.browse.flyout")).not.toBeNull()
+      expect(target(`${IREPO}.1.browse.flyout`)).not.toBeNull()
     );
     expect(flyoutLabels()).toEqual(["Browse Main"]);
   });

@@ -32,9 +32,7 @@ const workgroupPath = `${projectPath}\\.ac\\${workgroupName}`;
 const coordName = "dev-webpage-ui";
 const coordPath = `${workgroupPath}\\__agent_${coordName}`;
 
-const rowSelector = `[data-ac-testid="replica.row.quick.${automationIdPart(
-  workgroupName,
-)}.${automationIdPart(coordName)}"]`;
+const rowSelector = `[data-ac-testid="replica.row.quick.${automationIdPart(coordPath)}"]`;
 
 function isoMinutesAgo(minutes: number): string {
   return new Date(clockStore.nowMs - minutes * 60_000).toISOString();

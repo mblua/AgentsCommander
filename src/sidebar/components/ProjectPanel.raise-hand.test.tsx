@@ -28,7 +28,7 @@ function replicaPath(wgName: string, replicaName: string): string {
 }
 
 function rowSlotTestId(wgName: string, replicaName: string): string {
-  return `replica.row.quick.${wgName}.${replicaName}.communicationSlot`;
+  return `replica.row.quick.C-Project-.ac-${wgName}-__agent_${replicaName}.communicationSlot`;
 }
 
 function replica(wgName: string, replicaName: string, isCoordinator = true): AcAgentReplica {

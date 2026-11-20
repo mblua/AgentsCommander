@@ -283,7 +283,8 @@ describe("ProjectPanel collapse state", () => {
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
-      const quickRow = '[data-ac-testid="replica.row.quick.wg-2-dev-team.dev-webpage-ui"]';
+      const quickRow =
+        '[data-ac-testid="replica.row.quick.C-Project-.ac-wg-2-dev-team-__agent_dev-webpage-ui"]';
       await waitFor(() => expect(rendered.root.querySelector(quickRow)).not.toBeNull());
 
       const header = headerByName(rendered.root, "Orchestrators");

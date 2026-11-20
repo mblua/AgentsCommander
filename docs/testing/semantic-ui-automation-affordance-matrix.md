@@ -61,18 +61,18 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 
 | Behavior | Selector | Action |
 |---|---|---|
-| Open an orchestrator's context menu | `replica.row.<context>.<wg>.<agent>` | `contextClick` |
+| Open an orchestrator's context menu | `replica.row.<context>.<replicaPath>` | `contextClick` |
 | Wait for the Browse submenu to become available | `replica.<sessionId>.menu.repo.<index>.browse.arrow` | `wait` |
 | Open the Browse submenu | `replica.<sessionId>.menu.repo.<index>` | `hover` |
 | Detect the Browse submenu | `replica.<sessionId>.menu.repo.<index>.browse.flyout` | `query` |
 | Open the repo root on GitHub | `replica.<sessionId>.menu.repo.<index>.browse.main` | `hover`, `click` |
 | Open the current branch on GitHub (absent on main/master/HEAD) | `replica.<sessionId>.menu.repo.<index>.browse.branch` | `hover`, `click` |
-| Open the Add to Group flyout | `replica.<wg>.groups.trigger` | `hover` |
-| Detect the Add to Group flyout | `replica.<wg>.groups.flyout` | `query` |
+| Open the Add to Group flyout | `replica.<wgPath>.groups.trigger` | `hover` |
+| Detect the Add to Group flyout | `replica.<wgPath>.groups.flyout` | `query` |
 | Park the pointer nowhere (closes hover flyouts, releases the sidebar order freeze) | (none) | `hover --leave` |
 
 - The arrow wait must be re-run after **every** `contextClick`: opening a context menu clears the resolved-remote cache for all repos, so the previous menu's arrow disappears and the new one's has to resolve from scratch.
-- Inactive (gray) orchestrators use the constant prefix `replica.inactive.menu.repo` instead of `replica.<sessionId>.menu.repo`, so two inactive orchestrators share a prefix.
+- Inactive (gray) orchestrators use the prefix `replica.inactive.<replicaPath>.menu.repo` instead of `replica.<sessionId>.menu.repo`; it is unique per replica.
 - Bracket any hover-using script with `hover --leave` at both ends. The pointer is sticky **across CLI invocations**, and a script that starts with the pointer already on its target gets a same-element re-hover, which dispatches nothing (`diagnostics.hover.changed: false`).
 - `hover` drives JS handlers (`onMouseEnter` / `onPointerEnter` and their leave twins). It cannot drive the CSS `:hover` pseudo-class, and it deliberately dispatches no `pointermove` / `mousemove`, so nothing that listens for pointer movement — a drag, a splitter, the screenshot crosshair — can see it.
 - `hover` runs the same visibility and **obscured** gates as `click`: a covered element genuinely receives no pointer, so it is refused with `target_obscured`, and `diagnostics.topmost` names what is on top of it. The one place this bites in practice: the Browse flyout flips to the **left** of its anchor when it would overflow the viewport, so on a narrow window it can land on top of the menu itself, and the next `hover` on another repo entry is refused. Recovery: widen the window, or `hover --leave` (which closes the flyout) and retry.

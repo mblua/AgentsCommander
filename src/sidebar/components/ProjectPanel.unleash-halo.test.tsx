@@ -23,7 +23,8 @@ const wgPath = `${projectPath}\\.ac\\wg-1-dev-team`;
 const wildPath = `${wgPath}\\__agent_dev-rust`;
 const tamePath = `${wgPath}\\__agent_dev-web`;
 const itemTestId = "replica.wild.menu.unleash";
-const rowId = (name: string) => `replica.row.workgroups.wg-1-dev-team.${name}`;
+const rowId = (name: string) =>
+  `replica.row.workgroups.C-Project-.ac-wg-1-dev-team-__agent_${name}`;
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const byTestId = (id: string) => document.querySelector<HTMLElement>(`[data-ac-testid="${id}"]`);

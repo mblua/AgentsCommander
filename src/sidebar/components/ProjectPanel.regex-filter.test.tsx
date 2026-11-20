@@ -625,7 +625,7 @@ describe("ProjectPanel regex filter", () => {
       await waitFor(() => expect(rendered.root.textContent).toContain("dev-rust"));
       const staleRow = findByTestId<HTMLElement>(
         rendered.root,
-        "replica.row.workgroups.wg-2-dev-team.dev-rust"
+        "replica.row.workgroups.C-Project-.ac-wg-2-dev-team-__agent_dev-rust"
       );
       expect(staleRow.querySelector(".session-item-status")?.classList.contains("exited")).toBe(true);
 

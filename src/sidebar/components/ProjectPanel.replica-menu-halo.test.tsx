@@ -31,11 +31,11 @@ const coordPath = `${wgPath}\\__agent_dev-webpage-ui`;
 const memberPath = `${wgPath}\\__agent_dev-rust`;
 const grayPath = `${wgPath}\\__agent_dev-docs`;
 
-const coordQuickRowTestId = "replica.row.quick.wg-1-dev-team.dev-webpage-ui";
-const memberRowTestId = "replica.row.workgroups.wg-1-dev-team.dev-rust";
-const grayRowTestId = "replica.row.workgroups.wg-1-dev-team.dev-docs";
-const groupsTriggerTestId = "replica.wg-1-dev-team.groups.trigger";
-const groupsFlyoutTestId = "replica.wg-1-dev-team.groups.flyout";
+const coordQuickRowTestId = "replica.row.quick.C-Project-.ac-wg-1-dev-team-__agent_dev-webpage-ui";
+const memberRowTestId = "replica.row.workgroups.C-Project-.ac-wg-1-dev-team-__agent_dev-rust";
+const grayRowTestId = "replica.row.workgroups.C-Project-.ac-wg-1-dev-team-__agent_dev-docs";
+const groupsTriggerTestId = "replica.C-Project-.ac-wg-1-dev-team.groups.trigger";
+const groupsFlyoutTestId = "replica.C-Project-.ac-wg-1-dev-team.groups.flyout";
 
 function projectDiscovery(): AcDiscoveryResult {
   const result = discovery({
@@ -168,7 +168,7 @@ describe("ProjectPanel replica context menu origin halo (#3027)", () => {
 
   function coordRows(): HTMLElement[] {
     return Array.from(document.querySelectorAll<HTMLElement>(".replica-item")).filter((row) =>
-      (row.getAttribute("data-ac-testid") ?? "").endsWith("wg-1-dev-team.dev-webpage-ui")
+      (row.getAttribute("data-ac-testid") ?? "").endsWith("wg-1-dev-team-__agent_dev-webpage-ui")
     );
   }
 

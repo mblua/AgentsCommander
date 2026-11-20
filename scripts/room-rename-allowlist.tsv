@@ -290,22 +290,25 @@ P0-identifier	src/sidebar/components/ProjectPanel.tsx	await workgroupGroupsStore
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const createGroupFromMenu = async (wg: AcWorkgroup) => {
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	await workgroupGroupsStore.createGroupForWorkgroup(proj.path, name, wg.name);
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const renderAddToGroupFlyout = (wg: AcWorkgroup) => (
-P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.flyout`}
+P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.flyout`}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	onClick={() => void toggleNonStop(wg)}
-P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.nonstop`}
+P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.nonstop`}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	{nonStopChecked(wg) ? "✓" : ""}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const selected = () => groupAlreadyMatches(wg, group.id);
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const removable = () => removeExactGroupToken(group.regex, wg.name) !== null;
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	void toggleExistingGroup(wg, group.id);
-P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.${automationIdPart(group.id)}`}
+P0-testid	src/sidebar/components/ProjectPanel.tsx	`replica.${automationIdPart(wg.path)}.groups.${automationIdPart(group.id)}`
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	<Show when={workgroupGroupsStore.error(proj.path)}>
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	when={groupCreateWgPath() === wg.path}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	setGroupCreateWgPath(wg.path);
-P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.create`}
+P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.create`}
+P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.error`}
+P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.create.input`}
+P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.create.save`}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	void createGroupFromMenu(wg);
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	onClick={() => void createGroupFromMenu(wg)}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const renderAddToGroupItem = (wg: AcWorkgroup, replica: AcAgentReplica) => (
-P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.trigger`}
+P0-testid	src/sidebar/components/ProjectPanel.tsx	data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.trigger`}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	{renderAddToGroupFlyout(wg)}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const clearReplicaTaskTitle = async (wg: AcWorkgroup) => {
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const sessionId = resolveWorkgroupSessionId(wg);
@@ -356,7 +359,6 @@ P0-identifier	src/sidebar/components/ProjectPanel.tsx	setReplicaCtxMenu({ kind: 
 P0-key	src/sidebar/components/ProjectPanel.tsx	rowContext = "workgroups"
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const dotClass = () => replicaDotClass(wg, replica);
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const session = () => replicaSession(wg, replica);
-P0-identifier	src/sidebar/components/ProjectPanel.tsx	`replica.row.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	`replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	`replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	onClick={() => handleReplicaClick(replica, wg)}
@@ -3023,9 +3025,9 @@ P0-identifier	docs/testing/destructive-filesystem-regression.md	cmd /C mklink /J
 P0-identifier	docs/testing/destructive-filesystem-regression.md	- `$Wg` remains as a junction.
 P0-event	docs/testing/destructive-filesystem-regression.md	- No `workgroupRemoved` project refresh request is written.
 P2-fixture	docs/testing/destructive-filesystem-regression.md	$Junction = Join-Path $Root "wg-1-test"
-P0-testid	docs/testing/semantic-ui-automation-affordance-matrix.md	| Open an orchestrator's context menu | `replica.row.<context>.<wg>.<agent>` | `contextClick` |
-P0-testid	docs/testing/semantic-ui-automation-affordance-matrix.md	| Open the Add to Group flyout | `replica.<wg>.groups.trigger` | `hover` |
-P0-testid	docs/testing/semantic-ui-automation-affordance-matrix.md	| Detect the Add to Group flyout | `replica.<wg>.groups.flyout` | `query` |
+P0-testid	docs/testing/semantic-ui-automation-affordance-matrix.md	| Open an orchestrator's context menu | `replica.row.<context>.<replicaPath>` | `contextClick` |
+P0-testid	docs/testing/semantic-ui-automation-affordance-matrix.md	| Open the Add to Group flyout | `replica.<wgPath>.groups.trigger` | `hover` |
+P0-testid	docs/testing/semantic-ui-automation-affordance-matrix.md	| Detect the Add to Group flyout | `replica.<wgPath>.groups.flyout` | `query` |
 P0-testid	docs/testing/semantic-ui-automation-affordance-matrix.md	| Project panel rows | `project.row.*`, `workgroup.row.*`, `team.row.*`, `agent.row.*`, `replica.row.*` |
 
 # ---------------------------------------------------------------------------
