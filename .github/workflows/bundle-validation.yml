@@ -36,7 +36,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g --ignore-scripts npm@11.6.2
+        run: npm install -g --ignore-scripts npm@12.2.3
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
