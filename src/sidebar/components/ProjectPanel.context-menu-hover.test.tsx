@@ -44,13 +44,13 @@ const grayPath = `${wgPath}\\__agent_dev-docs`;
 // A live coordinator renders in the quick section; the other replicas render
 // under workgroups. dev-docs has no session at all, so it opens the INACTIVE
 // (gray) branch of the menu; the other two open the active branch.
-const coordRowTestId = "replica.row.quick.wg-1-dev-team.dev-webpage-ui";
-const memberRowTestId = "replica.row.workgroups.wg-1-dev-team.dev-rust";
-const grayRowTestId = "replica.row.workgroups.wg-1-dev-team.dev-docs";
-const groupsTriggerTestId = "replica.wg-1-dev-team.groups.trigger";
-const groupsFlyoutTestId = "replica.wg-1-dev-team.groups.flyout";
-const groupsErrorTestId = "replica.groups.error";
-const groupOptionTestId = "replica.wg-1-dev-team.groups.frontend";
+const coordRowTestId = "replica.row.quick.C-Project-.ac-wg-1-dev-team-__agent_dev-webpage-ui";
+const memberRowTestId = "replica.row.workgroups.C-Project-.ac-wg-1-dev-team-__agent_dev-rust";
+const grayRowTestId = "replica.row.workgroups.C-Project-.ac-wg-1-dev-team-__agent_dev-docs";
+const groupsTriggerTestId = "replica.C-Project-.ac-wg-1-dev-team.groups.trigger";
+const groupsFlyoutTestId = "replica.C-Project-.ac-wg-1-dev-team.groups.flyout";
+const groupsErrorTestId = "replica.C-Project-.ac-wg-1-dev-team.groups.error";
+const groupOptionTestId = "replica.C-Project-.ac-wg-1-dev-team.groups.frontend";
 
 function projectDiscovery() {
   return discovery({

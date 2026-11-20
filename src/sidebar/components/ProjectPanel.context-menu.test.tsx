@@ -41,9 +41,9 @@ const otherMemberPath = `${otherWorkgroupPath}\\__agent_dev-rust`;
 // renderReplicaItem builds rowTestId() from rowContext + wg.name + replica.name
 // via automationIdPart (which keeps these slugs verbatim). The non-coordinator
 // member always renders in the "workgroups" section.
-const memberRowTestId = "replica.row.workgroups.wg-2-dev-team.dev-rust";
-const otherRowTestId = "replica.row.workgroups.wg-3-other-team.dev-rust";
-const coordQuickRowTestId = "replica.row.quick.wg-2-dev-team.dev-webpage-ui";
+const memberRowTestId = "replica.row.workgroups.C-Project-.ac-wg-2-dev-team-__agent_dev-rust";
+const otherRowTestId = "replica.row.workgroups.C-Project-.ac-wg-3-other-team-__agent_dev-rust";
+const coordQuickRowTestId = "replica.row.quick.C-Project-.ac-wg-2-dev-team-__agent_dev-webpage-ui";
 
 // #545: taskTitle/task are parametrized so tests can drive the broom's
 // snapshot-aware disable predicate across Clean/empty/real titles.
@@ -246,7 +246,7 @@ function replicaMenu(): HTMLElement | null {
 
 // #2528: the Coding Agent item carries exactly one of the two testids.
 const LIVE_CODING_AGENT = "replica.member-session.menu.coding-agent";
-const INACTIVE_CODING_AGENT = "replica.inactive.menu.coding-agent";
+const INACTIVE_CODING_AGENT = `replica.inactive.${automationIdPart(memberPath)}.menu.coding-agent`;
 function expectCodingAgentTestId(menu: HTMLElement, present: string, absent: string): HTMLButtonElement {
   const codingAgent = menu.querySelector<HTMLButtonElement>(`[data-ac-testid="${present}"]`);
   expect(codingAgent).not.toBeNull();
@@ -821,7 +821,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     await projectStore.createAndLoad(otherProjectPath);
     await waitFor(() => expect(rendered!.root.textContent).toContain("OtherProject"));
 
-    contextMenu(findRow(findProjectPanel(rendered!.root, otherProjectPath), coordQuickRowTestId));
+    contextMenu(findRow(findProjectPanel(rendered!.root, otherProjectPath), coordQuickRowTestId.replace("C-", "D-Other")));
 
     let items: HTMLButtonElement[] = [];
     await waitFor(() => {
@@ -1700,7 +1700,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
     // The flyout renders through a Portal, so it is reached from the document,
     // not from the menu element.
     click(findExactMenuButton(menu, "Add to Group")!);
-    const createTestId = `replica.${automationIdPart("wg-2-dev-team")}.groups.create`;
+    const createTestId = `replica.${automationIdPart(workgroupPath)}.groups.create`;
     await waitFor(() =>
       expect(document.querySelector(`[data-ac-testid="${createTestId}"]`)).not.toBeNull(),
     );

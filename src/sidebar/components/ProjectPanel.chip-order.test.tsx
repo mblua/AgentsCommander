@@ -38,8 +38,8 @@ const CTX_PATTERN = "Context left until auto-compact: (\\d+)%";
 
 function rowTestId(rowContext: string, workgroup: string, replica: string): string {
   return `replica.row.${automationIdPart(rowContext)}.${automationIdPart(
-    workgroup,
-  )}.${automationIdPart(replica)}`;
+    `${projectPath}\\.ac\\${workgroup}\\__agent_${replica}`,
+  )}`;
 }
 
 function isoMinutesAgo(minutes: number): string {

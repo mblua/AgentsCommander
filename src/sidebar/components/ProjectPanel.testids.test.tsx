@@ -29,8 +29,8 @@ const coordPathOf = (proj: string) => `${wgPathOf(proj)}\\__agent_dev-webpage-ui
 const memberPathOf = (proj: string) => `${wgPathOf(proj)}\\__agent_dev-rust`;
 const agentPath = `${projectPath}\\.ac\\_agent_dev-docs`;
 const PA = AP(projectPath);
-const memberRow = `replica.row.workgroups.${WG_NAME}.dev-rust`;
-const coordRow = `replica.row.quick.${WG_NAME}.dev-webpage-ui`;
+const memberRow = `replica.row.workgroups.${AP(memberPathOf(projectPath))}`;
+const coordRow = (proj: string) => `replica.row.quick.${AP(coordPathOf(proj))}`;
 const BOT = { id: "bot-one", label: "Bot One", color: "red" };
 const BOT_2 = { id: "bot-two", label: "Bot Two", color: "blue" };
 
@@ -192,8 +192,9 @@ describe("#4825 ProjectPanel sidebar menu test ids", () => {
     await setup([], [projectPath, otherProjectPath]);
     const panels = Array.from(document.querySelectorAll<HTMLElement>(".project-panel"));
     expect(panels).toHaveLength(2);
-    for (const panel of panels) {
-      const row = panel.querySelector<HTMLElement>(`[data-ac-testid="${coordRow}"]`);
+    for (const [i, panel] of panels.entries()) {
+      const proj = [projectPath, otherProjectPath][i];
+      const row = panel.querySelector<HTMLElement>(`[data-ac-testid="${coordRow(proj)}"]`);
       if (!row) throw new Error("coordinator row not found");
       contextMenu(row);
       await new Promise((resolve) => setTimeout(resolve, 0));

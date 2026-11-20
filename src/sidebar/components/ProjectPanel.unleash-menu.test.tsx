@@ -22,7 +22,7 @@ import type { Session } from "../../shared/types";
 const projectPath = "C:\\Project";
 const wgPath = `${projectPath}\\.ac\\wg-1-dev-team`;
 const memberPath = `${wgPath}\\__agent_dev-rust`;
-const memberRowTestId = "replica.row.workgroups.wg-1-dev-team.dev-rust";
+const memberRowTestId = "replica.row.workgroups.C-Project-.ac-wg-1-dev-team-__agent_dev-rust";
 const itemTestId = "replica.member-session.menu.unleash";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));

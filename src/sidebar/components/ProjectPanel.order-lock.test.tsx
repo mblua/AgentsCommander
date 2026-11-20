@@ -33,10 +33,10 @@ const coordAPath = `${wg1Path}\\__agent_coord-a`;
 const wg2Path = `${projectPath}\\.ac\\wg-2-dev-team`;
 const coordBPath = `${wg2Path}\\__agent_coord-b`;
 
-const coordARowTestId = "replica.row.quick.wg-1-dev-team.coord-a";
-const coordBRowTestId = "replica.row.quick.wg-2-dev-team.coord-b";
-const groupsTriggerTestId = "replica.wg-1-dev-team.groups.trigger";
-const groupsFlyoutTestId = "replica.wg-1-dev-team.groups.flyout";
+const coordARowTestId = "replica.row.quick.C-Project-.ac-wg-1-dev-team-__agent_coord-a";
+const coordBRowTestId = "replica.row.quick.C-Project-.ac-wg-2-dev-team-__agent_coord-b";
+const groupsTriggerTestId = "replica.C-Project-.ac-wg-1-dev-team.groups.trigger";
+const groupsFlyoutTestId = "replica.C-Project-.ac-wg-1-dev-team.groups.flyout";
 
 function projectDiscovery() {
   return discovery({

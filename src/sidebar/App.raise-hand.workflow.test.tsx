@@ -22,8 +22,8 @@ const workgroupPath = `${projectPath}\\.ac\\${wgName}`;
 const replicaPath = `${workgroupPath}\\__agent_${replicaName}`;
 const sessionId = "coord-session";
 const updatedAt = "2026-06-28T17:00:00.000Z";
-const slotSelector =
-  `[data-ac-testid="replica.row.quick.${wgName}.${replicaName}.communicationSlot"]`;
+const slotRow = `replica.row.quick.C-Project-.ac-${wgName}-__agent_${replicaName}`;
+const slotSelector = `[data-ac-testid="${slotRow}.communicationSlot"]`;
 
 function coordSession(overrides: Partial<Session> = {}): Session {
   return session({

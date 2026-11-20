@@ -74,14 +74,14 @@ export interface GroupChoice {
 /** Every testid the live Add to Group surface emits. Three of the eight are NOT
  *  derivable from one base, so the spec carries each field. */
 export interface AddToGroupTestIds {
-  trigger: string; // replica.<wg>.groups.trigger
-  flyout: string; // replica.<wg>.groups.flyout
-  nonstop: string; // replica.<wg>.groups.nonstop
-  choice: (choiceId: string) => string; // replica.<wg>.groups.<automationIdPart(id)>
-  create: string; // replica.<wg>.groups.create
-  createInput: string; // replica.groups.create.input  - NOT base-derived
-  createSave: string; // replica.groups.create.save   - NOT base-derived
-  menuError: string; // replica.groups.error         - NOT base-derived
+  trigger: string; // replica.<wgPath>.groups.trigger
+  flyout: string; // replica.<wgPath>.groups.flyout
+  nonstop: string; // replica.<wgPath>.groups.nonstop
+  choice: (choiceId: string) => string; // replica.<wgPath>.groups.<automationIdPart(id)>
+  create: string; // replica.<wgPath>.groups.create
+  createInput: string; // replica.<wgPath>.groups.create.input
+  createSave: string; // replica.<wgPath>.groups.create.save
+  menuError: string; // replica.<wgPath>.groups.error
 }
 
 export interface AddToGroupSpec {

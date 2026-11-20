@@ -1736,7 +1736,7 @@ const ProjectPanel: Component = () => {
           menu: () => { wg: AcWorkgroup; replica: AcAgentReplica }
         ) => {
           const testId = () =>
-            `replica.coManaged.${kind}.${automationIdPart(menu().wg.name)}.${automationIdPart(menu().replica.name)}`;
+            `replica.coManaged.${kind}.${automationIdPart(menu().replica.path)}`;
           return (
             <Show when={coManagedGloballyEnabled() && menu().replica.isCoordinator}>
               <button
@@ -2005,14 +2005,14 @@ const ProjectPanel: Component = () => {
                 }}
                 onClick={(e) => e.stopPropagation()}
                 onContextMenu={(e) => e.stopPropagation()}
-                data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.flyout`}
+                data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.flyout`}
               >
                 {/* #777: built-in Non-stop slot, pinned above the user groups. */}
                 <button
                   class="session-context-option session-context-group-option session-context-group-option-nonstop"
                   title={`Watch this room in the ${DEFAULT_NON_STOP_NAME} group`}
                   onClick={() => void toggleNonStop(wg)}
-                  data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.nonstop`}
+                  data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.nonstop`}
                 >
                   <span class="session-context-option-check">
                     {nonStopChecked(wg) ? "✓" : ""}
@@ -2043,7 +2043,9 @@ const ProjectPanel: Component = () => {
                           if (disabled()) return;
                           void toggleExistingGroup(wg, group.id);
                         }}
-                        data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.${automationIdPart(group.id)}`}
+                        data-ac-testid={
+                          `replica.${automationIdPart(wg.path)}.groups.${automationIdPart(group.id)}`
+                        }
                       >
                         <span class="session-context-option-check">
                           {selected() ? "\u2713" : ""}
@@ -2060,7 +2062,10 @@ const ProjectPanel: Component = () => {
                   {(error) => <div class="session-context-error">{error()}</div>}
                 </Show>
                 <Show when={groupMenuError()}>
-                  <div class="session-context-error" data-ac-testid="replica.groups.error">
+                  <div
+                    class="session-context-error"
+                    data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.error`}
+                  >
                     {groupMenuError()}
                   </div>
                 </Show>
@@ -2075,7 +2080,7 @@ const ProjectPanel: Component = () => {
                         setGroupMenuError("");
                         reclampGroupFlyout();
                       }}
-                      data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.create`}
+                      data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.create`}
                     >
                       {/* #1731 - 👥 reads as "a group", which is what this row
                           PRODUCES; it moved here from Add to Group. No colour
@@ -2103,12 +2108,12 @@ const ProjectPanel: Component = () => {
                         }
                       }}
                       placeholder="Group name"
-                      data-ac-testid="replica.groups.create.input"
+                      data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.create.input`}
                     />
                     <button
                       class="session-context-option"
                       onClick={() => void createGroupFromMenu(wg)}
-                      data-ac-testid="replica.groups.create.save"
+                      data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.create.save`}
                     >
                       Create
                     </button>
@@ -2138,7 +2143,7 @@ const ProjectPanel: Component = () => {
                 e.stopPropagation();
                 activateGroupFlyout(e.currentTarget);
               }}
-              data-ac-testid={`replica.${automationIdPart(wg.name)}.groups.trigger`}
+              data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.trigger`}
             >
               {/* #1731 - user-plus, not 👥: this row ADDS a room to a group, it
                   does not produce one. Tinted through the class, never a hex. */}
@@ -2890,7 +2895,7 @@ const ProjectPanel: Component = () => {
               ? " The team auto-closes at the configured limit."
               : "");
           const rowTestId = () =>
-            `replica.row.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
+            `replica.row.${automationIdPart(rowContext)}.${automationIdPart(replica.path)}`;
           const communicationSlotTestId = () => `${rowTestId()}.communicationSlot`;
           const badgesTestId = () =>
             `replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
@@ -4487,11 +4492,13 @@ const ProjectPanel: Component = () => {
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
                       const matrixFolder = () => replicaMatrixFolder(menu().replica);
                       const repoEntries = () => replicaRepoMenuEntries(menu().wg, menu().replica);
+                      const inactiveId = (leaf: string) =>
+                        `replica.inactive.${automationIdPart(menu().replica.path)}.menu.${leaf}`;
                       return (
                         <>
                           <button
                             class="session-context-option"
-                            data-ac-testid="replica.inactive.menu.coding-agent"
+                            data-ac-testid={inactiveId("coding-agent")}
                             data-ac-role="menuitem"
                             onClick={() => {
                               const wg = menu().wg;
@@ -4507,24 +4514,18 @@ const ProjectPanel: Component = () => {
                             <span class="session-context-option-icon" aria-hidden="true">&#x1F916;</span> Coding Agent
                           </button>
                           <button
-                            data-ac-testid={
-                              `replica.inactive`
-                              + `.${automationIdPart(menu().replica.path)}.menu.openFolder`
-                            }
+                            data-ac-testid={inactiveId("openFolder")}
                             class="session-context-option"
                             title={menu().replica.path}
                             onClick={() => void openReplicaFolder(menu().replica.path)}
                           >
                             <span class="session-context-option-icon" aria-hidden="true">&#x1F4C2;</span> Open Replica's Folder
                           </button>
-                          {renderRepoMenuEntries(repoEntries, () => "replica.inactive.menu.repo")}
+                          {renderRepoMenuEntries(repoEntries, () => inactiveId("repo"))}
                           <Show when={matrixFolder()}>
                             {(path) => (
                               <button
-                                data-ac-testid={
-                                  `replica.inactive`
-                                  + `.${automationIdPart(menu().replica.path)}.menu.matrixFolder`
-                                }
+                                data-ac-testid={inactiveId("matrixFolder")}
                                 class="session-context-option"
                                 title={path()}
                                 onClick={() => void openMatrixFolder(path())}
@@ -4535,10 +4536,7 @@ const ProjectPanel: Component = () => {
                           </Show>
                           {renderAddToGroupItem(menu().wg, menu().replica)}
                           <button
-                            data-ac-testid={
-                              `replica.inactive`
-                              + `.${automationIdPart(menu().replica.path)}.menu.editTaskTitle`
-                            }
+                            data-ac-testid={inactiveId("editTaskTitle")}
                             class="session-context-option"
                             title="Edit TASK title"
                             onClick={(e) => {
@@ -4559,10 +4557,7 @@ const ProjectPanel: Component = () => {
                             <div class="session-context-title-error">{titleError()}</div>
                           </Show>
                           <button
-                            data-ac-testid={
-                              `replica.inactive`
-                              + `.${automationIdPart(menu().replica.path)}.menu.clearTaskTitle`
-                            }
+                            data-ac-testid={inactiveId("clearTaskTitle")}
                             class="session-context-option"
                             classList={{ "context-option-disabled": broomDisabled() }}
                             disabled={broomDisabled()}

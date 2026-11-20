@@ -28,6 +28,7 @@ const replicaName = "dev-webpage-ui";
 const otherReplicaName = "dev-rust";
 const workgroupPath = `${projectPath}\\.ac\\${wgName}`;
 const replicaPath = `${workgroupPath}\\__agent_${replicaName}`;
+const quickRowId = `replica.row.quick.C-Project-.ac-${wgName}-__agent_${replicaName}`;
 const otherReplicaPath = `${workgroupPath}\\__agent_${otherReplicaName}`;
 const sessionId = "coord-session";
 const otherSessionId = "member-session";
@@ -129,7 +130,7 @@ async function mounted(fake: FakeTransport) {
   const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
   await waitFor(() => {
     expect(sessionsStore.sessions.find((s) => s.id === sessionId)).toBeTruthy();
-    expect(rendered.root.querySelector(`[data-ac-testid="replica.row.quick.${wgName}.${replicaName}"]`)).not.toBeNull();
+    expect(rendered.root.querySelector(`[data-ac-testid="${quickRowId}"]`)).not.toBeNull();
   });
   return rendered;
 }
@@ -520,7 +521,9 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
 
   // #2482 p7 - the ROOM-REPLICA chip, the one in the user's screenshot.
   const replicaChip = (root: Element) =>
-    root.querySelectorAll<HTMLElement>(`[data-ac-testid="replica.row.quick.${wgName}.${replicaName}"] .ac-discovery-badge.agent`);
+    root.querySelectorAll<HTMLElement>(
+      `[data-ac-testid="${quickRowId}"] .ac-discovery-badge.agent`,
+    );
 
   function oneReplicaChip(root: Element): HTMLElement {
     const all = replicaChip(root);

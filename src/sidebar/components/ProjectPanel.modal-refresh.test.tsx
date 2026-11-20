@@ -63,9 +63,7 @@ const replicaPath = `${workgroupPath}\\__agent_${replicaName}`;
 const sessionId = "sess-1";
 const sessionName = `${workgroupName}/${replicaName}`;
 
-const replicaRowSelector = `[data-ac-testid="replica.row.quick.${automationIdPart(
-  workgroupName,
-)}.${automationIdPart(replicaName)}"]`;
+const replicaRowSelector = `[data-ac-testid="replica.row.quick.${automationIdPart(replicaPath)}"]`;
 
 function q<T extends HTMLElement = HTMLElement>(testId: string): T | null {
   return document.body.querySelector<T>(`[data-ac-testid="${testId}"]`);

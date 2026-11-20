@@ -62,7 +62,7 @@ const sessionName = (name: string, wg = wgName): string => `${wg}/${name}`;
 const sessionId = (name: string): string => `session-${name}`;
 
 const rowTestId = (context: string, replica: string, wg = wgName): string =>
-  `replica.row.${automationIdPart(context)}.${automationIdPart(wg)}.${automationIdPart(replica)}`;
+  `replica.row.${automationIdPart(context)}.${automationIdPart(replicaPath(replica, wg))}`;
 
 // #2131 - the repo every row in the CI tint block points at. `ciRepoPath()` is the
 // exact string the remote-activity payload is keyed by, which is why it is written

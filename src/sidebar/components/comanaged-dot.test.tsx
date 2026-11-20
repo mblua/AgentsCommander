@@ -35,7 +35,8 @@ const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
 const replicaAgentPath = `${workgroupPath}\\__agent_dev-webpage-ui`;
 const REPLICA_SESSION_ID = "comanaged-replica-session";
 
-const replicaRowSelector = `[data-ac-testid="replica.row.workgroups.wg-2-dev-team.dev-webpage-ui"]`;
+const replicaRowSelector =
+  `[data-ac-testid="replica.row.workgroups.C-Project-.ac-wg-2-dev-team-__agent_dev-webpage-ui"]`;
 
 function projectDiscovery() {
   return discovery({
