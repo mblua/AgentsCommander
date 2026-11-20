@@ -433,3 +433,82 @@ fn read_title_invalid_utf8_preserves_read_error() {
         format!("read TASK.md: {error}")
     );
 }
+
+// ---- #4805: gate T (temp-room folders of the config dir) ----
+
+fn temp_room(base: &std::path::Path, name: &str) -> String {
+    let dir = base.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.to_string_lossy().into_owned()
+}
+
+#[test]
+fn gate_t_accepts_a_temp_room_and_round_trips_title_and_clean() {
+    let base = tempfile::tempdir().unwrap();
+    let room = temp_room(base.path(), "temp-room-tr01");
+    let validated = validate_wg_root_in(&room, &[], Some(base.path())).expect("accept");
+    assert_eq!(validated, std::path::PathBuf::from(&room));
+    perform(&validated, TaskOp::SetUserTitle("T".into())).expect("set title");
+    assert!(base.path().join("temp-room-tr01").join("TASK.md").is_file());
+    let read = crate::cli::task_ops::read_title(&validated).expect("read");
+    assert_eq!(read.as_deref(), Some("USER: T"));
+    perform(&validated, TaskOp::Clean).expect("clean");
+    let read = crate::cli::task_ops::read_title(&validated).expect("read");
+    assert_eq!(read.as_deref(), Some("Clean"));
+}
+
+#[test]
+fn gate_t_rejects_non_canonical_nested_missing_and_foreign_rooms() {
+    let base = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let rejected = [
+        temp_room(base.path(), "temp-room-tr1"),
+        temp_room(base.path(), "temp-room-tr00"),
+        temp_room(&base.path().join("x"), "temp-room-tr01"),
+        base.path()
+            .join("temp-room-tr02")
+            .to_string_lossy()
+            .into_owned(),
+        temp_room(other.path(), "temp-room-tr01"),
+    ];
+    for path in &rejected {
+        assert!(
+            validate_wg_root_in(path, &[], Some(base.path())).is_err(),
+            "{path} must be rejected"
+        );
+    }
+    let foreign = validate_wg_root_in(&rejected[4], &[], Some(base.path())).unwrap_err();
+    assert!(
+        foreign.contains("is not a `room-*` or legacy `wg-*` Room directory"),
+        "{foreign}"
+    );
+}
+
+#[test]
+fn gate_t_judges_the_canonical_room_and_base() {
+    let base = tempfile::tempdir().unwrap();
+    temp_room(base.path(), "temp-room-tr01");
+    std::fs::create_dir_all(base.path().join("x")).unwrap();
+    let dotted = base
+        .path()
+        .join("x")
+        .join("..")
+        .join("temp-room-tr01")
+        .to_string_lossy()
+        .into_owned();
+    assert!(validate_wg_root_in(&dotted, &[], Some(base.path())).is_ok());
+    let room = base
+        .path()
+        .join("temp-room-tr01")
+        .to_string_lossy()
+        .into_owned();
+    let dotted_base = base.path().join("x").join("..");
+    assert!(validate_wg_root_in(&room, &[], Some(&dotted_base)).is_ok());
+}
+
+#[test]
+fn gate_t_without_a_base_keeps_rejecting_temp_rooms() {
+    let base = tempfile::tempdir().unwrap();
+    let room = temp_room(base.path(), "temp-room-tr01");
+    assert!(validate_wg_root_in(&room, &[], None).is_err());
+}

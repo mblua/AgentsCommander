@@ -2,10 +2,14 @@ import { createEffect, createRoot, createSignal, untrack } from "solid-js";
 import { settingsStore } from "../../shared/stores/settings";
 import type { AcWorkgroup } from "../../shared/types";
 import { projectStore } from "./project";
+import { tempRoomsStore } from "./temp-rooms";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 import { roomIsRawActive } from "../components/room-session-source";
 
 const ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT = 15;
+
+// #4805 - temp rooms get the same idle confirmation as project rooms.
+const activityProjects = () => [...projectStore.projects, ...tempRoomsStore.railProjects()];
 
 export function roomActivityKey(projectPath: string, roomPath: string): string | null {
   if (!projectPath.trim() || !roomPath.trim()) return null;
@@ -40,7 +44,7 @@ function cancel(entry: ActivityEntry): void {
 }
 
 function currentRoom(key: string): AcWorkgroup | undefined {
-  for (const project of projectStore.projects) {
+  for (const project of activityProjects()) {
     for (const room of project.workgroups) {
       if (roomActivityKey(project.path, room.path) === key) return room;
     }
@@ -79,7 +83,7 @@ function sample(): void {
   // Read every raw dependency under the effect, but never subscribe to our own
   // publication or mutable entries. Repeated idle facts cannot reset a deadline.
   const catalogue = new Map<string, boolean>();
-  for (const project of projectStore.projects) {
+  for (const project of activityProjects()) {
     for (const room of project.workgroups) {
       const key = roomActivityKey(project.path, room.path);
       if (key !== null) catalogue.set(key, roomIsRawActive(room));

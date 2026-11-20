@@ -66,6 +66,8 @@ pub(crate) const COORDINATOR_CLOCKS_TMP_GLOB: &str = "coordinator_clocks.json.*.
 // #4752 P02: per-replica Unleash flag store and its write lock.
 pub(crate) const UNLEASHED_REPLICAS_FILE_NAME: &str = "unleashed-replicas.json";
 pub(crate) const UNLEASHED_REPLICAS_LOCK_NAME: &str = ".unleashed-replicas.json.lock";
+pub(crate) const TEMP_ROOM_GROUPS_FILE_NAME: &str = "temp-room-groups.json";
+pub(crate) const TEMP_ROOM_GROUPS_LOCK_NAME: &str = ".temp-room-groups.json.lock";
 pub(crate) const DEBUG_LOGS_FILE_NAME: &str = "debug-logs.txt";
 pub(crate) const TELEGRAM_DIAG_RAW_LOG_FILE_NAME: &str = "diag-raw.log";
 pub(crate) const TELEGRAM_DIAG_SENT_LOG_FILE_NAME: &str = "diag-sent.log";

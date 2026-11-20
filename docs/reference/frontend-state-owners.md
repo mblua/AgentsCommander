@@ -17,6 +17,7 @@ mapped path no longer exists. Add one line here when you add a store module.
 | `src/sidebar/stores/project.ts` | `projectStore` | loaded projects, archived paths, loading, last load error |
 | `src/sidebar/stores/project-merge.ts` | (none) | pure merge helpers for `projectStore`, no state |
 | `src/sidebar/stores/unleashed-replicas.ts` | `unleashedReplicasStore` | per-replica Unleash overrides keyed by normalized path (#4752) |
+| `src/sidebar/stores/temp-rooms.ts` | `tempRoomsStore` | temp-room list and its rail projection (#4805) |
 | `src/sidebar/stores/project-refresh.ts` | (none) | pure path-compare helpers for `projectStore`, no state |
 | `src/sidebar/stores/project-collapse.ts` | `projectCollapseStore` | ProjectPanel section collapse map |
 | `src/sidebar/stores/rail-collapse.ts` | `railCollapseStore` | rail project collapse map, favorites collapsed |

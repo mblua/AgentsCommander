@@ -22,6 +22,7 @@ import { sessionsStore } from "../stores/sessions";
 import { projectStore } from "../stores/project";
 import { toastStore } from "../../shared/stores/toasts";
 import { unleashedReplicasStore } from "../stores/unleashed-replicas";
+import { tempRoomsStore } from "../stores/temp-rooms";
 import type { AgentConfig, Session } from "../../shared/types";
 import type { TempRoomAgentChoice, TempRoomInfo } from "../../shared/temp-rooms";
 import { tempRoomPlaceholderWarning } from "../../shared/temp-rooms";
@@ -96,6 +97,12 @@ function setup(opts: Setup = {}) {
     session({ id: "new", name: String(args.sessionName), workingDirectory: String(args.cwd) }),
   );
   fake.onInvoke("restart_session", (args) => session({ id: String(args.id) }));
+  fake.resolve("get_temp_room_groups", {
+    groups: [],
+    nonStop: null,
+    showAll: true,
+    showUngrouped: true,
+  });
   fake.resolve("switch_session", null);
   fake.resolve("destroy_session", null);
   fake.resolve("open_in_explorer", null);
@@ -156,6 +163,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
+    tempRoomsStore.resetForTests();
   });
   afterEach(() => {
     for (const c of cleanups) c();
@@ -309,7 +317,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(roomRow()).not.toBeNull();
   });
 
-  it("6. live agent-row menu: catalogue order, room folder, disabled items inert", async () => {
+  it("6. live agent-row menu: catalogue order, room folder, #4805 items enabled", async () => {
     const { fake } = track(setup({ sessions: [liveSession()] }));
     const menu = await openAgentMenu();
     const p = `tempRoom.${ROOM_1.name}`;
@@ -324,7 +332,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
       `${p}.close`,
       `${p}.menu.detachToggle`,
       `${p}.menu.telegram`,
-      `${p}.menu.addToGroup`,
+      `${p}.groups.trigger`,
       `${p}.menu.editTaskTitle`,
       `${p}.menu.clearTaskTitle`,
     ]);
@@ -334,21 +342,15 @@ describe("#4779 TemporaryRoomsPanel", () => {
       expect(text).not.toContain(absent);
     }
     expect(menu.querySelector(".session-context-repo-option")).toBeNull();
-    const titles: Record<string, string> = {
-      ".menu.addToGroup": "Groups need a project room",
-      ".menu.editTaskTitle": "Temp rooms have no TASK.md",
-      ".menu.clearTaskTitle": "Temp rooms have no TASK.md",
-    };
-    const before = fake.calls.length;
-    for (const [suffix, title] of Object.entries(titles)) {
+    // #4805 - the three items are live now: no dimmed class, no #4779 title.
+    for (const suffix of [".groups.trigger", ".menu.editTaskTitle", ".menu.clearTaskTitle"]) {
       const item = byId(`${p}${suffix}`) as HTMLButtonElement;
-      expect(item.disabled).toBe(true);
-      expect(item.className).toContain("context-option-disabled");
-      expect(item.title).toContain(title);
-      item.click();
+      expect(item.className).not.toContain("context-option-disabled");
+      for (const old of ["Groups need a project room", "Temp rooms have no TASK.md"]) {
+        expect(item.title ?? "").not.toContain(old);
+      }
     }
-    expect(fake.calls.length).toBe(before);
-    expect(document.querySelector(".session-context-flyout")).toBeNull();
+    expect(fake.calls.length).toBeGreaterThan(0);
   });
 
   const unleashItem = () => byId(`tempRoom.${ROOM_1.name}.menu.unleash`) as HTMLButtonElement;

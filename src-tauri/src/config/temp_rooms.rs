@@ -1,14 +1,37 @@
 //! Temp-room identity (#4779): `temp-room-trNN` folders directly in the app config dir.
-//! Identity is pure; `context` writes the context cache.
+//! Identity is pure; the group-set file is owned here; `context` writes the context cache.
 
 pub(crate) mod context;
 
-use std::path::Path;
+use crate::config::project_settings::WorkgroupGroupsConfig;
+use std::path::{Path, PathBuf};
 
 pub(crate) const TEMP_ROOM_PREFIX: &str = "temp-room-tr";
 
 /// Messaging address scheme of a temp room (`agentscommander://temp-room/tr01`).
 pub(crate) const TEMP_ROOM_ADDRESS_PREFIX: &str = "agentscommander://temp-room/";
+
+/// #4805 - store key of the Temporary Rooms group set in the frontend groups store and
+/// in `project_groups_updated` payloads. Mirrored by `TEMP_ROOMS_GROUPS_KEY` in
+/// `src/shared/temp-rooms.ts`. Never a real path, so it cannot match a project.
+pub(crate) const TEMP_ROOMS_GROUPS_KEY: &str = "agentscommander://temp-rooms";
+
+fn groups_file(base: &Path) -> PathBuf {
+    base.join(crate::config::instance_artifacts::TEMP_ROOM_GROUPS_FILE_NAME)
+}
+
+/// The Temporary Rooms group set of `base` (the config dir); default when absent.
+pub(crate) fn load_groups_in(base: &Path) -> Result<WorkgroupGroupsConfig, String> {
+    crate::config::project_settings::load_groups_file(&groups_file(base))
+}
+
+/// Validate and persist the Temporary Rooms group set of `base`.
+pub(crate) fn save_groups_in(
+    base: &Path,
+    config: WorkgroupGroupsConfig,
+) -> Result<WorkgroupGroupsConfig, String> {
+    crate::config::project_settings::save_groups_file(&groups_file(base), config)
+}
 
 pub(crate) fn temp_room_dir_name(n: u32) -> String {
     format!("{TEMP_ROOM_PREFIX}{n:02}")

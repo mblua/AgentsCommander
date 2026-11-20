@@ -221,10 +221,16 @@ fn only_a_deleted_outcome_is_success() {
 }
 
 #[test]
-fn dispatch_matches_exactly_the_three_temp_room_names() {
+fn dispatch_matches_exactly_the_five_temp_room_names() {
     assert_eq!(
         TEMP_ROOM_COMMANDS,
-        ["list_temp_rooms", "create_temp_room", "delete_temp_room"]
+        [
+            "list_temp_rooms",
+            "create_temp_room",
+            "delete_temp_room",
+            "get_temp_room_groups",
+            "update_temp_room_groups",
+        ]
     );
 }
 
@@ -347,4 +353,99 @@ fn serialized_info_has_unleashed_field() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let value = serde_json::to_value(info(tmp.path(), "temp-room-tr01".to_string())).unwrap();
     assert_eq!(value["unleashed"], json!(false));
+}
+
+// ---- #4805: group store, IPC routing and TASK titles ----
+
+#[test]
+fn group_commands_are_handled_without_the_fallback() {
+    let config = serde_json::to_value(WorkgroupGroupsConfig::default()).expect("config");
+    for (name, body) in [
+        ("get_temp_room_groups", json!({})),
+        ("update_temp_room_groups", json!({ "config": config })),
+    ] {
+        let (_result, calls) = invoke_with_counter(name, body);
+        assert_eq!(calls, 0, "{name} must not reach the fallback");
+    }
+}
+
+fn group(name: &str) -> crate::config::project_settings::WorkgroupGroup {
+    crate::config::project_settings::WorkgroupGroup {
+        id: format!("id-{name}"),
+        name: name.to_string(),
+        regex: "x".to_string(),
+        favorite: true,
+    }
+}
+
+#[test]
+fn load_groups_in_empty_dir_returns_default() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let loaded = crate::config::temp_rooms::load_groups_in(tmp.path()).expect("load");
+    assert_eq!(loaded, WorkgroupGroupsConfig::default());
+}
+
+#[test]
+fn save_then_load_groups_round_trips_favorites_and_non_stop() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = WorkgroupGroupsConfig {
+        groups: vec![group("a")],
+        non_stop: Some(crate::config::project_settings::NonStopGroupConfig {
+            favorite: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let saved = crate::config::temp_rooms::save_groups_in(tmp.path(), config).expect("save");
+    assert!(tmp.path().join("temp-room-groups.json").is_file());
+    let loaded = crate::config::temp_rooms::load_groups_in(tmp.path()).expect("load");
+    assert_eq!(loaded, saved);
+    assert!(loaded.groups[0].favorite);
+    assert!(loaded.non_stop.expect("non_stop").favorite);
+}
+
+#[test]
+fn save_groups_in_rejects_duplicate_names_and_writes_no_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut second = group("a");
+    second.id = "id-other".to_string();
+    let config = WorkgroupGroupsConfig {
+        groups: vec![group("a"), second],
+        ..Default::default()
+    };
+    assert!(crate::config::temp_rooms::save_groups_in(tmp.path(), config).is_err());
+    assert!(!tmp.path().join("temp-room-groups.json").exists());
+}
+
+fn titles(base: &Path) -> Vec<Option<String>> {
+    list_temp_rooms_in(base)
+        .expect("list")
+        .into_iter()
+        .map(|room| room.task_title)
+        .collect()
+}
+
+#[test]
+fn list_reports_the_task_title() {
+    use crate::cli::task_ops::TaskOp;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let name = create(tmp.path());
+    assert_eq!(titles(tmp.path()), vec![None]);
+    crate::cli::task_ops::perform(&tmp.path().join(&name), TaskOp::SetUserTitle("T".into()))
+        .expect("set title");
+    assert_eq!(titles(tmp.path()), vec![Some("USER: T".to_string())]);
+}
+
+#[tokio::test]
+async fn a_reused_number_inherits_no_task_title() {
+    use crate::cli::task_ops::TaskOp;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let name = create(tmp.path());
+    crate::cli::task_ops::perform(&tmp.path().join(&name), TaskOp::SetUserTitle("T".into()))
+        .expect("set title");
+    delete_temp_room_in(tmp.path(), &name, &manager())
+        .await
+        .expect("delete");
+    assert_eq!(create(tmp.path()), name);
+    assert_eq!(titles(tmp.path()), vec![None]);
 }

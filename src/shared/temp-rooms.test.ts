@@ -1,8 +1,18 @@
 // #4786 - which AC placeholders a temp-room agent uses that temp rooms lack.
 import { describe, expect, it } from "vitest";
+import { FakeTransport } from "./testing/fake-transport";
 import { settingsSnapshot } from "./testing/ui-harness";
-import { tempRoomPlaceholderWarning, tempRoomUnavailablePlaceholders } from "./temp-rooms";
-import type { AgentConfig, CodingAgentEnv, ProfileCellConfig } from "./types";
+import {
+  createTempRoomAPI,
+  tempRoomPlaceholderWarning,
+  tempRoomUnavailablePlaceholders,
+} from "./temp-rooms";
+import type {
+  AgentConfig,
+  CodingAgentEnv,
+  ProfileCellConfig,
+  WorkgroupGroupsConfig,
+} from "./types";
 
 const W = "%AC_WORKSPACE_ROOT%";
 const M = "%AC_MATRIX_ROOT%";
@@ -75,5 +85,21 @@ describe("#4786 tempRoomUnavailablePlaceholders", () => {
     expect(tempRoomPlaceholderWarning(M)).toBe(
       "%AC_MATRIX_ROOT% does not apply to Temporary Rooms: it does not exist for them.",
     );
+  });
+});
+
+describe("#4805 TempRoomAPI groups", () => {
+  it("getGroups and updateGroups invoke the temp-room group commands", async () => {
+    const fake = new FakeTransport();
+    const cfg = { groups: [], nonStop: null } as unknown as WorkgroupGroupsConfig;
+    fake.resolve("get_temp_room_groups", cfg);
+    fake.resolve("update_temp_room_groups", cfg);
+    const api = createTempRoomAPI(fake);
+    await api.getGroups();
+    await api.updateGroups(cfg);
+    expect(fake.calls).toEqual([
+      { cmd: "get_temp_room_groups", args: {} },
+      { cmd: "update_temp_room_groups", args: { config: cfg } },
+    ]);
   });
 });

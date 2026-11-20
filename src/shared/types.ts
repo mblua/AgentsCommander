@@ -1605,9 +1605,9 @@ export interface AcAgentReplica {
   savedPair?: SavedPair | null;
   /** #1942 - strict protection state; absent means unsupported/unknown. */
   selectionState?: SelectionState;
-  /** #1942 - strict-read diagnostic when `selectionState` is invalid. */
-  selectionError?: string | null;
+  selectionError?: string | null; // #1942 - diagnostic when `selectionState` is invalid.
   unleashed?: boolean; // #4752 - true when the user unleashed it; absent from older backends.
+  sessionName?: string; // #4805 - exact session name; only temp-room rows set it.
 }
 
 export interface CoordinatorCloseOutcome {

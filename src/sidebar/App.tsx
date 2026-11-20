@@ -59,6 +59,7 @@ import { applyWindowLayout } from "../shared/window-layout";
 import { sessionsStore } from "./stores/sessions";
 import { bridgesStore } from "./stores/bridges";
 import { projectStore } from "./stores/project";
+import { tempRoomsStore } from "./stores/temp-rooms";
 import { startCiActivityStamp } from "./stores/ci-activity-stamp";
 import { codingAgentsStore } from "./stores/coding-agents";
 import { workgroupGroupsStore } from "./stores/workgroup-groups";
@@ -111,12 +112,7 @@ function isExitedStatus(status: SessionStatus): boolean {
 }
 
 function sessionWarningIdentity(warning: SessionWarning): string {
-  return JSON.stringify([
-    warning.sessionId,
-    warning.key,
-    warning.kind,
-    warning.message,
-  ]);
+  return JSON.stringify([warning.sessionId, warning.key, warning.kind, warning.message]);
 }
 
 function incrementWarningCount(counts: Map<string, number>, warning: SessionWarning): void {
@@ -203,6 +199,9 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   const releaseRoomActivityObserver = acquireRoomActivityObserver();
   onCleanup(releaseRoomActivityObserver);
   const [showOnboarding, setShowOnboarding] = createSignal(false);
+  const railProjects = createMemo(() => [
+    ...projectStore.projects, ...tempRoomsStore.railProjects(),
+  ]);
   const [loopToast, setLoopToast] = createSignal<LoopToast | null>(null);
   const [settingsRailSide, setSettingsRailSide] = createSignal<MainSidebarSide>("right");
   const [activeContextTemplateUpdate, setActiveContextTemplateUpdate] =
@@ -1127,14 +1126,14 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         <RootAgentBanner compact={sidebarCompact()} railSide={railSide()} />
         <div class="sidebar-body" data-rail-side={railSide()}>
           <Show when={railSide() === "left"}>
-            <RoomGroupRail projects={projectStore.projects} surface={props.embedded ? "embedded" : "sidebar"} />
+            <RoomGroupRail projects={railProjects()} surface={props.embedded ? "embedded" : "sidebar"} />
           </Show>
           <div class="sidebar-scrollable" ref={sidebarScrollableEl}>
             <TemporaryRoomsPanel />
             <ProjectPanel />
           </div>
           <Show when={railSide() === "right"}>
-            <RoomGroupRail projects={projectStore.projects} surface={props.embedded ? "embedded" : "sidebar"} />
+            <RoomGroupRail projects={railProjects()} surface={props.embedded ? "embedded" : "sidebar"} />
           </Show>
         </div>
       </div>
