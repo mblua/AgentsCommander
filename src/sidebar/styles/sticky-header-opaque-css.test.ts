@@ -27,7 +27,10 @@ const om = '[data-sidebar-style="obsidian-mesh"]';
 const nc = '[data-sidebar-style="neon-circuit"]';
 const lt = "html.light-theme";
 const HEADERS: Array<[string, string[]]> = [
-  [`${ds} .project-header`, ["rgba(20, 30, 70, 0.6)", "rgba(10, 15, 45, 0.4)", "rgba(12, 18, 40, 0.7)"]],
+  [
+    `${ds} .project-header`,
+    ["rgba(20, 30, 70, 0.6)", "rgba(10, 15, 45, 0.4)", "rgba(12, 18, 40, 0.7)"],
+  ],
   [`${ao} .project-header`, ["rgba(160, 200, 255, 0.05)", "rgba(180, 210, 240, 0.06)"]],
   [`${lt}${ao} .project-header`, ["rgba(200, 225, 255, 0.3)", "rgba(220, 235, 255, 0.5)"]],
   [`${om} .project-header`, ["rgba(40, 30, 15, 0.6)", "rgba(25, 20, 10, 0.4)"]],
@@ -47,7 +50,9 @@ describe("#4821 sticky project header opaque", () => {
     const first = Math.min(...HEADERS.map(([sel]) => block(sel).index));
     const later = RULES.filter((r) => r.index > first).filter((r) =>
       r.selectors.some(
-        (s) => STYLES.some((st) => s.includes(`[data-sidebar-style="${st}"]`)) && s.endsWith(".project-header"),
+        (s) =>
+          STYLES.some((st) => s.includes(`[data-sidebar-style="${st}"]`)) &&
+          s.endsWith(".project-header"),
       ),
     );
     const owned = new Set(HEADERS.map(([sel]) => block(sel).index));
