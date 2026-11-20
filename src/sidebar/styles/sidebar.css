@@ -3598,7 +3598,7 @@ html.light-theme .settings-hint-error {
 /* #4810 - while an error shows, its panel paints over the next sticky header. */
 .project-panel:has(> .project-header > .project-filter-error-slot > .project-filter-error) {
   position: relative;
-  z-index: 21;
+  z-index: 22;
 }
 
 .project-title {
@@ -4792,14 +4792,28 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup {
 
 [data-sidebar-style="deep-space"] .project-header {
   padding: 10px 14px;
-  background: linear-gradient(
-    135deg,
-    rgba(20, 30, 70, 0.6) 0%,
-    rgba(10, 15, 45, 0.4) 100%
-  );
+  background:
+    linear-gradient(
+      135deg,
+      rgba(20, 30, 70, 0.6) 0%,
+      rgba(10, 15, 45, 0.4) 100%
+    ),
+    linear-gradient(rgba(12, 18, 40, 0.7), rgba(12, 18, 40, 0.7)),
+    var(--sidebar-bg);
   border-bottom: 1px solid rgba(60, 130, 220, 0.15);
   border-radius: 8px 8px 0 0;
   position: sticky;
+}
+
+/* #4821 - the light error row keeps today's background (no panel layer). */
+html.light-theme[data-sidebar-style="deep-space"] .project-filter-error-slot {
+  background:
+    linear-gradient(
+      135deg,
+      rgba(20, 30, 70, 0.6) 0%,
+      rgba(10, 15, 45, 0.4) 100%
+    ),
+    var(--sidebar-bg);
 }
 
 [data-sidebar-style="deep-space"] .project-header::after {
@@ -5050,12 +5064,19 @@ html.light-theme[data-sidebar-style="arctic-ops"] .project-panel {
 
 [data-sidebar-style="arctic-ops"] .project-header {
   padding: 9px 14px;
-  background: rgba(160, 200, 255, 0.05);
+  background:
+    linear-gradient(rgba(160, 200, 255, 0.05), rgba(160, 200, 255, 0.05)),
+    linear-gradient(rgba(180, 210, 240, 0.06), rgba(180, 210, 240, 0.06)),
+    var(--sidebar-bg);
   border-bottom: 2px solid rgba(160, 200, 255, 0.1);
+  border-radius: 3px 3px 0 0;
 }
 
 html.light-theme[data-sidebar-style="arctic-ops"] .project-header {
-  background: rgba(200, 225, 255, 0.3);
+  background:
+    linear-gradient(rgba(200, 225, 255, 0.3), rgba(200, 225, 255, 0.3)),
+    linear-gradient(rgba(220, 235, 255, 0.5), rgba(220, 235, 255, 0.5)),
+    var(--sidebar-bg);
   border-bottom-color: rgba(140, 180, 220, 0.2);
 }
 
@@ -5240,11 +5261,13 @@ html.light-theme[data-sidebar-style="arctic-ops"] .root-agent-avatar {
 
 [data-sidebar-style="obsidian-mesh"] .project-header {
   padding: 8px 12px;
-  background: linear-gradient(
-    135deg,
-    rgba(40, 30, 15, 0.6) 0%,
-    rgba(25, 20, 10, 0.4) 100%
-  );
+  background:
+    linear-gradient(
+      135deg,
+      rgba(40, 30, 15, 0.6) 0%,
+      rgba(25, 20, 10, 0.4) 100%
+    ),
+    var(--sidebar-bg);
   border-bottom: 2px solid rgba(220, 160, 40, 0.25);
   border-top: 1px solid rgba(220, 160, 40, 0.1);
   position: sticky;
@@ -5265,11 +5288,13 @@ html.light-theme[data-sidebar-style="arctic-ops"] .root-agent-avatar {
 }
 
 html.light-theme[data-sidebar-style="obsidian-mesh"] .project-header {
-  background: linear-gradient(
-    135deg,
-    rgba(240, 220, 170, 0.25) 0%,
-    rgba(230, 210, 150, 0.15) 100%
-  );
+  background:
+    linear-gradient(
+      135deg,
+      rgba(240, 220, 170, 0.25) 0%,
+      rgba(230, 210, 150, 0.15) 100%
+    ),
+    var(--sidebar-bg);
   border-bottom-color: rgba(180, 130, 20, 0.3);
 }
 
@@ -5515,6 +5540,8 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-disco
 [data-sidebar-style="neon-circuit"] .project-panel::before {
   content: "";
   position: absolute;
+  z-index: 21;
+  pointer-events: none;
   top: 0;
   left: 0;
   right: 0;
@@ -5531,13 +5558,17 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-disco
 
 [data-sidebar-style="neon-circuit"] .project-header {
   padding: 9px 14px;
-  background: rgba(255, 0, 180, 0.03);
+  background:
+    linear-gradient(rgba(255, 0, 180, 0.03), rgba(255, 0, 180, 0.03)),
+    var(--sidebar-bg);
   border-bottom: 1px solid rgba(255, 0, 180, 0.1);
   border-radius: 4px 4px 0 0;
 }
 
 html.light-theme[data-sidebar-style="neon-circuit"] .project-header {
-  background: rgba(255, 0, 180, 0.04);
+  background:
+    linear-gradient(rgba(255, 0, 180, 0.04), rgba(255, 0, 180, 0.04)),
+    var(--sidebar-bg);
 }
 
 [data-sidebar-style="neon-circuit"] .project-title {

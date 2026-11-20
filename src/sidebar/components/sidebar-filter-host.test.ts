@@ -191,6 +191,6 @@ describe("#4810 sidebar filter host", () => {
       ".project-panel:has(> .project-header > .project-filter-error-slot > .project-filter-error)",
     );
     expect(lift).toMatch(/position:\s*relative/);
-    expect(lift).toMatch(/z-index:\s*21/);
+    expect(lift).toMatch(/z-index:\s*22/);
   });
 });
