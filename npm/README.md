@@ -5,7 +5,7 @@
 When installing through npm, use `-g` so the `agentscommander` command is available from any directory:
 
 ```bash
-npm install -g @mblua/agentscommander
+npm install -g --allow-scripts=@mblua/agentscommander @mblua/agentscommander
 ```
 
 This installs the current `latest` release. Before installing, follow [Resolve versions and preserve configuration](#resolve-versions-and-preserve-configuration), then [Install and validate](#install-and-validate). Check the supported platforms and requirements below before installing.
@@ -15,14 +15,14 @@ This installs the current `latest` release. Before installing, follow [Resolve v
 New builds are published first under the `next` tag. To try one before it becomes the default release:
 
 ```bash
-npm install -g @mblua/agentscommander@next
+npm install -g --allow-scripts=@mblua/agentscommander @mblua/agentscommander@next
 ```
 
 `next` builds are not fully tested and can break. Share feedback in the [#testers Discord channel](https://discord.gg/T4R8RvEFX4).
 
 ## npm website install command
 
-The npm website's **Install** sidebar shows the generic local-install command. For the recommended global npm installation, include `-g` as shown above.
+The npm website's **Install** sidebar shows the generic local-install command. For the recommended global npm installation, include `-g` as shown above. On npm 12 and newer see [npm 12 and newer](#npm-12-and-newer).
 
 ## Choosing the npm route
 
@@ -90,10 +90,10 @@ Copy the complete persistent configuration directory to a user-controlled backup
 ## Install and validate
 
 ```bash
-npm install -g @mblua/agentscommander
+npm install -g --allow-scripts=@mblua/agentscommander @mblua/agentscommander
 ```
 
-The command installs the current `latest` release and exits 0 on success. The package's install script downloads that package version's raw asset and `SHASUMS256.txt` from `mblua/AgentsCommander`, computes SHA-256, and fails the install on a missing record or mismatch. This does not protect against compromise of the publisher or repository account because the asset and checksum share that trust boundary.
+The command installs the current `latest` release and exits 0 on success. npm 12 and newer also exit 0 when they skip the install script, so always validate with `agentscommander --version`. The package's install script downloads that package version's raw asset and `SHASUMS256.txt` from `mblua/AgentsCommander`, computes SHA-256, and fails the install on a missing record or mismatch. This does not protect against compromise of the publisher or repository account because the asset and checksum share that trust boundary.
 
 Validate the installed command:
 
@@ -103,6 +103,46 @@ agentscommander --help
 ```
 
 Both commands must exit 0. Confirm that `npm list` and the installed `package.json` report the `latest` version that `npm view @mblua/agentscommander version` returned; re-check the installed scripts, native path, and checksum correlation described above. `--help` must print the AgentsCommander command help, and on `0.31.0` or newer `agentscommander --version` must print the same version `npm list` reports. The npm package is `@mblua/agentscommander`; the installed command is `agentscommander`.
+
+### npm 12 and newer
+
+npm 12 and newer run a package's install script only when you allow it. This package's install script downloads the executable, so without the opt-in npm still exits 0 but `bin/` stays empty and `agentscommander` reports `Cannot find AgentsCommander executable`. A package cannot allow its own scripts; the `--allow-scripts` flag in the commands above is that opt-in.
+
+If a global install already ran without the flag, run:
+
+```bash
+npm rebuild -g --allow-scripts=@mblua/agentscommander @mblua/agentscommander
+```
+
+For a local (project) install, `--allow-scripts` is rejected. Add the package name to the project `package.json` before installing:
+
+```json
+"allowScripts": { "@mblua/agentscommander": true }
+```
+
+Or, after a blocked local install, run these two commands separately. `approve` pins the installed version, so repeat both after an upgrade:
+
+```bash
+npm install-scripts approve @mblua/agentscommander
+npm rebuild @mblua/agentscommander
+```
+
+For `npx`, pass the flag on the first run:
+
+```bash
+npx --allow-scripts=@mblua/agentscommander @mblua/agentscommander@<version>
+```
+
+If `npx` already ran without the flag, it reuses that blocked folder, so the flag alone does not help. Clear the npx cache first, then run the same `npx` command again (two separate commands):
+
+```bash
+npm cache npx rm --force
+npx --allow-scripts=@mblua/agentscommander @mblua/agentscommander@<version>
+```
+
+If the package is also installed globally or in the project, fix that install first: npx runs that install, not its cache.
+
+If `ignore-scripts` is set (flag or `.npmrc`), remove it first; it overrides `allow-scripts`.
 
 ### Windows Start Menu shortcut
 

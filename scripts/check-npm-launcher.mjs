@@ -185,8 +185,16 @@ function expectExit(r, code, label) {
   );
 }
 function assertHint(stderr, label) {
-  assertIncludes(stderr, '--ignore-scripts', label);
-  assertIncludes(stderr, 'npm rebuild -g @mblua/agentscommander', label);
+  const needles = [
+    '  npm rebuild -g --allow-scripts=@mblua/agentscommander @mblua/agentscommander\n',
+    '  npm install-scripts approve @mblua/agentscommander\n',
+    '  npm rebuild @mblua/agentscommander\n',
+    '  npm cache npx rm --force\n',
+    '  npx --allow-scripts=@mblua/agentscommander @mblua/agentscommander\n',
+    'it overrides allow-scripts',
+    'On older npm, run: npm rebuild @mblua/agentscommander (add -g',
+  ];
+  for (const needle of needles) assertIncludes(stderr, needle, label);
 }
 
 // ---------- work dir ----------
@@ -465,9 +473,14 @@ function runPackageChecks() {
       encoding: 'utf8',
     });
     expectExit(r, 0, 'P1 npm pack');
-    const start = r.stdout.indexOf('[');
-    assert(start !== -1, `P1: no JSON in npm pack output: ${JSON.stringify(r.stdout)}`);
-    const packed = JSON.parse(r.stdout.slice(start))[0];
+    const starts = ['[', '{'].map((c) => r.stdout.indexOf(c)).filter((i) => i !== -1);
+    assert(starts.length > 0, `P1: no JSON in npm pack output: ${JSON.stringify(r.stdout)}`);
+    const j = JSON.parse(r.stdout.slice(Math.min(...starts)));
+    const packed = Array.isArray(j) ? j[0] : Object.values(j)[0];
+    assert(
+      packed && typeof packed === 'object' && Array.isArray(packed.files),
+      `P1: npm pack JSON has no files list: ${JSON.stringify(j)}`,
+    );
     const files = packed.files.map((f) => f.path).sort();
     const expected = ['README.md', 'icon.png', 'install.js', 'linux-desktop-entry.js',
       'macos-alias.js', 'package.json', 'resolve-bin.js', 'run.js', 'windows-shortcut.js'];

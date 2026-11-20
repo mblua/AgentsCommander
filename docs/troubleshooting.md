@@ -6,6 +6,8 @@ For developers hitting an error. Skim the headings for the symptom that matches 
 
 Start with the [installation support gates](install-with-agent.md#support-gates). Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported. Linux x86_64/AMD64 is supported with medium test coverage and requires an explicit warning and confirmation. macOS is supported via npm only, with very low test coverage, so expect errors.
 
+- `Cannot find AgentsCommander executable` after an npm install on npm 12 or newer: npm skipped the install script. Run `npm rebuild -g --allow-scripts=@mblua/agentscommander @mblua/agentscommander`, or see [npm 12 and newer](../npm/README.md#npm-12-and-newer) for local and `npx` installs.
+
 ### Windows: SmartScreen blocks the installer
 
 Windows code signing is planned through SignPath, but current release artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. SmartScreen can also warn on newly signed apps before they build reputation. Do not bypass the warning silently. Before running a downloaded installer, [verify its exact filename and checksum](install-with-agent.md#verify-a-downloaded-asset-manually) against the same release's `SHASUMS256.txt`, then inspect Authenticode status separately:
@@ -34,7 +36,7 @@ chmod +x "$asset"
 macOS is supported via npm only, with very low test coverage, so errors are expected. Install it after the platform warning with:
 
 ```bash
-npm install -g @mblua/agentscommander
+npm install -g --allow-scripts=@mblua/agentscommander @mblua/agentscommander
 ```
 
 A `.dmg` or other artifact on a release is not a supported macOS route, and do not bypass Gatekeeper as part of a normal installation.
