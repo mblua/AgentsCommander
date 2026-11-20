@@ -40,7 +40,7 @@ Bring your own coding-agent CLIs, accounts, and model access. Choose how you wan
 Requires Node.js 18 or newer and npm. Run:
 
 ```bash
-npm install -g @mblua/agentscommander@latest
+npm install -g --allow-scripts=@mblua/agentscommander @mblua/agentscommander@latest
 ```
 
 Then launch:
@@ -62,7 +62,7 @@ winget install --id mblua.AgentsCommander --exact --source winget
 Paste this into the coding agent you already use:
 
 ```text
-Install the stable version of AgentsCommander with npm install -g @mblua/agentscommander@latest.
+Install the stable version of AgentsCommander with npm install -g --allow-scripts=@mblua/agentscommander @mblua/agentscommander@latest.
 Verify that it works, tell me how to launch it, and explain the basic concepts used by AgentsCommander: Agents-Matrix, Teams, and Rooms.
 ```
 

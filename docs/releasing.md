@@ -134,7 +134,7 @@ GitHub Release as latest. `npm install -g @mblua/agentscommander`, the in-app
 update check and the GitHub `releases/latest` link keep pointing at the previous
 version until a maintainer promotes the new one.
 
-Test it with `npm install -g @mblua/agentscommander@next`, then promote both
+Test it with `npm install -g --allow-scripts=@mblua/agentscommander @mblua/agentscommander@next`, then promote both
 together:
 
 ```bash
