@@ -2553,8 +2553,8 @@ jobs:
           test "$release_id" = "$EXPECTED_RELEASE_ID"
           node_major="$(node --version | cut -d. -f1 | tr -d v)"
           test "$node_major" = 22
-          env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" install --global npm@11.6.2 --registry "$REGISTRY_URL"
-          test "$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" --version)" = 11.6.2
+          env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" install --global npm@12.2.3 --registry "$REGISTRY_URL"
+          test "$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" --version)" = 12.2.3
           npm_require_official_registry "$(env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" config get registry)"
           mapfile -t package_info < <(node - "$VERSION" <<'NODE'
           const assert = require('node:assert/strict');
@@ -2587,8 +2587,10 @@ jobs:
           const fs = require('node:fs');
           const path = require('node:path');
           const result = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-          assert.ok(Array.isArray(result) && result.length === 1);
-          const filename = result[0].filename;
+          assert.ok(result && typeof result === 'object' && !Array.isArray(result));
+          const entries = Object.values(result);
+          assert.equal(entries.length, 1);
+          const filename = entries[0].filename;
           assert.match(filename, /^[A-Za-z0-9._-]+\.tgz$/);
           const output = path.join(process.argv[3], filename);
           assert.ok(fs.statSync(output).isFile() && fs.statSync(output).size > 0);
@@ -2850,6 +2852,7 @@ jobs:
           normal_public_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$selected_asset"
           curl --fail --location --proto '=https' --tlsv1.2 "$normal_public_url" --output "$public_assets/normal-public-$selected_asset"
           cmp -- "$public_assets/$selected_asset" "$public_assets/normal-public-$selected_asset"
+          printf '{"private":true,"allowScripts":{"%s@%s":true}}\n' "$package_name" "$VERSION" > "$install_dir/package.json"
           env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" install --foreground-scripts --prefix "$install_dir" --registry "$REGISTRY_URL" "$package_name@$VERSION"
           env -u NODE_AUTH_TOKEN -u NPM_CONFIG_USERCONFIG npm --userconfig "$TOKENLESS_NPMRC" --prefix "$install_dir" audit signatures --registry "$REGISTRY_URL"
           version_output="$("$install_dir/node_modules/.bin/$binary_name" --version)"

@@ -64,7 +64,7 @@ jobs:
           node-version: 22
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2 --ignore-scripts
+        run: npm install -g npm@12.2.3 --ignore-scripts
 
       - name: Install native Linux dependencies
         if: matrix.platform == 'linux'
@@ -221,7 +221,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g --ignore-scripts npm@11.6.2
+        run: npm install -g --ignore-scripts npm@12.2.3
 
       - name: Install frontend dependencies
         # Never pass --omit=optional: jscpd's native runner arrives through
@@ -406,7 +406,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g --ignore-scripts npm@11.6.2
+        run: npm install -g --ignore-scripts npm@12.2.3
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
@@ -773,7 +773,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g --ignore-scripts npm@11.6.2
+        run: npm install -g --ignore-scripts npm@12.2.3
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
@@ -858,7 +858,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g --ignore-scripts npm@11.6.2
+        run: npm install -g --ignore-scripts npm@12.2.3
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
@@ -1397,7 +1397,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2 --ignore-scripts
+        run: npm install -g npm@12.2.3 --ignore-scripts
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
@@ -1639,7 +1639,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2 --ignore-scripts
+        run: npm install -g npm@12.2.3 --ignore-scripts
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
@@ -1738,7 +1738,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2 --ignore-scripts
+        run: npm install -g npm@12.2.3 --ignore-scripts
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
@@ -2852,7 +2852,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2 --ignore-scripts
+        run: npm install -g npm@12.2.3 --ignore-scripts
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
@@ -2996,7 +2996,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2 --ignore-scripts
+        run: npm install -g npm@12.2.3 --ignore-scripts
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
@@ -3363,7 +3363,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2 --ignore-scripts
+        run: npm install -g npm@12.2.3 --ignore-scripts
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
@@ -3952,7 +3952,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g --ignore-scripts npm@11.6.2
+        run: npm install -g --ignore-scripts npm@12.2.3
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
@@ -4024,7 +4024,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g --ignore-scripts npm@11.6.2
+        run: npm install -g --ignore-scripts npm@12.2.3
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
@@ -4204,7 +4204,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2 --ignore-scripts
+        run: npm install -g npm@12.2.3 --ignore-scripts
 
       - name: Install frontend dependencies
         run: npm ci --ignore-scripts
