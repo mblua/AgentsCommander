@@ -473,6 +473,16 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(roomRow()).not.toBeNull();
   });
 
+  it("8c. #4838 the task title label carries the full title as tooltip", async () => {
+    const full = "A very long temporary room task title that the sidebar ellipsizes";
+    track(setup({ rooms: [{ ...ROOM_1, taskTitle: full }] }));
+    await waitFor(() => expect(byId("tempRoom.temp-room-tr01.taskTitle")).not.toBeNull());
+    const label = byId("tempRoom.temp-room-tr01.taskTitle")!;
+    expect(label.textContent).toBe(full);
+    expect(label.getAttribute("title")).toBe(full);
+    expect(label.closest(".ac-wg-header")!.getAttribute("title")).toBe(ROOM_1.path);
+  });
+
   it("8b. #4825 the header collapse button carries tempRooms.header.toggle", async () => {
     track(setup());
     await waitFor(() => expect(byId("tempRooms.header.toggle")).not.toBeNull());

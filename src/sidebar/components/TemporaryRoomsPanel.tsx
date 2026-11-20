@@ -662,6 +662,7 @@ const TemporaryRoomsPanel: Component = () => {
                       <span
                         class="ac-wg-task sidebar-task-label"
                         tabIndex={0}
+                        title={text()}
                         data-ac-testid={`tempRoom.${room.name}.taskTitle`}
                         data-ac-role="text"
                         data-ac-state={text() === "Clean" ? "clean" : "task"}

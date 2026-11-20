@@ -510,7 +510,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     return fake;
   }
 
-  function expectTaskLabelsWithoutTooltips(title = "USER title"): void {
+  function expectTaskLabelsWithTitleTooltip(title = "USER title"): void {
     const labels = taskLabels();
     expect(labels.some(label => label.classList.contains("ac-wg-task"))).toBe(true);
     expect(labels.some(label => label.classList.contains("coord-task-title"))).toBe(true);
@@ -518,7 +518,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(label.textContent).toBe(title);
       expect(label.tabIndex).toBe(0);
       expect(label.hasAttribute("aria-describedby")).toBe(false);
-      expect(label.hasAttribute("title")).toBe(false);
+      expect(label.getAttribute("title")).toBe(title);
       if (label.classList.contains("ac-wg-task")) {
         expect(label.getAttribute("data-ac-testid")).toBe(
           "workgroup.taskTitle." + automationIdPart(projectPath) + ".workgroups.wg-2-dev-team"
@@ -530,7 +530,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(document.querySelector(".sidebar-task-tooltip, [role='tooltip']")).toBeNull();
   }
 
-  function exerciseTaskLabelsWithoutTooltips(): void {
+  function exerciseTaskLabelsWithTitleTooltip(): void {
     vi.useFakeTimers();
     try {
       for (const label of taskLabels()) {
@@ -538,23 +538,23 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
         label.focus();
         expect(document.activeElement).toBe(label);
         vi.advanceTimersByTime(500);
-        expectTaskLabelsWithoutTooltips();
+        expectTaskLabelsWithTitleTooltip();
         label.blur();
         label.focus();
         vi.advanceTimersByTime(500);
-        expectTaskLabelsWithoutTooltips();
+        expectTaskLabelsWithTitleTooltip();
         label.blur();
         label.dispatchEvent(new Event("pointerleave"));
         vi.advanceTimersByTime(500);
-        expectTaskLabelsWithoutTooltips();
+        expectTaskLabelsWithTitleTooltip();
       }
     } finally { vi.useRealTimers(); }
   }
 
   it("keeps header and quick-row titles focusable without tooltips on hover or refocus", async () => {
     await statusPanel();
-    expectTaskLabelsWithoutTooltips();
-    exerciseTaskLabelsWithoutTooltips();
+    expectTaskLabelsWithTitleTooltip();
+    exerciseTaskLabelsWithTitleTooltip();
   });
 
   it("keeps titles without tooltips after status refresh, null and failed reads", async () => {
@@ -563,12 +563,12 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { status }));
       await projectStore.refreshTaskSnapshot(workgroupPath);
       expect(projectStore.taskSnapshot(workgroupPath)?.status).toBe(status);
-      exerciseTaskLabelsWithoutTooltips();
+      exerciseTaskLabelsWithTitleTooltip();
     }
     fake.reject("task_get_snapshot_at", "unreadable");
     await projectStore.refreshTaskSnapshot(workgroupPath);
-    expectTaskLabelsWithoutTooltips();
-    exerciseTaskLabelsWithoutTooltips();
+    expectTaskLabelsWithTitleTooltip();
+    exerciseTaskLabelsWithTitleTooltip();
   });
 
   it("refreshes repeated titles after successful Clean and preserves snapshot on failure", async () => {
@@ -582,7 +582,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       await waitFor(() => expect(error).toHaveBeenCalledWith("Failed to clear task title:", "failed Clean"));
     } finally { error.mockRestore(); }
     expect(projectStore.taskSnapshot(workgroupPath)).toEqual(snapshot);
-    expectTaskLabelsWithoutTooltips();
+    expectTaskLabelsWithTitleTooltip();
     fake.resolve("task_clean_at", { workgroupRoot: workgroupPath, task: null });
     fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { taskTitle: "Clean", status: null }));
     contextMenu(findRow(rendered!.root, memberRowTestId));
@@ -591,7 +591,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     // Titles follow discovery; snapshot refresh owns status independently.
     fake.resolve("discover_project", projectDiscovery("Clean"));
     await projectStore.reloadProject(projectPath);
-    await waitFor(() => expectTaskLabelsWithoutTooltips("Clean"));
+    await waitFor(() => expectTaskLabelsWithTitleTooltip("Clean"));
     expect(projectStore.taskSnapshot(workgroupPath)?.status).toBeNull();
   });
 
