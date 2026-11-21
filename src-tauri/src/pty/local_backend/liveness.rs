@@ -1,11 +1,11 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
 
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::output::SessionIoFanout;
-use crate::pty::spawn_diagnostics::ChildLiveness;
+use crate::pty::spawn_diagnostics::{ChildLiveness, SpawnRecord};
 
 use super::PtyInstance;
 
@@ -153,4 +153,44 @@ pub(super) fn probe_child_liveness(
         Ok(None) => ChildLiveness::Alive,
         Err(e) => ChildLiveness::Unqueryable(e.to_string()),
     }
+}
+
+pub(super) fn reap_child_in_background(
+    session_id: Uuid,
+    pid: Option<u32>,
+    mut child: Box<dyn portable_pty::Child + Send + Sync>,
+    record: Option<Arc<SpawnRecord>>,
+) -> std::thread::JoinHandle<Result<(), String>> {
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) => {
+            // #942 - the exit AC asked for. The monitor may have reported this child
+            // first (it died a hair before our stop); then the event is already on
+            // record with the right cause and we only leave a reap crumb.
+            let liveness = ChildLiveness::from(&status);
+            match record.as_ref() {
+                Some(record) => {
+                    let cause = record.attribute_exit(record.stop_snapshot());
+                    if !record.log_child_exit(cause, &liveness, "reaped-after-stop") {
+                        log::debug!(
+                            "[pty] Reaped session {session_id} child pid {pid:?}: {status:?} \
+                             (exit already reported)"
+                        );
+                    }
+                }
+                None => log::info!(
+                    "[pty] child-exit session={} pid={:?} cause=ac-requested \
+                        detail=reaped-after-stop \
+                        child={}",
+                    session_id,
+                    pid,
+                    liveness.as_log()
+                ),
+            }
+            Ok(())
+        }
+        Err(e) => {
+            log::warn!("[pty] Failed to reap session {session_id} child pid {pid:?}: {e}");
+            Err(e.to_string())
+        }
+    })
 }

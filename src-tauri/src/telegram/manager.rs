@@ -137,6 +137,42 @@ impl BridgeShutdown {
             }
         }
     }
+
+    /// #3317 - proof variant of `wait_or_abort`: same deadline, but an aborted task is
+    /// then awaited too. True only if every task ended `Ok` or cancelled; a panicked task
+    /// is false. Never returns while a task still runs.
+    pub(crate) async fn wait_until_stopped(self) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut stopped = true;
+        for mut task in self.tasks {
+            let mut finished = None;
+            if Instant::now() < deadline {
+                match timeout_at(deadline, &mut task).await {
+                    Ok(joined) => finished = Some(joined),
+                    Err(_) => log::warn!(
+                        "[telegram] Bridge task for session {} did not stop within timeout",
+                        self.session_id
+                    ),
+                }
+            }
+            let joined = match finished {
+                Some(joined) => joined,
+                None => {
+                    task.abort();
+                    (&mut task).await
+                }
+            };
+            if let Some(e) = joined.as_ref().err().filter(|e| !e.is_cancelled()) {
+                log::warn!(
+                    "[telegram] Bridge task for session {} ended with error: {}",
+                    self.session_id,
+                    e
+                );
+            }
+            stopped &= joined.is_ok() || joined.as_ref().is_err_and(|e| e.is_cancelled());
+        }
+        stopped
+    }
 }
 
 impl TelegramBridgeManager {
@@ -452,6 +488,19 @@ impl TelegramBridgeManager {
                 tasks: Vec::new(),
             },
         );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test_bridge_task_for_test(
+        &mut self,
+        session_id: Uuid,
+        task: JoinHandle<()>,
+    ) {
+        self.bridges
+            .get_mut(&session_id)
+            .expect("insert_test_bridge first")
+            .tasks
+            .push(task);
     }
 
     #[cfg(test)]
