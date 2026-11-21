@@ -10,6 +10,10 @@ permissions:
 jobs:
   npm-linux-runtime-smoke:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        npm: ['11.6.2', '11.20.0', '12.2.3']
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -17,6 +21,12 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
+      - name: Pin npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g --ignore-scripts "npm@${{ matrix.npm }}"
+          test "$(npm --version)" = "${{ matrix.npm }}"
       - name: Run the release job's runtime setup on a fresh runner
         shell: bash
         run: |
@@ -36,8 +46,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/npm-runtime-smoke"
+          printf '%s\n' '{"private":true,"allowScripts":{"@mblua/agentscommander":true}}' > "$RUNNER_TEMP/npm-runtime-smoke/package.json"
           npm install --prefix "$RUNNER_TEMP/npm-runtime-smoke" --registry https://registry.npmjs.org/ @mblua/agentscommander@latest
           binary="$RUNNER_TEMP/npm-runtime-smoke/node_modules/@mblua/agentscommander/bin/agentscommander"
+          test -x "$binary"
           ldd "$binary" | tee "$RUNNER_TEMP/npm-runtime-libraries.txt"
           if grep -F 'not found' "$RUNNER_TEMP/npm-runtime-libraries.txt"; then
             exit 1
