@@ -31,6 +31,14 @@ pub(crate) struct PortTestBackend {
     spawns: AtomicUsize,
     live: Mutex<HashSet<Uuid>>,
     kills: Mutex<std::collections::HashMap<Uuid, usize>>,
+    native_exits: Mutex<std::collections::HashMap<Uuid, NativeExitMode>>,
+}
+
+/// #3317 - what the next `kill_observed` of a session proves about its native child.
+pub(crate) enum NativeExitMode {
+    Observed,
+    Reaping(std::sync::mpsc::Receiver<()>),
+    ReapFails,
 }
 
 struct KillPause {
@@ -40,6 +48,10 @@ struct KillPause {
 }
 
 impl PortTestBackend {
+    pub(crate) fn set_native_exit(&self, id: Uuid, mode: NativeExitMode) {
+        self.native_exits.lock().unwrap().insert(id, mode);
+    }
+
     pub(crate) fn gate_kill(
         &self,
         session: Uuid,
@@ -164,6 +176,28 @@ impl crate::pty::backend::PtyBackend for PortTestBackend {
         *self.kills.lock().unwrap().entry(id).or_default() += 1;
         self.set_live(id, false);
         Ok(())
+    }
+
+    fn kill_observed(
+        &self,
+        id: Uuid,
+    ) -> Result<crate::pty::backend::NativeExit, crate::errors::AppError> {
+        use crate::pty::backend::NativeExit;
+        self.kill(id)?;
+        let mode = self.native_exits.lock().unwrap().remove(&id);
+        Ok(match mode {
+            None => NativeExit::Unobserved,
+            Some(NativeExitMode::Observed) => NativeExit::Observed,
+            Some(NativeExitMode::Reaping(gate)) => {
+                NativeExit::Reaping(std::thread::spawn(move || {
+                    let _ = gate.recv();
+                    Ok(())
+                }))
+            }
+            Some(NativeExitMode::ReapFails) => {
+                NativeExit::Reaping(std::thread::spawn(|| Err("reap failed".to_owned())))
+            }
+        })
     }
 
     fn has_session(&self, id: Uuid) -> bool {

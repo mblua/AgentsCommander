@@ -87,7 +87,7 @@ pub(crate) async fn force_close(
 ) -> TeardownOutcome {
     // Once admission is in flight, accepted or already-pending work cannot be excluded.
     accepted.store(true, Ordering::Release);
-    match coordinator.background_destroy(sid).await {
+    match coordinator.explicit_discard_destroy(sid).await {
         Ok(CriticalAdmissionOutcome::Completed(result)) => match result.into_single_result(sid) {
             Ok(()) => TeardownOutcome::Closed,
             Err(reason) => {

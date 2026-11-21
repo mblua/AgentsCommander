@@ -8,6 +8,7 @@ use crate::resource_monitor::ResourceMonitorState;
 use crate::session::manager::acquire_carrier_mutation_permit;
 use crate::session::manager::CommitDecision;
 use crate::session::manager::LifecycleMutations;
+use crate::session::selection::response_close::{DiscardHold, ResponseEffectOwner};
 use crate::session::selection::CriticalAdmissionOutcome;
 use crate::session::selection::SelectionCoordinator;
 use crate::session::selection::SelectionTransaction;
@@ -57,11 +58,26 @@ pub(crate) async fn destroy_one_legacy_session<R: tauri::Runtime>(
         let permit = acquire_carrier_mutation_permit().await;
         tracker.invalidate_manager_row(session_id, std::time::Instant::now());
         if !crate::config::sessions_persistence::retire_carrier_for_discard(&permit, session_id) {
-            response_close::log_discard_veto(transaction.app(), &permit, session_id);
-            outcome
-                .failed
-                .push((session_id, "response_close_deferred".to_owned()));
-            return;
+            let recovered = if matches!(
+                request.source,
+                DestructionSource::ManualClose | DestructionSource::ExplicitDiscard
+            ) {
+                recover_quiescent_closing(transaction.app(), &permit, session_id)
+            } else {
+                Err(DiscardHold::NotExplicitDiscard)
+            };
+            if let Err(hold) = recovered {
+                log::warn!(
+                    target: "agentscommander_lib::response_close_diag",
+                    "stage=discard_recovery outcome=held reason={} session={session_id}",
+                    hold.code()
+                );
+                log_discard_veto(transaction.app(), &permit, session_id);
+                outcome
+                    .failed
+                    .push((session_id, "response_close_deferred".to_owned()));
+                return;
+            }
         }
         crate::session::selection::forget_response_close_registration(session_id);
     }
@@ -90,6 +106,166 @@ pub(crate) async fn destroy_one_legacy_session<R: tauri::Runtime>(
     } else {
         mutations.remove(session_id);
         outcome.destroyed_ids.push(session_id);
+    }
+}
+
+fn closing_owner_for_discard<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: Uuid,
+) -> Result<Arc<ResponseEffectOwner>, DiscardHold> {
+    let owners = app
+        .try_state::<crate::app_state::AppOwners>()
+        .and_then(|state| state.response_effects.snapshot())
+        .ok_or(DiscardHold::OwnerUnavailable)?;
+    let tracker = app
+        .try_state::<crate::pty::manager::ResponseCloseState>()
+        .ok_or(DiscardHold::OwnerUnavailable)?;
+    let owner = owners
+        .into_iter()
+        .find(|owner| owner.registration().member.session_id == id)
+        .ok_or(DiscardHold::OwnerUnavailable)?;
+    let registration = owner.registration();
+    let binding = owner.ticket().committed_binding();
+    let carrier = &registration.carrier;
+    if binding.member == registration.member
+        && carrier.session_id == id
+        && carrier.token == binding.member.token
+        && carrier.target == binding.member.target
+        && registration.tracker.same_state(&tracker)
+    {
+        Ok(owner)
+    } else {
+        Err(DiscardHold::OwnerIdentityMismatch)
+    }
+}
+
+/// #3317 - runs under the discard's carrier permit, so no settlement can race.
+fn recover_quiescent_closing<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    permit: &crate::session::manager::CarrierMutationPermit,
+    id: Uuid,
+) -> Result<(), DiscardHold> {
+    let owner = closing_owner_for_discard(app, id)?;
+    owner.discard_quiescence()?;
+    let registration = owner.registration();
+    if !registration
+        .tracker
+        .discarded_close_is_current(owner.ticket())
+    {
+        return Err(DiscardHold::TrackerCloseMismatch);
+    }
+    if !crate::config::sessions_persistence::retire_closing_carrier_for_discard(
+        permit,
+        &registration.carrier,
+    ) {
+        return Err(DiscardHold::CarrierRetireRejected);
+    }
+    let binding = owner.ticket().committed_binding();
+    if registration
+        .tracker
+        .retire_discarded_close(owner.ticket())
+        .is_err()
+    {
+        log::warn!(
+            target: "agentscommander_lib::response_close_diag",
+            "stage=discard_recovery outcome=residual reason=tracker_retire_failed session={id}"
+        );
+    }
+    if response_close::response_effect_owners(app)
+        .remove(id)
+        .is_err()
+    {
+        log::warn!(
+            target: "agentscommander_lib::response_close_diag",
+            "stage=discard_recovery outcome=residual reason=owner_remove_failed session={id}"
+        );
+    }
+    log::warn!(
+        target: "agentscommander_lib::response_close_diag",
+        "stage=discard_recovery outcome=retired session={id} close_nonce={} generation={}",
+        binding.close_nonce,
+        binding.member.generation
+    );
+    Ok(())
+}
+
+fn diagnostic_value<T: std::fmt::Display>(value: Option<T>) -> String {
+    value.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+}
+
+pub(crate) fn log_discard_veto<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    permit: &crate::session::manager::CarrierMutationPermit,
+    id: Uuid,
+) {
+    use crate::config::sessions_persistence::{observe_discard_veto, DiscardVetoReason};
+    // This returns owned data and drops all lower locks before consulting owners.
+    let observations: Vec<crate::config::sessions_persistence::DiscardVetoObservation> =
+        observe_discard_veto(permit, id);
+    let owners = app
+        .try_state::<crate::app_state::AppOwners>()
+        .and_then(|state| state.response_effects.snapshot());
+    let tracker = app.try_state::<crate::pty::manager::ResponseCloseState>();
+    for observed in observations {
+        let mut owner_reason = "owner_unavailable";
+        let mut close_nonce = None;
+        let mut generation = None;
+        let mut recorded_terminal = None;
+        let mut quiescence = None;
+        if observed.reason == DiscardVetoReason::ProtectionClosing {
+            let owner = owners.as_ref().and_then(|owners| {
+                owners.iter().find(|owner| {
+                    Some(owner.registration().member.session_id) == observed.protected_session
+                })
+            });
+            if let Some(owner) = owner {
+                let registration = owner.registration();
+                let binding = owner.ticket().committed_binding();
+                let carrier = &registration.carrier;
+                if binding.member == registration.member
+                    && observed.protected_session == Some(carrier.session_id)
+                    && observed.token == Some(binding.member.token)
+                    && observed.token == Some(carrier.token)
+                    && observed.target.as_ref() == Some(&binding.member.target)
+                    && observed.target.as_ref() == Some(&carrier.target)
+                    && observed.protection_nonce == Some(carrier.nonce)
+                    && tracker
+                        .as_ref()
+                        .is_some_and(|t| registration.tracker.same_state(t))
+                {
+                    close_nonce = Some(binding.close_nonce);
+                    generation = Some(binding.member.generation);
+                    recorded_terminal = owner.diagnostic_terminal();
+                    quiescence = Some(match owner.discard_quiescence() {
+                        Ok(()) => "quiescent",
+                        Err(hold) => hold.code(),
+                    });
+                    owner_reason = if recorded_terminal.is_some() {
+                        "observed"
+                    } else {
+                        "owner_record_unreadable"
+                    };
+                } else {
+                    owner_reason = "owner_identity_mismatch";
+                }
+            }
+        }
+        log::warn!(
+            target: "agentscommander_lib::response_close_diag",
+            "stage=discard_veto reason={} session={} protected_session={} target={} \
+             phase={} protection_nonce={} epoch={} version={} owner_reason={} \
+             close_nonce={} generation={} recorded_terminal={} quiescence={} \
+             owner_nonce={} previous={} replacement={}",
+            observed.reason.code(), observed.session,
+            diagnostic_value(observed.protected_session),
+            diagnostic_value(observed.target), diagnostic_value(observed.phase),
+            diagnostic_value(observed.protection_nonce),
+            diagnostic_value(observed.epoch), diagnostic_value(observed.version), owner_reason,
+            diagnostic_value(close_nonce), diagnostic_value(generation),
+            diagnostic_value(recorded_terminal), diagnostic_value(quiescence),
+            diagnostic_value(observed.owner_nonce),
+            diagnostic_value(observed.previous), diagnostic_value(observed.replacement)
+        );
     }
 }
 
@@ -371,7 +547,8 @@ pub(crate) async fn execute_destroy_transaction_common<R: tauri::Runtime>(
             }
             DestructionSource::AutoClose
             | DestructionSource::SpawnRollback
-            | DestructionSource::BackgroundCleanup => CommitDecision::Clear,
+            | DestructionSource::BackgroundCleanup
+            | DestructionSource::ExplicitDiscard => CommitDecision::Clear,
         }
     } else {
         CommitDecision::Keep

@@ -25,8 +25,9 @@ pub(crate) use carrier::{
     classify_lifecycle_carrier_scope, current_protected_carrier, finish_carrier_replacement,
     manual_discard_carrier, register_published_carrier, renew_carrier_replacement,
     restore_carrier_scopes_are_empty, retained_carrier_for_replacement, retire_carrier_for_discard,
-    retire_manual_discard_carrier, unconfirmed_replacement_work_waits, with_confirmed_carrier,
-    CarrierCheckpointTransition, CreateCarrierScope, InitialCarrierIntent, PublishedCarrier,
+    retire_closing_carrier_for_discard, retire_manual_discard_carrier,
+    unconfirmed_replacement_work_waits, with_confirmed_carrier, CarrierCheckpointTransition,
+    CreateCarrierScope, InitialCarrierIntent, PublishedCarrier,
 };
 pub use live_update::{
     clear_blocked_menu_and_persist, clear_start_fresh_and_persist_result,

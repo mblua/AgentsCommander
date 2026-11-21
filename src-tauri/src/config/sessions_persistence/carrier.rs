@@ -685,6 +685,10 @@ pub(crate) fn retire_carrier_for_discard(_permit: &CarrierMutationPermit, id: Uu
             return false;
         }
     }
+    drop_session_protections(slots, id)
+}
+
+fn drop_session_protections(slots: Vec<PublicationSlot>, id: Uuid) -> bool {
     for slot in slots {
         let Ok(mut state) = slot.lock() else {
             return false;
@@ -694,6 +698,48 @@ pub(crate) fn retire_carrier_for_discard(_permit: &CarrierMutationPermit, id: Uu
             .retain(|protection| protection.session_id != id);
     }
     true
+}
+
+/// #3317 - retire the exact Closing protection of `carrier` for an explicit discard
+/// whose owner proved quiescence. False (nothing changed) on unreadable state, any
+/// Preparing that names the id, or anything but exactly one Closing of the id
+/// matching token, target and nonce.
+pub(crate) fn retire_closing_carrier_for_discard(
+    _permit: &CarrierMutationPermit,
+    carrier: &PublishedCarrier,
+) -> bool {
+    let id = carrier.session_id;
+    let Some(slots) = publication_slot_values() else {
+        return false;
+    };
+    let mut closing = 0usize;
+    for slot in &slots {
+        let Ok(state) = slot.lock() else {
+            return false;
+        };
+        for protection in &state.protections {
+            match protection.phase {
+                ProtectionPhase::Preparing {
+                    previous,
+                    replacement,
+                    ..
+                } if protection.session_id == id || previous == id || replacement == id => {
+                    return false;
+                }
+                ProtectionPhase::Closing if protection.session_id == id => {
+                    if protection.token != carrier.token
+                        || protection.target != carrier.target
+                        || protection.nonce != carrier.nonce
+                    {
+                        return false;
+                    }
+                    closing += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    closing == 1 && drop_session_protections(slots, id)
 }
 
 /// Veto only: an unowned delivery cannot use an unconfirmed replacement B.
