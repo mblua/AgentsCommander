@@ -6,6 +6,8 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+## 0.48.0
+
 ### Added
 
 - **Temporary Rooms**: a new sidebar category below the Root Agent creates disposable `temp-room-trNN` folders in the app config directory and runs a coding agent there (**Create new Temp Room**). Temporary Rooms are not restored when the app restarts. (#4779, #4782)
@@ -49,7 +51,6 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 - About 105 behavior-preserving refactor and test PRs. CI adds CodeQL, cargo deny, ESLint, Prettier, an npm audit gate, a PR net-line budget, per-test flaky rates and SHA-pinned actions; TypeScript enables `noImplicitOverride`, `noUnusedLocals` and `noUncheckedIndexedAccess`. (#4315, #4337, #4591, #4633, #4460, #4537, #4596, #4615, #4490, #4738, #4715, #4736, #4527, #4718, #4690, #4700, #4571, #4585, #4587, #4612, #4652, #4671)
 - Security threat model, module map, frontend state map and SAFETY notes for every `unsafe` block. (#4493, #4509, #4526, #4532, #4580, #4594, #4653, #4662, #4743)
-
 ## 0.47.0
 
 ### Added
