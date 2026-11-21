@@ -476,17 +476,14 @@ pub(crate) async fn run_response_close_auxiliary<R: tauri::Runtime>(
     let Some(commit) = owner.start("manager") else {
         return;
     };
-    let committed = transaction.commit_response_close_retained(id).await;
-    let committed = match committed {
-        Ok(committed) => {
-            let _ = owner.complete(commit, Ok(()));
-            committed
-        }
+    let committed = match transaction.commit_response_close_retained(id).await {
+        Ok(committed) => committed,
         Err(error) => {
             let _ = owner.complete(commit, Err(error));
             return;
         }
     };
+    let _ = owner.complete(commit, Ok(()));
     let Some(persist) = owner.start("persist") else {
         return;
     };
