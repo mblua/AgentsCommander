@@ -153,9 +153,10 @@ function publishCi(ci: CiState, repoPath: string = ciRepoPath()): void {
 }
 
 /** The chip element for one row context and replica, by the test id the panel emits:
- *  `replica.repoBadge.<context>.<wg>.<replica>.<index>.<label>`. */
+ *  `replica.repoBadge.<context>.<replicaPath>.<index>.<label>`. */
 const chipSelector = (context: string, replica: string, wg: string = wgName): string =>
-  `[data-ac-testid="replica.repoBadge.${automationIdPart(context)}.${automationIdPart(wg)}.${automationIdPart(replica)}.0.${CI_REPO_LABEL}"]`;
+  `[data-ac-testid="replica.repoBadge.${automationIdPart(context)}`
+  + `.${automationIdPart(replicaPath(replica, wg))}.0.${CI_REPO_LABEL}"]`;
 
 function chip(root: HTMLElement, context: string, replica: string, wg: string = wgName): HTMLElement {
   const el = root.querySelector<HTMLElement>(chipSelector(context, replica, wg));
@@ -772,7 +773,8 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
       // untinted row is the isCoord() gate talking, not an empty repoBadges().
       expect(
         rendered.root.querySelector(
-          `[data-ac-testid^="replica.repoBadge.workgroups.${automationIdPart(wgName)}.${automationIdPart(WORKER)}."]`
+          `[data-ac-testid^="replica.repoBadge.workgroups.`
+            + `${automationIdPart(replicaPath(WORKER))}."]`
         )
       ).toBeNull();
     } finally {

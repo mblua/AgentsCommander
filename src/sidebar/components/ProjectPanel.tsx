@@ -2897,14 +2897,12 @@ const ProjectPanel: Component = () => {
           const rowTestId = () =>
             `replica.row.${automationIdPart(rowContext)}.${automationIdPart(replica.path)}`;
           const communicationSlotTestId = () => `${rowTestId()}.communicationSlot`;
-          const badgesTestId = () =>
-            `replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
+          const rowKey = () => `${automationIdPart(rowContext)}.${automationIdPart(replica.path)}`;
+          const badgesTestId = () => `replica.badges.${rowKey()}`;
           const repoBadgeTestId = (label: string, index: number) =>
-            `replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
-          const tierBadgeTestId = () =>
-            `replica.tierBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
-          const lockChipTestId = () =>
-            `replica.lockChip.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
+            `replica.repoBadge.${rowKey()}.${index}.${automationIdPart(label)}`;
+          const tierBadgeTestId = () => `replica.tierBadge.${rowKey()}`;
+          const lockChipTestId = () => `replica.lockChip.${rowKey()}`;
           // #2030 - the chip is icon-only, so its tooltip and its accessible name
           // come from the same accessor; the glyph itself is aria-hidden.
           const lockChipLabel = () => selectionLockChipTitle(replica, settingsStore.current);
@@ -2926,8 +2924,7 @@ const ProjectPanel: Component = () => {
             const notice = sessionOrphanNotice(s);
             return notice ? { text: notice.text, key } : null;
           };
-          const orphanNoticeTestId = () =>
-            `replica.orphanNotice.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
+          const orphanNoticeTestId = () => `replica.orphanNotice.${rowKey()}`;
           const ctxVisible = () =>
             contextBadgeConfigured(settingsStore.current?.agents, session()?.agentId);
           const ctxPercent = () => {
@@ -3046,7 +3043,7 @@ const ProjectPanel: Component = () => {
                       selecting the session under the click. */}
                   <Show when={session()?.profileOutdated}>
                     <ProfileOutdatedBadge
-                      testId={`replica.outdated.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                      testId={`replica.outdated.${rowKey()}`}
                       onReload={() => {
                         const s = session();
                         if (s) void restartReplicaSession(s.id);
@@ -3134,7 +3131,7 @@ const ProjectPanel: Component = () => {
                       percent={ctxPercent()}
                       historyScope={historyScope()}
                       colorSessions={settingsStore.current?.contextHistoryColorSessions}
-                      testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                      testId={`replica.contextBadge.${rowKey()}`}
                     />
                   </Show>
                   <Show when={extraBadge}>
@@ -3179,11 +3176,7 @@ const ProjectPanel: Component = () => {
               <Show when={isLive()}>
                 <Show when={isRecording()}>
                   <button
-                    data-ac-testid={
-                      `replica.micCancel.${automationIdPart(rowContext)}`
-                      + `.${automationIdPart(wg.name)}`
-                      + `.${automationIdPart(replica.name)}`
-                    }
+                    data-ac-testid={`replica.micCancel.${rowKey()}`}
                     class="session-item-mic-cancel"
                     onClick={handleCancelRecording}
                     title="Cancel recording"
@@ -3232,7 +3225,10 @@ const ProjectPanel: Component = () => {
                   <Show when={roomHasBlockedMenu(wg)}>
                     <span
                       class="ac-wg-header-blocked-menu"
-                      data-ac-testid={`workgroup.header.blockedMenu.${automationIdPart(wg.name)}`}
+                      data-ac-testid={
+                        `workgroup.header.blockedMenu.${automationIdPart(rowContext)}`
+                        + `.${automationIdPart(wg.path)}`
+                      }
                       title="A session is waiting on an interactive menu"
                       aria-label="A session is waiting on an interactive menu"
                     >
@@ -3292,7 +3288,7 @@ const ProjectPanel: Component = () => {
                 <span
                   class="ac-wg-header-blocked-menu"
                   classList={{ "project-header-indicator--last": fileDifference() === 0 }}
-                  data-ac-testid="project.header.blockedMenu"
+                  data-ac-testid={`project.header.${projectAutomationId()}.blockedMenu`}
                   title="A session is waiting on an interactive menu"
                   aria-label="A session is waiting on an interactive menu"
                 >
@@ -3414,7 +3410,9 @@ const ProjectPanel: Component = () => {
                             >
                               <span
                                 class="ac-wg-header-blocked-menu"
-                                data-ac-testid="coordinators.header.blockedMenu"
+                                data-ac-testid={
+                                  `coordinators.header.${projectAutomationId()}.blockedMenu`
+                                }
                                 title="A session is waiting on an interactive menu"
                                 aria-label="A session is waiting on an interactive menu"
                               >
