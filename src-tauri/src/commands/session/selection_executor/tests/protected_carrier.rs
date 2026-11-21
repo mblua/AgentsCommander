@@ -2,6 +2,7 @@
 
 mod cleanup;
 mod closing;
+mod recovery;
 
 use super::native_fixture::NativeFixture;
 use std::sync::Arc;

@@ -222,6 +222,11 @@ pub(crate) enum DiscardHold {
     ReadersMissing,
     ReadersRunning,
     ReadersAmbiguous,
+    OwnerUnavailable,
+    OwnerIdentityMismatch,
+    TrackerCloseMismatch,
+    CarrierRetireRejected,
+    NotExplicitDiscard,
 }
 
 impl DiscardHold {
@@ -244,6 +249,11 @@ impl DiscardHold {
             Self::ReadersMissing => "readers_missing",
             Self::ReadersRunning => "readers_running",
             Self::ReadersAmbiguous => "readers_ambiguous",
+            Self::OwnerUnavailable => "owner_unavailable",
+            Self::OwnerIdentityMismatch => "owner_identity_mismatch",
+            Self::TrackerCloseMismatch => "tracker_close_mismatch",
+            Self::CarrierRetireRejected => "carrier_retire_rejected",
+            Self::NotExplicitDiscard => "not_explicit_discard",
         }
     }
 }
@@ -323,6 +333,13 @@ impl ResponseEffectOwner {
         })
         .join()
         .is_err());
+    }
+
+    /// #3317 - sets a task lane back to `Missing` so a test can call the real
+    /// `record_task_stop`; it never writes `Task`/`Quiescent` itself.
+    #[cfg(test)]
+    pub(crate) fn clear_task_lane_for_test(&self, lane: StopLane) {
+        self.record.lock().unwrap().lanes[lane.index()] = LaneEvidence::Missing;
     }
 
     pub(crate) fn start(&self, name: &'static str) -> Option<usize> {

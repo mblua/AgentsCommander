@@ -500,6 +500,53 @@ impl ResponseCloseState {
         })
         .map_err(|_| StaleOrInvalidSettlement)?
     }
+
+    fn discarded_close_matches(route: &ResponseCloseRoute, ticket: &ResponseCloseTicket) -> bool {
+        let b = ticket.committed_binding();
+        route.committed_binding.as_ref() == Some(&b)
+            && route.closing == Some(b.close_nonce)
+            && route.closing_target.as_deref() == Some(b.member.target.as_str())
+            && route.generation == b.member.generation
+    }
+
+    /// #3317 - read-only: the route still carries this ticket's exact committed close.
+    pub(crate) fn discarded_close_is_current(&self, ticket: &ResponseCloseTicket) -> bool {
+        self.with_inner(|inner| {
+            inner
+                .routes
+                .get(&ticket.session_id)
+                .is_some_and(|route| Self::discarded_close_matches(route, ticket))
+        })
+        .unwrap_or(false)
+    }
+
+    /// #3317 - retire this ticket's exact committed close after a quiescent discard.
+    pub(crate) fn retire_discarded_close(
+        &self,
+        ticket: &ResponseCloseTicket,
+    ) -> Result<(), StaleOrInvalidSettlement> {
+        self.with_inner(|inner| {
+            if !inner
+                .routes
+                .get(&ticket.session_id)
+                .is_some_and(|route| Self::discarded_close_matches(route, ticket))
+            {
+                return Err(StaleOrInvalidSettlement);
+            }
+            if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {
+                log::debug!(
+                    target: DIAG_TARGET,
+                    "response_close_diag id=unknown site={} stage=discard_retire \
+                     outcome=removed member={}",
+                    line!(),
+                    ticket.session_id
+                );
+            }
+            inner.routes.remove(&ticket.session_id);
+            Ok(())
+        })
+        .map_err(|_| StaleOrInvalidSettlement)?
+    }
 }
 
 fn finish_settlement_group_rejected(

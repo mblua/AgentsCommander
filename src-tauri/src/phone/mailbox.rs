@@ -26,6 +26,9 @@ mod session_lookup;
 mod session_request;
 mod settle;
 mod teardown;
+// #3317 - recovery tests drive the real mailbox discard
+#[cfg(test)]
+pub(crate) use teardown::{force_close, TeardownOutcome};
 mod temp_room_outbox;
 mod wake_delivery;
 mod wake_injection;

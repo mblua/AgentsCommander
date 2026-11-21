@@ -8,6 +8,7 @@ use crate::resource_monitor::ResourceMonitorState;
 use crate::session::manager::acquire_carrier_mutation_permit;
 use crate::session::manager::CommitDecision;
 use crate::session::manager::LifecycleMutations;
+use crate::session::selection::response_close::{DiscardHold, ResponseEffectOwner};
 use crate::session::selection::CriticalAdmissionOutcome;
 use crate::session::selection::SelectionCoordinator;
 use crate::session::selection::SelectionTransaction;
@@ -57,11 +58,26 @@ pub(crate) async fn destroy_one_legacy_session<R: tauri::Runtime>(
         let permit = acquire_carrier_mutation_permit().await;
         tracker.invalidate_manager_row(session_id, std::time::Instant::now());
         if !crate::config::sessions_persistence::retire_carrier_for_discard(&permit, session_id) {
-            log_discard_veto(transaction.app(), &permit, session_id);
-            outcome
-                .failed
-                .push((session_id, "response_close_deferred".to_owned()));
-            return;
+            let recovered = if matches!(
+                request.source,
+                DestructionSource::ManualClose | DestructionSource::ExplicitDiscard
+            ) {
+                recover_quiescent_closing(transaction.app(), &permit, session_id)
+            } else {
+                Err(DiscardHold::NotExplicitDiscard)
+            };
+            if let Err(hold) = recovered {
+                log::warn!(
+                    target: "agentscommander_lib::response_close_diag",
+                    "stage=discard_recovery outcome=held reason={} session={session_id}",
+                    hold.code()
+                );
+                log_discard_veto(transaction.app(), &permit, session_id);
+                outcome
+                    .failed
+                    .push((session_id, "response_close_deferred".to_owned()));
+                return;
+            }
         }
         crate::session::selection::forget_response_close_registration(session_id);
     }
@@ -91,6 +107,86 @@ pub(crate) async fn destroy_one_legacy_session<R: tauri::Runtime>(
         mutations.remove(session_id);
         outcome.destroyed_ids.push(session_id);
     }
+}
+
+fn closing_owner_for_discard<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: Uuid,
+) -> Result<Arc<ResponseEffectOwner>, DiscardHold> {
+    let owners = app
+        .try_state::<crate::app_state::AppOwners>()
+        .and_then(|state| state.response_effects.snapshot())
+        .ok_or(DiscardHold::OwnerUnavailable)?;
+    let tracker = app
+        .try_state::<crate::pty::manager::ResponseCloseState>()
+        .ok_or(DiscardHold::OwnerUnavailable)?;
+    let owner = owners
+        .into_iter()
+        .find(|owner| owner.registration().member.session_id == id)
+        .ok_or(DiscardHold::OwnerUnavailable)?;
+    let registration = owner.registration();
+    let binding = owner.ticket().committed_binding();
+    let carrier = &registration.carrier;
+    if binding.member == registration.member
+        && carrier.session_id == id
+        && carrier.token == binding.member.token
+        && carrier.target == binding.member.target
+        && registration.tracker.same_state(&tracker)
+    {
+        Ok(owner)
+    } else {
+        Err(DiscardHold::OwnerIdentityMismatch)
+    }
+}
+
+/// #3317 - runs under the discard's carrier permit, so no settlement can race.
+fn recover_quiescent_closing<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    permit: &crate::session::manager::CarrierMutationPermit,
+    id: Uuid,
+) -> Result<(), DiscardHold> {
+    let owner = closing_owner_for_discard(app, id)?;
+    owner.discard_quiescence()?;
+    let registration = owner.registration();
+    if !registration
+        .tracker
+        .discarded_close_is_current(owner.ticket())
+    {
+        return Err(DiscardHold::TrackerCloseMismatch);
+    }
+    if !crate::config::sessions_persistence::retire_closing_carrier_for_discard(
+        permit,
+        &registration.carrier,
+    ) {
+        return Err(DiscardHold::CarrierRetireRejected);
+    }
+    let binding = owner.ticket().committed_binding();
+    if registration
+        .tracker
+        .retire_discarded_close(owner.ticket())
+        .is_err()
+    {
+        log::warn!(
+            target: "agentscommander_lib::response_close_diag",
+            "stage=discard_recovery outcome=residual reason=tracker_retire_failed session={id}"
+        );
+    }
+    if response_close::response_effect_owners(app)
+        .remove(id)
+        .is_err()
+    {
+        log::warn!(
+            target: "agentscommander_lib::response_close_diag",
+            "stage=discard_recovery outcome=residual reason=owner_remove_failed session={id}"
+        );
+    }
+    log::warn!(
+        target: "agentscommander_lib::response_close_diag",
+        "stage=discard_recovery outcome=retired session={id} close_nonce={} generation={}",
+        binding.close_nonce,
+        binding.member.generation
+    );
+    Ok(())
 }
 
 fn diagnostic_value<T: std::fmt::Display>(value: Option<T>) -> String {
