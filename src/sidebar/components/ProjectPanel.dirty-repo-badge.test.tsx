@@ -12,6 +12,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { replicaVolatileStore } from "../stores/replica-volatile";
+import { automationIdPart as AP } from "./replica-repo-badges";
 
 // #1028/#1078 - the repo badge's letters go red when that repo has local work not
 // confirmed by cached origin tracking: a dirty worktree, but also a clean local-ahead
@@ -42,7 +43,7 @@ const REPO_B = `${workgroupPath}\\repo-webpage`;
 const TREE = "workgroups";
 const QUICK = "quick";
 
-/** The badge's own data-ac-testid: replica.repoBadge.<ctx>.<wg>.<replica>.<i>.<label> */
+/** The badge's own data-ac-testid: replica.repoBadge.<ctx>.<replicaPath>.<i>.<label> */
 function badgeIn(
   root: Element,
   ctx: string,
@@ -51,7 +52,7 @@ function badgeIn(
   label: string
 ): HTMLElement | null {
   return root.querySelector<HTMLElement>(
-    `[data-ac-testid="replica.repoBadge.${ctx}.wg-2-dev-team.${replicaName}.${index}.${label}"]`
+    `[data-ac-testid="replica.repoBadge.${ctx}.${AP(`${workgroupPath}\\__agent_${replicaName}`)}.${index}.${label}"]`
   );
 }
 

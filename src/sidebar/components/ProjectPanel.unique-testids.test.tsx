@@ -238,3 +238,134 @@ describe("#4827 sidebar replica ids are unique per window", () => {
     }
   });
 });
+
+// #4841 - row decorations and header blockedMenu badges, same two-project setup.
+const DECORATION = new RegExp(
+  "^(replica\\.(badges|repoBadge|tierBadge|lockChip|orphanNotice|outdated|contextBadge|micCancel)\\.|"
+    + "(workgroup|project|coordinators)\\.header\\.([^.]+\\.)*blockedMenu)",
+);
+const FAMILIES = [
+  "badges", "repoBadge", "tierBadge", "lockChip", "orphanNotice", "outdated", "contextBadge",
+];
+const devSession = (proj: string) => `dev-${AP(proj)}`;
+
+function decorationDuplicates(): string[] {
+  const seen = new Map<string, number>();
+  for (const el of Array.from(document.querySelectorAll("[data-ac-testid]"))) {
+    const id = el.getAttribute("data-ac-testid") ?? "";
+    if (DECORATION.test(id)) seen.set(id, (seen.get(id) ?? 0) + 1);
+  }
+  return Array.from(seen).filter(([, n]) => n > 1).map(([id]) => id).sort();
+}
+
+function decorationDiscovery(proj: string): AcDiscoveryResult {
+  const result = projectDiscovery(proj);
+  result.workgroups[0].agents[0].selectionState = "locked";
+  return result;
+}
+
+describe("#4841 row decorations and header badges are unique per window", () => {
+  let cleanupDom: (() => void) | null = null;
+  let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
+
+  beforeEach(async () => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+    sessionsStore.resetOrphanNoticesForTests();
+    const fake = new FakeTransport();
+    fake.onInvoke("new_project", (args) => ({
+      path: args.path as string,
+      registered: true,
+      created: false,
+    }));
+    fake.onInvoke("discover_project", (args) => decorationDiscovery(args.path as string));
+    fake.resolve("get_settings", baseSettings({
+      agents: [{
+        id: "codex",
+        label: "Codex",
+        command: "codex",
+        color: "#d97757",
+        envs: [],
+        isolatedHome: false,
+        contextRegex: String.raw`Context (\d{1,3})%`,
+      }],
+    }));
+    fake.resolve("task_get_title", "Same room");
+    fake.resolve("list_unresolved_loop_targets", []);
+    sessionsStore.setSessions(
+      PROJECTS.map((proj) =>
+        session({
+          id: devSession(proj),
+          name: `${WG}/dev`,
+          workingDirectory: devPath(proj),
+          isCoordinator: true,
+          status: "running",
+          agentId: "codex",
+          agentLabel: "Codex",
+          requestedProfile: "B",
+          effectiveProfile: "B",
+          profileFallbackApplied: false,
+          matchTier: "labelAndLetter",
+          profileOutdated: true,
+          communication: {
+            kind: "blockedMenu",
+            visible: true,
+            updatedAt: "2026-11-21T00:00:00Z",
+            message: "Pick one",
+          },
+        }),
+      ),
+    );
+    rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    await settingsStore.load();
+    for (const proj of PROJECTS) await projectStore.createAndLoad(proj);
+    await waitFor(() => expect(panels()).toHaveLength(2));
+    sessionsStore.setVisibleActiveIdForTests(devSession(PROJECTS[0]));
+    await waitFor(() => expect(rowsOf(panels()[0], "selected").length).toBeGreaterThan(0));
+    sessionsStore.setVisibleActiveIdForTests(devSession(PROJECTS[1]));
+    sessionsStore.setAlwaysShowSelectedWorkgroup(true);
+    // Guard: every family renders in both panels, plus 4 header badges each.
+    await waitFor(() => {
+      for (const panel of panels()) {
+        for (const fam of FAMILIES) {
+          const found = panel.querySelectorAll(`[data-ac-testid^="replica.${fam}."]`);
+          expect(found.length, fam).toBeGreaterThan(0);
+        }
+        expect(panel.querySelectorAll(".ac-wg-header-blocked-menu")).toHaveLength(4);
+      }
+    });
+  });
+
+  afterEach(() => {
+    rendered?.cleanup();
+    rendered = null;
+    sessionsStore.setAlwaysShowSelectedWorkgroup(false);
+    sessionsStore.resetOrphanNoticesForTests();
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+    vi.restoreAllMocks();
+  });
+
+  it("no duplicate decoration or header badge ids across projects", () => {
+    expect(decorationDuplicates()).toEqual([]);
+  });
+
+  it("each new id matches one element per project", () => {
+    const single = ["badges", "tierBadge", "lockChip", "orphanNotice", "outdated", "contextBadge"];
+    for (const proj of PROJECTS) {
+      const rp = AP(devPath(proj));
+      for (const ctx of CONTEXTS) {
+        for (const fam of single) only(document, `replica.${fam}.${ctx}.${rp}`);
+        only(document, `replica.repoBadge.${ctx}.${rp}.0.x`);
+        only(document, `replica.orphanNotice.${ctx}.${rp}.dismiss`);
+      }
+      for (const ctx of ["selected", "workgroups"]) {
+        only(document, `workgroup.header.blockedMenu.${ctx}.${AP(wgPath(proj))}`);
+      }
+      only(document, `project.header.${AP(proj)}.blockedMenu`);
+      only(document, `coordinators.header.${AP(proj)}.blockedMenu`);
+    }
+  });
+});

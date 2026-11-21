@@ -6,6 +6,7 @@ import { FakeTransport } from "../../shared/testing/fake-transport";
 import { click, discovery, installBrowserDomStubs, renderWithFakeTransport, resetUiStoresForTests, session } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
+import { automationIdPart as AP } from "./replica-repo-badges";
 
 const path = "C:\Project";
 const command = "get_project_file_difference";
@@ -144,7 +145,7 @@ describe("Project root file difference", () => {
     sessionsStore.setSessions([session({ name: "room-test/worker", workingDirectory: replicaPath, communication: { kind: "blockedMenu", visible: true, updatedAt: "2026-10-19T00:00:00Z", message: "Waiting" } })]);
     const root = await mount(fake, [path], discovery({ workgroups: [{ name: "room-test", path: roomPath, task: null, taskTitle: null, agents: [{ name: "worker", path: replicaPath, repoPaths: [], isCoordinator: false }] }] }));
     const header = root.querySelector(".project-header")!;
-    const blocked = header.querySelector('[data-ac-testid="project.header.blockedMenu"]')!;
+    const blocked = header.querySelector(`[data-ac-testid="project.header.${AP(path)}.blockedMenu"]`)!;
     expect(blocked).not.toBeNull();
     expect(header.classList.contains("project-header--has-indicator")).toBe(true);
     expect(header.querySelectorAll(".project-header-indicator--last")).toHaveLength(1);

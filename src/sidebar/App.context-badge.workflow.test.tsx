@@ -13,6 +13,7 @@ import {
 } from "../shared/testing/ui-harness";
 import { sessionsStore } from "./stores/sessions";
 import type { AgentConfig, Session } from "../shared/types";
+import { automationIdPart as AP } from "./components/replica-repo-badges";
 
 // #1033 - the wiring, end to end, through the REAL App listener and the REAL
 // mount-time hydration: backend event / snapshot -> ipc -> store -> projection -> DOM.
@@ -45,7 +46,7 @@ const CLAUDE_PATTERN = String.raw`^ {2}Context [░█]+ (\d{1,3})%`;
  * (every replica). Both render the same badge from the same shared resolver.
  */
 function badgeSelector(replica: string, rowContext: "quick" | "workgroups" = "quick"): string {
-  return `[data-ac-testid="replica.contextBadge.${rowContext}.${wgName}.${replica}"]`;
+  return `[data-ac-testid="replica.contextBadge.${rowContext}.${AP(`${workgroupPath}\\__agent_${replica}`)}"]`;
 }
 
 function agentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {

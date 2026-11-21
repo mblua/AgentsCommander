@@ -15,6 +15,7 @@ import {
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
+import { automationIdPart as AP } from "./replica-repo-badges";
 
 // #592: the profile-drift "outdated" badge must surface on a WG replica row, not
 // only on the sidebar SessionItem. The backend marks profileOutdated in
@@ -29,6 +30,7 @@ const replicaName = "dev-webpage-ui";
 const sessionName = `wg-2-dev-team/${replicaName}`;
 // #2435 - a second replica with no session: the dormant row.
 const dormantName = "dormant-ui";
+const dormantPath = `${workgroupPath}\\__agent_${dormantName}`;
 
 function replicaDiscovery() {
   return discovery({
@@ -48,7 +50,7 @@ function replicaDiscovery() {
           },
           {
             name: dormantName,
-            path: `${workgroupPath}\\__agent_${dormantName}`,
+            path: dormantPath,
             repoPaths: [],
             isCoordinator: false,
             currentProfile: "B",
@@ -165,7 +167,7 @@ describe("ProjectPanel replica tier badge (#2435)", () => {
         }),
       ]);
       const tierSelector =
-        '[data-ac-testid="replica.tierBadge.workgroups.wg-2-dev-team.dev-webpage-ui"]';
+        `[data-ac-testid="replica.tierBadge.workgroups.${AP(replicaPath)}"]`;
       await waitFor(() => expect(rendered.root.querySelector(tierSelector)).not.toBeNull());
       const tier = rendered.root.querySelector<HTMLElement>(tierSelector)!;
       expect(tier.tagName).toBe("SPAN");
@@ -207,9 +209,9 @@ describe("ProjectPanel replica orphan notice (#2568)", () => {
   });
 
   const liveSelector =
-    '[data-ac-testid="replica.orphanNotice.workgroups.wg-2-dev-team.dev-webpage-ui"]';
+    `[data-ac-testid="replica.orphanNotice.workgroups.${AP(replicaPath)}"]`;
   const dormantSelector =
-    '[data-ac-testid="replica.orphanNotice.workgroups.wg-2-dev-team.dormant-ui"]';
+    `[data-ac-testid="replica.orphanNotice.workgroups.${AP(dormantPath)}"]`;
   // The coordinator row also renders in other panel sections; count the
   // workgroups surface only.
   const WG_NOTICES = '[data-ac-testid^="replica.orphanNotice.workgroups."]:not([data-ac-testid$=".dismiss"])';
