@@ -333,7 +333,9 @@ impl crate::loops::ipc_observer::IpcObserver {
                 list_targets(invoke)
             } else {
                 commands::temp_rooms::dispatch(invoke, &|invoke| {
-                    commands::context_history::dispatch(invoke, &generated)
+                    commands::audio_sink::dispatch(invoke, &|invoke| {
+                        commands::context_history::dispatch(invoke, &generated)
+                    })
                 })
             }
         }

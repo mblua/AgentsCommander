@@ -122,3 +122,57 @@ fn prevent_child_creation() -> std::os::windows::io::OwnedHandle {
         job
     }
 }
+
+#[test]
+fn audio_sink_exit_codes_map_to_status() {
+    assert_eq!(status_from_exit(Some(0)), AudioSinkStatus::Ok);
+    assert_eq!(status_from_exit(Some(1)), AudioSinkStatus::Missing);
+    for code in [Some(2), Some(-1), Some(127), None] {
+        assert_eq!(status_from_exit(code), AudioSinkStatus::Unknown, "{code:?}");
+    }
+}
+
+#[test]
+fn audio_sink_status_serializes_lowercase() {
+    let wire = |s| serde_json::to_string(&s).expect("serialize");
+    assert_eq!(wire(AudioSinkStatus::Ok), "\"ok\"");
+    assert_eq!(wire(AudioSinkStatus::Missing), "\"missing\"");
+    assert_eq!(wire(AudioSinkStatus::Unknown), "\"unknown\"");
+}
+
+#[tokio::test]
+async fn audio_sink_status_skips_probe_in_appimage_or_off_linux() {
+    let expected = if cfg!(target_os = "linux") {
+        AudioSinkStatus::Unknown
+    } else {
+        AudioSinkStatus::Ok
+    };
+    assert_eq!(audio_sink_status(true).await, expected);
+}
+
+#[test]
+fn audio_sink_program_is_gst_inspect() {
+    assert_eq!(GST_INSPECT, "gst-inspect-1.0");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn audio_sink_probe_sends_the_exact_argv() {
+    let stub =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gst-inspect-stub.sh");
+    assert_eq!(
+        probe_audio_sink(stub.as_os_str()).await,
+        AudioSinkStatus::Ok
+    );
+    assert_eq!(
+        probe_audio_sink(std::ffi::OsStr::new("false")).await,
+        AudioSinkStatus::Missing
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn audio_sink_probe_spawn_error_is_unknown() {
+    let missing = std::ffi::OsStr::new("ac-4843-no-such-program");
+    assert_eq!(probe_audio_sink(missing).await, AudioSinkStatus::Unknown);
+}
