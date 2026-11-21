@@ -451,7 +451,8 @@ pub(crate) async fn execute_destroy_transaction_common<R: tauri::Runtime>(
             }
             DestructionSource::AutoClose
             | DestructionSource::SpawnRollback
-            | DestructionSource::BackgroundCleanup => CommitDecision::Clear,
+            | DestructionSource::BackgroundCleanup
+            | DestructionSource::ExplicitDiscard => CommitDecision::Clear,
         }
     } else {
         CommitDecision::Keep

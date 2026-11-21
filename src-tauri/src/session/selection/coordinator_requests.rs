@@ -481,6 +481,23 @@ impl SelectionCoordinator {
         &self,
         session_id: Uuid,
     ) -> Result<CriticalAdmissionOutcome<super::DestroyOutcome>, String> {
+        self.background_destroy_from(session_id, super::DestructionSource::BackgroundCleanup)
+            .await
+    }
+
+    pub(crate) async fn explicit_discard_destroy(
+        &self,
+        session_id: Uuid,
+    ) -> Result<CriticalAdmissionOutcome<super::DestroyOutcome>, String> {
+        self.background_destroy_from(session_id, super::DestructionSource::ExplicitDiscard)
+            .await
+    }
+
+    async fn background_destroy_from(
+        &self,
+        session_id: Uuid,
+        source: super::DestructionSource,
+    ) -> Result<CriticalAdmissionOutcome<super::DestroyOutcome>, String> {
         if IN_SELECTION_WORKER.try_with(|()| ()).is_ok() {
             return Err(SelectionCoordinatorError::RecursiveSubmission.to_string());
         }
@@ -514,7 +531,7 @@ impl SelectionCoordinator {
             job: CoordinatorJob::Destroy {
                 request: super::DestroyRequest {
                     ids: vec![session_id],
-                    source: super::DestructionSource::BackgroundCleanup,
+                    source,
                     force_destroy_root: false,
                 },
                 response,
