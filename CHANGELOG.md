@@ -6,6 +6,50 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- **Temporary Rooms**: a new sidebar category below the Root Agent creates disposable `temp-room-trNN` folders in the app config directory and runs a coding agent there (**Create new Temp Room**). Temporary Rooms are not restored when the app restarts. (#4779, #4782)
+- A temp-room agent starts limited to its own folder, receives AgentsCommander CLI credentials, and can message verified room orchestrators and the Root Agent in both directions. `%AC_REPLICA_ROOT%` resolves to the temp room's folder; `%AC_WORKSPACE_ROOT%` and `%AC_MATRIX_ROOT%` fail with a clear error, and the panel warns about them before launch. (#4780, #4809, #4786, #4793)
+- Temp-room agents support groups, Non-stop, favorites and **Edit TASK title** / **Clear task title**, like room replicas. Deleting or re-creating a `trNN` folder clears its group membership. (#4805, #4822)
+- **Unleash** / **Leash** in the replica menu (above Close Session) and on Temporary Room rows lifts or restores the workspace restrictions of a local replica after a confirmation, and restarts the session fresh. Unleashed rows show a breathing red halo. The Root Agent never shows the item. The flag is removed when its room or replica is deleted. (#4752, #4761, #4762, #4763, #4764, #4765, #4768, #4772, #4826, #4828)
+- Coding agents installed through mise are detected and skipped by the startup auto-update, which used to fail on every start. Settings > Auto-update shows "Managed by mise - update with `mise upgrade <command>`". (#4804, #4808)
+- Testable Linux builds can save a PNG of the main window with `ui-backend --selector window.snapshot --value <path>`, without moving or focusing the window. (#4248, #4848)
+- Sidebar menu controls have unique `data-ac-testid` values, keyed by path, for `ui-*` GUI tests. (#4825, #4829, #4827, #4836, #4841, #4847)
+
+### Changed
+
+- The sidebar has one regex filter. It sits in the group header stuck at the top of the sidebar ("Temporary Rooms" at scroll top, then the stuck project header) and filters temporary rooms and projects. (#4785, #4792, #4810, #4814)
+- The **WWW** button is hidden unless `webBrowserEnabled` is `true` in settings.json (off by default). The `web-browser` CLI commands are unchanged. (#4751, #4753)
+- The context-history card opens after the mouse stays 2 s on the `CTX %` badge (focus, click and touch still open it at once). All context-history text is now English. (#4796, #4797)
+- A raised hand is lowered only by Enter in that session. Scrolling, typing or arrow keys no longer lower it. (#4778, #4781)
+- npm 12 and newer skip this package's install script unless allowed. Install docs, the in-app upgrade command and the missing-executable hint now use `--allow-scripts=@mblua/agentscommander`. (#4837, #4840, #4842, #4844)
+- Releases bundle `THIRD_PARTY_NOTICES.md` and `LICENSE`, generated from the Rust and npm dependency graphs. (#4491, #4528)
+- Semver-compatible npm and Cargo dependency updates. Rust is pinned to 1.98.1 through `rust-toolchain.toml`. (#4769, #4773, #4473, #4530)
+
+### Fixed
+
+- On Linux only one GUI per executable name runs at a time, the same rule as on Windows. (#4788, #4791)
+- On Linux, Spec Board accepts spec files inside a repo instead of rejecting them as "outside every valid repo root". (#4604, #4631)
+- A render error shows a recovery card with **Try again** and **Reload** instead of a blank window. (#4461, #4479)
+- Saving Settings no longer rolls back keys written elsewhere while the modal was open, such as the temp-room agent, sidebar width or window geometry. (#4783, #4789)
+- A stuck wake no longer blocks message delivery to an agent forever. It ends with a logged, counted error, and each claimed delivery has a 300 s deadline. (#3263, #4816)
+- A poisoned internal lock no longer cascades into panics. (#98, #4730)
+- Container cleanup no longer waits 10 s and logs a false timeout when nothing is shutting down. (#4643, #4688)
+- The sticky project header is opaque in the deep-space, arctic-ops, obsidian-mesh and neon-circuit sidebar styles. Hovering a sidebar TASK title shows the full title. (#4821, #4830, #4838, #4839)
+- Session selection timing is logged off the async worker, and a create ticket is freed before the response, removing two delays and races. (#4813, #4815, #4807, #4812)
+
+### Security
+
+- Each window gets only the Tauri permissions it uses. The screenshot overlay keeps event IPC only. (#4330, #4469)
+- External Telegram text, peer messages, handoff prompts and loop prompts pass the PTY text policy before delivery. CR, ESC and other forbidden controls are rejected, never rewritten. (#4309, #4522)
+- Debug output redacts bot tokens, session tokens, API keys and other settings secrets. (#4475, #4487, #4637, #4660, #4638, #4745)
+- The RTK hooks for Claude Code no longer auto-approve the commands they rewrite; Claude Code's normal permission flow decides. (#4583, #4586)
+
+### Notes
+
+- About 105 behavior-preserving refactor and test PRs. CI adds CodeQL, cargo deny, ESLint, Prettier, an npm audit gate, a PR net-line budget, per-test flaky rates and SHA-pinned actions; TypeScript enables `noImplicitOverride`, `noUnusedLocals` and `noUncheckedIndexedAccess`. (#4315, #4337, #4591, #4633, #4460, #4537, #4596, #4615, #4490, #4738, #4715, #4736, #4527, #4718, #4690, #4700, #4571, #4585, #4587, #4612, #4652, #4671)
+- Security threat model, module map, frontend state map and SAFETY notes for every `unsafe` block. (#4493, #4509, #4526, #4532, #4580, #4594, #4653, #4662, #4743)
+
 ## 0.47.0
 
 ### Added
