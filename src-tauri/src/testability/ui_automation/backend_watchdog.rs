@@ -1,6 +1,6 @@
 use super::{
     UiAutomationAction, UiAutomationRequest, UiAutomationResponse,
-    RESOURCE_WATCHDOG_BACKEND_SELECTOR,
+    RESOURCE_WATCHDOG_BACKEND_SELECTOR, WINDOW_SNAPSHOT_BACKEND_SELECTOR,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -49,7 +49,9 @@ impl BackendWatchdogMode {
     }
 }
 
-pub(crate) async fn handle_backend_request<H: BackendWatchdogHost>(
+pub(crate) async fn handle_backend_request<
+    H: BackendWatchdogHost + super::window_snapshot::WindowSnapshotHost,
+>(
     app: &H,
     request: &UiAutomationRequest,
 ) -> UiAutomationResponse {
@@ -64,6 +66,9 @@ pub(crate) async fn handle_backend_request<H: BackendWatchdogHost>(
     match request.selector.as_str() {
         RESOURCE_WATCHDOG_BACKEND_SELECTOR => {
             handle_resource_watchdog_backend_request(app, request).await
+        }
+        WINDOW_SNAPSHOT_BACKEND_SELECTOR => {
+            super::window_snapshot::handle_window_snapshot_request(app, request).await
         }
         _ => UiAutomationResponse::error_for_request(
             request,

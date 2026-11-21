@@ -87,6 +87,12 @@ xcap = "0.9.6"
 image = "0.25.10"
 # #2774 Wayland portal; same version/features rfd already resolves
 ashpd = { version = "=0.11.1", default-features = false, features = ["async-std"] }
+# #4248 Linux WebView snapshot (window.snapshot) and examples/linux_snapshot; exact versions
+# already locked via tauri/wry/gtk
+webkit2gtk = "=2.0.2"
+gio = "=0.18.4"
+glib = "=0.18.5"
+cairo-rs = { version = "=0.18.5", features = ["png"] }
 
 # #2079 macOS screenshot capture. A byte copy of the Linux table above.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -102,14 +108,6 @@ image = "0.25.10"
 # feature to the normal build.
 [target.'cfg(windows)'.dev-dependencies]
 tao = { version = "0.37.1", default-features = false, features = ["rwh_06"] }
-
-# #4248 examples/linux_snapshot native WebView snapshot experiment. Exact versions
-# already locked through tauri/wry, so this adds dev edges only, no new package.
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-webkit2gtk = "=2.0.2"
-gio = "=0.18.4"
-glib = "=0.18.5"
-cairo-rs = { version = "=0.18.5", features = ["png"] }
 
 [dev-dependencies]
 #4545 paused clock in tests; dev-only feature, not in the normal build (resolver 2)

@@ -4,6 +4,7 @@ mod cli_run;
 mod files;
 pub(crate) mod liveness;
 mod protocol;
+pub(crate) mod window_snapshot;
 
 #[cfg(test)]
 use self::protocol::UiTerminalOperation;
@@ -19,7 +20,7 @@ pub use self::protocol::{
 };
 pub use self::protocol::{
     BACKEND_AUTOMATION_WINDOW, ENV_ENABLE, REQUESTS_DIR, RESOURCE_WATCHDOG_BACKEND_SELECTOR,
-    RESPONSES_DIR, SESSION_FILE, UI_AUTOMATION_DIR,
+    RESPONSES_DIR, SESSION_FILE, UI_AUTOMATION_DIR, WINDOW_SNAPSHOT_BACKEND_SELECTOR,
 };
 use crate::shutdown::ShutdownSignal;
 pub use args::{
