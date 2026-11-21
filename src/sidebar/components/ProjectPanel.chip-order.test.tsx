@@ -292,7 +292,7 @@ describe("ProjectPanel replica chip strip order (#1730)", () => {
     );
     expect(chips[0].getAttribute("aria-label")).toBe(chips[0].getAttribute("title"));
     expect(children[7].getAttribute("data-ac-testid")).toBe(
-      `replica.lockChip.quick.${automationIdPart(wgName)}.${automationIdPart(coordName)}`,
+      `replica.lockChip.quick.${automationIdPart(coordPath)}`,
     );
   });
 

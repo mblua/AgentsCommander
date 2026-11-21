@@ -359,15 +359,11 @@ P0-identifier	src/sidebar/components/ProjectPanel.tsx	setReplicaCtxMenu({ kind: 
 P0-key	src/sidebar/components/ProjectPanel.tsx	rowContext = "workgroups"
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const dotClass = () => replicaDotClass(wg, replica);
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const session = () => replicaSession(wg, replica);
-P0-identifier	src/sidebar/components/ProjectPanel.tsx	`replica.badges.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
-P0-identifier	src/sidebar/components/ProjectPanel.tsx	`replica.repoBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}.${index}.${automationIdPart(label)}`;
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	onClick={() => handleReplicaClick(replica, wg)}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	handleReplicaContextMenu(e, s, wg, replica);
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	handleReplicaInactiveContextMenu(e, wg, replica);
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	title={`${wg.name}/${peer.name}`}
-P0-identifier	src/sidebar/components/ProjectPanel.tsx	testId={`replica.contextBadge.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	{/* #592 - drift indicator for a WG replica session. Mirrors the
-P0-identifier	src/sidebar/components/ProjectPanel.tsx	testId={`replica.outdated.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const renderWorkgroupSubgroup = (wg: AcWorkgroup, rowContext: string) => {
 P0-key	src/sidebar/components/ProjectPanel.tsx	"workgroup",
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	workgroupCollapseId(wg, rowContext)
