@@ -8,6 +8,7 @@ pub const RESPONSES_DIR: &str = "responses";
 pub const ENV_ENABLE: &str = "AC_UI_AUTOMATION";
 pub const BACKEND_AUTOMATION_WINDOW: &str = "__backend";
 pub const RESOURCE_WATCHDOG_BACKEND_SELECTOR: &str = "resourceMonitor.watchdog";
+pub const WINDOW_SNAPSHOT_BACKEND_SELECTOR: &str = "window.snapshot";
 
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 pub(crate) const POLL_MS: u64 = 50;

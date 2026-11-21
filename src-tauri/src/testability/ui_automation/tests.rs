@@ -18,6 +18,7 @@ mod cli_grammar;
 mod pid;
 mod requests;
 mod watchdog;
+mod window_snapshot;
 
 fn sample_request(request_id: String, selector: &str) -> UiAutomationRequest {
     UiAutomationRequest {

@@ -1,3 +1,5 @@
+mod window_snapshot;
+
 use tauri::{State, WebviewWindow};
 
 #[tauri::command]
