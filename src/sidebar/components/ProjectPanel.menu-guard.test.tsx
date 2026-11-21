@@ -289,7 +289,8 @@ describe("ProjectPanel blocked-menu rollup badges (#1859)", () => {
   const workerName = "dev-rust";
   const coordSessionId = `${rollupWg}-${coordName}`;
 
-  const subgroupBadge = `[data-ac-testid="workgroup.header.blockedMenu.workgroups.${AP(wgPath(rollupWg))}"]`;
+  const subgroupBadge =
+    `[data-ac-testid="workgroup.header.blockedMenu.workgroups.${AP(wgPath(rollupWg))}"]`;
   const coordinatorsBadge = `[data-ac-testid="coordinators.header.${AP(projectPath)}.blockedMenu"]`;
   const projectBadge = `[data-ac-testid="project.header.${AP(projectPath)}.blockedMenu"]`;
   const allBadges = [subgroupBadge, coordinatorsBadge, projectBadge];

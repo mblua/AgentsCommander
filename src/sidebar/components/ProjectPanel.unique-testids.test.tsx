@@ -241,7 +241,8 @@ describe("#4827 sidebar replica ids are unique per window", () => {
 
 // #4841 - row decorations and header blockedMenu badges, same two-project setup.
 const DECORATION = new RegExp(
-  "^(replica\\.(badges|repoBadge|tierBadge|lockChip|orphanNotice|outdated|contextBadge|micCancel)\\.|"
+  "^(replica\\.(badges|repoBadge|tierBadge|lockChip|orphanNotice|outdated|contextBadge"
+    + "|micCancel)\\.|"
     + "(workgroup|project|coordinators)\\.header\\.([^.]+\\.)*blockedMenu)",
 );
 const FAMILIES = [

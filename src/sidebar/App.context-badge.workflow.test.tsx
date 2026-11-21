@@ -46,7 +46,8 @@ const CLAUDE_PATTERN = String.raw`^ {2}Context [░█]+ (\d{1,3})%`;
  * (every replica). Both render the same badge from the same shared resolver.
  */
 function badgeSelector(replica: string, rowContext: "quick" | "workgroups" = "quick"): string {
-  return `[data-ac-testid="replica.contextBadge.${rowContext}.${AP(`${workgroupPath}\\__agent_${replica}`)}"]`;
+  const path = AP(`${workgroupPath}\\__agent_${replica}`);
+  return `[data-ac-testid="replica.contextBadge.${rowContext}.${path}"]`;
 }
 
 function agentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {

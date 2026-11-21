@@ -52,7 +52,8 @@ function badgeIn(
   label: string
 ): HTMLElement | null {
   return root.querySelector<HTMLElement>(
-    `[data-ac-testid="replica.repoBadge.${ctx}.${AP(`${workgroupPath}\\__agent_${replicaName}`)}.${index}.${label}"]`
+    `[data-ac-testid="replica.repoBadge.${ctx}.${AP(`${workgroupPath}\\__agent_${replicaName}`)}`
+      + `.${index}.${label}"]`
   );
 }
 
