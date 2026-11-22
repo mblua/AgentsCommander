@@ -1,3 +1,11 @@
+//! Per-coordinator clocks and close markers, persisted across restarts.
+//! `CoordinatorClocks` maps a coordinator FQN to a `ClockEntry` (last user message, last
+//! activity, auto/manual close markers, fresh-start intent) and is saved as one JSON file in
+//! the config dir (`COORDINATOR_CLOCKS_FILE_NAME`) by `load` / `save_map`.
+//! Also tracks in-flight coordinator creates in memory (`CoordinatorCreateOrder`), removes a
+//! room's keys, and prunes keys of rooms that are gone on disk at startup.
+//! It does not decide when to auto-close; it only stores the facts the callers read.
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};

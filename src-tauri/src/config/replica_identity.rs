@@ -1,3 +1,10 @@
+//! Identity of a room replica and repair of its `config.json`.
+//! `expected_wg_replica_identity` derives the only valid identity (`WgReplicaIdentity`): the
+//! relative path from `__agent_<name>` to the `_agent_<name>` matrix in the same `.ac` root.
+//! Readers validate the stored identity (faults as `ReplicaConfigFault`); the repair path
+//! rewrites `identity` and the `context` list in the replica config.
+//! It does not create replicas or matrices.
+
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

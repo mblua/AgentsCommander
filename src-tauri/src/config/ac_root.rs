@@ -1,3 +1,10 @@
+//! Project AC Root (`.ac`) naming and lookup helpers.
+//! Names the canonical root dir (`CANONICAL_AC_ROOT_DIR`), finds it under a project or among a
+//! path's ancestors, and checks it is authoritative (`ensure_authoritative_ac_root`).
+//! Also resolves the room-replica layout `__agent_* -> wg-* -> .ac -> project` into
+//! `WgReplicaLayout` via `wg_replica_layout_from_agent_dir`.
+//! Owns no state; it does not create the `.ac` directory or read any config file.
+
 use std::path::{Path, PathBuf};
 
 use crate::filesystem::config_locations;

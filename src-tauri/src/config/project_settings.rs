@@ -1,3 +1,10 @@
+//! Per-project room-group settings stored in the project's `.ac` root.
+//! Owns `WorkgroupGroupsConfig` (groups, show flags, optional Non-stop watchdog group) and the
+//! file named by `PROJECT_SETTINGS_FILE`, loaded by `load_workgroup_groups` and saved by
+//! `save_workgroup_groups`. Bad Non-stop values are clamped on load, not rejected.
+//! Before any read or write it migrates the legacy `project-settings.json` name under locks.
+//! Saving is last-writer-wins; it does not merge concurrent edits.
+
 use crate::filesystem::documents;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -1,3 +1,9 @@
+//! Creates a new agent folder on disk.
+//! `create_agent_folder_on_disk` validates the name, creates the folder under a parent, and
+//! writes a starter `CLAUDE.md`; it serves both the UI command and the CLI `create-agent` verb.
+//! Returns `CreatedAgentFolder`. It does not create replicas, write `config.json`, or register
+//! the agent in any team.
+
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 

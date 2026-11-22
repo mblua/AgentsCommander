@@ -1,3 +1,11 @@
+//! Default context templates seeded into project `.ac` roots and the root config dir.
+//! `ensure_project_context_templates`, `ensure_platform_context_templates` and
+//! `ensure_root_context_template` create missing templates and auto-update untouched defaults,
+//! tracking hashes in a state file (`SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME`).
+//! `scan_project_context_template_updates` reports user-edited templates with a newer default
+//! (`ContextTemplateUpdate`). Project setup also creates the shared dirs and project skills.
+//! User-edited files are replaced only by an explicit overwrite, which first makes a backup.
+
 mod legacy_templates;
 mod overwrite;
 mod retire;

@@ -1,3 +1,10 @@
+//! Local cache of Agency role templates fetched from a GitHub repository.
+//! `update_cache` fetches the repo with git, normalizes each role into a `Role.md` in a staging
+//! dir, and swaps it in as the live cache in the config dir; `status_cache` and the list
+//! helpers report it. A `.lock` file (`CacheLock`) guards updates and stale locks are recovered.
+//! Leftover `.next-`/`.prev-` dirs from an interrupted publish are restored or removed.
+//! It does not apply templates to agents; template parsing lives in `config::role_templates`.
+
 #[cfg(test)]
 use std::fs;
 use std::fs::File;
