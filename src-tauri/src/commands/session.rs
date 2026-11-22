@@ -307,7 +307,10 @@ pub(crate) mod restore_emit_seam;
 /// Create a new session. Optionally override shell/args/cwd/name (for action buttons).
 /// Falls back to settings defaults when not provided.
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Tauri command: each optional argument is a frontend IPC field"
+)]
 #[tauri::command]
 pub async fn create_session(
     app: AppHandle,
@@ -618,7 +621,10 @@ pub async fn close_coordinator(
 }
 
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Tauri command: managed State plus id, agent and profile IPC fields"
+)]
 #[tauri::command]
 pub async fn restart_session(
     app: AppHandle,

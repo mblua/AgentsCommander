@@ -298,7 +298,10 @@ impl InternalSystemNotice {
     /// rule, because a `%BEHIND%` that renders to nothing would silently produce
     /// a wrong sentence rather than a missing one. Every violation is an `Err`,
     /// never a silent default.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each remote-activity fact is a separate validated notice field"
+    )]
     pub(crate) fn for_remote_activity(
         kind: RemoteNoticeKind,
         repo_nwo: String,

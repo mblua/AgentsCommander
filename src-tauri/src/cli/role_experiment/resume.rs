@@ -141,7 +141,10 @@ pub(super) fn load_and_validate_resume_artifacts(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "checks the loaded run against each expected suite/variant artifact"
+)]
 fn validate_resume_run_contract(
     args: &RunArgs,
     loaded: &LoadedExperiment,

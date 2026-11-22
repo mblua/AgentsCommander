@@ -26,7 +26,10 @@ use crate::restore::{
 };
 use crate::{commands, config, loops, phone, resource_monitor};
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "startup task takes ownership of every app handle restore needs"
+)]
 pub(crate) fn start_native_restore_startup(
     app: tauri::AppHandle,
     restore_barrier: crate::session::selection::RestoreBarrierGuard,

@@ -230,7 +230,10 @@ pub(crate) fn live_session_count_for(
         .sum()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fingerprint hashes every assignment input as its own field"
+)]
 pub(crate) fn assignment_fingerprint(
     enumeration: &ProfileTargetEnumeration,
     sessions: &[SessionInfo],

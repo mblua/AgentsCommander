@@ -300,7 +300,10 @@ pub struct ActivityCoalescer {
     last_idle_at: OnceLock<Mutex<LastIdleAt>>,
 }
 
-#[allow(clippy::new_without_default)]
+#[allow(
+    clippy::new_without_default,
+    reason = "one owner per AppState; a Default would invite stray sink owners"
+)]
 impl ActivityCoalescer {
     pub fn new() -> Self {
         Self {

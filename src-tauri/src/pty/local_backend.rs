@@ -63,7 +63,10 @@ use liveness::{
 pub struct GitGuardTempSequence(AtomicU64);
 
 #[cfg(windows)]
-#[allow(clippy::new_without_default)]
+#[allow(
+    clippy::new_without_default,
+    reason = "new() starts a shared temp-name counter; owned via AppOwners only"
+)]
 impl GitGuardTempSequence {
     pub fn new() -> Self {
         Self(AtomicU64::new(0))

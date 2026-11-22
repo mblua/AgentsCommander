@@ -143,7 +143,10 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "root-agent flag set takes permit, id and value; family parity"
+    )]
     pub(crate) async fn set_is_root_agent_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -172,7 +175,10 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pending root-agent set takes permit, binding, value; parity"
+    )]
     pub(crate) async fn set_pending_is_root_agent_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,

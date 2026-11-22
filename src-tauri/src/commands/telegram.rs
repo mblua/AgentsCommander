@@ -162,7 +162,10 @@ impl<R: tauri::Runtime> bridge::TelegramRuntime for AppHandle<R> {
 /// structural (an enum is one variant or none), so the pre-#260
 /// `debug_assert!(kinds_set <= 1, …)` guard was removed.
 // Eight parameters since #2454 split the identity slice from `shell_args` (D3-g).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "reader choice depends on shell, args, cwd, backend and agent homes"
+)]
 pub(crate) fn derive_reader(
     shell: &str,
     shell_args: &[String],

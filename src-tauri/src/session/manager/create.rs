@@ -67,7 +67,10 @@ impl SessionManager {
 
     // Session record is created with the full set of fields up front; splitting
     // into a builder would just defer the same parameter list.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "facade forwards ticket plus each spawn field: shell, cwd, agent, repos"
+    )]
     #[cfg_attr(
         not(test),
         expect(
@@ -103,7 +106,10 @@ impl SessionManager {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "transaction facade forwards shell, args, cwd, agent, repos, backend"
+    )]
     #[cfg_attr(
         not(test),
         expect(
@@ -139,7 +145,10 @@ impl SessionManager {
         Ok((session, binding))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "insert takes binding plus every spawn field of the pending session"
+    )]
     #[cfg_attr(
         not(test),
         expect(
@@ -175,7 +184,10 @@ impl SessionManager {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "permit-guarded insert: permit, binding and every session spawn field"
+    )]
     pub(super) async fn insert_new_pending_session_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -248,7 +260,10 @@ impl SessionManager {
         Ok(session)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "binding-bound create: binding, permit and each session spawn field"
+    )]
     pub(crate) async fn create_pending_session_with_binding_and_carrier_permit(
         &self,
         binding: PendingCreateBinding,
@@ -283,7 +298,10 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "session rename takes permit, id and name; kept for family parity"
+    )]
     pub(crate) async fn rename_session_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -316,7 +334,10 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pending rename takes permit, binding and name; family parity"
+    )]
     pub(crate) async fn rename_pending_session_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -329,7 +350,10 @@ impl SessionManager {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pending update takes permit, binding and closure; family parity"
+    )]
     pub(super) async fn update_pending_with_carrier_permit<F>(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -363,7 +387,10 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pending rollback takes only permit and binding; family parity"
+    )]
     pub(in crate::session) async fn rollback_pending_create_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -405,7 +432,10 @@ impl SessionManager {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pending record insert takes permit, session, binding; parity"
+    )]
     pub(in crate::session) async fn insert_transaction_pending_record_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,

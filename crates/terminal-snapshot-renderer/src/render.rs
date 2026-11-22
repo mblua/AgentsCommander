@@ -406,7 +406,10 @@ fn fill_cell_span(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "glyph draw needs buffer, cell position, span, color, cursor and mask"
+)]
 fn draw_glyph(
     pixels: &mut [u8],
     image_width: u32,
@@ -511,7 +514,10 @@ fn draw_glyph(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "pixel blend needs buffer, coordinates, four clip edges and color"
+)]
 fn draw_mask_pixel(
     pixels: &mut [u8],
     image_width: u32,
@@ -538,7 +544,10 @@ fn draw_mask_pixel(
     color.blend(pixels, pixel_offset(image_width, x, y)?, alpha)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fallback box needs buffer, cell position, span, color and cursor"
+)]
 fn draw_hollow_fallback(
     pixels: &mut [u8],
     image_width: u32,

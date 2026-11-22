@@ -182,7 +182,10 @@ impl MailboxPoller {
     /// two-phase gate, the pending-set alias bookkeeping, and the archive-first phase-2 tail are
     /// shared and must not fork. The name is kept so a rename does not churn fifteen call sites
     /// (two production wrappers plus thirteen tests) for zero behavioral value.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "driver takes persist, restart and inject closures plus three timings"
+    )]
     pub(crate) async fn drive_self_switch_after_sustained_idle<
         SessionState,
         SessionFut,
@@ -377,7 +380,10 @@ impl MailboxPoller {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "response writer needs message, path, status, targets and outbox kind"
+    )]
     pub(crate) async fn write_self_switch_response<S: MailboxHost>(
         &self,
         app: &S,
@@ -404,7 +410,10 @@ impl MailboxPoller {
     /// #1632 - write the self-handoff-and-restart queue-ack response, then move the message to
     /// delivered/. `profile` serializes as JSON `null` when the session inherited its letter: the
     /// recipe pins nothing there, and reporting an invented `"A"` would be a lie about the pin.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "response writer needs message, path, status, recipe and outbox kind"
+    )]
     pub(crate) async fn write_self_restart_response<S: MailboxHost>(
         &self,
         app: &S,
@@ -428,7 +437,10 @@ impl MailboxPoller {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "response writer needs message, path, raised flag and outbox kind"
+    )]
     pub(crate) async fn write_raise_hand_response<S: MailboxHost>(
         &self,
         app: &S,

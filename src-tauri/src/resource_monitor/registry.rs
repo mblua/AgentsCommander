@@ -405,7 +405,10 @@ impl ResourceMonitorState {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "group registration stores each session label and identity field"
+    )]
     fn register_group(
         &self,
         permit: AgentLaunchPermit,

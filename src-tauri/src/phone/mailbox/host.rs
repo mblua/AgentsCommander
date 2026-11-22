@@ -127,7 +127,10 @@ pub(crate) trait MailboxHost:
         uuid: Uuid,
     ) -> impl Future<Output = Result<(), String>> + Send + 'a;
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "host trait seam mirrors restart's managers, profile, intent and gate"
+    )]
     fn restart_session_inner_with_intent<'a>(
         &'a self,
         _session_mgr: &'a Arc<RwLock<SessionManager>>,

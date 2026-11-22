@@ -49,7 +49,10 @@ fn no_peer_is_closed_on_a_non_purged_status() {
 // ── (#885 D-3) handle_purge_wg end-to-end tests ──
 
 /// Build a purge-wg outbox message file in the sender's outbox.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test helper: each argument is one field of the purge message"
+)]
 fn build_purge_wg_message(
     sender_cwd: &Path,
     msg_id: &str,

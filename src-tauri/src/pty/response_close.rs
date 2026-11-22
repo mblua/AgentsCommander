@@ -440,7 +440,10 @@ impl ResponseCloseState {
         }
     }
     // Publish primitive row facts under the manager guard, preserving the P03 API.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "manager row publish records each id, token, version and flag value"
+    )]
     pub(crate) fn publish_manager_row(
         &self,
         id: Uuid,

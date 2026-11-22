@@ -302,7 +302,10 @@ impl MailboxPoller {
     /// (#749) archiving `SELF-HANDOFF.md` and injecting the handoff prompt that names the archived
     /// path, and ALWAYS de-registers on exit. No "inject anyway" fallback - a busy or never-idle
     /// session is never cleared (the user-approved "30s sustained idle" semantic).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "self-clear needs target, text, root, summary and three timings"
+    )]
     #[cfg_attr(test, allow(dead_code))]
     pub(crate) async fn run_self_clear_after_sustained_idle<S: MailboxHost>(
         host: &S,
@@ -366,7 +369,10 @@ impl MailboxPoller {
         .await;
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "driver takes state, inject and boundary closures plus three timings"
+    )]
     pub(crate) async fn drive_self_clear_after_sustained_idle<
         SessionState,
         SessionFut,
@@ -482,7 +488,10 @@ impl MailboxPoller {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "self-switch needs target agent/profile, flavor and three timings"
+    )]
     #[cfg_attr(test, allow(dead_code))]
     async fn run_self_switch_after_sustained_idle<S: MailboxHost>(
         host: &S,

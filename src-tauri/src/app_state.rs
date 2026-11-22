@@ -40,7 +40,10 @@ pub struct AppOwners {
     pub git_guard: Arc<crate::pty::local_backend::GitGuardTempSequence>,
 }
 
-#[allow(clippy::new_without_default)]
+#[allow(
+    clippy::new_without_default,
+    reason = "new() builds fresh shared owners; Default would hide that allocation"
+)]
 impl AppOwners {
     pub fn new() -> Self {
         Self {

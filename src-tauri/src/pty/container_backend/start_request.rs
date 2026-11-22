@@ -10,7 +10,10 @@ use crate::pty::container_runtime::{
 use crate::pty::container_tokens::ContainerApiToken;
 use uuid::Uuid;
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "request maps each container start field: cmd, env, size, mounts"
+)]
 pub(super) fn build_start_request(
     session_id: Uuid,
     cmd: &str,
@@ -53,7 +56,10 @@ pub(super) fn build_start_request(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "same start fields as build_start_request plus explicit settings"
+)]
 pub(super) fn build_start_request_with_settings(
     session_id: Uuid,
     cmd: &str,

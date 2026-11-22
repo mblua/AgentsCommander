@@ -191,7 +191,10 @@ pub(crate) fn sync_generated_template(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "sync flags (create, pending, repair) and clock are distinct inputs"
+)]
 pub(crate) fn sync_one_template(
     project_dir: Option<&Path>,
     ac_root: &Path,

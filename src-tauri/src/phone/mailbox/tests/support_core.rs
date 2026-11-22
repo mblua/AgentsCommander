@@ -190,7 +190,10 @@ pub(super) async fn add_mailbox_session<R: tauri::Runtime>(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test helper: each argument sets one field of the session shape"
+)]
 pub(super) async fn add_mailbox_session_with_shape<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     cwd: &Path,

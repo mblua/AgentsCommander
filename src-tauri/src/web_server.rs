@@ -605,7 +605,10 @@ impl WebServerHandle {
         true
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "generation supervisor owns its tokens, senders and server factory"
+    )]
     async fn supervise_generation<F, Fut>(
         &self,
         generation: u64,

@@ -17,7 +17,10 @@ use crate::config::loops::{
 use crate::loops::delivery::LoopDeliveryReport;
 
 impl LoopScheduler {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "coalesce needs context, paths, config, state and S0 snapshot"
+    )]
     pub(super) async fn maybe_coalesce_pending(
         &self,
         context: &SchedulerContext,
@@ -82,7 +85,10 @@ impl LoopScheduler {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "missed-run record adds run id and due time to S0 snapshot inputs"
+    )]
     pub(super) async fn record_missed_while_closed(
         &self,
         context: &SchedulerContext,
@@ -141,7 +147,10 @@ impl LoopScheduler {
         Ok(state)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "delivery report needs run timing plus state and S0 snapshot"
+    )]
     pub(super) async fn apply_delivery_report(
         &self,
         context: &SchedulerContext,
@@ -250,7 +259,10 @@ impl LoopScheduler {
         Ok(next)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "audit write needs entry, message, delivered state and S0 bytes"
+    )]
     pub(super) fn record_unrecorded_delivery(
         &self,
         dir: &Path,

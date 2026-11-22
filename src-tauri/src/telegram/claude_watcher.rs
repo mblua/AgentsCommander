@@ -44,7 +44,7 @@ const FLUSH_DELAY_MS: u64 = 500;
 /// — at attach and at detach (#2232 phase 4 section 6). `None` is a room-only
 /// reader: no logger is built, nothing is sent, and the records still reach
 /// `sink`.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "owns all watch inputs")]
 pub fn spawn_watch_task(
     project_dir: PathBuf,
     transcript_id: Option<String>,
@@ -286,7 +286,7 @@ fn extract_assistant_text(line: &str) -> Option<String> {
 // Eight parameters: phase 1's seven plus the attachment. Grouping them into a
 // builder would hide which of them the record copies verbatim, which is the one
 // thing the phase-1 tests read this function for.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "fields copied as-is")]
 fn capture_record(
     text: String,
     turn_id: Option<String>,
@@ -936,7 +936,7 @@ impl ClaudeReader {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "takes spawn's inputs")]
 async fn watch_loop(
     project_dir: PathBuf,
     transcript_id: Option<String>,

@@ -58,7 +58,10 @@ impl SessionStats {
     }
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "report mean of token counts; f64 rounding past 2^53 is acceptable"
+)]
 pub(crate) fn mean_of(sum: u64, count: u64) -> Option<f64> {
     (count > 0).then(|| sum as f64 / count as f64)
 }

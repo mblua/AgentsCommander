@@ -64,7 +64,10 @@ fn acquire_websocket_upgrade_guard(
 /// Called from Tauri's `setup()`, runs on the same tokio runtime.
 // Wired by a single setup() call with all shared state already in scope; an
 // args struct would just rename the same fields.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "server start needs bind, port, token, managers and spawn hook"
+)]
 pub(super) async fn start_server<F>(
     bind: String,
     port: u16,
@@ -126,7 +129,10 @@ where
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "router wires token, sessions, dispatcher, socket and dist inputs"
+)]
 pub(super) fn build_router(
     web_token: Arc<WebAccessToken>,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,

@@ -194,7 +194,10 @@ impl DiagLogger {
 
 // Threads through the full bridge state on each flush; collapsing into a
 // struct would only move the fields, not reduce them.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "flush needs buffer, chat target, event port, both loggers and dedup"
+)]
 pub(crate) async fn flush_buffer(
     buffer: &mut String,
     network: &OutboundNetwork,
