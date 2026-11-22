@@ -1,3 +1,10 @@
+//! Facade for team, workgroup and Agent Matrix creation, update and deletion commands.
+//! Re-exports commands such as `create_team`, `update_team`, `delete_team`,
+//! `create_workgroup`, `delete_workgroup`, `create_agent_matrix` and `list_all_agents`.
+//! Defines shared result types (`CreatedEntityResult`, `WorkgroupCloneResult`, `SyncResult`)
+//! and disk-create argument structs. Logic lives in the private submodules; name types come
+//! from `crate::config::entity_creation`.
+
 pub use crate::config::entity_creation::names::{
     RepoAssignment, TeamAgentSource, TeamConfigResult,
 };

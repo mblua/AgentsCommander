@@ -1,3 +1,8 @@
+//! Store of "unleashed" flags for replicas and temp rooms.
+//! Owns the file named by `UNLEASHED_REPLICAS_FILE_NAME` in the app config dir: reads it with
+//! `is_unleashed`, sets flags with `set_unleashed`, and drops them with `forget_under`.
+//! Unreadable content reads as empty and is never rewritten on read.
+
 // #4752 P02: Unleash flag store for replicas and temp rooms (#4780). This module is the
 // sole owner of `unleashed-replicas.json` in the app config directory. An unleashed
 // replica spawns without the Git brakes; the flag persists until the user turns it off (D3).

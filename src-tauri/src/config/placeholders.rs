@@ -1,3 +1,9 @@
+//! AC path placeholders such as `%AC_REPLICA_ROOT%` and `%USER_HOME%`.
+//! `placeholder_context_for_launch_root` classifies a launch root (replica or root agent, temp
+//! room, or plain cwd) into a `PlaceholderContext`; `expand_placeholders` expands strictly and
+//! rejects unknown markers, while `expand_placeholders_in_content` is lenient for seeded files.
+//! `AC_PLACEHOLDER_TOKENS` is the single list of AC tokens. No state; it writes no files.
+
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 

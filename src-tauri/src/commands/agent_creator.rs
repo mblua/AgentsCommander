@@ -1,3 +1,7 @@
+//! Tauri commands for the "new agent" flow: `pick_folder` and `create_agent_folder`.
+//! Holds no state; the folder picker uses `rfd`, and on-disk creation is delegated to
+//! `config::agent_creation`.
+
 use std::path::PathBuf;
 
 use crate::config::agent_creation;

@@ -1,3 +1,10 @@
+//! Tauri commands for scheduled prompt loops: `create_loop`, `update_loop`, `delete_loop`,
+//! `toggle_loop`, `run_loop_now`, `get_loop_config`, `preview_loop_cron` and
+//! `list_unresolved_loop_targets`, with their request/preview types.
+//! Implements `LoopDeliveryHost` for `AppHandle` so the scheduler can create, restart and
+//! inject into sessions. Loop persistence is delegated to `crate::config::loops` and timing
+//! to `crate::loops::scheduler::LoopScheduler`.
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
