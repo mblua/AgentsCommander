@@ -1,3 +1,8 @@
+//! Snapshot scanner shutdown: `SnapshotScannerShutdownOwner` tracks spawned tasks
+//! (`spawn_tracked`) and seals and drains them (`seal_and_drain_until`).
+//! Owns per-task ownership states (`ScannerTaskOwnership`), the task cap and abort grace,
+//! and `SnapshotScannerTaskStartControl` for tests that gate task start.
+
 use super::failure::record_host_ingress_failure;
 use super::task::{SnapshotTask, SnapshotTaskHost};
 use std::collections::HashMap;

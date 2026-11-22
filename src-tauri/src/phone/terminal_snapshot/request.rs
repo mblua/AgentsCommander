@@ -1,3 +1,7 @@
+//! Terminal snapshot requests: the deserialized `HostTerminalSnapshotRequest`, its
+//! validation (`validate`, `validate_correlation`) and a redacting `Debug` impl.
+//! `confirmation_tag` derives the request's confirmation tag; processing happens elsewhere.
+
 use super::REQUEST_KIND;
 use super::REQUEST_VERSION;
 use serde::Deserialize;

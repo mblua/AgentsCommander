@@ -1,3 +1,8 @@
+//! Terminal snapshot mailbox scanner: `SnapshotMailboxScanner` finds, claims and
+//! dispatches snapshot requests per requester root (`scan_root`, `startup_sweep_root`).
+//! Verifies scan directories and private file modes before claiming (`claim_request`).
+//! Request processing is in `process`; task tracking at shutdown is in `shutdown`.
+
 use super::failure::record_host_ingress_failure;
 use super::process::process_claimed;
 use super::process::TerminalSnapshotHost;
