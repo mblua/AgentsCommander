@@ -379,7 +379,10 @@ impl fmt::Display for ConfigStartupError {
 
 impl std::error::Error for ConfigStartupError {}
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test seam: each filesystem step and the sleep are injected as separate closures"
+)]
 fn probe_candidate_write_with<Handle, CreateDirectory, CreateFile, WriteFile, RemoveFile, Sleep>(
     platform: RetryPlatform,
     candidate: &Path,
