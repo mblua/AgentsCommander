@@ -20,6 +20,8 @@
 //! a terminal event and every process owner has proved native-tree settlement.
 //! Dropping the public await cannot orphan the pass or release the gate early.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 mod cancellation;
 mod gate;
 mod install;

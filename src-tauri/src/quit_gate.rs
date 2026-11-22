@@ -1,5 +1,7 @@
 //! Backend quit gate (#2296).
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -348,6 +350,10 @@ impl QuitGate {
         unanswered.sort();
         let outcome = QuitOutcome::aborted(epoch, reason, refusing, unanswered);
         let effects = {
+            #[allow(
+                clippy::expect_used,
+                reason = "round checked live above under the same lock guard"
+            )]
             let round = inner
                 .live_round(epoch)
                 .expect("round checked live above under the same lock");
@@ -461,6 +467,10 @@ impl QuitGate {
             .unwrap_or_default();
         let outcome = QuitOutcome::aborted(epoch, reason, refusing, vec![label.to_string()]);
         let effects = {
+            #[allow(
+                clippy::expect_used,
+                reason = "round checked live above under the same lock guard"
+            )]
             let round = inner
                 .live_round(epoch)
                 .expect("round checked live above under the same lock");
@@ -507,6 +517,10 @@ impl QuitGate {
             let outcome =
                 QuitOutcome::aborted(epoch, QuitAbortReason::Refused, refusing, Vec::new());
             let effects = {
+                #[allow(
+                    clippy::expect_used,
+                    reason = "round checked live above under the same lock guard"
+                )]
                 let round = inner
                     .live_round(epoch)
                     .expect("round checked live above under the same lock");
