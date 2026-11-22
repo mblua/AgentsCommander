@@ -91,7 +91,10 @@ impl SessionManager {
         session.id
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "test helper mirrors each spawn field: shell, cwd, agent, repos"
+    )]
     pub async fn create_session(
         &self,
         shell: String,
