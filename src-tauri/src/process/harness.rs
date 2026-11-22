@@ -1,3 +1,7 @@
+//! Runs harness commands: `run_argv` for an argv list and `run_raw_shell` for a raw
+//! string (`cmd.exe /C` on Windows, `sh -c` elsewhere), both with the agent search
+//! path. On Windows it adds `CREATE_NO_WINDOW` only when no console is owned (#992).
+
 use std::process::Command;
 
 #[cfg(target_os = "windows")]

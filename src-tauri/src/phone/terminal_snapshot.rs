@@ -1,3 +1,7 @@
+//! Terminal snapshot mailbox: request/response protocol constants and re-exports for the
+//! scanner (`SnapshotMailboxScanner`), requests, publishing, host and shutdown.
+//! Logic lives in the submodules.
+
 use std::time::Duration;
 
 mod failure;
