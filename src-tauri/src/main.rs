@@ -1,3 +1,12 @@
+//! Binary entry point: parses the command line and picks CLI or GUI mode.
+//!
+//! With a subcommand it attaches the parent console, preflights the config,
+//! starts the logger and exits with `cli::handle_cli`'s status. Without one it
+//! resolves the test window placement and UI automation opt-in, takes the
+//! single-instance guard (a Windows named mutex or a Linux lock file) and
+//! calls `agentscommander_lib::run`. It holds no state of its own beyond the
+//! process-lifetime mutex handle and does not implement any command.
+
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use agentscommander_lib::cli::Commands;
