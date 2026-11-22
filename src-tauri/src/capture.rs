@@ -2,6 +2,8 @@
 //! turn-boundary machine, the user catalog, the `Jev` call and the pre-egress
 //! secret detector.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 // #2232 phase 3: the sink, its state and the per-session owners join phase 1's
 // record. Every module here is a leaf: the phone, session and commands
 // subtrees, and the teams and settings config modules, may not be named from

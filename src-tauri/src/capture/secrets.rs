@@ -106,6 +106,10 @@ struct CompiledRules {
     env_secret_assignment: Regex,
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the eight patterns are fixed valid literals, so Regex::new cannot fail"
+)]
 fn compiled_rules(owner: &SecretRules) -> &CompiledRules {
     owner.rules.get_or_init(|| CompiledRules {
         // Plan section 7.1 rule 1.
