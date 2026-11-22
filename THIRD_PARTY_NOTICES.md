@@ -167,7 +167,7 @@ The DejaVu and Bitstream Vera-derived license permits redistribution and embeddi
 - foreign-types 0.5.0 — MIT/Apache-2.0 — texts: T13, T119
 - foreign-types-shared 0.1.1 — MIT/Apache-2.0 — texts: T13, T119
 - foreign-types-shared 0.3.1 — MIT/Apache-2.0 — texts: T13, T119
-- form_urlencoded 1.2.2 — MIT OR Apache-2.0 — texts: T4, T120
+- form_urlencoded 1.2.3 — MIT OR Apache-2.0 — texts: T4, T120
 - futures 0.3.34 — MIT OR Apache-2.0 — texts: T121, T122
 - futures-channel 0.3.34 — MIT OR Apache-2.0 — texts: T121, T122
 - futures-core 0.3.34 — MIT OR Apache-2.0 — texts: T121, T122
@@ -488,7 +488,7 @@ The DejaVu and Bitstream Vera-derived license permits redistribution and embeddi
 - unicode-width 0.1.14 — MIT OR Apache-2.0 — texts: T361, T4, T138
 - unsafe-libyaml-norway 0.2.15 — MIT — texts: T3
 - untrusted 0.9.0 — ISC — texts: T362
-- url 2.5.8 — MIT OR Apache-2.0 — texts: T4, T157
+- url 2.5.9 — MIT OR Apache-2.0 — texts: T4, T157
 - urlencoding 2.1.3 — MIT — texts: T363
 - urlpattern 0.6.0 — MIT — texts: T364
 - utf8_iter 1.1.0 — Apache-2.0 OR MIT — texts: T365, T94, T97
