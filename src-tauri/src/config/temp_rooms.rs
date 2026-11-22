@@ -4,6 +4,7 @@
 pub(crate) mod context;
 
 use crate::config::project_settings::WorkgroupGroupsConfig;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 pub(crate) const TEMP_ROOM_PREFIX: &str = "temp-room-tr";
@@ -61,7 +62,7 @@ pub(crate) fn temp_room_names_in(base: &Path) -> Result<Vec<String>, String> {
 /// True iff `cwd` is `<base>/temp-room-trNN`.
 pub(crate) fn is_temp_room_path_in(cwd: &str, base: &Path) -> bool {
     let path = Path::new(cwd);
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(name) = path.file_name().and_then(OsStr::to_str) else {
         return false;
     };
     if parse_temp_room_number(name).is_none() {

@@ -2,6 +2,7 @@
 //! Layering: uses only `crate::config` leaves and `crate::filesystem::session_context`.
 
 use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;
+use std::ffi::OsStr;
 use std::path::Path;
 
 const HEADER: &str = concat!(
@@ -119,7 +120,7 @@ pub(crate) fn build_temp_room_context(cwd: &str, platform_rules: &str) -> Result
         .ok_or_else(|| "Could not resolve app config directory".to_string())?;
     let room_name = Path::new(cwd)
         .file_name()
-        .and_then(|name| name.to_str())
+        .and_then(OsStr::to_str)
         .ok_or_else(|| format!("Temp room path has no folder name: {cwd}"))?;
     let lifted = crate::config::unleashed_replicas::is_unleashed(cwd);
     let content = render_temp_room_context(

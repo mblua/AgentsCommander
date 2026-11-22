@@ -741,7 +741,7 @@ function braceBodyEnd(code, b) {
 }
 function maskedFunctions(code) {
   const functions = [];
-  for (const m of code.matchAll(/\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<|\()/g)) {
+  for (const m of code.matchAll(/\bfn\s+([A-Za-z_]\w*)\s*(?:<|\()/g)) {
     const b = code.indexOf('{', m.index), semi = code.indexOf(';', m.index);
     if (b < 0 || semi >= 0 && semi < b) continue;
     functions.push({ name: m[1], start: m.index, end: braceBodyEnd(code, b) });
@@ -829,7 +829,7 @@ function workspaceEntryAllowed(state, key, value) {
 }
 // #4639: root release profile, only keys and values that cannot change cfg or targets.
 const RELEASE_PROFILE = { lto: /^(?:false|true|"thin"|"fat"|"off")$/,
-  'codegen-units': /^[1-9][0-9]{0,2}$/, strip: /^(?:false|true|"none"|"debuginfo"|"symbols")$/,
+  'codegen-units': /^[1-9]\d{0,2}$/, strip: /^(?:false|true|"none"|"debuginfo"|"symbols")$/,
   panic: /^"(?:unwind|abort)"$/ };
 function manifestEntryAllowed(state, key, value) {
   const { section, external } = state;
