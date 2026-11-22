@@ -1,3 +1,9 @@
+//! Facade for settings and configuration commands, split into private submodules.
+//! Re-exports commands such as `get_settings`, `update_settings`, coding-agent catalog and
+//! profile commands, web/API server start-stop, preferences, agent updates and diagnostics.
+//! Defines `get_agent_help` and `fetch_home_markdown` (size- and time-bounded fetch) here.
+//! Owns no settings state; persistence is delegated to `crate::config::settings`.
+
 use crate::config::settings::SettingsFileTarget;
 use std::time::Duration;
 use tauri::State;

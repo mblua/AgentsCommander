@@ -1,3 +1,7 @@
+//! Voice input: `transcribe_audio` calls the Gemini API (also used by the Telegram bridge).
+//! Tauri commands `voice_transcribe`, `voice_mark_recording` and `voice_had_typing`.
+//! Recording/typing state lives in `crate::voice::tracker::VoiceTrackingState`.
+
 use base64::Engine;
 use tauri::State;
 

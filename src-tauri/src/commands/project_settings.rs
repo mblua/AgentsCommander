@@ -1,3 +1,8 @@
+//! Tauri commands for per-project workgroup groups: `get_project_groups` and
+//! `update_project_groups`. An update broadcasts `PROJECT_GROUPS_UPDATED_EVENT` to desktop
+//! and web clients. Holds no state; load and save are delegated to
+//! `crate::config::project_settings`.
+
 use std::path::Path;
 
 use crate::config::project_settings::{

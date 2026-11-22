@@ -1,3 +1,8 @@
+//! Tauri command `ipc_blackbox_report` (#1652): harvests renderer IPC black-box records.
+//! Holds no state of its own; it forwards records to the managed `IpcObserver` from
+//! `crate::loops::ipc_observer` and returns the localStorage keys the caller must delete.
+//! Parsing, logging into `app.log` and run filtering are done by `IpcObserver`, not here.
+
 use std::sync::Arc;
 
 use tauri::State;

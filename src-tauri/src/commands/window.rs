@@ -1,3 +1,9 @@
+//! Tauri commands for windows: detach/attach terminals, detached and watchers geometry,
+//! main window placement, focus, Spec Board, resource monitor and watchers windows,
+//! and opening paths or URLs externally. Computes resource monitor placement per monitor and
+//! owns `WatchersScopeState` (the watchers window scope). Detach/attach run through the
+//! `SelectionCoordinator`; settings persistence goes to `crate::config::settings`.
+
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;

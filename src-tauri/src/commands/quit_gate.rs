@@ -1,3 +1,8 @@
+//! Tauri commands for the coordinated app quit: `quit_gate_register`, `quit_gate_unregister`,
+//! `quit_gate_resolve`, `quit_gate_progress` and `quit_application`.
+//! Thin wrappers that pass the window label to the managed `QuitGate`; gate state and quit
+//! logic live in `crate::quit_gate`.
+
 use std::sync::Arc;
 
 use crate::quit_gate::{
