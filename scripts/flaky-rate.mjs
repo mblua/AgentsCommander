@@ -106,9 +106,10 @@ function collectRuns(state) {
     }
   }
   state.coverage.runs_listed = state.listed.length;
-  state.listed.sort((a, b) =>
-    a.created_at === b.created_at ? a.id - b.id : a.created_at < b.created_at ? -1 : 1,
-  );
+  state.listed.sort((a, b) => {
+    if (a.created_at === b.created_at) return a.id - b.id;
+    return a.created_at < b.created_at ? -1 : 1;
+  });
   for (const run of state.listed) collectRun(state, run);
 }
 
@@ -327,8 +328,13 @@ export function collect({ gh, today, nowIso, tmpDir, limits = {} }) {
 function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] === '--repo') args.repo = argv[(i += 1)];
-    else if (argv[i] === '--out') args.out = argv[(i += 1)];
+    if (argv[i] === '--repo') {
+      i += 1;
+      args.repo = argv[i];
+    } else if (argv[i] === '--out') {
+      i += 1;
+      args.out = argv[i];
+    }
   }
   return args;
 }

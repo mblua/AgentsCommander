@@ -10,7 +10,9 @@ const TIMEOUT_MS = 120000;
 
 export class ApiError extends Error {
   constructor(endpoint, status, http) {
-    super(`gh api ${endpoint} failed (exit ${status}${http ? `, HTTP ${http}` : ''})`);
+    const prefix = `gh api ${endpoint} failed (exit ${status}`;
+    const httpSuffix = http ? `, HTTP ${http}` : '';
+    super(`${prefix}${httpSuffix})`);
     this.name = 'ApiError';
     this.endpoint = endpoint;
     this.status = status;
