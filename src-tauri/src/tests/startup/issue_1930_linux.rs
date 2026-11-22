@@ -7,6 +7,8 @@ use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::config::ConfigStartupError;
+
 pub(super) const CHILD_SENTINEL: &str = "AGENTSCOMMANDER_ISSUE_1577_CHILD";
 const TEST_NAME: &str =
     "tests::startup::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start";
@@ -19,7 +21,7 @@ pub(super) fn assert_child_refuses_startup(
     let adjacent = case_root.join(".agentscommander_issue1577_linux_subprocess");
 
     assert_eq!(crate::config::config_dir(), Some(adjacent.clone()));
-    let Some(crate::config::ConfigStartupError::AdjacentDirectoryUnwritable { config_dir, reason }) =
+    let Some(ConfigStartupError::AdjacentDirectoryUnwritable { config_dir, reason }) =
         crate::config::config_startup_error()
     else {
         panic!("an unwritable unmarked adjacent directory must refuse startup");
