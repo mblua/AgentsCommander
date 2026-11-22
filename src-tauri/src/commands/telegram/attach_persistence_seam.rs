@@ -1,3 +1,8 @@
+//! Test seam that forces the Telegram attach persistence step to fail for chosen sessions.
+//! `arm` marks a session id; `take` consumes the mark, and the attach path in the parent
+//! `telegram` module reports a persistence failure when it returns true.
+//! It owns only a process-wide set of armed session ids and does no persistence itself.
+
 use std::collections::HashSet;
 use std::sync::Mutex;
 use uuid::Uuid;
