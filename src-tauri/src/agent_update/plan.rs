@@ -1,3 +1,7 @@
+//! Agent update planning: `build_update_plan`, mise detection (`MiseLayout`, `mise_managed`),
+//! command program resolution and install-state probes (`TargetProbeOutcome`, `ProbeFn`),
+//! and the `update_overview` entry points. It plans and probes; it does not run updates.
+
 use super::gate::AgentUpdateGate;
 use super::{emit_all, AgentUpdateTasks, ManagedBroadcastEvents};
 use crate::agent_version::{

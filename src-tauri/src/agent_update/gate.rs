@@ -1,3 +1,8 @@
+//! Agent update gate: `AgentUpdateGate` and its `GateState`, which track pending prompts
+//! (`PendingPrompt`, `ClaimedPrompt`, `AnswerClaim`), per-target phases, step admission,
+//! owner lifecycle, final results and terminal publication for an update pass.
+//! Also holds the `*_for_test` hold hooks used by tests to pause at specific steps.
+
 use super::target::{
     AsyncFence, StepAdmission, TargetClaim, TargetControl, TargetPhase, TargetWork, TerminalPublish,
 };
