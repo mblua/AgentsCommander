@@ -1,3 +1,7 @@
+//! Web access auth: `WebAccessToken`, the WebSocket token kept separate from `MasterToken`,
+//! with a constant-time `matches` check, and `read_persisted_web_token` for loading a
+//! saved token.
+
 /// Dedicated token for WebSocket authentication.
 /// Separate from `MasterToken` to limit blast radius if captured via network sniffing.
 pub struct WebAccessToken(String);
