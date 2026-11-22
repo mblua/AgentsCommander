@@ -1,3 +1,8 @@
+//! PTY dispatch session selection and boundary steps for `PtyDispatcher`.
+//! Selects a session, routes or spawns one, and handles retained or inconsistent selections.
+//! Checks boundary authority, performs the boundary write and maps its result.
+//! Context types come from `context`; the overall dispatch flow is in the parent module.
+
 use super::context::BoundaryWriteGuards;
 use super::{
     BoundaryAuthority, DispatchSelection, FinalDispatchInput, PtyDispatchContext,

@@ -1,3 +1,8 @@
+//! Session requests on `MailboxPoller`: room purge (`handle_purge_wg`), self-clear
+//! (`handle_self_clear`, including the plain flow) and raise-hand (`handle_raise_hand`).
+//! Owns `PlainReceiptStage` and purge scope, lease and readiness helpers.
+//! Peer gating and purge response bodies live in the `purge` submodule.
+
 mod purge;
 
 #[cfg(not(test))]

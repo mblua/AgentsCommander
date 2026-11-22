@@ -1,3 +1,8 @@
+//! Host PTY input validation: `MailboxPoller` methods that check and enqueue host PTY input.
+//! Validates the input envelope, outbox owner, claimed host authority and selected target.
+//! Computes request fingerprints and also exposes `dispatch_pty_input_operation`.
+//! The actual PTY write is done by `pty_dispatch`.
+
 use super::poller::MailboxPoller;
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;

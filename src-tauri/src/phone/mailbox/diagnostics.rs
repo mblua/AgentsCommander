@@ -1,3 +1,8 @@
+//! Response-close diagnostics: `response_diag!` and related logging macros.
+//! They log to the `agentscommander_lib::response_close_diag` target at debug level.
+//! Arguments are only evaluated when that target is enabled; used by `response_source.rs`.
+//! They log only; they never change delivery outcomes.
+
 // Only primitive/static/UUID diagnostics; expressions remain lazy when disabled.
 macro_rules! response_diag {
     ($stage:literal, $outcome:expr_2021, $id:expr_2021) => {
