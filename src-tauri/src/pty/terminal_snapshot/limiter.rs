@@ -1,3 +1,8 @@
+//! Rate and concurrency limits for terminal snapshots: rolling windows per ingress, requester
+//! and target, plus in-flight counters, in `RollingState`. `RequesterSnapshotPermit` holds a
+//! lease that gives its counts back on `Drop`. It only counts; who may ask is checked in
+//! `authority.rs`.
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

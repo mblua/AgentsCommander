@@ -1,3 +1,8 @@
+//! Audit record for one terminal snapshot request. `TerminalSnapshotAuditGuard` collects
+//! metadata as the request moves on, and writes exactly one record through
+//! `crate::api::audit::record_terminal_snapshot`; if dropped unfinished it records a failure.
+//! It decides nothing about the request; it only records what other modules report.
+
 use super::{TerminalSnapshotServiceRequest, TerminalSnapshotSourcePlane};
 use crate::config::teams::VerifiedTerminalSnapshotRoute;
 use crate::pty::backend::SessionBackendKind;
