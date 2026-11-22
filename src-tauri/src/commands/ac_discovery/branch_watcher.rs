@@ -271,7 +271,8 @@ impl DiscoveryBranchWatcher {
             );
             #[allow(
                 clippy::expect_used,
-                reason = "existing failure mode: the watcher thread panics if no runtime can be built"
+                reason = "existing failure mode: the watcher thread panics \
+                          if no runtime can be built"
             )]
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

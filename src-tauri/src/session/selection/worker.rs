@@ -29,6 +29,11 @@ use super::replacement_fixture::{
     ReplacementFixtureControl, ReplacementFixtureCut, ReplacementFixtureEnvelopeTrace,
 };
 
+#[allow(
+    clippy::expect_used,
+    reason = "selection start contract binds the lifecycle executor \
+              before any job runs"
+)]
 impl<C: SelectionContext> SelectionTransaction<C> {
     pub(super) async fn worker_loop(
         host: C::Host,
@@ -193,10 +198,6 @@ impl<C: SelectionContext> SelectionTransaction<C> {
                 }
             }
             CoordinatorJob::ConditionalResponseClose { request } => {
-                #[allow(
-                    clippy::expect_used,
-                    reason = "selection start contract binds the lifecycle executor before any job runs"
-                )]
                 let executor = transaction.lifecycle_executor().expect(
                     "selection start contract violated: lifecycle executor binding missing",
                 );
@@ -209,10 +210,6 @@ impl<C: SelectionContext> SelectionTransaction<C> {
                 hold.release();
             }
             CoordinatorJob::Destroy { request, response } => {
-                #[allow(
-                    clippy::expect_used,
-                    reason = "selection start contract binds the lifecycle executor before any job runs"
-                )]
                 let executor = transaction.lifecycle_executor().expect(
                     "selection start contract violated: lifecycle executor binding missing",
                 );
@@ -285,10 +282,6 @@ impl<C: SelectionContext> SelectionTransaction<C> {
             Result<crate::session::session::SessionInfo, String>,
         >,
     ) {
-        #[allow(
-            clippy::expect_used,
-            reason = "selection start contract binds the lifecycle executor before any job runs"
-        )]
         let executor = transaction
             .lifecycle_executor()
             .expect("selection start contract violated: lifecycle executor binding missing");
@@ -396,10 +389,6 @@ impl<C: SelectionContext> SelectionTransaction<C> {
             Result<crate::session::session::SessionInfo, String>,
         >,
     ) {
-        #[allow(
-            clippy::expect_used,
-            reason = "selection start contract binds the lifecycle executor before any job runs"
-        )]
         let executor = transaction
             .lifecycle_executor()
             .expect("selection start contract violated: lifecycle executor binding missing");
