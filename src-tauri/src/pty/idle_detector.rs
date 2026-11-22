@@ -3,6 +3,7 @@
 //! Also keeps the auto-close silence clock, alive-since clocks and resize grace, and reports
 //! `PurgeReadiness`. Detector kinds (timed, Codex working) decide what counts as busy.
 //! It does not kill sessions itself; callers act on its signals.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};

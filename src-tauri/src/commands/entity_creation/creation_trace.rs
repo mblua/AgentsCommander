@@ -1,4 +1,5 @@
 //! Per-invocation room creation diagnostics. No transport or persistence lives here.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::future::Future;
@@ -274,6 +275,11 @@ impl<'a> StageGuard<'a> {
             fields: &self.fields,
         };
         // All strings are fixed vocabulary, a SHA256 or a UUID; no arbitrary error text.
+        #[allow(
+            clippy::expect_used,
+            reason = "the record holds only strings and plain fields, which serde_json always \
+                      serializes"
+        )]
         let json = serde_json::to_string(&record).expect("room creation record is serializable");
         match outcome {
             Some(Outcome::Error | Outcome::Timeout | Outcome::Interrupted) => {

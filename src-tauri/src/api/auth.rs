@@ -7,6 +7,7 @@
 //! on every request via an mtime-gated reload cache (§0.5 HIGH-2): a CLI-side
 //! mint/revoke takes effect on the next request. The file is the source of
 //! truth; the in-memory copy is a cache keyed by mtime.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;

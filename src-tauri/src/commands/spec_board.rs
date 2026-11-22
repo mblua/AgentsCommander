@@ -3,6 +3,7 @@
 //! and close.
 //! Owns `SpecBoardManager` (open documents and their watch tasks) and polls files for
 //! external changes. File and snapshot I/O is delegated to `crate::spec_board`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::HashMap;
 
@@ -885,6 +886,10 @@ async fn create_snapshot_for_doc(
     if skip_for_size {
         return Ok(());
     }
+    #[allow(
+        clippy::expect_used,
+        reason = "`snapshot` is `None` only when `skip_for_size`, which returned just above"
+    )]
     let snapshot = snapshot.expect("snapshot present when not skipped");
     ensure_snapshot_directory(&snapshot_dir).await?;
     write_snapshot_atomic(&snapshot_dir, &snapshot).await?;

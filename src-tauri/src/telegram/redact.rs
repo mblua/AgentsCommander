@@ -43,6 +43,7 @@
 //! * Safe to call from inside `logging.rs`'s format closure: no `log::*`
 //!   macros, no panics.
 //! * Returns the input unchanged (cloned) when no match is found.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 /// Scrub Telegram bot tokens and Gemini API keys from an arbitrary string.
 ///
@@ -183,6 +184,10 @@ fn secret_spans(input: &str) -> Vec<(usize, usize)> {
         // advances (`chars_end`, `val_end`, `end`) only walk ASCII-byte
         // predicates, and this branch advances by `len_utf8()` of the
         // current char. That also keeps every span on char boundaries.
+        #[allow(
+            clippy::expect_used,
+            reason = "the comment above explains why `i` is a char boundary below `len()`"
+        )]
         let ch = input[i..]
             .chars()
             .next()

@@ -3,6 +3,7 @@
 //! `ContainerStartRequest`, `ContainerRuntimeHandle` and `ContainerDiagnostics`.
 //! Owns `ContainerRuntimeControl` for shutdown gating and redaction of secrets in diagnostic text.
 //! The Docker implementation lives in `docker_runtime`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
@@ -556,6 +557,11 @@ fn secret_value_range(input: &str, cursor: usize) -> (usize, usize) {
             if is_unquoted_secret_delimiter(bytes[value_end]) {
                 break;
             }
+            #[allow(
+                clippy::expect_used,
+                reason = "the loop condition above keeps this index on a char boundary below \
+                          `len()`, so the slice is non-empty"
+            )]
             let ch = input[value_end..]
                 .chars()
                 .next()
@@ -636,6 +642,11 @@ fn redact_token_prefix(input: &str, prefix: &str) -> String {
             }
         }
 
+        #[allow(
+            clippy::expect_used,
+            reason = "the loop condition above keeps this index on a char boundary below `len()`, \
+                      so the slice is non-empty"
+        )]
         let ch = input[cursor..].chars().next().expect("valid char boundary");
         out.push(ch);
         cursor += ch.len_utf8();
