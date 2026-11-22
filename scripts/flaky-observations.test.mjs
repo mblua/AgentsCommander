@@ -10,6 +10,7 @@ import {
   collapseOutcomes,
   identityFromEnv,
   main,
+  parseCargoLog,
   serializeRecord,
   vitestRecord,
 } from './flaky-observations.mjs';
@@ -118,6 +119,51 @@ test('count mismatch marks every outcome not_run', () => {
   const record = vitestRecord(report(assertions, 1), { root: ROOT, identity: IDENTITY });
   assert.equal(record.header.sources[0].complete, false);
   assert.deepEqual(record.tests.map((t) => t.outcome), ['not_run', 'not_run']);
+});
+
+const vitestHeaderPrefix =
+  '{"schema":1,"kind":"header","suite":"vitest","platform":"Linux-X64",' +
+  '"job":"frontend-regression","run_id":"11","run_attempt":"2","sha":"abc",' +
+  '"head_sha":"def","event":"pull_request","repository":"o/r",' +
+  '"sources":[{"file":"npm-test-results.json","present":true,';
+
+test('4920 malformed and valid empty Vitest reports serialize different headers', () => {
+  const options = { root: ROOT, identity: IDENTITY };
+  const malformed = vitestRecord({ numTotalTests: 0, testResults: {} }, options);
+  const empty = vitestRecord({ numTotalTests: 0, testResults: [] }, options);
+  assert.equal(serializeRecord(malformed), vitestHeaderPrefix +
+    '"complete":false,"tests":0}],"collapsed":0,"rejected":0}\n');
+  assert.equal(serializeRecord(empty), vitestHeaderPrefix +
+    '"complete":true,"tests":0}],"collapsed":0,"rejected":0}\n');
+});
+
+test('4920 vitest raw row order', () => {
+  const fixture = report([
+    { fullName: 'z', status: 'passed' },
+    { fullName: 'a', status: 'unknown' },
+    { fullName: 'invalid\nid', status: 'failed' },
+    { fullName: 'z', status: 'failed' },
+  ]);
+  fixture.testResults.unshift({ name: path.join(ROOT, 'src', 'missing.test.ts') });
+  const options = { root: ROOT, identity: IDENTITY };
+  const complete = vitestRecord(fixture, options);
+  const incomplete = vitestRecord({ ...fixture, numTotalTests: 5 }, options);
+
+  assert.deepEqual(complete.tests, [
+    { test_id: 'src/a.test.ts::z', outcome: 'fail' },
+    { test_id: 'src/a.test.ts::a', outcome: 'not_run' },
+  ]);
+  assert.deepEqual(incomplete.tests, [
+    { test_id: 'src/a.test.ts::z', outcome: 'not_run' },
+    { test_id: 'src/a.test.ts::a', outcome: 'not_run' },
+  ]);
+  const rowA = '{"test_id":"src/a.test.ts::a","outcome":"not_run"}\n';
+  assert.equal(serializeRecord(complete), vitestHeaderPrefix +
+    '"complete":true,"tests":2}],"collapsed":1,"rejected":1}\n' +
+    rowA + '{"test_id":"src/a.test.ts::z","outcome":"fail"}\n');
+  assert.equal(serializeRecord(incomplete), vitestHeaderPrefix +
+    '"complete":false,"tests":2}],"collapsed":1,"rejected":1}\n' +
+    rowA + '{"test_id":"src/a.test.ts::z","outcome":"not_run"}\n');
 });
 
 test('truncated JSON writes a header-only record', () => {
@@ -245,6 +291,54 @@ test('cargo 1: two sections, exact ids and outcomes', () => {
   assert.deepEqual(record.header.sources, [
     { file: 'log0.log', present: true, complete: true, tests: 4, children: 0, tainted: 0 },
   ]);
+});
+
+test('4920 Cargo parser preserves ordered sections and raw state', () => {
+  const text = log(
+    'running 99 tests', 'test before_header ... ok', result(99, 0, 0),
+    LIB, 'running 2 tests', 'running 1 test',
+    'test z ... \x1b[31mFAILED\x1b[0m', 'test a ... FAILED',
+    'failures:', '', '---- z stdout ----', '    captured_output',
+    'failures:', '', '', '    z', '    a', '', '    after_list',
+    'prefix test glued ... ok', result(1, 0, 0), result(0, 2, 0),
+    '   Doc-tests agentscommander_lib', 'running 1 test', 'test docs ... ok', result(1, 0, 0),
+    FOO, 'running 1 test', 'test b ... ok', result(1, 0, 0),
+  ).replaceAll('\n', '\r\n');
+
+  const sections = parseCargoLog(text);
+  assert.deepEqual(sections, [
+    {
+      target: 'agentscommander_lib',
+      expected: 2,
+      lines: new Map([['z', ['fail']], ['a', ['fail']]]),
+      failedNames: new Set(['z', 'a']),
+      result: { P: 0, F: 2, I: 0, M: 0 },
+      childResults: 1,
+      children: 1,
+      afterResult: false,
+      glue: 1,
+    },
+    {
+      target: 'foo',
+      expected: 1,
+      lines: new Map([['b', ['pass']]]),
+      failedNames: new Set(),
+      result: { P: 1, F: 0, I: 0, M: 0 },
+      childResults: 0,
+      children: 0,
+      afterResult: false,
+      glue: 0,
+    },
+  ]);
+  assert.deepEqual([...sections[0].lines.keys()], ['z', 'a']);
+  assert.deepEqual([...sections[0].failedNames], ['z', 'a']);
+});
+
+test('4920 a later Cargo failure list cannot resume after its blank', () => {
+  const [section] = parseCargoLog(log(
+    LIB, 'failures:', '    from_first_list', '', 'failures:', '', '    from_second_list',
+  ));
+  assert.deepEqual([...section.failedNames], ['from_first_list']);
 });
 
 test('cargo 2: --nocapture split resolves by counts or failure list', () => {

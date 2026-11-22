@@ -298,3 +298,154 @@ test('16: a complete index of 999 items still creates a new issue', () => {
   assert.deepEqual(result.overflow.notices, []);
   assert.equal(result.error, null);
 });
+
+test('4920 quarantine mixed plan preserves actions, markers and notices', () => {
+  const beforeClose = '2026-11-02';
+  const afterClose = '2026-11-04';
+  const closed = { state: CLOSED, closed_at: '2026-11-03T23:00:00Z' };
+  const upper = 'A'.repeat(40);
+  const lower = 'a'.repeat(40);
+  const release = (test_id) => ({ test_id, streak: 50, streak_since: '2026-11-01' });
+  const rep = report({
+    candidates: {
+      new: [[lower, afterClose], [upper, afterClose]],
+      reopen: [[lower, beforeClose], [upper, afterClose]],
+      evidence: [[sha(6), beforeClose], [sha(7), afterClose]],
+      held: [[sha(8), beforeClose]],
+      unread: [[sha(9), afterClose]],
+    },
+    release: [release('ready'), release('unread-release')],
+  });
+  rep.candidates.reopen.evidence.push({ platform: 'windows', sha: lower, last_day: afterClose });
+
+  const issues = [
+    issueFor('reopen', 21, closed), issueFor('evidence', 22), issueFor('held', 23, closed),
+    issueFor('unread', 24), issueFor('ready', 25), issueFor('unread-release', 26),
+  ];
+  const createHash = '11507a0e2f5e69d5dfa40a62a1bd7b6ee57e6bcd85c67c9b8431b36fff21c437';
+  const reopenHash = '2df3bea2d156aaa017dc7dd437b49ffdcc2431944ea0a63008b3115302a5dccf';
+  const evidenceHash = 'ee8250fb76e094b34b471f13a73dbbe51d1ae142e9df59d7c0d31ec20f0a0a8e';
+  const releaseHash = 'b24d6d33736ecd5604a4b17bc9c6481039fac362bb7df044ef1c10a2bfd21db6';
+  const markers = new Map([
+    [21, new Set()], [22, new Set([ev(evidenceHash, sha(6))])], [23, new Set()], [25, new Set()],
+  ]);
+  const table = [
+    '| suite | platform | executed | fails | failure rate | flaky SHAs | class |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
+    '| vitest | linux | 30 | 3 | 10.0% | 2 | flaky-evidence |',
+  ];
+  const evidenceBody = (...rows) => [
+    'New flaky evidence.', '', ...table, '', 'Flaky SHAs:', ...rows, '', 'Report run: U', '',
+  ].join('\n');
+
+  const plan = planActions(rep, issues, markers, 'x', 'U');
+  assert.deepEqual(plan, {
+    actions: [
+      {
+        type: 'create',
+        test_id: 'new',
+        title: 'Flaky test: new',
+        body: [
+          `<!-- flaky-test-id:v1:${createHash} -->`, '', '```text', 'new', '```', '',
+          ...table, '', 'Flaky SHAs:',
+          `- \`AAAAAAA\` ${ev(createHash, upper)}`,
+          `- \`aaaaaaa\` ${ev(createHash, lower)}`,
+          '',
+          'Quarantine is advisory (#4527): the test still runs and still blocks merge. ' +
+            'Only a person closes this issue.',
+          '', 'Report run: U', '',
+        ].join('\n'),
+      },
+      { type: 'reopen', test_id: 'reopen', issue: 21 },
+      {
+        type: 'comment', kind: 'evidence', test_id: 'reopen', issue: 21,
+        body: evidenceBody(
+          `- \`AAAAAAA\` ${ev(reopenHash, upper)}`,
+          `- \`aaaaaaa\` ${ev(reopenHash, lower)}`,
+        ),
+      },
+      {
+        type: 'comment', kind: 'evidence', test_id: 'evidence', issue: 22,
+        body: evidenceBody(`- \`0000000\` ${ev(evidenceHash, sha(7))}`),
+      },
+      {
+        type: 'comment', kind: 'release', test_id: 'ready', issue: 25,
+        body: '50 executed passes in a row since 2026-11-01. ' +
+          'A person may close this issue; automation never closes it.\n' +
+          `<!-- flaky-release:v1:${releaseHash}:2026-11-01 -->\n`,
+      },
+    ],
+    overflow: {
+      notices: [
+        { test_id: 'unread', kind: 'evidence', reason: 'not_read' },
+        { test_id: 'unread-release', kind: 'release', reason: 'not_read' },
+      ],
+      duplicates: [],
+    },
+    held_closed: [{ test_id: 'held', issue: 23 }],
+  });
+  assert.deepEqual(planActions(rep, issues, Object.fromEntries(markers), 'x', 'U'), plan);
+});
+
+test('4920 a candidate uses the final comment slot before release', () => {
+  const { rep, issues } = manyOpen(10);
+  rep.release_ready = [{ test_id: 'ready', streak: 50, streak_since: '2026-11-01' }];
+  const allIssues = [...issues, issueFor('ready', 11)];
+  const markers = new Map(allIssues.map((issue) => [issue.number, new Set()]));
+
+  const plan = planActions(rep, allIssues, markers, 'x');
+  assert.deepEqual(plan.actions.map(({ kind, issue }) => [kind, issue]), [
+    ['evidence', 1], ['evidence', 2], ['evidence', 3], ['evidence', 4], ['evidence', 5],
+    ['evidence', 6], ['evidence', 7], ['evidence', 8], ['evidence', 9], ['evidence', 10],
+  ]);
+  assert.deepEqual(plan.overflow.notices, [{ test_id: 'ready', kind: 'release', reason: 'cap' }]);
+});
+
+test('4920 quarantine reopen at open cap', () => {
+  const evidence = [[sha(1), '2026-11-04']];
+  const rep = report({ candidates: { z: evidence, a: evidence, m: evidence, closed: evidence } });
+  const issue = issueFor('closed', 42, { state: CLOSED, closed_at: '2026-11-03T23:00:00Z' });
+  const plan = planActions(rep, [issue], new Map([[42, new Set()]]), 'x', 'U', true);
+
+  assert.deepEqual(plan.actions.map(({ type, test_id }) => [type, test_id]), [
+    ['create', 'z'], ['create', 'a'], ['create', 'm'],
+  ]);
+  assert.deepEqual(plan.overflow.notices, [{ test_id: 'closed', kind: 'reopen', reason: 'cap' }]);
+  assert.deepEqual(plan.held_closed, []);
+});
+
+test('4920 quarantine main preserves value consumption, last options and usage', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'flaky-q-'));
+  tempDirs.push(dir);
+  const input = path.join(dir, 'report.json');
+  const final = path.join(dir, 'final');
+  fs.writeFileSync(input, JSON.stringify(report()));
+  const deps = { gh: fakeGh(), nowIso: '2026-11-30T00:00:00Z' };
+
+  const stderr = process.stderr.write;
+  let output = '';
+  process.stderr.write = (chunk) => {
+    output += String(chunk);
+    return true;
+  };
+  try {
+    assert.equal(main([
+      '--out', path.join(dir, 'first'), '--report', path.join(dir, 'missing.json'),
+      '--ignored', 'unused', '--repo', '', '--report', input, '--out', final,
+      '--repo', '--out',
+    ], {}, deps), 0);
+    assert.equal(output, '');
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['final', 'report.json']);
+    assert.deepEqual(fs.readdirSync(final), ['quarantine.json']);
+
+    const valid = ['--repo', 'o/r', '--report', input, '--out', final];
+    for (const flag of ['--repo', '--report', '--out']) {
+      output = '';
+      assert.equal(main([...valid, flag], {}, deps), 2, flag);
+      assert.equal(output,
+        'usage: flaky-quarantine.mjs --repo <o/r> --report <file> --out <dir>\n');
+    }
+  } finally {
+    process.stderr.write = stderr;
+  }
+});
