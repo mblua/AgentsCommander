@@ -1,3 +1,8 @@
+//! Tauri sinks for PTY watchers: `ContextEventSink` emits `session_context` and
+//! `QuotaEventSink` emits `agent_quota` to all windows.
+//! `WatcherDelivery::to_watchers_window` sends `watcher_matches` batches only to the
+//! watchers window and reports whether that window exists. No parsing happens here.
+
 use crate::commands;
 use crate::pty::agent_quota::{AgentQuotaPayload, QuotaEventSink};
 use crate::pty::context_scrape::{ContextEventSink, ContextUsagePayload};
