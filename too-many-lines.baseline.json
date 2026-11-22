@@ -25,21 +25,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/commands/session/tests/muse_spawn.rs::muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback",
-      "name": "muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback",
-      "anchor": "53aa0507a3a0",
-      "sites": {
-        "linux": {
-          "lines": 184,
-          "production": false
-        },
-        "macos": {
-          "lines": 184,
-          "production": false
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/src/config/session_context.rs::legacy_rendered_default_context_for_generation",
       "name": "legacy_rendered_default_context_for_generation",
       "anchor": "4a221d65b426",
@@ -74,58 +59,6 @@
         "windows": {
           "lines": 195,
           "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/path_identity/retained.rs::impl:RetainedDirectory::cleanup_unix_tracked_file_inner",
-      "name": "cleanup_unix_tracked_file_inner",
-      "anchor": "e5eb3e1de7de",
-      "sites": {
-        "linux": {
-          "lines": 108,
-          "production": true
-        },
-        "macos": {
-          "lines": 108,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/screenshot/native/tests.rs::linux_display_server_classification",
-      "name": "linux_display_server_classification",
-      "anchor": "290d17a2c336",
-      "sites": {
-        "linux": {
-          "lines": 136,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/tests/startup.rs::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start",
-      "name": "issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start",
-      "anchor": "e82e349f7a2b",
-      "sites": {
-        "linux": {
-          "lines": 261,
-          "production": false
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/tests/cli_close_session.rs::simulate_daemon_response",
-      "name": "simulate_daemon_response",
-      "anchor": "476cfa695822",
-      "sites": {
-        "linux": {
-          "lines": 106,
-          "production": false
-        },
-        "macos": {
-          "lines": 106,
-          "production": false
         }
       }
     }
