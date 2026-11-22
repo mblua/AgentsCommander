@@ -1,4 +1,5 @@
 //! Physical Matrix copy, ownership and resource sessions.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 use super::deletion::{metadata_is_link_or_reparse, metadata_parts_are_link_or_reparse};
 use super::roles;
 use std::fs::{File, OpenOptions};
@@ -424,6 +425,10 @@ impl OwnedCopyArtifacts {
         } else {
             let stamp = if let Some(owned) = output {
                 let mut file = owned.create_file(relative)?;
+                #[allow(
+                    clippy::expect_used,
+                    reason = "`create_file` just pushed this entry and returned `Ok`"
+                )]
                 let entry = owned.entries.last_mut().expect("created file entry");
                 Self::read_file(&path, Some((&mut file, entry)), None, hooks)?
             } else {
@@ -614,6 +619,10 @@ impl OwnedCopyArtifacts {
         relative: &Path,
     ) -> Result<OwnedPayloadSession<'_>, String> {
         let file = self.create_file(relative)?;
+        #[allow(
+            clippy::expect_used,
+            reason = "`create_file` just pushed this entry and returned `Ok`"
+        )]
         let entry = self.entries.last_mut().expect("created payload entry");
         Ok(OwnedPayloadSession { file, entry })
     }

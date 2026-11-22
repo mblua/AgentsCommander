@@ -15,6 +15,7 @@
 //! The only FQN ever constructed is the one the coordinator field of the room's
 //! team config resolves to. No code path here enumerates replicas, so a
 //! non-orchestrator member is never a candidate, because it is never named.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

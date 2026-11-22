@@ -1,9 +1,15 @@
 //! The desktop app entry: boot preamble, managed state and the Tauri builder
 //! chain. The `.setup` hook lives in `setup.rs` and the run-event handler in
 //! `exit.rs`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 pub(crate) mod exit;
 pub(crate) mod history_environment;
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "`setup/` is outside #4906; this keeps its lints exactly as before the file-level warn"
+)]
 mod setup;
 
 use std::collections::{HashMap, HashSet};
@@ -21,6 +27,11 @@ use crate::{
 };
 
 #[expect(clippy::exit, reason = "Tauri generated thread failure exits")]
+#[allow(
+    clippy::expect_used,
+    reason = "startup aborts by design if the shared network clients or the Tauri app cannot be \
+              built; there is no caller to report to"
+)]
 pub(crate) fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
     ui_automation_enabled: bool,
@@ -318,6 +329,11 @@ fn prepare_boot(
     let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
 
     // Create instance-private outbox directory and clean up stale ones
+    #[allow(
+        clippy::expect_used,
+        reason = "startup cannot continue without a config directory; this existing panic is the \
+                  boot policy"
+    )]
     let config_dir = config::config_dir().expect("Cannot determine home directory");
     let instances_dir = config_dir.join(crate::config::instance_artifacts::INSTANCES_DIR_NAME);
 

@@ -2,6 +2,7 @@
 //! detector, response watchers, the web broadcaster and screen parsers, and batches UI output.
 //! Owns UI history replay, `PtyScreenSnapshot`, and output target/registration types.
 //! Submodules: `attachments`, `capture`, `delivery`, `markers`, `screen`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod attachments;
 mod capture;

@@ -2,6 +2,7 @@
 //! picks per-shell injection profiles, resolves logical commands, and writes text with submit
 //! handling and seam observation (`AgentSubmitOutcome`).
 //! Submodules: `host` (host-side injection), `preflight`, and `clear_watch`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod clear_watch;
 pub(crate) mod host;
@@ -490,6 +491,10 @@ where
         codex_clear_observation,
         |session, current| {
             let session = session.ok_or_else(|| format!("Session not found: {session_id}"))?;
+            #[allow(
+                clippy::expect_used,
+                reason = "the `PeerWake` hold policy always supplies current facts to this callback"
+            )]
             let current = current.expect("peer boundary supplies current facts");
             if observe_codex_clear
                 && (!shell_file_stem(&session.shell).starts_with("codex")

@@ -3,6 +3,7 @@
 //! and `loop`: `write_refresh`, `build_new_team_config`, `push_unique` and project
 //! resolution. Removal checks live sessions and dirty repos and holds only the project gate.
 //! Room creation and deletion on disk are delegated to `commands::entity_creation`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -130,6 +131,10 @@ pub(crate) fn write_refresh(project_path: &Path, changed_path: &Path, name: &str
     write_refresh_traced(project_path, changed_path, name, reason, None);
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "`request.id` is the UUID string generated a few lines above, so it always parses"
+)]
 fn write_refresh_traced(
     project_path: &Path,
     changed_path: &Path,

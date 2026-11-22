@@ -1,4 +1,5 @@
 //! Durable DB-backed send queue for the control-plane API.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -160,6 +161,10 @@ impl std::fmt::Debug for PtyInputEnqueueRequest {
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    reason = "each nibble is below 16, which `from_digit` accepts for radix 16"
+)]
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut out = String::with_capacity(64);
