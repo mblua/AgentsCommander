@@ -16,12 +16,18 @@ use super::poller::{
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{ResponseWakeWork, WakeDelivery};
+#[cfg(test)]
+use super::tests::{fixture_capture_owner, fixture_source_binding, run_owned_persist_core};
+#[cfg(not(test))]
+use crate::config::sessions_persistence::run_owned_persist_core;
 use crate::config::teams;
 use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use crate::session::selection::SourceExecutorGuard;
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -698,7 +704,7 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
         previous_id: Uuid,
-    ) -> Result<Option<OwnedPeerTarget>, String> {
+    ) -> Result<ControlFlow<OwnedPeerWakeStep, OwnedPeerTarget>, String> {
         #[cfg(test)]
         if let Some(control) = self
             .test_hooks
@@ -706,7 +712,7 @@ impl MailboxPoller {
             .and_then(MailboxTestHooks::replacement_fixture_control)
         {
             if !control.before_source_accept(&msg.id).await {
-                return Ok(None);
+                return Ok(ControlFlow::Break(OwnedPeerWakeStep::Relist));
             }
         }
         use crate::session::selection::{ReplacementAdmissionStep, ResolvedReplacement};
@@ -722,6 +728,7 @@ impl MailboxPoller {
         let (physical, replica) = owned_replacement_directories(request)?;
         let work = owned_replacement_work(msg)?;
         let mut prepared = None;
+        let mut source = SourceExecutorGuard::unbound();
         loop {
             coordinator.wait_for_restore_release().await?;
             if !self
@@ -737,7 +744,7 @@ impl MailboxPoller {
             let exact = gate.acquire_exact(&msg.to).await;
             let captured = owned_snapshot(&manager, &directory, msg, &physical, previous_id).await;
             if captured.0 {
-                return Ok(None);
+                return Ok(ControlFlow::Break(OwnedPeerWakeStep::Relist));
             }
             if prepared.is_none() {
                 if let Some((carrier, previous)) = captured.1 {
@@ -763,6 +770,8 @@ impl MailboxPoller {
                 }
             }
             if let Some(candidate) = prepared.take() {
+                #[cfg(test)]
+                let candidate = fixture_source_binding(candidate);
                 let tracker = pty
                     .lock()
                     .map_err(|_| "targetCreateGateUnavailable".to_string())?
@@ -770,22 +779,36 @@ impl MailboxPoller {
                 let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
                 let admission = manager
                     .with_current_carrier_snapshot(&permit, |current| {
-                        coordinator
-                            .admit_owned_replacement(&permit, current, &tracker, &pty, candidate)
+                        coordinator.admit_owned_wake_replacement(
+                            &permit,
+                            current,
+                            &tracker,
+                            &pty,
+                            candidate,
+                            &mut source,
+                        )
                     })
                     .await;
                 drop(permit);
-                match admission? {
-                    ReplacementAdmissionStep::Accepted(continuation) => {
-                        return Ok(Some(OwnedPeerTarget {
+                match admission.map_err(|error| error.admission_error()) {
+                    Ok(ReplacementAdmissionStep::Accepted(continuation)) => {
+                        return Ok(ControlFlow::Continue(OwnedPeerTarget {
                             continuation,
+                            source,
                             gate,
                             exact,
                             stripe,
                             physical,
                         }))
                     }
-                    ReplacementAdmissionStep::Waiting(candidate) => prepared = Some(candidate),
+                    Ok(ReplacementAdmissionStep::Waiting(candidate)) => prepared = Some(candidate),
+                    Err(Some(error)) => return Err(error),
+                    Err(None) => {
+                        return Ok(ControlFlow::Break(RetainedExit::step(
+                            "source_unbound",
+                            None,
+                        )))
+                    }
                 }
             }
             drop(exact);
@@ -817,11 +840,12 @@ impl MailboxPoller {
         super::wake_injection::admit_peer_text(msg, &msg.body, delivery.0, delivery.1)?;
         let (request, resolved_command) = owned_replacement_request(plan, dispatch.1);
         let manager = app.pty_sessions().read().await.clone();
-        let Some(target) = self
+        let target = match self
             .admit_owned_peer_replacement(app, msg, &request, previous)
             .await?
-        else {
-            return Ok(OwnedPeerWakeStep::Relist);
+        {
+            ControlFlow::Continue(target) => target,
+            ControlFlow::Break(step) => return Ok(step),
         };
         let continuation = self.with_owned_source_validation(
             app,
@@ -841,6 +865,10 @@ impl MailboxPoller {
         };
         #[cfg(test)]
         continuation.fixture_inserted();
+        #[cfg(test)]
+        fixture_capture_owner(&continuation);
+        // Capturing the bound guard lets even an unpolled core record Stopped.
+        let mut source = target.source;
         let mut execution = OwnedPeerWakeExecution {
             message: msg.clone(),
             delivery,
@@ -864,17 +892,11 @@ impl MailboxPoller {
         // Relocates the one existing create core around its owned work tail.
         // Common create borrows this lexical proof and never spawns another core.
         let (id, to) = (msg.id.clone(), msg.to.clone());
-        let result = crate::config::sessions_persistence::run_owned_persist_core(async move {
-            let mut source = crate::session::selection::SourceExecutorGuard::unbound();
-            let result = if source.bind(&execution.continuation) {
-                let result = delivery
-                    .execute_owned_peer_replacement(&app, &pty, &mut execution)
-                    .await;
-                source.returned(result.is_err());
-                result
-            } else {
-                Ok(RetainedExit::step("source_unbound", None))
-            };
+        let result = run_owned_persist_core(async move {
+            let result = delivery
+                .execute_owned_peer_replacement(&app, &pty, &mut execution)
+                .await;
+            source.returned(result.is_err());
             drop((source, execution));
             let result = owned_peer_completion(result, &completion, &manager, &pty).await;
             log_core_end(&result, &id, &to, previous);

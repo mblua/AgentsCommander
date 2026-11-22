@@ -599,6 +599,7 @@ pub(crate) struct OwnedPeerWakeExecution {
 
 pub(crate) struct OwnedPeerTarget {
     pub(crate) continuation: crate::session::selection::OwnedReplacementContinuation,
+    pub(crate) source: crate::session::selection::SourceExecutorGuard,
     pub(crate) gate: Arc<crate::api::message_store::PtyInputTargetGate>,
     pub(crate) exact: crate::api::message_store::PtyInputTargetGuard,
     pub(crate) stripe: crate::api::message_store::PtyInputStripeGuard,

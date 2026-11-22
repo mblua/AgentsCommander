@@ -29,7 +29,7 @@ use super::replacement::{
     OwnedEffectState, OwnedReplacementContinuation, OwnedReplacementDescriptor,
     PreparedOwnedReplacement, ReplacementAdmissionStep, ReplacementCleanupAuthority,
     ReplacementOwner, ReplacementProgress, ReplacementStage, ReplacementState, ResolvedReplacement,
-    RetainedReplacements, SourceExecutorObservation,
+    RetainedReplacements, SourceExecutorGuard, SourceExecutorObservation,
 };
 use super::{
     CoordinatorInner, CoordinatorJob, SelectionCoordinator, SelectionRequest,
@@ -39,6 +39,61 @@ use super::{
 
 #[cfg(test)]
 use super::replacement::FixtureRootReservation;
+
+pub(crate) enum WakeReplacementAdmissionError {
+    SourceUnbound,
+    Admission(String),
+}
+
+impl WakeReplacementAdmissionError {
+    pub(crate) fn admission_error(self) -> Option<String> {
+        match self {
+            Self::SourceUnbound => None,
+            Self::Admission(error) => Some(error),
+        }
+    }
+}
+
+#[cfg(test)]
+impl PreparedOwnedReplacement {
+    pub(crate) fn fixture_mismatch_wake_executor(&mut self) -> Uuid {
+        self.executor_nonce = Uuid::new_v4();
+        let state = self.owner.state.lock().unwrap();
+        state.replacement.as_ref().unwrap().binding.session_id()
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct WakeSourceFixtureObservation {
+    pub(crate) active: bool,
+    pub(crate) stopped: bool,
+    pub(crate) effects_started: usize,
+}
+
+#[cfg(test)]
+impl OwnedReplacementContinuation {
+    pub(crate) fn fixture_mismatched_wake_executor(&self) -> Self {
+        Self {
+            executor_nonce: Uuid::new_v4(),
+            ..self.clone()
+        }
+    }
+
+    pub(crate) fn fixture_wake_source_observation(&self) -> WakeSourceFixtureObservation {
+        let state = self.owner.state.lock().unwrap();
+        let source = state.replacement.as_ref().unwrap().source_executor;
+        WakeSourceFixtureObservation {
+            active: source == SourceExecutorObservation::Active,
+            stopped: source == SourceExecutorObservation::Stopped,
+            effects_started: state
+                .effects
+                .iter()
+                .filter(|effect| !matches!(effect, OwnedEffectState::NotStarted))
+                .count(),
+        }
+    }
+}
 
 impl SelectionCoordinator {
     pub fn new(
@@ -378,9 +433,48 @@ impl SelectionCoordinator {
         pty: &Arc<Mutex<PtyManager>>,
         prepared: PreparedOwnedReplacement,
     ) -> Result<ReplacementAdmissionStep, String> {
+        self.admit_owned_replacement_with_source(permit, current, tracker, pty, prepared, None)
+            .map_err(|error| {
+                error
+                    .admission_error()
+                    .unwrap_or_else(|| "source_unbound".into())
+            })
+    }
+
+    pub(crate) fn admit_owned_wake_replacement(
+        &self,
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        tracker: &crate::pty::manager::ResponseCloseState,
+        pty: &Arc<Mutex<PtyManager>>,
+        prepared: PreparedOwnedReplacement,
+        source: &mut SourceExecutorGuard,
+    ) -> Result<ReplacementAdmissionStep, WakeReplacementAdmissionError> {
+        self.admit_owned_replacement_with_source(
+            permit,
+            current,
+            tracker,
+            pty,
+            prepared,
+            Some(source),
+        )
+    }
+
+    fn admit_owned_replacement_with_source(
+        &self,
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        tracker: &crate::pty::manager::ResponseCloseState,
+        pty: &Arc<Mutex<PtyManager>>,
+        prepared: PreparedOwnedReplacement,
+        mut source: Option<&mut SourceExecutorGuard>,
+    ) -> Result<ReplacementAdmissionStep, WakeReplacementAdmissionError> {
         use crate::pty::manager::CreateAdmission;
+        use WakeReplacementAdmissionError as Refusal;
         let OwnedReplacementDescriptor::Replacement(descriptor) = &prepared.owner.descriptor else {
-            return Err(SelectionCoordinatorError::Unavailable.to_string());
+            return Err(Refusal::Admission(
+                SelectionCoordinatorError::Unavailable.to_string(),
+            ));
         };
         let Some((carrier, previous, classification)) =
             Self::replacement_admission_candidate(permit, current, tracker, pty, descriptor)
@@ -405,14 +499,31 @@ impl SelectionCoordinator {
             .lock()
             .ok()
             .and_then(|state| state.replacement.as_ref().map(|progress| progress.binding))
-            .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
-        if let Err(error) = self.insert_lifecycle_entry(&prepared.owner) {
+            .ok_or_else(|| {
+                Refusal::Admission(SelectionCoordinatorError::Unavailable.to_string())
+            })?;
+        let continuation = OwnedReplacementContinuation {
+            owner: prepared.owner,
+            coordinator: Arc::downgrade(&self.inner),
+            executor_nonce: prepared.executor_nonce,
+            source_validation: None,
+            #[cfg(test)]
+            fixture: None,
+        };
+        if source
+            .as_mut()
+            .is_some_and(|guard| !guard.bind(&continuation))
+        {
+            drop((reservation, work));
+            return Err(Refusal::SourceUnbound);
+        }
+        if let Err(error) = self.insert_lifecycle_entry(&continuation.owner) {
             // No Preparing, row binding publication or native effect occurred.
             // Drop only this refused attempt's claims, outside owner/root locks.
             drop(reservation);
             drop(work);
             let released = tracker.publishers_bound();
-            if let Ok(mut state) = prepared.owner.state.lock() {
+            if let Ok(mut state) = continuation.owner.state.lock() {
                 state.completion = Some(Err(error.clone()));
                 state.publication_observed = true;
                 state.envelope_released = true;
@@ -426,16 +537,19 @@ impl SelectionCoordinator {
                     ReplacementStage::Ambiguous
                 };
             }
-            return Err(error);
+            if let Some(source) = source {
+                drop(std::mem::replace(source, SourceExecutorGuard::unbound()));
+            }
+            return Err(Refusal::Admission(error));
         }
         let begun = crate::config::sessions_persistence::begin_carrier_replacement(
             permit,
             &carrier,
-            prepared.owner.operation,
+            continuation.owner.operation,
             binding.session_id(),
             current,
         );
-        if let Ok(mut state) = prepared.owner.state.lock() {
+        if let Ok(mut state) = continuation.owner.state.lock() {
             if let Some(progress) = state.replacement.as_mut() {
                 progress.current_previous = previous;
                 progress.previous_carrier = carrier;
@@ -450,16 +564,7 @@ impl SelectionCoordinator {
                     Some("replacement Preparing unavailable after acceptance".into());
             }
         }
-        Ok(ReplacementAdmissionStep::Accepted(
-            OwnedReplacementContinuation {
-                owner: prepared.owner,
-                coordinator: Arc::downgrade(&self.inner),
-                executor_nonce: prepared.executor_nonce,
-                source_validation: None,
-                #[cfg(test)]
-                fixture: None,
-            },
-        ))
+        Ok(ReplacementAdmissionStep::Accepted(continuation))
     }
 
     pub(super) fn insert_lifecycle_entry(
