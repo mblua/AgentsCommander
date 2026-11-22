@@ -1,3 +1,9 @@
+//! Moves a legacy user-owned catalog to a managed base plus an extracted local layer.
+//! `migrate_legacy` writes backup, journal, local layer, then base; recovery functions
+//! resume an interrupted run from the journal or the backup.
+//! Also refreshes a stale managed base and fresh-initializes an absent catalog.
+//! Callers hold the catalog lock; atomic file publication lives in `publication`.
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
