@@ -1,6 +1,5 @@
 use super::*;
 use serde_json::json;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn manager() -> Arc<tokio::sync::RwLock<SessionManager>> {
     Arc::new(tokio::sync::RwLock::new(SessionManager::new()))
@@ -234,37 +233,14 @@ fn dispatch_matches_exactly_the_five_temp_room_names() {
     );
 }
 
-type Mock = tauri::test::MockRuntime;
-
 fn invoke_with_counter(cmd: &str, body: serde_json::Value) -> (Result<(), String>, usize) {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&calls);
-    let fallback = move |_invoke: tauri::ipc::Invoke<Mock>| {
-        counted.fetch_add(1, Ordering::SeqCst);
-        false
-    };
-    let app = tauri::test::mock_builder()
-        .manage(manager())
-        .invoke_handler(move |invoke| dispatch(invoke, &fallback))
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("mock app");
-    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
-        .build()
-        .expect("webview");
-    let response = tauri::test::get_ipc_response(
-        &webview,
-        tauri::webview::InvokeRequest {
-            cmd: cmd.into(),
-            callback: tauri::ipc::CallbackFn(0),
-            error: tauri::ipc::CallbackFn(1),
-            url: crate::test_support::LOCAL_IPC_ORIGIN.parse().unwrap(),
-            body: tauri::ipc::InvokeBody::Json(body),
-            headers: Default::default(),
-            invoke_key: tauri::test::INVOKE_KEY.to_string(),
-        },
+    let (response, calls) = crate::test_support::invoke_counting_fallback(
+        tauri::test::mock_builder().manage(manager()),
+        |invoke, fallback| dispatch(invoke, &fallback),
+        cmd,
+        body,
     );
-    let result = response.map(|_| ()).map_err(|e| e.to_string());
-    (result, calls.load(Ordering::SeqCst))
+    (response.map(|_| ()).map_err(|e| e.to_string()), calls)
 }
 
 #[test]

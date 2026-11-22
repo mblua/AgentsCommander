@@ -103,13 +103,18 @@ fn status_from_exit(code: Option<i32>) -> AudioSinkStatus {
 
 /// #4843 `Ok` off Linux; `Unknown` inside an AppImage (its bundled GStreamer may differ).
 pub(crate) async fn audio_sink_status(in_appimage: bool) -> AudioSinkStatus {
+    audio_sink_status_with(in_appimage, std::ffi::OsStr::new(GST_INSPECT)).await
+}
+
+/// #4843 `audio_sink_status` with the inspector as a parameter (tests pass a stub).
+async fn audio_sink_status_with(in_appimage: bool, program: &std::ffi::OsStr) -> AudioSinkStatus {
     if cfg!(not(target_os = "linux")) {
         return AudioSinkStatus::Ok;
     }
     if in_appimage {
         return AudioSinkStatus::Unknown;
     }
-    probe_audio_sink(std::ffi::OsStr::new(GST_INSPECT)).await
+    probe_audio_sink(program).await
 }
 
 /// #4843 Run `<program> --exists autoaudiosink` with the app's own environment (no

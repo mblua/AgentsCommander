@@ -333,24 +333,10 @@ fn dispatch_returns_the_fallback_bool_for_unknown_commands() {
             }
             result
         };
-        let app = tauri::test::mock_builder()
-            .invoke_handler(move |invoke| dispatch(invoke, &fallback))
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("mock app");
-        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
-            .build()
-            .expect("webview");
-        let response = tauri::test::get_ipc_response(
-            &webview,
-            tauri::webview::InvokeRequest {
-                cmd: "get_context_history_reports".into(),
-                callback: tauri::ipc::CallbackFn(0),
-                error: tauri::ipc::CallbackFn(1),
-                url: crate::test_support::LOCAL_IPC_ORIGIN.parse().unwrap(),
-                body: tauri::ipc::InvokeBody::Json(json!({})),
-                headers: Default::default(),
-                invoke_key: tauri::test::INVOKE_KEY.to_string(),
-            },
+        let response = crate::test_support::mock_ipc_response(
+            tauri::test::mock_builder().invoke_handler(move |invoke| dispatch(invoke, &fallback)),
+            "get_context_history_reports",
+            json!({}),
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         match result {

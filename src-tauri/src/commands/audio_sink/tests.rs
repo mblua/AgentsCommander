@@ -1,41 +1,15 @@
 use super::*;
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
-};
-
-type Mock = tauri::test::MockRuntime;
-
 fn invoke_with_counter(cmd: &str) -> (Result<serde_json::Value, String>, usize) {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&calls);
-    let fallback = move |_invoke: tauri::ipc::Invoke<Mock>| {
-        counted.fetch_add(1, Ordering::SeqCst);
-        false
-    };
-    let app = tauri::test::mock_builder()
-        .invoke_handler(move |invoke| dispatch(invoke, &fallback))
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("mock app");
-    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
-        .build()
-        .expect("webview");
-    let response = tauri::test::get_ipc_response(
-        &webview,
-        tauri::webview::InvokeRequest {
-            cmd: cmd.into(),
-            callback: tauri::ipc::CallbackFn(0),
-            error: tauri::ipc::CallbackFn(1),
-            url: crate::test_support::LOCAL_IPC_ORIGIN.parse().unwrap(),
-            body: tauri::ipc::InvokeBody::Json(serde_json::json!({})),
-            headers: Default::default(),
-            invoke_key: tauri::test::INVOKE_KEY.to_string(),
-        },
+    let (response, calls) = crate::test_support::invoke_counting_fallback(
+        tauri::test::mock_builder(),
+        |invoke, fallback| dispatch(invoke, &fallback),
+        cmd,
+        serde_json::json!({}),
     );
     let result = response
         .map(|b| b.deserialize::<serde_json::Value>().expect("json"))
         .map_err(|e| e.to_string());
-    (result, calls.load(Ordering::SeqCst))
+    (result, calls)
 }
 
 #[test]
@@ -83,4 +57,15 @@ fn lib_routes_audio_sink_between_temp_rooms_and_history() {
     assert!(temp_rooms < audio_sink, "after temp rooms");
     assert!(audio_sink < history, "before history");
     assert_eq!(lib.matches("commands::audio_sink::dispatch(").count(), 1);
+}
+
+#[test]
+fn command_passes_the_environment_appimage_flag() {
+    let source = include_str!("../audio_sink.rs");
+    let call = "crate::process::audio_sink_status(crate::config::environment::in_appimage()).await";
+    assert_eq!(
+        source.matches(call).count(),
+        1,
+        "command forwards in_appimage()"
+    );
 }

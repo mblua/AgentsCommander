@@ -147,12 +147,29 @@ async fn audio_sink_status_skips_probe_in_appimage_or_off_linux() {
     } else {
         AudioSinkStatus::Ok
     };
+    let stub =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gst-inspect-stub.sh");
+    assert_eq!(
+        audio_sink_status_with(true, stub.as_os_str()).await,
+        expected
+    );
+    assert_eq!(
+        audio_sink_status_with(false, stub.as_os_str()).await,
+        AudioSinkStatus::Ok
+    );
     assert_eq!(audio_sink_status(true).await, expected);
 }
 
 #[test]
 fn audio_sink_program_is_gst_inspect() {
     assert_eq!(GST_INSPECT, "gst-inspect-1.0");
+    let call = "audio_sink_status_with(in_appimage, std::ffi::OsStr::new(GST_INSPECT)).await";
+    let source = include_str!("../process.rs");
+    assert_eq!(
+        source.matches(call).count(),
+        1,
+        "forwards the flag and GST_INSPECT"
+    );
 }
 
 #[cfg(target_os = "linux")]

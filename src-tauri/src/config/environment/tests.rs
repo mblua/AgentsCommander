@@ -26,6 +26,7 @@ const INPUT_KEYS: &[&str] = &[
     "AC_SPAWN_PAINT_FLOOR_BYTES",
     "AC_SPAWN_CONCURRENCY_WINDOW_MS",
     "AC_SPAWN_STOP_ATTRIBUTION_MS",
+    "APPIMAGE",
 ];
 const UNICODE_VALUE: &str = "machine-ñ-東京";
 
@@ -140,6 +141,7 @@ fn environment_child_case() {
         };
         assert_eq!(actual, expected, "{key}");
     }
+    assert_eq!(in_appimage(), case != "missing", "APPIMAGE");
     match case.as_str() {
         "missing" => {
             assert_eq!(machine_output_string(), Err(std::env::VarError::NotPresent));
