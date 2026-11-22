@@ -530,7 +530,6 @@ pub struct MessageWarnings {
     pub(super) warned: OnceLock<Mutex<HashSet<String>>>,
 }
 
-#[allow(clippy::new_without_default)]
 impl MessageWarnings {
     pub fn new() -> Self {
         Self {

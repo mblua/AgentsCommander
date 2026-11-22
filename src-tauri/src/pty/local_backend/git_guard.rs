@@ -1,3 +1,9 @@
+//! Windows git guard for local agent sessions. Writes a `git.cmd` plus `git-guard.ps1`
+//! wrapper into the config dir's git-guard folder; the script only lets git run inside `repo-*`
+//! directories and refuses `--git-dir` / `--work-tree`. Owns the atomic, retrying file publish.
+//! It does NOT locate the real git binary (that is `process::git::watcher`) or put the wrapper
+//! on a session's `PATH`; the launch code in the parent module does that.
+
 #[cfg(windows)]
 use std::path::Path;
 

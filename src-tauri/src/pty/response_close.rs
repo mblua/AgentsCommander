@@ -243,7 +243,7 @@ pub(crate) struct CreateOwnerReservation {
     pub(in crate::pty) state: ResponseCloseState,
     pub(in crate::pty) target: String,
     pub(in crate::pty) nonce: Uuid,
-    #[allow(dead_code)] // Read only by tests; constructed outside this file (#3550).
+    #[allow(dead_code, reason = "read only by tests until P05 (#3550)")]
     pub(in crate::pty) classification: CreateClassification,
 }
 
@@ -253,21 +253,21 @@ pub(crate) struct CreateOwnerReservation {
 // Dormant until P05 integration; remove with real callers.
 pub(crate) enum CreateClassification {
     Foreign {
-        #[allow(dead_code)] // Constructed outside this file (#3550).
+        #[allow(dead_code, reason = "dormant until P05 reads it (#3550)")]
         publication_epoch: u64,
     },
     Protected {
         identity: ResponseRouteIdentity,
-        #[allow(dead_code)] // Constructed outside this file (#3550).
+        #[allow(dead_code, reason = "dormant until P05 reads it (#3550)")]
         publication_epoch: u64,
     },
     Preparing {
         owner_nonce: Uuid,
         identity: ResponseRouteIdentity,
-        #[allow(dead_code)] // Constructed outside this file (#3550).
+        #[allow(dead_code, reason = "dormant until P05 reads it (#3550)")]
         publication_epoch: u64,
     },
-    #[allow(dead_code)] // Matched in response_close/admission.rs; built only by tests (#3550).
+    #[allow(dead_code, reason = "built only by tests (#3550)")]
     Unknown,
 }
 
@@ -440,7 +440,10 @@ impl ResponseCloseState {
         }
     }
     // Publish primitive row facts under the manager guard, preserving the P03 API.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "manager row publish records each id, token, version and flag value"
+    )]
     pub(crate) fn publish_manager_row(
         &self,
         id: Uuid,

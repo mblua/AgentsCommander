@@ -431,7 +431,10 @@ pub fn spawn_reader(
 /// `reader_mode` is `true` when the session has a transcript reader: the PTY
 /// 6-phase pipeline is then skipped, and the reader itself is owned by the
 /// supervisor, not by this handle (#2232 phase 4).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "bridge spawn needs bot, chat, session, PTY, ports and reader mode"
+)]
 pub fn spawn_bridge(
     bot_token: String,
     chat_id: i64,
@@ -504,7 +507,10 @@ const FLUSH_DELAY_MS: u64 = 500;
 
 // The 8-argument signature is the frozen plan spec (#1549 §5.4): the PTY-bridge
 // chain threads `agent_kind` as a loose parameter by design (no struct grouping).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "output task owns its channel, network, chat, cancel and event port"
+)]
 async fn output_task(
     mut rx: mpsc::Receiver<Vec<u8>>,
     network: OutboundNetwork,

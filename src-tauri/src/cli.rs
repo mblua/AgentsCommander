@@ -1,3 +1,13 @@
+//! Command-line surface: the `clap` definition (`Cli`, `Commands`), one
+//! submodule per verb, and `handle_cli`, which dispatches a parsed command
+//! and returns its exit code.
+//!
+//! It also owns the console helpers for CLI and startup output
+//! (`attach_parent_console`, `present_fatal_startup_message`,
+//! `flush_outputs`, `cli_println!`), the token shape check
+//! `validate_cli_token` and the `plain-clear` verb's runner. It does not
+//! authorize tokens: the daemon mailbox does that for write-path verbs.
+
 pub(crate) mod agency_templates;
 mod api_client;
 mod close_session;
@@ -265,7 +275,10 @@ pub enum Commands {
 /// useful (the user double-clicked the GUI exe in explorer.exe, etc.). For PIPE,
 /// CHAR, DISK, REMOTE — the inherited handle is already routable, leave it alone.
 #[cfg(target_os = "windows")]
-#[allow(clippy::collapsible_if)]
+#[allow(
+    clippy::collapsible_if,
+    reason = "Windows-only; the destination gate stays separate from the unsafe console calls"
+)]
 pub fn attach_parent_console() {
     use windows_sys::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
 

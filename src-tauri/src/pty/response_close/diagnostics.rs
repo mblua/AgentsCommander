@@ -1,3 +1,8 @@
+//! Debug-level diagnostics for `ResponseCloseState`: poll health and select observations of
+//! routes, policy and safe predicates, logged only when the debug target is enabled.
+//! Observation only: it never recovers lock poison and never changes routes or tickets; the
+//! real decisions are made in `returns.rs`.
+
 use crate::pty::response_close::ResponseCloseInner;
 use crate::pty::response_close::ResponseCloseRoute;
 use crate::pty::response_close::ResponseCloseState;

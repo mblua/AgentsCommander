@@ -65,7 +65,10 @@ where
 
 /// The production PAIR boundary. Pending deltas are computed on private maps
 /// before cleanup or the caller's split-marker policy can change either file.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "guarded pair update takes both paths, hooks, mutator and finisher"
+)]
 pub(crate) fn update_config_pair_guarded<F>(
     decisions: &Path,
     state: &Path,
@@ -96,7 +99,10 @@ where
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "inner seam also takes the publisher and optional reservation"
+)]
 pub(in crate::config) fn update_config_pair_inner<F>(
     decisions: &Path,
     state: &Path,

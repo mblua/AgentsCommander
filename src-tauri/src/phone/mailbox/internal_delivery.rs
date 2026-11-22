@@ -1,3 +1,8 @@
+//! Internal system wake delivery: `MailboxPoller` methods that deliver internal notices.
+//! Finds live or exited target sessions, spawns background sessions and injects into the PTY.
+//! Also holds `inject_wake_into_pty`, `has_pty_session_for_wake` and `destroy_exited_wake_session`.
+//! Spawn awaiting and wake receipt bookkeeping live in `background_spawn` and `wake_receipt`.
+
 use super::notice::{
     canonical_cwd_owned_by_replica, format_wake_content, internal_system_envelope,
     resolve_wake_agent_command_from_sources, InternalNoticeGuard, InternalSystemNotice,

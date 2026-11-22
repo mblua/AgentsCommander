@@ -1,3 +1,7 @@
+//! Small shared helpers for `role-experiment`: matrix and variant path naming, SHA-256 hex,
+//! `CliError` and `CliWarning` builders, and a simple line-by-line diff with stats.
+//! Holds no state and does no file IO.
+
 use super::artifacts::CliError;
 use super::artifacts::CliWarning;
 use super::artifacts::DiffStats;

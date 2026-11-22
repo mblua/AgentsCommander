@@ -1,3 +1,7 @@
+//! Loads and flushes the retained last-prompt checkpoint file (`RETAINED_PROMPTS`).
+//! Builds `PromptKey` values from canonical cwd, agent id and profiles, and blocks duplicates.
+//! The in-memory cache itself lives in `SessionManager`; this module only maps it to disk.
+
 use super::project_scope::strip_long_prefix_str;
 use super::record::PersistedSession;
 use super::write::rename_with_retry;

@@ -121,7 +121,10 @@ pub(crate) async fn create_owned_response_replacement_in_context<R: tauri::Runti
 }
 
 // Shared by Tauri command + restore path; collapsing args would force a context struct.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "public create entry takes shell, cwd, agent and viewport inputs apart"
+)]
 pub async fn create_session_inner<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -244,7 +247,10 @@ pub(super) fn wake_create_result(completion: CreateCompletion) -> Result<Session
 
 pub(crate) use crate::session::create_contracts::PtyTargetCreateStep;
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "create variant adds PTY target ownership to the create inputs"
+)]
 pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -348,7 +354,10 @@ pub(crate) async fn create_persisted_root_for_restore<R: tauri::Runtime>(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "restore create passes persisted session fields as separate inputs"
+)]
 pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -404,7 +413,10 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "impl threads every create, restore and inline-selection input"
+)]
 pub(crate) async fn create_session_inner_impl<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,

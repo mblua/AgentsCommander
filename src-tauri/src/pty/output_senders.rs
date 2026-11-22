@@ -1,3 +1,7 @@
+//! `OutputSenderMap`: the shared per-session map of mpsc senders the PTY read loop uses to
+//! copy output to an active bridge.
+//! Type alias only, no logic.
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

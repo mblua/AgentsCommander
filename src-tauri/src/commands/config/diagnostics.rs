@@ -1,3 +1,10 @@
+//! Tauri commands for frontend diagnostics: rail diagnostic lines, debug logs and error popups.
+//!
+//! `append_rail_diagnostic` accepts only a closed, scalar-only `RailDiagnosticRecord` vocabulary,
+//! validates bounds and size, and writes one `[rail-diag]` Debug log line. Other commands save
+//! debug logs and drain or mute buffered error-log entries.
+//! It owns no state: the error buffer and mutes live in `logging`, file writes in `debug_logs`.
+
 use uuid::Uuid;
 
 // #3083: closed diagnostic vocabulary; no client-selected target or text.

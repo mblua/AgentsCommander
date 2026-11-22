@@ -1,3 +1,9 @@
+//! `list-peers` and `list-peers-lean` CLI verbs: print the caller's team peers as JSON, full
+//! (`PeerInfo`) or compact (`LeanPeerInfo`), with an exact-FQN `--peer` filter. Owns
+//! `ListPeersArgs`, `ListPeersLeanArgs` and `apply_peer_filter`. Peer discovery and session
+//! status come from `config::teams` and `config::sessions_persistence`; the
+//! `--snapshot-targets` view lives in the `snapshot` submodule.
+
 use clap::Args;
 use std::collections::HashMap;
 #[cfg(test)]

@@ -1,3 +1,7 @@
+//! Project refresh data types for mailbox polling.
+//! `ProjectRefreshRequest` is read from disk; `ProjectRefreshEventPayload` is the event body.
+//! `ProjectRefreshPollBatch` groups payloads with the processed request paths.
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

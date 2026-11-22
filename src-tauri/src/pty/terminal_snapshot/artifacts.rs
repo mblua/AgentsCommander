@@ -1,3 +1,8 @@
+//! Snapshot artifact files on disk: reserve, track, relocate and clean up artifacts, and run
+//! the periodic background sweep that removes expired ones (forced on shutdown). Owns
+//! `ArtifactRegistry` and the tracked directory/file records. Path identity checks come from
+//! `crate::path_identity`; building the snapshot payload is not done here.
+
 #[cfg(all(test, unix))]
 use super::TerminalSnapshotUnixCleanupControl;
 use super::{

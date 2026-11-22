@@ -764,7 +764,10 @@ fn assert_no_temp_files(dir: &Path) {
     }
 }
 
-#[allow(clippy::permissions_set_readonly_false)]
+#[allow(
+    clippy::permissions_set_readonly_false,
+    reason = "test clears readonly only to restore the file it made readonly"
+)]
 #[test]
 fn git_guard_writer_skips_unchanged_readonly_file() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -829,7 +832,10 @@ fn git_guard_writer_retries_in_use_destination_until_released() {
     assert_no_temp_files(dir.path());
 }
 
-#[allow(clippy::permissions_set_readonly_false)]
+#[allow(
+    clippy::permissions_set_readonly_false,
+    reason = "test resets readonly on its own temp file after the check"
+)]
 #[test]
 fn git_guard_sequence_shared_unique_and_noop() {
     let owners = crate::AppOwners::new();

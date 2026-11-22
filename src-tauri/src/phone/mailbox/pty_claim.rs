@@ -26,7 +26,10 @@ use uuid::Uuid;
 /// eight fields because the text and its validation need all eight, and boxing
 /// them would add an allocation per notice to buy nothing measurable. The peer
 /// arm is a borrow, so it is small either way.
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "notice variant is large by design; boxing adds a per-notice alloc"
+)]
 pub(crate) enum WakeDelivery<'a> {
     Peer {
         message: &'a OutboxMessage,
@@ -922,6 +925,6 @@ pub(crate) struct ResponseWakeWork {
         crate::pty::manager::ResponseRouteIdentity,
     )>,
     // P05 creates the nonce-bound context at the actual pre-write boundary.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "dormant until P05; read only by tests")]
     pub(crate) delivery_context: Option<crate::pty::manager::ResponseDeliveryContext>,
 }

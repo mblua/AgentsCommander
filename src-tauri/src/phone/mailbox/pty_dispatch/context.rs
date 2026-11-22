@@ -1,3 +1,8 @@
+//! PTY dispatch context types shared by the dispatcher and its `select` module.
+//! Owns `PtyDispatchContext`, `PtyDispatchGuards`, `DispatchSelection` and `BoundaryAuthority`.
+//! Gathers and ranks candidate sessions via `dispatch_selection_candidates`.
+//! Also prepares the dispatch claim with `prepare_dispatch_claim` (`PreparedDispatchClaim`).
+
 use super::super::settle::session_has_current_pty_submission_provenance;
 use super::super::settle::{OwnedPtyWorkTransfer, PtySpawnStep};
 use crate::api::message_store::{

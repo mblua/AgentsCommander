@@ -1,3 +1,8 @@
+//! Admission side of `ResponseCloseState`: reserving writers, work and create owners, starting
+//! deliveries and settling terminal targets. The guard types (`WorkAdmission`,
+//! `WriterAdmission`, `CreateOwnerReservation`, ...) release their reservation on `Drop`.
+//! Route registration and the close decision itself live in `routes.rs` and `returns.rs`.
+
 use crate::pty::response_close::CreateAdmission;
 use crate::pty::response_close::CreateClassification;
 use crate::pty::response_close::CreateOwnerReservation;

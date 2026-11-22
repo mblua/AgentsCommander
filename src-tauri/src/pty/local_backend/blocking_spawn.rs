@@ -1,3 +1,7 @@
+//! Cancel-safe blocking spawn for the local PTY backend. Runs spawn work on
+//! `spawn_blocking` with a drop guard, so a cancelled caller still triggers the cleanup
+//! callback for that session id. It does not know what the work or the cleanup does.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 

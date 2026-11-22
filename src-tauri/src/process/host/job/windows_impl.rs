@@ -1,3 +1,8 @@
+//! Windows Job Object support: `JobObject` owns a kill-on-close job handle with
+//! `for_child`, `terminate`, `terminate_checked` and `active_processes`.
+//! `spawn_suspended_contained` starts a suspended child, assigns it to a job, then resumes it.
+//! Failed spawns are settled and reported as `ContainedSpawnError`.
+
 use std::fmt;
 use std::time::Duration;
 

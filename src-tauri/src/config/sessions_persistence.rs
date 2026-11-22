@@ -1,3 +1,9 @@
+//! Persistence of sessions to `sessions.json` and peer status built from it.
+//! This file re-exports the load, save, carrier, orphan and project-scope submodules, and
+//! builds a cwd index of saved sessions (`build_session_index`) that `compute_peer_status`
+//! uses to report a peer's `PeerStatus` (working, waiting, exited, blocked menu).
+//! The index and status code only read; writes go through the `persist` and `write` submodules.
+
 mod carrier;
 #[cfg(test)]
 pub(crate) use carrier::poison_discard_slot_for_test;

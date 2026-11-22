@@ -1,3 +1,7 @@
+//! Strict JSON scanning: `scan_json_document` returns a `ScannedJsonDocument` with the
+//! value, whether keys were duplicated and whether it is a privileged candidate;
+//! `parse_json_no_duplicates` rejects duplicate keys. No file IO.
+
 use serde::de;
 use serde::de::DeserializeSeed;
 use serde::de::MapAccess;

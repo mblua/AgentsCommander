@@ -1,3 +1,7 @@
+//! Session domain root: only declares the session submodules (the `Session`
+//! type, the manager, profiles, status, selection, maintenance, auto-close,
+//! alerts, warnings and create contracts). It holds no code or state itself.
+
 pub(crate) mod auto_close;
 pub(crate) mod context_alerts;
 pub(crate) mod context_sample_queue;
@@ -9,7 +13,10 @@ pub mod profile;
 pub(crate) mod purge_guard;
 pub(crate) mod remote_alerts;
 pub mod selection;
-#[allow(clippy::module_inception)]
+#[allow(
+    clippy::module_inception,
+    reason = "session::session is the existing public path of the Session type"
+)]
 pub mod session;
 pub(crate) mod status;
 pub(crate) mod warnings;

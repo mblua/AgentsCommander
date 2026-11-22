@@ -1,3 +1,8 @@
+//! Helpers that locate Codex CLI session files for the session watcher.
+//! Resolves the `~/.codex/sessions/` root and normalizes cwd strings for comparison with
+//! `session_meta.cwd`. Exposes no Tauri commands and holds no state; root existence checks
+//! are delegated to `crate::telegram::existing_codex_sessions_root`.
+
 // Codex CLI session-file path resolver.
 //
 // Codex stores rollouts under `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`.

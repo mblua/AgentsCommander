@@ -1,3 +1,10 @@
+//! #979 retirement of the standalone global context template in the app-config directory.
+//! Moves the live file to an inert timestamped backup, deletes it only when its raw bytes
+//! match known generated content, then drops the `global` entry from the state manifest.
+//! Also holds `validate_expected_hashes`, the hash check used before an overwrite.
+//! Owns no state of its own; it does not seed, sync or overwrite project templates
+//! (see `sync.rs` and `overwrite.rs`).
+
 use super::{
     compute_pending_update, is_known_generated_standalone_global_template, is_link_or_reparse,
     load_state, persist_state, sha256_hex, validate_existing_dir, LoadedState,

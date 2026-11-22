@@ -1,3 +1,12 @@
+//! Tauri adapters for session services. `SessionWarningEvents` buffers each warning in
+//! `SessionWarningState` and emits `SESSION_ENV_WARNING_EVENT`.
+//! `ContextAlertTauriServices` gives `ContextAlertMonitor` session lookup, scraper
+//! registration, purge checks and mailbox delivery of internal notices.
+//! `AutoCloseServices` hands managed state to `AutoClose` and emits the coordinator
+//! clock and auto-close badge events. Selection and Co-managed events are also emitted
+//! here; selection events go to Tauri and to the WebSocket broadcaster.
+//! The policies themselves live in `crate::session` and `crate::co_managed`.
+
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};

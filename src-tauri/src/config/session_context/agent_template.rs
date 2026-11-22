@@ -132,7 +132,10 @@ pub fn get_default_coordinator_template() -> &'static str {
      user interacts with your session.\n"
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "template render needs roots, skills, cwd, config, mounts, policy"
+)]
 pub(crate) fn render_agent_context_template(
     template: &str,
     agent_root: &str,
@@ -157,7 +160,10 @@ pub(crate) fn render_agent_context_template(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "inner render adds the root-agent flag to the template inputs"
+)]
 pub(crate) fn render_agent_context_template_inner(
     template: &str,
     agent_root: &str,
@@ -276,7 +282,6 @@ pub(crate) fn render_agent_context_template_inner(
         )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_default_agent_context(
     agent_root: &str,
     matrix_root: Option<&str>,
@@ -319,7 +324,10 @@ pub(crate) fn resolve_agent_context(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "resolution adds the manifest activation token to render inputs"
+)]
 pub(crate) fn resolve_agent_context_with_activation(
     agent_root: &str,
     matrix_root: Option<&str>,

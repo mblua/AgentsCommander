@@ -650,7 +650,10 @@ impl MailboxPoller {
         guard.restore_communication(id, communication.clone()).await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "spawn consumes distinct borrowed proofs, each with its own lifetime"
+    )]
     pub(crate) fn spawn_pty_input_target<
         'poller,
         'host,

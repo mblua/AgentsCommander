@@ -1,3 +1,9 @@
+//! Pure preparation of a source candidate before it may be written.
+//! `prepare_source_candidate_with_original_links` checks revision, unknown fields, duplicate
+//! identities and legacy origin units, assigns unique names, and serializes the result as a
+//! `PreparedSourceCandidate`. Also exposes `source_general_field_names`.
+//! Writes nothing; publication and coordination live in other `source` modules.
+
 #[cfg(test)]
 use super::super::agents_instance_groups;
 #[cfg(test)]

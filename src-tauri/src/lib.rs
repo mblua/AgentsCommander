@@ -1,3 +1,13 @@
+//! Crate root of `agentscommander_lib`: declares the top-level modules and
+//! re-exports the app owners, and holds the Tauri glue that `main.rs` calls.
+//!
+//! It owns the GUI entry point `run` (which hands off to `app_run::run`), the
+//! `invoke_handler` command table, the `MasterToken` type and the shared state
+//! aliases (`UpdateCheckState`, `SpecBoardState`). It also implements the
+//! subsystems' host traits for `tauri::AppHandle` and the production remote
+//! alert ports. It does not parse the command line (`cli` does) and does not
+//! own the startup sequence or the app state types (`app_run`, `app_state`).
+
 pub mod agent_update;
 pub mod agent_version;
 pub mod api;

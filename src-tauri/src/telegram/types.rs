@@ -1,3 +1,8 @@
+//! Shared Telegram data types: `TelegramBotConfig` (a bot stored in settings),
+//! `BridgeInfo` (a bot attached to a session) and `BridgeStatus`.
+//! All serialize as camelCase. `TelegramBotConfig` has a manual `Debug` that hides
+//! the bot token; serialization still includes it.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]

@@ -1,3 +1,9 @@
+//! Resolves a stored, portable coding-agent reference to a local agent id and profile letter.
+//! Tiers in order: local id, cell digest (`MatchTier::Hash`), label + letter, command + letter.
+//! Owns the `StoredReference`, `AgentMatch`, `MatchTier` and `MatchOutcome` types.
+//! Pure: it only reads `AppSettings` and logs tie warnings; it never writes the result back.
+//! Cell digests and canonical command text come from `profile_hash`.
+
 use std::collections::BTreeMap;
 
 use super::{canonical_command_text, cell_identity};

@@ -1,3 +1,10 @@
+//! Job bodies the selection worker runs inside a `SelectionTransaction`: user switch and
+//! restore transitions, create finalization (generic and owned replacement), dormant restore,
+//! pending-create rollback, and route-loss reconcile, plus their inline wrappers.
+//!
+//! Holds no state; it commits through the session manager and publishes events. Queueing and
+//! admission live in the `coordinator_*` modules; shutdown cleanup in `shutdown_cleanup`.
+
 use crate::session::warnings::SessionWarning;
 
 use super::replacement::OwnedReplacementContinuation;

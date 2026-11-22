@@ -67,7 +67,10 @@ pub(super) fn configuration_ref_from_tooling(
 
 /// Read a coherent source-null pin without treating derived aliases as manual.
 /// Historical and absent markers keep the existing alias authority and warning.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "read only by tests until source activation")
+)]
 pub(crate) fn read_source_null_profile_result(
     launch_path: &Path,
 ) -> Result<ReplicaProfileRead, String> {

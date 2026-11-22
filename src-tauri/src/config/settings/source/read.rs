@@ -707,7 +707,10 @@ impl LegacyCompatibilityOrigin {
     /// this pure seam verifies that evidence against the captured source and
     /// complete origin binding, without scanning or mutating any matrix.
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)] // Complete original source and target CAS evidence.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "complete original source and target CAS evidence"
+    )]
     pub(crate) fn bind_original_selection(
         &self,
         snapshot: &RawSourceSnapshot,
@@ -735,7 +738,10 @@ impl LegacyCompatibilityOrigin {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "CAS evidence plus the explicit original slot to bind"
+    )]
     pub(crate) fn bind_original_selection_at(
         &self,
         snapshot: &RawSourceSnapshot,

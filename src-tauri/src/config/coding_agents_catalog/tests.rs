@@ -49,7 +49,10 @@ fn extra_row(key: &str) -> serde_json::Value {
 /// (key, label, description, color, command, instructionsFilename, seed dest)
 /// for the nine current presets. The embedded default must match these
 /// values. The frontend keeps a parallel `FALLBACK_CODING_AGENTS` test (E7).
-#[allow(clippy::type_complexity)]
+#[allow(
+    clippy::type_complexity,
+    reason = "flat test table mirrors the preset columns; a type alias adds nothing"
+)]
 const EXPECTED_PRESETS: [(&str, &str, &str, &str, &str, Option<&str>, Option<&str>); 9] = [
     (
         "claude",

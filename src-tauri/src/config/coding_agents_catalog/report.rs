@@ -1,3 +1,8 @@
+//! Read-only catalog report: the persisted catalog definitions plus visible diagnostics.
+//! Owns the `CatalogReport`, `CatalogDiagnostic` and `CatalogUnavailable` types and the
+//! report codes; picks the project or instance catalog from settings.
+//! It never seeds, refreshes, locks or writes; layer resolution lives in `snapshot`.
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};

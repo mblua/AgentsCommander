@@ -1,3 +1,7 @@
+//! `purge-wg` gate: `PurgeGuard` and its `PurgeLease` block input and wakes to the
+//! sessions and agents being purged, while sessions outside the purge keep working.
+//! `acquire` waits behind any in-flight purge; dropping the lease clears the targets.
+
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;

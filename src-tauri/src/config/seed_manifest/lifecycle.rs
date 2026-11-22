@@ -33,7 +33,10 @@ use thiserror::Error;
 // transient return value that every caller matches and destructures immediately, so
 // the disparity is a single stack move (identical in cost to returning the guard
 // itself); boxing it would only add an allocation on the per-spawn gate-acquire path.
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Held is matched at once; boxing would add a per-spawn allocation"
+)]
 pub(crate) enum SoftProjectGate {
     Held(ProjectSeedManifestGuard),
     DegradedUntracked,

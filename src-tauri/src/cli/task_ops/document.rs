@@ -1,3 +1,8 @@
+//! Pure TASK.md text model. Parses a file into `ParsedTask` (BOM, line ending, frontmatter,
+//! body), renders it back, and applies `TaskOp` edits: set title, append or set body, clean.
+//! Also owns the `USER:` human-owned title marker helpers.
+//! It does no file IO and takes no lock; `flow` and `clean` do the reads and writes.
+
 use super::operation::TaskOp;
 
 /// Reserved marker that flags a task title as human-set (#738).

@@ -1,3 +1,8 @@
+//! Mailbox request polling: `MailboxPoller` methods for session and refresh request files.
+//! Polls project refresh, session and coding agent requests and writes session results.
+//! Also moves messages to delivered, rejects messages and raw files, and sweeps stale results.
+//! Request and result shapes come from `cli::create_agent` (`SessionRequest`).
+
 use super::poller::{collect_project_refresh_requests, read_text_bom_tolerant, MailboxPoller};
 use crate::config::instance_artifacts::PROJECT_REFRESH_REQUESTS_DIR_NAME;
 use crate::config::instance_artifacts::SESSION_REQUESTS_DIR_NAME;

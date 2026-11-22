@@ -1,3 +1,9 @@
+//! `list-sessions` CLI verb: reads `sessions.json` directly and prints sessions with runtime
+//! data as JSON, optionally filtered by `--status`. Owns `ListSessionsArgs` and the
+//! `SessionEntry` output shape, including the derived `raisedHand` flag. Warns on stderr when
+//! no running daemon is detected, since the file may then be stale. It does not ask the
+//! daemon for live state.
+
 use clap::Args;
 use serde::Serialize;
 

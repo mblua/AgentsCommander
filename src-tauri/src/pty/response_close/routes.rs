@@ -1,4 +1,9 @@
+//! Route lifecycle of `ResponseCloseState`: apply settings, register and remove routes per
+//! session generation, and record the facts each route uses (manager rows, raw output,
+//! detector, menu, holds, typing keys). Records facts only; deciding and committing a close
+//! is done in `returns.rs`.
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use crate::pty::response_close::ResponseCloseError;
 use crate::pty::response_close::ResponseCloseInner;
 use crate::pty::response_close::ResponseCloseRoute;

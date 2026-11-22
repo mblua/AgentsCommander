@@ -1,3 +1,7 @@
+//! Embedded frontend serving: `embedded_static_handler` serves the bundled dist files
+//! with content type and cache headers, SPA fallback to `index.html`, and rejection of
+//! suspicious paths. Parts are compiled only with `has_embedded_dist`.
+
 #[cfg(has_embedded_dist)]
 use axum::body::Body;
 #[cfg(has_embedded_dist)]

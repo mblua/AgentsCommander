@@ -1,3 +1,8 @@
+//! Re-export seam for team-config reading, writing and the mutation guard.
+//! Exposes `TeamConfigMutationGuard`, the guarded writers and name/context-alert helpers to
+//! the other entity-creation commands; some items are test-only.
+//! No logic lives here: it is in `crate::config::entity_creation::teams` and `names`.
+
 pub(crate) use crate::config::entity_creation::names::{
     normalize_context_alert_percentages, resolve_agent_ref,
 };

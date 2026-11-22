@@ -1,3 +1,9 @@
+//! Builds the JSON value that the project-aware settings writer puts on disk.
+//! Owns the rules for keeping disk-owned fields: placement keys, the terminal snapshot gate,
+//! protected agent groups and legacy configuration commands.
+//! `save_settings_value` takes the settings lock, then hands off to the locked writer.
+//! The locked write itself lives in `save/locked.rs`; the atomic writer in `save.rs`.
+
 #[cfg(test)]
 use super::super::SETTINGS_PRESERVE_LOCK_HOOK;
 use super::super::{

@@ -128,7 +128,6 @@ impl<R: tauri::Runtime> MailboxHost for tauri::AppHandle<R> {
         crate::commands::session::background_destroy_session_inner(self, uuid).await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn restart_session_inner_with_intent<'a>(
         &'a self,
         _session_mgr: &'a Arc<RwLock<SessionManager>>,

@@ -1,3 +1,9 @@
+//! Write machinery for the coding-agents catalog: paths, directory, lock and publication.
+//! `ensure_catalog_dir` creates or checks the canonical catalog dir; `acquire_catalog_lock`
+//! takes the sidecar file lock with a timeout.
+//! `publish_exclusive` and `publish_replace` write files atomically through a synced temp.
+//! Deciding what to write lives in `initialization` and `migration`.
+
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;

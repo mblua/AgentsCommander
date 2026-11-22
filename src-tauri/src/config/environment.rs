@@ -1,3 +1,8 @@
+//! Named wrappers for process environment variable reads.
+//! Each function wraps `std::env` lookups (for example `AGENTSCOMMANDER_ROOT`, `CODEX_HOME`,
+//! `RUST_LOG`, Wayland and Hyprland variables) under a descriptive name.
+//! It holds no state and never sets or removes environment variables.
+
 pub(crate) fn test_window_placement() -> Option<String> {
     std::env::var("AC_TEST_WINDOW_PLACEMENT").ok()
 }

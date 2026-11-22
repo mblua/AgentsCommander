@@ -1,3 +1,10 @@
+//! Tauri commands to check for and create a Project AC Root (`.ac`) in a folder.
+//!
+//! `create_ac_project` makes the project directory and AC root if missing, pins both, takes
+//! the seed-manifest project gate, writes the root `.gitignore` and, only for a fresh root,
+//! the default context templates (recording each publication), then seeds the catalog.
+//! Low-level directory creation lives in `filesystem::projects`; it holds no state.
+
 use super::gitignore::ensure_ac_root_gitignore;
 use crate::config::ac_root::{ac_root_for_project, canonical_ac_root_label, existing_ac_root};
 use crate::filesystem::projects::{self as project_fs, discovery};

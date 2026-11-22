@@ -1,3 +1,9 @@
+//! Pure mutations of `settings.agents`: add, update and remove (`CodingAgentOp`), plus moves.
+//! Validates ids and colors, mints ids, applies an `AgentPatch`, and reorders agents with
+//! `move_registered_agent` and `reorder_registered_agent`; then runs the shared validator.
+//! Works only in memory: it never saves settings to disk.
+//! Persistence belongs to the callers, such as the request queue in `request_queue`.
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::settings::{

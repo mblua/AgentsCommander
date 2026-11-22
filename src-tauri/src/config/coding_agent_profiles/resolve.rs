@@ -1,3 +1,9 @@
+//! Resolves which profile letter and cell a coding-agent launch uses.
+//! Ranks instance override, launch request, origin default and agent default, then falls
+//! back letter by letter toward `A` (`resolve_profile`, `resolve_profile_selection`).
+//! Read-only: it writes nothing; it only collects warnings in the result.
+//! Reading replica fields lives in `replica_profile`; path validation lives in `paths`.
+
 use super::paths::{
     agent_name_from_dir, normalize_profile_from_source, origin_matrix_dir_for_launch_path,
     validate_profile_selection_agent_path,

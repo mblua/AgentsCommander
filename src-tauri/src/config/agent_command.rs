@@ -1,3 +1,11 @@
+//! Builds the command that launches a configured coding agent.
+//! `resolve_agent_spawn_command` resolves the profile, expands AC placeholders, merges agent,
+//! profile and generated env, picks `CODEX_HOME`, and returns an `AgentSpawnCommand`.
+//! `prepare_agent_spawn_command` does the only disk work: it creates an isolated `CODEX_HOME`
+//! and, best-effort, an opencode `OPENCODE_CONFIG_DIR`.
+//! Also holds command tokenizing (`normalize_legacy_agent_command`) and `resolve_program`.
+//! It does not spawn the PTY or run the config-folder seed copy; the session layer does.
+
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

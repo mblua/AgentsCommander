@@ -1,3 +1,13 @@
+//! Configuration root: declares the `config::*` submodules and owns the
+//! resolution of the running instance's location.
+//!
+//! The cached `InstanceLocation` gives `config_dir()`, `agent_local_dir_name()`
+//! and `instance_base()`, chosen from the config-dir overrides, the executable
+//! name and HOME, with a write probe for portable directories. It also holds
+//! the transient-IO retry helper, the probe failure types, `ConfigStartupError`
+//! and the `config.json` and Root Agent directory names. It does not read or
+//! write settings, teams or sessions; the submodules do that.
+
 pub(crate) mod ac_root;
 pub(crate) mod activity_log;
 pub(crate) mod agency_cache;
@@ -369,7 +379,10 @@ impl fmt::Display for ConfigStartupError {
 
 impl std::error::Error for ConfigStartupError {}
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test seam: each filesystem step and the sleep are injected as separate closures"
+)]
 fn probe_candidate_write_with<Handle, CreateDirectory, CreateFile, WriteFile, RemoveFile, Sleep>(
     platform: RetryPlatform,
     candidate: &Path,

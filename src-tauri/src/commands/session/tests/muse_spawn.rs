@@ -248,21 +248,10 @@ async fn muse_spawn_error_is_not_retried_fresh() {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 async fn muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback() {
-    use std::os::unix::fs::PermissionsExt;
-    use tauri::Manager;
-
     let bin = tempfile::tempdir().unwrap();
     let journal = bin.path().join("argv.journal");
     let muse_path = bin.path().join("muse");
-    std::fs::write(
-        &muse_path,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 41\n",
-            journal.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&muse_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_exit_41_muse_script(&muse_path, &journal);
     let muse_path_str = muse_path.to_string_lossy().to_string();
     assert_eq!(
         CodingAgentKind::detect(&muse_path_str, &[]),
@@ -273,30 +262,7 @@ async fn muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback() 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     // The real local backend: the child monitor and exit attribution live in it.
     let owners = crate::AppOwners::new();
-    let git_app = Box::leak(Box::new(
-        crate::test_support::test_builder_with_owners(owners.clone())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build git watcher app"),
-    ));
-    let git_watcher = crate::pty::git_watcher::GitWatcher::new(
-        Arc::clone(&session_mgr),
-        git_app.handle().clone(),
-    );
-    let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
-    let output_senders: crate::telegram::manager::OutputSenderMap =
-        Arc::new(Mutex::new(HashMap::new()));
-    let backend = Arc::new(crate::pty::local_backend::LocalProcessBackend::with_owners(
-        output_senders,
-        idle_detector,
-        git_watcher,
-        None,
-        #[cfg(windows)]
-        owners.git_guard.clone(),
-        owners.spawn.clone(),
-    ));
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend,
-    )));
+    let pty_mgr = real_local_pty_manager(&session_mgr, &owners);
     let app = session_test_app(
         settings.clone(),
         Arc::clone(&session_mgr),
@@ -361,6 +327,85 @@ async fn muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback() 
             "--last".to_string()
         ]
     );
+    assert_child_exit_reported_once(&record).await;
+
+    // One journal entry: the resume argv. No plain fallback ran.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let journaled = std::fs::read_to_string(&journal).unwrap();
+    assert_eq!(journaled.lines().collect::<Vec<_>>(), vec!["resume --last"]);
+
+    // No second created event and no destroy: the row is retained.
+    while let Ok((name, _)) = events.try_recv() {
+        assert!(
+            name != "session_created" && name != "session_destroyed",
+            "unexpected lifecycle event after the child exit: {name}"
+        );
+    }
+    let rows = session_mgr.read().await.list_sessions().await;
+    assert_eq!(rows.len(), 1, "the retained row survives the nonzero exit");
+    assert_eq!(rows[0].id, created.id);
+    assert!(rows[0].shell_args.is_empty(), "configured argv unchanged");
+
+    // The retained row permits a deliberate user-selected fresh Restart Session:
+    // one more process attempt, with configured plain argv (empty journal line).
+    assert_fresh_restart_journals_one_plain_attempt(
+        &app,
+        &session_mgr,
+        &pty_mgr,
+        id,
+        &created.id,
+        &journal,
+    )
+    .await;
+    close_test_coordinator(&app).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn write_exit_41_muse_script(muse_path: &std::path::Path, journal: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(
+        muse_path,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 41\n",
+            journal.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(muse_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn real_local_pty_manager(
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    owners: &crate::AppOwners,
+) -> Arc<Mutex<crate::pty::manager::PtyManager>> {
+    let git_app = Box::leak(Box::new(
+        crate::test_support::test_builder_with_owners(owners.clone())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build git watcher app"),
+    ));
+    let git_watcher =
+        crate::pty::git_watcher::GitWatcher::new(Arc::clone(session_mgr), git_app.handle().clone());
+    let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+    let output_senders: crate::telegram::manager::OutputSenderMap =
+        Arc::new(Mutex::new(HashMap::new()));
+    let backend = Arc::new(crate::pty::local_backend::LocalProcessBackend::with_owners(
+        output_senders,
+        idle_detector,
+        git_watcher,
+        None,
+        #[cfg(windows)]
+        owners.git_guard.clone(),
+        owners.spawn.clone(),
+    ));
+    Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+        backend,
+    )))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn assert_child_exit_reported_once(record: &crate::pty::spawn_diagnostics::SpawnRecord) {
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     let liveness = loop {
         if let Some(liveness) = record.final_liveness() {
@@ -396,31 +441,24 @@ async fn muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback() 
         ),
         "a second report of the same exit is suppressed"
     );
+}
 
-    // One journal entry: the resume argv. No plain fallback ran.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let journaled = std::fs::read_to_string(&journal).unwrap();
-    assert_eq!(journaled.lines().collect::<Vec<_>>(), vec!["resume --last"]);
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn assert_fresh_restart_journals_one_plain_attempt(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<crate::pty::manager::PtyManager>>,
+    id: Uuid,
+    created_id: &str,
+    journal: &std::path::Path,
+) {
+    use tauri::Manager;
 
-    // No second created event and no destroy: the row is retained.
-    while let Ok((name, _)) = events.try_recv() {
-        assert!(
-            name != "session_created" && name != "session_destroyed",
-            "unexpected lifecycle event after the child exit: {name}"
-        );
-    }
-    let rows = session_mgr.read().await.list_sessions().await;
-    assert_eq!(rows.len(), 1, "the retained row survives the nonzero exit");
-    assert_eq!(rows[0].id, created.id);
-    assert!(rows[0].shell_args.is_empty(), "configured argv unchanged");
-
-    // The retained row permits a deliberate user-selected fresh Restart Session:
-    // one more process attempt, with configured plain argv (empty journal line).
     let settings_state = app.state::<crate::config::settings::SettingsState>();
     let restarted = super::super::restart_session_inner_with_activation(
         app.handle(),
-        &session_mgr,
-        &pty_mgr,
+        session_mgr,
+        pty_mgr,
         settings_state.inner(),
         id,
         None,
@@ -430,11 +468,11 @@ async fn muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback() 
     )
     .await
     .expect("user-selected fresh Restart Session is available");
-    assert_ne!(restarted.id, created.id);
+    assert_ne!(restarted.id, created_id);
     assert_eq!(restarted.effective_shell_args.as_deref(), Some(&[][..]));
     let restart_deadline = std::time::Instant::now() + Duration::from_secs(15);
     loop {
-        let journaled = std::fs::read_to_string(&journal).unwrap();
+        let journaled = std::fs::read_to_string(journal).unwrap();
         let lines: Vec<&str> = journaled.lines().collect();
         if lines.len() == 2 {
             assert_eq!(lines, vec!["resume --last", ""]);
@@ -446,5 +484,4 @@ async fn muse_post_spawn_nonzero_exit_is_reported_once_without_fresh_fallback() 
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    close_test_coordinator(&app).await;
 }

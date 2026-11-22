@@ -108,7 +108,10 @@ impl ReadyAttempt {
 /// The ready arm carries the notice, which is the largest value this actor
 /// builds, and it is also the arm that is routinely constructed: boxing it would
 /// add an allocation to every attempt to buy nothing measurable.
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Ready holds a full attempt; short-lived local enum, boxing adds noise"
+)]
 enum AttemptPreparation {
     Ready(ReadyAttempt),
     Cancel {

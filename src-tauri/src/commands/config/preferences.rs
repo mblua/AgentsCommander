@@ -1,3 +1,11 @@
+//! Narrow settings setters: UI preferences, log level and coding-agent order.
+//!
+//! Each setter clones settings under the write lock, changes one field (sounds, theme, resource
+//! monitor, rail collapse, log level), saves and publishes, so it cannot clobber unrelated fields.
+//! Agent move and reorder reject while the local overlay owns `agents`, and emit
+//! `coding_agent_settings_updated`. Ordering rules live in `config::coding_agent_mutations`;
+//! saving lives in `config::settings`.
+
 use tauri::{AppHandle, Emitter, State};
 
 use crate::config::coding_agent_mutations::{

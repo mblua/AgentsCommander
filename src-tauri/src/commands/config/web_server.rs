@@ -346,7 +346,10 @@ pub async fn mint_api_client(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mint takes settings path plus each client field: scopes, ids, secret"
+)]
 pub(crate) fn mint_api_client_with_path(
     path: &Path,
     settings: &AppSettings,
@@ -467,7 +470,10 @@ pub(crate) fn bounded_mint_api_client_expiry(
     Ok(expires_at.to_rfc3339())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "start needs each owned app handle: settings, token, managers, shutdown"
+)]
 pub(crate) fn begin_web_server_start(
     ws_handle: WebServerHandle,
     settings: SettingsState,
@@ -547,7 +553,10 @@ pub(crate) fn begin_web_server_start(
 }
 
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Tauri command: each argument is injected managed State or AppHandle"
+)]
 #[tauri::command]
 pub async fn start_web_server(
     app_handle: tauri::AppHandle,

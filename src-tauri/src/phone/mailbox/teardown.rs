@@ -136,7 +136,10 @@ pub(crate) async fn force_close(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "close needs managers, PTY, timeout and injected exit/busy hooks"
+)]
 pub(crate) async fn graceful_close<E, B, F>(
     manager: SessionManager,
     coordinator: SelectionCoordinator,

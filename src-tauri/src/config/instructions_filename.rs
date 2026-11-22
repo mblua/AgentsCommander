@@ -1,3 +1,8 @@
+//! Names of managed instruction files and the filename safety check.
+//! Defines `CLAUDE_MD_FILE_NAME`, `AGENTS_MD_FILE_NAME` and the internal `AC_CONTEXT_FILE_NAME`.
+//! `is_safe_instructions_filename` accepts only a bare, safe `*.md` name that cannot escape the
+//! agent root. Pure checks only: it reads and writes no files.
+
 /// AC-internal managed context file name; never a user instructions file.
 pub(crate) const AC_CONTEXT_FILE_NAME: &str = "last_ac_context.md";
 /// Built-in managed instructions file for Claude.

@@ -1,3 +1,9 @@
+//! Reads and writes per-replica profile fields in the agent `config.json` tooling section.
+//! Covers the requested profile letter, current coding agent, profile content hash,
+//! the matrix default profile and the instance profile override.
+//! Protects a saved coding-agent + profile pair from being half cleared.
+//! Picking the effective profile lives in `resolve`; path checks live in `paths`.
+
 use super::paths::validate_profile_selection_agent_path;
 use serde_json::Value;
 

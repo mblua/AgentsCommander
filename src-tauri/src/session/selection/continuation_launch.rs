@@ -1,3 +1,11 @@
+//! Launch and completion steps of `OwnedReplacementContinuation`.
+//!
+//! Validates the source and create region, marks the pending binding, records the observed
+//! spawn once, checks the launch is current, refreshes completion info and applies the
+//! finalized carry. Also hosts test-only fixture hooks. It does not define the continuation
+//! state (see `replacement`), nor publish checkpoints, build the carry capability or clean
+//! up pending runtimes (see `continuation_cleanup`).
+
 use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;

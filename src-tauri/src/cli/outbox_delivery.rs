@@ -1,3 +1,8 @@
+//! Shared outbox helpers for CLI verbs: `deliver` writes an `OutboxMessage` JSON into an
+//! outbox directory and `confirm` waits up to 30s for its `delivered/` receipt or
+//! `rejected/` reason. Owns `ConfirmationError`. It does not wait for daemon response files;
+//! each verb polls its own `responses/` file afterwards.
+
 use std::path::Path;
 use std::time::{Duration, Instant};
 

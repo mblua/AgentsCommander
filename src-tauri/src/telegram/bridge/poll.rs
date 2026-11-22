@@ -16,7 +16,10 @@ use uuid::Uuid;
 
 // ── Poll task (Telegram -> PTY) ──────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "poll task owns token, chat, session ids, network and both ports"
+)]
 pub(super) async fn poll_task(
     token: String,
     chat_id: i64,
@@ -403,7 +406,6 @@ pub(super) fn new_poll_backoff(session_id: &str) -> NetworkBackoff {
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn deliver_text(
     runtime: &dyn TelegramRuntime,
     event_port: &dyn TelegramEvents,
@@ -434,7 +436,10 @@ async fn deliver_text(
 
 /// Transcribes one inbound Telegram voice message. Returns `None` when the
 /// update must be skipped (no API key, download or transcription failure).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "voice transcription needs runtime, network, chat, logger and file id"
+)]
 async fn transcribe_voice_update(
     runtime: &dyn TelegramRuntime,
     network: &OutboundNetwork,

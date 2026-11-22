@@ -1,3 +1,8 @@
+//! Test-only pause inside a failed coordinator create's close-marker restore.
+//! Owns one process-wide map of channel pairs keyed by agent FQN.
+//! `create::admission` calls `hit`; tests arm it with `install`.
+//! Compiled only under `#[cfg(test)]`.
+
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Mutex;

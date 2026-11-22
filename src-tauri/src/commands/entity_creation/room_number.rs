@@ -1,3 +1,8 @@
+//! Room number allocation and room directory naming for new rooms.
+//! `room_dir_name` is the only place a room directory name is built from a number; the pad
+//! width comes from the persisted room number mask.
+//! The lowest-free scan itself lives in `crate::config::entity_creation::directories`.
+
 use std::path::Path;
 
 /// Scan the selected Project AC Root for existing `room-<N>-{team_name}/` dirs and return the

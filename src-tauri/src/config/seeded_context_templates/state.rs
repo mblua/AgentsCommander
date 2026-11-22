@@ -1,3 +1,9 @@
+//! State manifest and shared file helpers for seeded context templates.
+//! Owns `SeededContextTemplateState`, its entries, `SeededContextTemplateSpec` and
+//! `LoadedState`, and loads/persists the manifest atomically via a temp file.
+//! Also provides hashing, path display, link checks and validated file snapshots.
+//! It does not decide what to seed or update; that lives in `sync.rs` and `overwrite.rs`.
+
 use super::{SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME, STATE_SCHEMA_VERSION};
 use sha2::Digest;
 use sha2::Sha256;

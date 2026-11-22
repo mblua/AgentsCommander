@@ -1,3 +1,9 @@
+//! Coding-agent records inside `AppSettings`: `AgentConfig`, its env rows and backend.
+//! Owns the tolerant decode of `order` and id-hash fields, the load-side `finalize_agent_order`
+//! and write-side `normalize_agent_order`, and env, `CODEX_HOME`, image and preflight checks.
+//! Re-exports the blocking-menu, command, file, help, instance and profile submodules.
+//! It does not read or write files itself; that work lives in the `instance` and `file` children.
+
 mod blocking_menu;
 mod command;
 mod file;

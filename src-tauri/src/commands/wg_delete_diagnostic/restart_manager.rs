@@ -1,3 +1,9 @@
+//! Windows Restart Manager scan for room-delete diagnostics: finds processes holding files.
+//! Runs a bulk pass with binary-search fallback for bad files, then a per-file pass that
+//! attributes up to `MAX_FILES_PER_PROCESS` files to each blocker PID.
+//! Owns only short-lived RM sessions (`RmSession` ends them on drop); file collection and
+//! the report types live in the parent `wg_delete_diagnostic` module.
+
 use super::collect_files_to_probe;
 use super::diagnostic_error;
 use super::win32_error;

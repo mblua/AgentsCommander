@@ -300,7 +300,6 @@ pub struct ActivityCoalescer {
     last_idle_at: OnceLock<Mutex<LastIdleAt>>,
 }
 
-#[allow(clippy::new_without_default)]
 impl ActivityCoalescer {
     pub fn new() -> Self {
         Self {

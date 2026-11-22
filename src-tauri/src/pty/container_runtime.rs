@@ -1,3 +1,9 @@
+//! Container runtime port: the `ContainerRuntime` trait (start, stop, diagnostics, orphan and
+//! retained cleanup) plus its request, handle, state and diagnostics types such as
+//! `ContainerStartRequest`, `ContainerRuntimeHandle` and `ContainerDiagnostics`.
+//! Owns `ContainerRuntimeControl` for shutdown gating and redaction of secrets in diagnostic text.
+//! The Docker implementation lives in `docker_runtime`.
+
 use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};

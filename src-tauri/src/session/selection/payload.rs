@@ -1,3 +1,11 @@
+//! Selection payload types shared by the coordinator and its callers.
+//!
+//! Owns `SessionSelection` (the serialized selection snapshot and its `none`, `live`
+//! and `dormant` constructors), the `SelectionSource` / `SelectionMode` wire enums,
+//! the trusted intents behind `SelectionCause`, the runtime witnesses and
+//! `SelectionCoordinatorError`. Pure data: no locking, queueing or event emission;
+//! the worker and transaction modules decide when a selection is built and published.
+
 use std::fmt;
 
 use serde::Serialize;

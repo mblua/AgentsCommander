@@ -1,3 +1,8 @@
+//! Project lookup for `send`: derives the project directory from an agent root that lives
+//! inside a room replica. A thin wrapper over
+//! `config::ac_root::wg_replica_layout_from_agent_dir`; it owns no state and does not
+//! decide routing.
+
 use std::path::Path;
 
 /// If `root` lives inside `<project_dir>/<Project AC Root>/wg-<N>-*/__agent_*/`,

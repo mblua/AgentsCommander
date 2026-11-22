@@ -1,3 +1,10 @@
+//! Shared data types passed between the stages of a session create.
+//! Defines `CreateBodyContext` (borrowed inputs for one create), the stage payloads
+//! `PendingLaunch`, `ContextReady` and `PublicationInput`, and the result `CreateCompletion`
+//! with `DeferredCreateOutput`. Also `InitialLastPrompt` and re-exports of
+//! `session::create_contracts`.
+//! Holds no logic beyond small accessors; each stage lives in `create::core`.
+
 use super::admission::CoordinatorCreateTicket;
 use super::admission::OwnedCreateAdmission;
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;

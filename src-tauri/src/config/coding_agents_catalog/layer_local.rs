@@ -1,3 +1,9 @@
+//! Strict parsing and composition of the local and project override catalog layers.
+//! Parses layer JSON into `LocalLayer` rows (patches, removals, order) and rejects unknown
+//! fields; `compose_local_layer` merges rows onto base definitions by key and validates.
+//! Also applies the built-in support gate (`apply_support_gate`).
+//! Pure: it reads no files; reading and resolving layers lives in `snapshot`.
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 

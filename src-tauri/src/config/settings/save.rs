@@ -1,3 +1,9 @@
+//! Entry point of settings persistence and the shared atomic JSON writer.
+//! `save_settings` preserves the on-disk project fields and writes the rest;
+//! `write_value_atomic` does the unique-temp, fsync, rename and read-back check.
+//! Owns the save op-id counter. Errors live in `save/error.rs`, the file lock in
+//! `save/lock.rs`, narrow disk operations in `save/disk.rs`, the value builder in `save/value.rs`.
+
 #[cfg(test)]
 use super::{project_migration_error, reconcile_project_state_to_path};
 use super::{AppSettings, ProjectWriteMode};

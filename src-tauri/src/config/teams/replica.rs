@@ -1,3 +1,9 @@
+//! Verified replica identities for privileged PTY input and terminal snapshots.
+//! Defines `VerifiedPtyInputIdentity`, route types and strict FQN parsing (`parse_strict_pty_fqn`).
+//! `verify_replica` checks replica, matrix and team config on disk and builds fingerprints.
+//! Also hosts `verified_wg_coordinator_target` and re-exports `resolve_wg_coordinator_replica`.
+//! Owns no state. Sender checks and route policy live in `routes.rs`.
+
 use super::enumerate_project_dirs;
 use super::is_valid_wg_local_shape;
 use super::split_project_prefix;

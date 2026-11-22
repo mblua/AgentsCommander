@@ -1,3 +1,10 @@
+//! Plans and executes a config pair write as five ordered disk stages.
+//! `prepare_config_pair_plan` runs cleanup and mutate closures without touching disk;
+//! `execute_unreserved_config_pair` publishes each changed side under both sidecar locks.
+//! Also publishes one prepared image, with an optional source-native parent check.
+//! Plan types live in `pair_image`; reservations live in `pair_revision`.
+//! The final rename or replace lives in `publish`.
+
 use super::pair_image::{
     log_unverified_cleanup_refusal, prepared_pair_image, read_config_pair_physical,
     ConfigPairCleanup, PairTargetGuard, PhysicalState, PreparedConfigPairPlan, PreparedPairError,

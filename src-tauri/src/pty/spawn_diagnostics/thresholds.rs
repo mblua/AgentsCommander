@@ -1,3 +1,8 @@
+//! Tunable thresholds for spawn diagnostics (stall timeout, paint floor, head bytes, windows,
+//! poll intervals), with defaults and clamped values read once from the environment.
+//! `Thresholds` is carried by each record so no code path reads a process global. It holds
+//! numbers only; detecting stalls and writing reports is done elsewhere in `spawn_diagnostics`.
+
 use std::sync::OnceLock;
 use std::time::Duration;
 

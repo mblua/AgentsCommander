@@ -1,3 +1,10 @@
+//! Blocking-menu patterns: the shipped, downloaded and local layers and their resolution.
+//! Owns `BlockingMenusFile` parsing, the remote cache gate with its size and pattern limits,
+//! the throttle stamp, `BlockingMenusStore::resolve_for`, the #1757 migration and the one-shot
+//! #1905 export of legacy `blockingMenus` arrays into the `.local` file.
+//! It does not fetch over HTTP or watch files; callers pass the response and the store is
+//! built once per process.
+
 use super::super::{default_true, settings_path, AppSettings, OVERLAY_KEY_AGENTS};
 use super::{registered_profile_raw_gate, AgentConfig, StartupAgentRows};
 use crate::config::instance_artifacts::{

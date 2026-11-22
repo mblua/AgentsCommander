@@ -258,7 +258,6 @@ impl SessionManager {
         Arc::clone(&self.activity)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn mark_idle_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -307,7 +306,6 @@ impl SessionManager {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn mark_busy_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -364,7 +362,10 @@ impl SessionManager {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "PTY boundary checks target, sender, route, permit and both recipes"
+    )]
     pub(crate) async fn prepare_pty_input_boundary_with_carrier_permit<'a, F, G>(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -484,7 +485,6 @@ impl SessionManager {
         Ok(route_guard)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn commit_selection_transition_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -602,7 +602,6 @@ impl SessionManager {
         Ok(result)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn remove_exited_sessions_with_carrier_permit(
         &self,
         ids: &[Uuid],

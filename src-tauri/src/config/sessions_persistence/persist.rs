@@ -1,3 +1,10 @@
+//! Entry points that snapshot live sessions and save them to `sessions.json`.
+//! Runs the capture, prepare, recheck and guarded-save loop, retrying while carrier
+//! protections or the publication epoch change, and publishes initial carriers.
+//! Also hosts the startup orphan purge and the failed-recoverable merge persist.
+//! It owns no long-lived state; slots and protections live in `carrier`, file writes in
+//! `write` and `store`, row snapshots in the `snapshot` submodule, orphans in `orphan`.
+
 mod snapshot;
 
 pub use self::snapshot::snapshot_sessions;

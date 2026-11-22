@@ -1,3 +1,9 @@
+//! Finds the coordinator replica of a room.
+//! `resolve_wg_coordinator_replica` reads the team `config.json` for its coordinator, then scans
+//! the room's `__agent_*` replicas for the one whose identity matches, returning
+//! `WgCoordinatorReplica`. Reading a replica config may repair it through
+//! `read_and_repair_wg_replica_config`; this module keeps no state.
+
 use crate::config::replica_identity::agent_bare_name_from_ref;
 use crate::config::replica_identity::read_and_repair_wg_replica_config;
 use crate::config::replica_identity::WG_REPLICA_REQUIRED_CONTEXT;

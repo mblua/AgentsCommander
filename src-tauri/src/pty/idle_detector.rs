@@ -1,3 +1,9 @@
+//! Session activity tracking: `IdleDetector` records PTY output, input, resizes and deliveries
+//! per session and fires idle and busy callbacks from a periodic check.
+//! Also keeps the auto-close silence clock, alive-since clocks and resize grace, and reports
+//! `PurgeReadiness`. Detector kinds (timed, Codex working) decide what counts as busy.
+//! It does not kill sessions itself; callers act on its signals.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};

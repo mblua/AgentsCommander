@@ -1,3 +1,7 @@
+//! Async `*_offloaded` wrappers over the blocking `MessageStore` PTY input methods.
+//! Each clones the store and runs the call in `tokio::task::spawn_blocking`.
+//! Join failures map to `MessageStoreError::BlockingTask`; no SQL lives here.
+
 use super::types::{
     ClaimedPtyInputOperation, DuePtyInputCandidate, HostPtyInputRejectionRequest,
     PtyInputEnqueueRequest, PtyInputEnqueueResult,

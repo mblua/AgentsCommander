@@ -1,3 +1,8 @@
+//! Tauri commands for repositories: `search_repos` over configured project paths and
+//! `git_remote_url` (#943), which reads `origin` with a 2 s timeout and strips userinfo.
+//! Holds no state; search and helpers are delegated to `crate::repos` and git calls to
+//! `crate::process::git::read`.
+
 use std::path::Path;
 use tauri::State;
 

@@ -495,7 +495,10 @@ pub fn identity_persisted_name(name: &str, occupied: &[String]) -> String {
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by the dormant source transition (#2897) and tests"
+)]
 pub(crate) fn source_transition_digest<T: Serialize>(
     value: &T,
 ) -> Result<String, SourceCoordinationError> {

@@ -1,3 +1,11 @@
+//! Tauri commands that open, create and remove projects in the settings project list.
+//!
+//! Every change runs as one project-paths settings transaction on a blocking thread, then
+//! broadcasts `project_archive_changed` when the archived list moved. New registrations seed
+//! the coding-agent catalog; `new_project` rolls back settings if the prepared root changed.
+//! Also implements `ArchiveGateHost` for `AppHandle`. Path rules live in `config::projects`;
+//! archiving itself lives in `project_archive`.
+
 use crate::config::settings::{
     instance_settings_target, AppSettings, SettingsFileTarget, SettingsProjectTransaction,
     SettingsState,

@@ -1,3 +1,11 @@
+//! Coding-agent binding helpers for `SessionManager`.
+//!
+//! Installs a birth binding on pending create rows, validating id, seed and seed conflicts;
+//! reads a session's `CodingAgentBinding`; refreshes failed binding recipes; and retires
+//! bindings with their seeds and origins. Mutations run under a carrier mutation permit.
+//! It owns no state; the maps live in `SessionManagerState`, and the commit path that calls
+//! the free helpers lives in `commit.rs`.
+
 use super::carrier::{acquire_carrier_mutation_permit, CarrierMutationPermit};
 use super::{CodingAgentBinding, PendingCreateBinding, SessionManager, SessionManagerState};
 use uuid::Uuid;

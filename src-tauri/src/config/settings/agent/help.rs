@@ -1,3 +1,9 @@
+//! Per-agent help tips: the embedded, local and downloaded `AgentHelpFile` layers.
+//! Owns parsing with https-only links, the remote byte and count caps, the cache note and
+//! throttle stamp, and the refresh of the AC-owned shipped copy beside `settings.json`.
+//! It does not fetch over HTTP or merge layers for display; callers pass the response and the
+//! runtime reads `shipped_agent_help`, never the disk copy.
+
 use super::super::settings_path;
 use super::pretty_json_bytes;
 use crate::config::instance_artifacts::{

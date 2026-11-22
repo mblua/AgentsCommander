@@ -1,3 +1,8 @@
+//! Test-only child-mode helpers for the Stage D lock-order proofs. Holds the frozen env-var
+//! protocol (action, nonce, control dir), validates it into a `ChildContext`, and implements
+//! the reached/release marker barrier plus the owned workgroup fixture a child runs against.
+//! It does not spawn children or assert on ordering; the Stage E parent tests do that.
+
 #![cfg(test)]
 
 use std::path::PathBuf;

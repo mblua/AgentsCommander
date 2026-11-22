@@ -1,3 +1,9 @@
+//! Glue between the web server and the desktop app: builds `WsState` and implements
+//! `WebOperations` and `AgentUpdateOperations` for `tauri::AppHandle`.
+//! Exposes no Tauri commands and owns no state; operations delegate to desktop command code
+//! (`commands::session`, `commands::config`, `commands::ac_discovery`, `commands::pty`)
+//! and agency template ops to `crate::cli::agency_templates`.
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};

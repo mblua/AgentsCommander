@@ -1,3 +1,7 @@
+//! Tauri command `drain_session_warnings`: drains buffered warnings, for one session or all.
+//! The buffer is owned by `crate::session::warnings::SessionWarningState`, not by this module.
+//! It does not create warnings; it only locks the buffer, drains it and reports a poisoned lock.
+
 use tauri::State;
 
 use crate::session::warnings::{SessionWarning, SessionWarningState};

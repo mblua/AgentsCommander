@@ -1,3 +1,9 @@
+//! Telegram bridge output filtering: which terminal rows get sent to Telegram.
+//! `RowTracker` emits a vt100 row only after it stays unchanged for the stabilization time,
+//! and dedupes emitted content. The `AgentFilter` trait drops TUI chrome per agent:
+//! `ClaudeCodeFilter` by default and `AgyFilter` for Antigravity, chosen by `filter_for_agent`.
+//! It does not send messages; the bridge does that with the returned lines.
+
 use crate::session::profile::CodingAgentKind;
 use std::collections::HashSet;
 use tokio::time::Duration;

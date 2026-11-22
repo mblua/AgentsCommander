@@ -520,7 +520,10 @@ async fn window_screenshot_route_local_factory_auth_and_raw_path_order_is_audite
 
 #[cfg(target_os = "windows")]
 #[tokio::test]
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "audit capture guard is a thread-local marker, not a held mutex"
+)]
 async fn window_screenshot_route_local_factory_queue_is_bounded_and_disconnect_retains_lease() {
     let fixture = new_window_screenshot_fixture().await;
     let token = fixture.api_coordinator_token.secret.clone();

@@ -1,3 +1,9 @@
+//! Coordination records and locks for identity-changing source edits.
+//! Owns the private journal (`SourcePrivateJournal`: intents, inventories, progress), its
+//! validation, and the `IdentityWriteLease` and `SourceWriteContext` locks.
+//! `read_source_transition` reports a transition's phase without any write.
+//! Inventory building lives in `source/inventory.rs`; proof checks in `source/proof.rs`.
+
 use super::super::IdentityReferenceError;
 use super::super::IdentityReferencePhysicalState;
 use super::super::IdentityReferenceProtectedRevision;

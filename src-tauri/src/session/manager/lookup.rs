@@ -143,7 +143,6 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn set_is_root_agent_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -172,7 +171,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn set_pending_is_root_agent_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,

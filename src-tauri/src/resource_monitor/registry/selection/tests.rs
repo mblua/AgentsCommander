@@ -211,7 +211,6 @@ impl Fixture {
             .publish_arm_metadata(reservation, self.binding())
             .unwrap();
     }
-    #[allow(clippy::result_large_err)]
     fn run(&self) -> Result<crate::resource_monitor::types::ResourceKillResult, CleanupFailure> {
         self.monitor
             .kill_group_diagnostic(self.id, ResourceKillReason::User)

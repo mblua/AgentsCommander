@@ -1,3 +1,8 @@
+//! App-wide settings: the `AppSettings` struct and the facade over its submodules.
+//! Declares `AppSettings` (serialized to `settings.json`) and `CodingAgentProfilesConfig`, and
+//! re-exports load, save, agents layer, project paths, owner and source submodules.
+//! Load, validation, migration and atomic save live in those submodules, not here.
+
 mod agent;
 mod app_defaults;
 pub(crate) mod context_history;

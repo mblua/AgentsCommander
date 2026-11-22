@@ -1,3 +1,8 @@
+//! Host-to-container path translation: `ContainerPathMap` maps a host root to a container
+//! root and translates paths and selected env values (`HOST_PATH_TRANSLATE_ENV_KEYS`).
+//! Owns env classes, validation regimes and `ContainerEnvWarning` for suspicious values.
+//! Pure string/path logic: it does not touch the filesystem or start containers.
+
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

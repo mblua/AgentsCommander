@@ -1,3 +1,9 @@
+//! Tauri commands for terminal I/O: `pty_write`, `pty_resize`, `get_screen_snapshot`,
+//! output activate/detach, typing hold, session context, quota readings and watcher tools
+//! (`get_watcher_activity`, `preview_watcher_pattern`, `preview_watcher_reach`).
+//! Also tracks user input per session (busy marks, fresh-boundary notes) for other modules.
+//! PTY processes are owned by `crate::pty::manager::PtyManager`, not by this module.
+
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 

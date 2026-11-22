@@ -1,3 +1,9 @@
+//! Leaf value types and serde default functions used by `AppSettings` fields.
+//! Owns small config types such as `ConfigSeedConfig`, `WatcherEntry`, `QuotaSourceEntry` and
+//! the Telegram log levels, the `default_*` functions, timing bounds and their in-memory
+//! repairs, and `resolve_auto_self_clear`.
+//! It holds no state and does no IO; how watchers and quota sources run lives elsewhere.
+
 use super::{AppSettings, ProfileSlotConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

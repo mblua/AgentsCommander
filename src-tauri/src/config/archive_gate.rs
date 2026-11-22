@@ -1,3 +1,10 @@
+//! Gate that keeps session spawns out of archived projects.
+//! `probe_spawn_refusal` is a read-only check; `enforce_unarchived_for_spawn` auto-unarchives the
+//! project that holds the cwd by re-registering it in settings, then notifies the host.
+//! The host supplies settings and the notice through the `ArchiveGateHost` trait.
+//! It owns no state of its own; it refuses when the project's `.ac` root is gone or settings
+//! hold malformed project metadata.
+
 use std::path::Path;
 use std::time::Duration;
 

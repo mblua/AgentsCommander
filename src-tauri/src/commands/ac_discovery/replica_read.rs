@@ -1,3 +1,11 @@
+//! Read-only helpers that turn agent, replica and TASK.md files into discovery fields.
+//!
+//! Resolves a directory's preferred coding agent, validates (and repairs) a replica identity,
+//! derives origin project and display names, maps the strict selection state to wire fields,
+//! and extracts a TASK.md first line and title. Also projects paths without the Windows
+//! verbatim prefix. It holds no state; config parsing lives in `config::agent_config`,
+//! `config::replica_identity` and `config::coding_agent_profiles`.
+
 use super::model::AcReplicaSavedPair;
 use crate::config::ac_root::find_ac_root_segment;
 use crate::filesystem::tasks::TASK_FILE_NAME;

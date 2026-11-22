@@ -1,3 +1,10 @@
+//! Provider resume-argument injection and env-reference expansion for session spawns.
+//! Detects existing resume or subcommand tokens and injects Codex, Antigravity, Pi and Muse
+//! resume arguments into the effective argument vector only.
+//! Also expands `%NAME%` and `$env:NAME` references for the Claude resume probe.
+//! Owns no state; Claude `--continue` and `--session-id` injection lives in
+//! `create::core::context`.
+
 use super::agent_command::executable_basename;
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::pty::backend::SessionBackendKind;

@@ -1,3 +1,8 @@
+//! Locks and guards for PTY input work: `PtyInputActiveOperations`, `PtyInputTargetLocks`,
+//! `PtyInputTargetGate`, `PtyInputStripeGuard` and `PreparationHeartbeatGuard`.
+//! Also owns `MessageStoreState`, which holds the store plus its target gate state.
+//! File-backed stripe leases come from `crate::filesystem::message_store`.
+
 use super::{
     MessageStore, MessageStoreError, PTY_INPUT_OPERATION_LOCK_STRIPES,
     PTY_INPUT_TARGET_LOCK_STRIPES,

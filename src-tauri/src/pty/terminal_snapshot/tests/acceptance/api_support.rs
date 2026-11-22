@@ -180,7 +180,10 @@ fn assert_common_blocking_overlap_denial(state: &TerminalSnapshotState) {
     assert_api_lifecycle_active(api_lifecycle_counts(state), true);
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shared timeout scenario takes each stage, control and expectation"
+)]
 pub(super) async fn timeout_api_at_common_blocking_stage(
     fixture: &AcceptanceFixture,
     config: &Path,

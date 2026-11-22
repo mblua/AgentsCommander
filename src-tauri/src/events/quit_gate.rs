@@ -1,3 +1,7 @@
+//! Tauri emit helper for the quit gate: `emit_to` sends one JSON event to one window label.
+//! It maps the Tauri error to a `String`; it holds no state and makes no quit decisions.
+//! The gate logic itself lives elsewhere.
+
 use tauri::{AppHandle, Runtime};
 
 pub(crate) fn emit_to<R: Runtime>(

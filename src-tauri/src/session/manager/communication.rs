@@ -41,7 +41,6 @@ impl SessionManager {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn raise_hand_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -87,7 +86,6 @@ impl SessionManager {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     // Dormant until P05 integration; remove with real callers.
     pub(crate) async fn rollback_raise_with_carrier_permit(
         &self,
@@ -121,7 +119,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn clear_communication_if_kind_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -159,7 +156,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn set_blocked_menu_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -204,7 +200,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn clear_blocked_menu_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -236,7 +231,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn set_co_managed_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -290,7 +284,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn clear_co_managed_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -322,7 +315,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn restore_communication_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -354,7 +346,6 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn set_start_fresh_on_restore_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -384,7 +375,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn set_pending_start_fresh_on_restore_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -411,7 +401,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn set_pending_communication_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -433,7 +422,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn clear_start_fresh_on_restore_if_set_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -467,7 +455,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn set_start_fresh_on_restore_if_unset_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -511,7 +498,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn clear_user_input_transitions_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,

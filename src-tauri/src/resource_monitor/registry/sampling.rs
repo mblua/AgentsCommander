@@ -1,3 +1,8 @@
+//! Sampling half of `ResourceMonitorState`: observes and merges agent process trees.
+//! Covers watchdog samples, `merge_tree` and `merge_sample` with missing-root strikes up to
+//! `REAP_STRIKES`, the confirmed `apply_reap`, strike reset, and pruning of Terminated groups
+//! beyond `MAX_TERMINATED_RETAINED`. It owns no types; the OS walk is the backend's job.
+
 use crate::resource_monitor::registry::is_missing_root_cleanup_error;
 use crate::resource_monitor::registry::join_errors;
 use crate::resource_monitor::registry::merge_observed;

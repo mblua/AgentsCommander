@@ -1,3 +1,7 @@
+//! Per-session environment warnings: `SessionWarning`, the bounded `SessionWarningBuffer`
+//! (shared as `SessionWarningState`), and `emit_session_warning` through the
+//! `SessionWarningEvents` trait. Also event and warning-kind name constants.
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

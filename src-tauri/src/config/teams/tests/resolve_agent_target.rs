@@ -36,7 +36,10 @@ impl FixtureRoot {
 /// `projects` is a slice of `(project_name, &[(wg_name, &[agent_short])])`.
 // The nested-slice shape is the most direct way to express the fixture; a
 // type alias would obscure the structure at the only call sites.
-#[allow(clippy::type_complexity)]
+#[allow(
+    clippy::type_complexity,
+    reason = "nested project/room/agent literal reads best inline in test fixture"
+)]
 pub(super) fn make_project_fixture(
     projects: &[(&str, &[(&str, &[&str])])],
 ) -> (FixtureRoot, Vec<String>) {

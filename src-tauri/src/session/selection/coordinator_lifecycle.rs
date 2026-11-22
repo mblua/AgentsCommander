@@ -1,3 +1,12 @@
+//! Construction and bookkeeping of `SelectionCoordinator`: builds `CoordinatorInner`, reports
+//! phase and restore state, reserves envelope capacity, and submits `transition`/`destroy` jobs.
+//!
+//! Also manages the retained-replacements root: `prepare_owned_replacement` and
+//! `admit_owned_replacement` (checks retired carrier A, reserves create and delivery),
+//! `prepare_lifecycle_owner` and `insert_lifecycle_entry` (capacity-bounded), then
+//! `finish_lifecycle_entry`, and sealing and inspecting retained entries at shutdown.
+//! Other submitters live in `coordinator_requests`; worker start in `coordinator_runtime`.
+
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};

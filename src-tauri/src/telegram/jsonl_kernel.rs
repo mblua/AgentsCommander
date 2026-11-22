@@ -1,3 +1,8 @@
+//! Shared helpers for JSONL transcript readers used by the Claude and Codex watchers.
+//! Owns the poll, rotation, preamble and grace constants, and thin wrappers over
+//! `crate::filesystem::transcripts` for discovery, incremental reads and the §J preamble scan.
+//! It does no file IO itself and does not parse backend-specific line formats.
+
 // Shared scaffold for append-only JSONL session-file readers.
 // Hosts the primitives reused by claude_watcher and codex_watcher:
 // directory scan, offset-based incremental read,

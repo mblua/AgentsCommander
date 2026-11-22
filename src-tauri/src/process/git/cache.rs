@@ -1,3 +1,7 @@
+//! Blocking `git` runner: `run_agency_git` spawns git with scrubbed credentials and the
+//! agent search path, reads stdout/stderr on threads and kills it after a timeout.
+//! No caching happens in this module despite its name; callers handle results.
+
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};

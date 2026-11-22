@@ -807,7 +807,10 @@ pub struct SpawnRegistry {
     registry: OnceLock<Mutex<Registry>>,
 }
 
-#[allow(clippy::new_without_default)]
+#[allow(
+    clippy::new_without_default,
+    reason = "new() is the explicit constructor for the lazily built registry"
+)]
 impl SpawnRegistry {
     pub fn new() -> Self {
         Self {

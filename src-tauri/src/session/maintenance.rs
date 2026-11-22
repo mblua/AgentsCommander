@@ -1,3 +1,8 @@
+//! Session-maintenance reservations: `PendingSelfClear` holds in-memory Legacy and Plain
+//! self-clear reservations, keyed by session id, with `Lease` handles and aliases.
+//! Errors are `MaintenanceError`. State is volatile; a daemon restart drops it.
+//! It does not perform the clear itself.
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Mutex;

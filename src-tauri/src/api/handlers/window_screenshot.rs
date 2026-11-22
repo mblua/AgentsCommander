@@ -1,3 +1,8 @@
+//! Window screenshot API route: `WINDOW_SCREENSHOT_ROUTE`, `route` and the `get` handler.
+//! It authenticates the caller, takes a `WindowScreenshotLease` and records audit results.
+//! PNG capture is injected as a `CaptureFactory`; the real one is `capture_window_png`.
+//! Test helpers swap in a fake capture factory.
+
 use std::{
     future::Future,
     net::{IpAddr, SocketAddr},

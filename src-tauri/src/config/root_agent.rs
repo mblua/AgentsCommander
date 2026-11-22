@@ -1,3 +1,10 @@
+//! Root Agent directory, its default files and its default skills.
+//! Defines Root Agent names (`ROOT_AGENT_SESSION_NAME`, `ROOT_AGENT_SENDER`), resolves
+//! `root_agent_dir` in the app config dir, and re-exports the provisioning, file IO and
+//! context-snapshot submodules that create and repair the root role and skills.
+//! Keeps a process-wide set of paths already warned about failed skill repairs.
+//! It does not run the Root Agent session or send messages.
+
 mod context_snapshot_temp_rooms;
 mod context_snapshots;
 mod file_io;

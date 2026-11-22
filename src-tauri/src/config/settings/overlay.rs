@@ -1,3 +1,7 @@
+//! Loads the personal settings overlay that sits beside the main settings file.
+//! `load_settings_overlay` resolves the overlay path and merges it into the base value.
+//! Owns no state; the merge rules live in `crate::config::local_overlay`.
+
 use crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME;
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay, PairedLeaf};
 use serde_json::Value;

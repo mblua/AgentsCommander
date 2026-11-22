@@ -1,3 +1,9 @@
+//! Raw gate over the registered profile documents before a load or write uses them.
+//! Owns reading `settings.json`, the agents file and `settings.local.json` together,
+//! classifying IO, syntax, duplicate-member and profile problems in `RegisteredProfileCapture`,
+//! choosing the selected owner, and the byte-equal recheck in `recheck_registered_profile_gate`.
+//! It never writes; callers use the captured documents to authorize their own publication.
+
 use super::super::{agents_instance_path, AGENTS_INSTANCE_KEYS};
 use super::{
     duplicate_profile_document, physical_profile_rows, physical_profile_sets,

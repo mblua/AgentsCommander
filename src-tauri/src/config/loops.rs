@@ -77,7 +77,10 @@ pub enum LoopSessionStart {
 
 // Explicit, not derived: Fresh is a product decision (a Loop starts a new
 // conversation) and must read as one at the definition site.
-#[allow(clippy::derivable_impls)]
+#[allow(
+    clippy::derivable_impls,
+    reason = "Fresh as default is a product decision kept explicit at definition"
+)]
 impl Default for LoopSessionStart {
     fn default() -> Self {
         LoopSessionStart::Fresh

@@ -1,3 +1,11 @@
+//! Test-only support: the `test-reset` verb, UI automation, window info and
+//! test window placement submodules, plus the single-instance mutex probe.
+//!
+//! `acquire_profile_mutex_probe` reports whether a GUI with this binary
+//! identity holds the Windows mutex and returns a guard that keeps its own
+//! handle until dropped; on other platforms it always reports inactive. It
+//! does not enforce single-instance startup; `main.rs` does that.
+
 mod mutex_holders;
 pub(crate) mod reset;
 pub mod ui_automation;

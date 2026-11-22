@@ -1,3 +1,9 @@
+//! Backend abstraction for PTY sessions: the `PtyBackend` trait every local or container backend
+//! implements (spawn, write, resize, kill, screen reads, output activation).
+//! Owns shared launch types: `BackendSpawnSpec`, `PtyViewport`, `LaunchWitness`, `NativeExit`,
+//! `PreflightLaunch`, and screen read results such as `TerminalScreenRead`.
+//! Screen frame stamping lives in the `screen_frame` submodule. No concrete backend lives here.
+
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -1,3 +1,11 @@
+//! Queue envelope types for the selection coordinator: `CoordinatorEnvelope` carries a job
+//! with its admission, critical-key and create-ticket guards; `EnvelopeHold` keeps those
+//! guards after the job moves out and releases them before each completion send.
+//!
+//! Also holds `RestoreSubmissionPhaseGuard` and `FinalizedOwnedCarryCapability`, the sealed
+//! carry capability. It does not reserve capacity or run jobs; that lives in the
+//! `coordinator_*` and `worker` modules.
+
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 

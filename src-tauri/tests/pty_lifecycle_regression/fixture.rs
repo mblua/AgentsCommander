@@ -407,7 +407,10 @@ pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test app wires each capture map, cleanup, override and owners"
+)]
 pub(crate) fn make_test_app(
     repo_root: &Path,
     captured_output: &Arc<Mutex<HashMap<String, Vec<u8>>>>,

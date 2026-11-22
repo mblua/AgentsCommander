@@ -1,3 +1,10 @@
+//! Tauri commands for project context templates and a replica's `context` file list.
+//!
+//! Keeps a user's custom template, overwrites one with the default under the seed-manifest
+//! project gate (recording the publication), and reads or writes the replica config `context`
+//! array. Template hashing, update detection and file writes live in
+//! `config::seeded_context_templates`; config edits go through `config::agent_config`.
+
 use crate::config::ac_root::existing_ac_root;
 use std::path::Path;
 

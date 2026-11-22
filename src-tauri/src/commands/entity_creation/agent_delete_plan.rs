@@ -1,3 +1,10 @@
+//! Agent-delete planning: resolves the `_agent_<name>` origin and every `__agent_<name>` replica.
+//! Builds an `AgentDeletePlan` (targets, path keys, team-config mutations) and runs the
+//! live-session preflight before anything is removed.
+//! Also prepares settings metadata (`PreparedAgentDeleteMetadata`) and keeps test-only
+//! persist/restore helpers. It does not delete directories; the guarded team-config
+//! writes live in `crate::config::entity_creation::teams`.
+
 use super::delete_guard::{
     path_key_for_delete, target_keys_for_delete, validate_delete_root_not_link_or_reparse,
 };

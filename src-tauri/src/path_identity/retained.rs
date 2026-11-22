@@ -285,6 +285,18 @@ impl RetainedDirectory {
             return UnixTrackedCleanupOutcome::Uncertain;
         }
 
+        self.unlink_verified_unix_claim(path, claim_path, expected, witness, &mut hook)
+    }
+
+    #[cfg(unix)]
+    fn unlink_verified_unix_claim(
+        &self,
+        path: &Path,
+        claim_path: PathBuf,
+        expected: &VerifiedPathIdentity,
+        witness: &RetainedUnixFileWitness,
+        hook: &mut impl FnMut(UnixTrackedCleanupStage, &Path, &Path),
+    ) -> UnixTrackedCleanupOutcome {
         hook(
             UnixTrackedCleanupStage::BeforeClaimUnlink,
             path,

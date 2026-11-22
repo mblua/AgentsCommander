@@ -1,3 +1,10 @@
+//! Applies UI edits to a physical agent file and persists them.
+//! Owns `prepare_agent_file_edits` (row patches, profile sets and slots, then command
+//! validation), the registered-instance save, the remembered source per menu, and the async
+//! `persist_agent_file_edits` entry point.
+//! Project personal catalogs are routed to the scoped catalog operation in `authority`; this
+//! module writes only the registered file and `settings.json`.
+
 use super::super::super::{
     list_active_sources, source_bytes_revision, source_diagnostic, write_value_atomic_labeled,
     AppSettings, OperationOutcome, SettingsOperationGuard, SettingsPublisher, SettingsState,

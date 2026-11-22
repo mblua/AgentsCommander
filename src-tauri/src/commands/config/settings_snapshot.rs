@@ -1,3 +1,11 @@
+//! The `get_settings` command and the `SettingsSnapshot` it returns to clients.
+//!
+//! Repairs eligible project paths to disk at the snapshot boundary, then returns the settings
+//! with the root token cleared, a `ProjectPathResolution` report (issues with stable SHA-256
+//! ids), the instance settings-file path and read-only overlay and agents-file flags.
+//! Shared by the Tauri and WebSocket transports. Path resolution and repair live in
+//! `config::projects` and `config::settings`; this module keeps no state.
+
 use tauri::State;
 
 use sha2::{Digest, Sha256};

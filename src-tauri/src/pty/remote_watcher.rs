@@ -237,7 +237,6 @@ pub struct RemoteActivityState {
     snapshot: OnceLock<Mutex<HashMap<String, RemoteActivity>>>,
 }
 
-#[allow(clippy::new_without_default)]
 impl RemoteActivityState {
     pub fn new() -> Self {
         Self {

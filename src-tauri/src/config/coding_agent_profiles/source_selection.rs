@@ -453,7 +453,6 @@ pub(crate) fn prepare_identity_reference_patch(
 
 /// Resume executes the original packet; it never prepares new caller images.
 /// The pure validation callback borrows existing C/source/target authority.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_identity_reference_patch(
     decisions: &Path,
     state: &Path,

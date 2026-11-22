@@ -223,7 +223,10 @@ impl SessionManager {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "prompt init: permit, binding, key, text and three restore flags"
+    )]
     pub(crate) async fn initialize_pending_prompt_with_carrier_permit(
         &self,
         permit: &CarrierMutationPermit,

@@ -1,3 +1,9 @@
+//! Creates and repairs the Root Agent directory on disk.
+//! Builds the layout, messaging and skills folders, seeds the default skills, migrates
+//! `Role.md` and the Root context template, and retires the old standalone global context.
+//! Also checks whether a path is the Root Agent directory and must be protected.
+//! File helpers live in `file_io`; frozen template snapshots live in `context_snapshots`.
+
 use super::{
     cleanup_temp_role, ensure_default_skill_file, merge_root_agent_config, normalize_role_text,
     paths_equivalent, publish_missing_role_file, replace_role_file, root_agent_dir, sync_role_dir,

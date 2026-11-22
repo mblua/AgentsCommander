@@ -1,3 +1,7 @@
+//! Resource monitor data types: observed processes and trees, memory, snapshots per agent
+//! group and overall, group states and warnings, kill requests, results and reasons,
+//! `ResourceLimits` and `ResourceLaunchMetadata`. Data only; no sampling or killing here.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

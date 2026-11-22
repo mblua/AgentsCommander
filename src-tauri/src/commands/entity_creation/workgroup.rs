@@ -80,7 +80,13 @@ pub(crate) fn agent_ref_bare_name(agent_ref: &str) -> String {
 }
 
 // Compatibility entry point for callers without an existing operation.
-#[allow(dead_code)] // test-only; cfg(test) kills Origin::OnDisk outside #3595
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "test-only; cfg(test) would remove Origin::OnDisk outside #3595"
+    )
+)]
 pub(crate) async fn create_workgroup_on_disk(
     args: WorkgroupDiskCreateArgs,
 ) -> Result<WorkgroupCloneResult, String> {

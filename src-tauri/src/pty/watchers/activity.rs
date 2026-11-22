@@ -1,3 +1,7 @@
+//! Types for internal activity consumers of the watchers engine: `ActivityObservation`,
+//! the consumer and factory callbacks, and the built-in Codex working-row pattern. No state
+//! and no logic; the engine decides when to deliver an observation.
+
 use std::sync::Arc;
 use uuid::Uuid;
 

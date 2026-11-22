@@ -1,4 +1,9 @@
+//! The `RemoteSweeper` loop: builds the sweeper, starts it, and runs each round by reading local
+//! git facts for every path, grouping them into query keys, and gating rounds on rate-limit
+//! backoff. Also resolves the base branch for a path.
+//! It does NOT parse GitHub answers or apply them; `ci_parse` and `outcome` do.
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 mod round;
 
 use round::RoundReservations;

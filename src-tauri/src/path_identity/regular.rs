@@ -1,3 +1,7 @@
+//! Identity-checked regular-file operations: bounded reads, delete-pending checks,
+//! best-effort parent sync, same-identity removal, atomic publish and replace, and
+//! path equivalence and descendant checks. Platform-specific variants per OS.
+
 use super::identity::handle_identity;
 use super::identity::is_link_or_reparse;
 #[cfg(unix)]

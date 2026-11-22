@@ -1,3 +1,7 @@
+//! `SettlementAttempt`: a monotonic deadline budget for one native cleanup attempt.
+//! Offers `new`, `remaining`, `expired` and `restart`.
+//! Shared by Job Object spawn cleanup and the probe and native proof code.
+
 /// One monotonic native-settlement attempt budget. Updater, probe, and rejected
 /// suspended-spawn cleanup pass this same deadline through direct-child, reader,
 /// and native tree proof work; a new deadline is created only after the current
