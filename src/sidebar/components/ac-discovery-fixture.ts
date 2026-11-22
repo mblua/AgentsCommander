@@ -15,7 +15,12 @@ export function acDiscoveryTransport(): FakeTransport {
       path: String.raw`C:\Project\.ac\wg-1-team`,
       task: null,
       taskTitle: null,
-      agents: [{ name: "dev", path: "C:\\Project\\.ac\\wg-1-team\\__agent_dev", repoPaths: [], isCoordinator: false }],
+      agents: [{
+        name: "dev",
+        path: String.raw`C:\Project\.ac\wg-1-team\__agent_dev`,
+        repoPaths: [],
+        isCoordinator: false,
+      }],
     }],
   }));
   // The picker filter renders only with at least one coding agent.
