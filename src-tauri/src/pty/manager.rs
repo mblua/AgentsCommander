@@ -1,3 +1,8 @@
+//! Session manager: `PtyManager` routes each session to its local or container `PtyBackend`
+//! by `SessionBackendKind`, tracks pending spawns, and forwards writes, kills and screen reads.
+//! Owns route registry access, `SpawnMark`, `PendingSpawn` and route proofs (`route_proof`
+//! submodule) used for verified writes and snapshots. It holds no PTY I/O of its own.
+
 #[cfg(test)]
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

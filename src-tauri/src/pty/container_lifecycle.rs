@@ -1,3 +1,7 @@
+//! Lifecycle callback port for the container backend: the `ContainerLifecycle` trait and its
+//! cloneable `ContainerLifecycleSender`, used to report a lost container route with an exit code.
+//! `CriticalAdmissionOutcome` tells whether the report completed or one was already pending.
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

@@ -1,3 +1,10 @@
+//! Container transport backend: `ContainerTransportBackend` implements `PtyBackend` for sessions
+//! that run inside a container and talk to the host over a framed bridge transport.
+//! Owns session states (pending, attaching, active), bridge frame types such as
+//! `BridgeToHostFrame`, and `ContainerTransportTuning`.
+//! Submodules split spawn, start requests, transport, cleanup, retained cleanup, shutdown work and
+//! orphan sweeps. Container start/stop itself is delegated to a `ContainerRuntime`.
+
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
 use crate::pty::container_lifecycle::ContainerLifecycleSender;
