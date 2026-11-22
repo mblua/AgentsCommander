@@ -1,3 +1,8 @@
+//! Fresh-conversation boundary metadata for sessions (#756).
+//! Stamps or drops the start-fresh intent in two halves: the coordinator-clocks mirror first,
+//! then the persisted session record, and combines both into a `BoundaryMetadataOutcome`.
+//! It does not inject `/clear` or content; callers do that and then call these helpers.
+
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
