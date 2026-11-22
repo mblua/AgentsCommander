@@ -1,3 +1,8 @@
+//! Session-create contracts: the `CreateSelectionIntent` a caller passes, its mapping to
+//! `TrustedCreateIntent`, and the request and step types for owned replacement creates
+//! (`OwnedReplacementCreateRequest`, `OwnedReplacementCreateStep`) and PTY targets
+//! (`PtyTargetCreateStep`). Data types only; the create flow runs elsewhere.
+
 #[cfg(test)]
 pub(crate) mod fixture;
 

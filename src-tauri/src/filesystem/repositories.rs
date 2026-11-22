@@ -1,3 +1,8 @@
+//! Filesystem probes for repository discovery: directory and agent-marker checks,
+//! visiting repo-search children, spec repo and git-marker checks (`SpecRepoChildren`
+//! wraps an async `ReadDir`), canonical git project paths, and clone and working-tree
+//! markers. Read-only; runs no git commands.
+
 use std::io;
 use std::path::{Path, PathBuf};
 

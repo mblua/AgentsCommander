@@ -1,3 +1,8 @@
+//! Loop prompt delivery: `deliver_loop_prompt` resolves the target agent session, skips
+//! busy or stale targets, spawns or restarts it when needed, and returns a
+//! `LoopDeliveryReport`. Host access goes through `LoopDeliveryHost`; restart choices are
+//! `PreRestartDecision` and `PostRestartDecision`. It does not schedule loops.
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;

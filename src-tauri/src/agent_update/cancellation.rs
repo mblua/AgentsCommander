@@ -1,3 +1,7 @@
+//! Agent update cancellation: `cancel_update` for one target and `cancel_all_updates` for
+//! every active target, plus `cancellation_snapshot` built from the gate's `GateState`.
+//! Reserves targets and waits on their `AsyncFence`s; it does not run updates itself.
+
 use super::gate::{AgentUpdateGate, GateState};
 use super::target::{AsyncFence, ResponseReleaseGuard, TargetClaim, TargetPhase};
 use super::ManagedBroadcastEvents;

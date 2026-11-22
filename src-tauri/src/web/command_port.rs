@@ -1,3 +1,7 @@
+//! Web command port: the `WebCommandDispatcher` trait (text `dispatch` and `binary` input)
+//! and `ManagedWebCommandDispatcher`, the shared `Arc` handle to it.
+//! No implementation lives here.
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

@@ -1,3 +1,8 @@
+//! Per-target update state types: `TargetWork`, `TargetPhase`, `TargetClaim`,
+//! `TargetControl`, `StepAdmission` and `TerminalPublish`. Owns `AsyncFence` and
+//! `ResponseReleaseGuard` for waiting and release, plus test hook structs. Holds no logic
+//! beyond these small primitives.
+
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

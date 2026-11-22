@@ -1,3 +1,7 @@
+//! The `master-token.txt` file in the config directory: `matches` and
+//! `matches_bounded_regular` compare a token against it (the latter via a bounded
+//! regular-file read), and `publish` writes it. Does not generate tokens.
+
 const FILE_NAME: &str = "master-token.txt";
 
 pub(crate) fn matches(config_dir: Option<&std::path::Path>, token: &str) -> bool {

@@ -1,3 +1,7 @@
+//! Filesystem access for agent command setup: creates the OpenCode config directory
+//! and the isolated Codex home directory. Owns no types; directory contents are
+//! managed elsewhere.
+
 use std::io;
 use std::path::Path;
 

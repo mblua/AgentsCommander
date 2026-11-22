@@ -1,3 +1,7 @@
+//! Agent update pass: `PassSupervisor` runs one pass (plan, prompts, per-target tasks,
+//! panic settling and finalize) with `PassRuntime`. `TargetTerminalizer` publishes each
+//! target's final result; also holds target probing, `pass_nodes` and post-update probes.
+
 use super::gate::AgentUpdateGate;
 use super::plan::{
     build_update_plan, mise_managed, probe_command_install_state_cancellable, production_probe,

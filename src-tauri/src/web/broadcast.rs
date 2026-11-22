@@ -1,3 +1,7 @@
+//! WebSocket fan-out: `WsBroadcaster` holds one bounded queue per client and sends
+//! `WsOutMsg` text frames (events) and binary frames (PTY output). It does not own sockets;
+//! clients get a receiver from `subscribe`.
+
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 

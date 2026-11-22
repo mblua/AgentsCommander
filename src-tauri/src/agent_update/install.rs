@@ -1,3 +1,8 @@
+//! Coding agent installs: `AgentInstallState` tracks in-flight install commands and
+//! `InstallInFlight` guards one command at a time. Starts and runs installs
+//! (`start_agent_install`, `run_agent_install`), maps outcomes into `AgentInstallRun`,
+//! and builds log lines and the install-finished event payload.
+
 use super::updater::{
     output_tail, TargetProcessOwner, TargetSettlement, TargetWait, UpdaterStepOutcome,
 };
