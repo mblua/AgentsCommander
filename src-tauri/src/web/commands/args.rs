@@ -1,3 +1,8 @@
+//! Argument helpers for web command dispatch: read JSON args with `require_str`,
+//! `require_json`, `str_or`, `str_vec_or` and `terminal_dimension`.
+//! Each helper returns a `String` error ready to send back to the browser client.
+//! Used by the `*_dispatch` modules next to it; holds no state.
+
 use serde_json::Value;
 
 pub(super) fn require_str(args: &Value, key: &str) -> Result<String, String> {

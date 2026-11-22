@@ -1,3 +1,8 @@
+//! Web command dispatch for PTY sessions: list, create, destroy, switch and rename
+//! sessions, set the last prompt, resize, read size, drain warnings, and
+//! `subscribe_session`, which returns a screen snapshot for a session.
+//! Works through the `PtyManager` in `WsState` and broadcasts changes to web clients.
+
 use super::args::{require_str, str_or, str_vec_or, terminal_dimension};
 use super::{WebSessionCreate, WsState};
 use crate::web::event_broadcast::broadcast_all;

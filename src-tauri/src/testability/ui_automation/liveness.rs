@@ -1,3 +1,8 @@
+//! Process and path helpers for UI automation session checks: `pid_is_alive` and
+//! `pid_is_zombie` per platform, `process_path` on Windows, path comparison that ignores
+//! case on Windows, and `now_unix_ms`.
+//! Holds no state; used by the CLI runner to decide if a session's app is still running.
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};

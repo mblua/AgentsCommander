@@ -1,3 +1,9 @@
+//! Web command dispatch for coding agent routes, profiles and selection: moving and
+//! reordering agents, profile resolve and defaults, profile selection preview/apply,
+//! selection lock removal, and replica selection defaults.
+//! Changes are broadcast to web clients with `broadcast_all`; the selection logic itself
+//! lives in `commands::session::selection_executor`.
+
 use serde_json::{json, Value};
 
 use crate::commands::session::selection_executor::{
