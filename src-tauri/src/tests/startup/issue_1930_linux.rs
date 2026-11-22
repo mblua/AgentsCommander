@@ -3,7 +3,7 @@
 use std::fs::OpenOptions;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -141,34 +141,13 @@ pub(super) fn run_child(
             )
         })?;
 
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut status_poll_error = None;
-    let terminal_status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() < deadline => {
-                thread::sleep(Duration::from_millis(25));
-            }
-            Ok(None) => break None,
-            Err(error) => {
-                status_poll_error = Some(error);
-                break None;
-            }
-        }
-    };
+    let (terminal_status, status_poll_error) = wait_for_exit(&mut child, Duration::from_secs(15));
 
     if terminal_status.is_none() {
         let kill_error = child.kill().err();
-        let reap_deadline = Instant::now() + Duration::from_secs(5);
-        let reaped = loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break true,
-                Ok(None) if Instant::now() < reap_deadline => {
-                    thread::sleep(Duration::from_millis(25));
-                }
-                Ok(None) | Err(_) => break false,
-            }
-        };
+        let reaped = wait_for_exit(&mut child, Duration::from_secs(5))
+            .0
+            .is_some();
         if !reaped {
             return Err(format!(
                 "child did not reap within 5 seconds; kill_error={kill_error:?} \
@@ -266,4 +245,22 @@ pub(super) fn restore_case_root_mode(case_root: &Path, original_mode: u32) -> Re
             case_root.display()
         )
     })
+}
+
+/// Polls `child` until it exits, `timeout` passes, or polling fails.
+fn wait_for_exit(
+    child: &mut Child,
+    timeout: Duration,
+) -> (Option<ExitStatus>, Option<std::io::Error>) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return (Some(status), None),
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None) => return (None, None),
+            Err(error) => return (None, Some(error)),
+        }
+    }
 }
