@@ -25,7 +25,7 @@ const FN_HEAD = /\bfn\s+(\w+)\s*(<[^(]*>)?\s*\(/;
 const PARAM = /^(mut\s+)?([A-Za-z_]\w*)\s*:\s*([\s\S]+)$/;
 const INJECTED = new RegExp(
   "^(tauri::)?(ipc::|webview::|window::)?" +
-    "(AppHandle|WebviewWindow|Window|Webview|State|Request|Invoke)\\b",
+    String.raw`(AppHandle|WebviewWindow|Window|Webview|State|Request|Invoke)\b`,
 );
 const WS_ARM_BEFORE = /"([a-z0-9_]+)"\s*(?==>|\|)/g;
 const WS_ARM_AFTER = /\|\s*"([a-z0-9_]+)"/g;

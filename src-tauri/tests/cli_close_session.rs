@@ -7,6 +7,8 @@
 //! outbox files written by the CLI subprocess. On non-Windows the simulator
 //! remains an in-process Rust helper.
 
+#[cfg(not(target_os = "windows"))]
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
@@ -445,7 +447,7 @@ fn wait_for_ready_outbox_message(
             let mut files: Vec<_> = rd
                 .flatten()
                 .map(|entry| entry.path())
-                .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("json"))
+                .filter(|p| p.is_file() && p.extension().and_then(OsStr::to_str) == Some("json"))
                 .collect();
             files.sort();
             files.into_iter().next()
