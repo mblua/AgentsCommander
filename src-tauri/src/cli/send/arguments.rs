@@ -1,3 +1,8 @@
+//! Clap argument definitions for the `send` CLI verb (`SendArgs`), including the long
+//! `--help` text on delivery modes, routing, filename format, PTY input and confirmation.
+//! Only declares flags and their help; validation, routing and delivery are done by the
+//! rest of the `send` module.
+
 use clap::Args;
 use std::ffi::OsString;
 
