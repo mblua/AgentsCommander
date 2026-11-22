@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::super::{
     next_settings_save_op_id, rotate_settings_backups_labeled, write_value_atomic_labeled,
     AppSettings, SettingsFileLock, SettingsSaveError, SettingsSaveLegacyOutward,
@@ -270,6 +272,11 @@ pub(crate) fn select_project_source_at_path(
     Ok(select_project_source_locked(&transaction)?.projection)
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "temp paths are built with a file name"
+)]
 pub(crate) fn publish_project_migration_backup_labeled(
     settings_path: &Path,
     label: &Path,
@@ -380,6 +387,11 @@ fn backup_mismatch_error(backup: &Path, backup_label: &Path, label: &Path) -> Se
     )
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "backup paths are built with a file name"
+)]
 fn backup_temp_path(backup: &Path, parent: &Path) -> PathBuf {
     let mut name = backup.file_name().unwrap().to_os_string();
     name.push(format!(
@@ -390,6 +402,11 @@ fn backup_temp_path(backup: &Path, parent: &Path) -> PathBuf {
     parent.join(name)
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "temp paths are built with a file name"
+)]
 fn write_backup_temp(
     backup: &Path,
     temp: &Path,
@@ -451,6 +468,11 @@ pub(crate) fn ensure_project_paths_migrated_at_locked_path(
     ensure_project_paths_migrated_at_labeled_path(path, path, checkpoint)
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the legacy source is selected only when it exists"
+)]
 pub(crate) fn ensure_project_paths_migrated_at_labeled_path(
     path: &Path,
     label: &Path,

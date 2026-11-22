@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

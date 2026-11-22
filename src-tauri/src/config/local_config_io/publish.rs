@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::pair_image::{ordinary_publish_result, PairTargetGuard, PreparedPairError};
 use std::path::Path;
 
@@ -95,6 +97,11 @@ pub(super) fn publish_temp_config_guarded(
 }
 
 #[cfg(not(windows))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "PUBLISH_ATTEMPTS >= 1, so the retry loop sets last_err at least once"
+)]
 pub(super) fn publish_temp_config_retry_with_attempt(
     tmp_path: &Path,
     path: &Path,

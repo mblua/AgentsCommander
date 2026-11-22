@@ -7,6 +7,8 @@
 //! mutable `&mut AppSettings` borrow plus a `&Path`. Callers own the
 //! lock-acquire and the `save_settings` call.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 pub(crate) mod ac_root_gitignore;
 
 use crate::filesystem::config_locations;
@@ -479,6 +481,11 @@ pub(crate) fn commit_prepared_new_project(
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the match arm runs only when exactly one match exists"
+)]
 pub fn resolve_project_reference(
     project_paths: &[String],
     raw_project: &str,

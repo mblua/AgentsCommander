@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::project_path as projects;
 use super::project_path::ProjectPathPersistenceState;
 #[cfg(test)]
@@ -177,6 +179,11 @@ pub(crate) type ComposedSettings = (AppSettings, bool, Option<AgentsLayerState>)
 /// `merge_label` is the settings path that enables the agents merge and the
 /// undecodable-overlay fallback. The agents layer state is returned, not
 /// registered, so the caller decides whether a process-wide registry changes.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "serialized settings are always a JSON object"
+)]
 pub(crate) fn compose_settings_parts(
     mut value: Value,
     source: &str,
@@ -483,6 +490,11 @@ pub(crate) fn default_settings_with_overlay(settings_path: &Path, _source: &str)
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "serialized settings are always a JSON object"
+)]
 pub(crate) fn default_settings_with_overlay_captured(
     settings_path: &Path,
     source: &str,

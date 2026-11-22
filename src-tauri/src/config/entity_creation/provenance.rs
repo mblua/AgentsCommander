@@ -1,4 +1,7 @@
 //! Copy provenance format, validation and history.
+
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::names::validate_existing_name;
 use crate::filesystem::projects::entities::copies::{
     self as disk, MatrixCopyHooks, MatrixCopyStage, OwnedCopyArtifacts,
@@ -9,6 +12,11 @@ use std::path::Path;
 // Strict Matrix copy and team publication share ephemeral output ownership.
 pub(crate) const COPY_PROVENANCE_FILE: &str = ".ac-copy-provenance.json";
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "both fields were validated as strings earlier in this function"
+)]
 pub(crate) fn validate_copy_provenance(
     history: Option<&[u8]>,
 ) -> Result<serde_json::Value, String> {

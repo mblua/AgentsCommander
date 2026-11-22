@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::BTreeMap;
 
 use super::normalize_legacy_agent_command;
@@ -131,6 +133,11 @@ pub(super) fn render_command_token(token: &str) -> String {
 /// inputs itself (callers never pre-canonicalize): env keys fold to uppercase,
 /// the command becomes an argv vector (`exe`, `argc`, `a` per argument) so argv
 /// boundaries survive, or `rawcmd` when it cannot be tokenized.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the tokenizer always yields at least the executable token"
+)]
 pub(crate) fn profile_hash_preimage(command: &str, env: &BTreeMap<String, String>) -> String {
     use std::fmt::Write as _;
     // Fold keys for dedup/compare; value stays verbatim (raw).

@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::{
     empty_project_transaction, io_error_kind_as_str, json_error_category_as_str, AppSettings,
     ProjectPathsWriteTransaction, SettingsSaveCause, SettingsSaveError, SourceReadContext,
@@ -280,6 +282,11 @@ impl SettingsReadPermit {
 impl std::ops::Deref for SettingsReadPermit {
     type Target = AppSettings;
 
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a settings read permit holds its guard until drop; not a lock-poison site"
+    )]
     fn deref(&self) -> &AppSettings {
         self.guard
             .as_deref()

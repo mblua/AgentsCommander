@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use crate::filesystem::config_seed as seed_disk;
 use std::path::Path;
 

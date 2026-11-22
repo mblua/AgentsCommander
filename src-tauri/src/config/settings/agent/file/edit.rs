@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::super::super::{
     list_active_sources, source_bytes_revision, source_diagnostic, write_value_atomic_labeled,
     AppSettings, OperationOutcome, SettingsOperationGuard, SettingsPublisher, SettingsState,
@@ -234,6 +236,11 @@ fn apply_profile_set_edits(
     Ok(())
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the profile cell was just set to a JSON object"
+)]
 fn submitted_profile_cell(raw: &Value, old: Option<&Map<String, Value>>) -> Result<Value, String> {
     let cell: ProfileCellConfig =
         serde_json::from_value(raw.clone()).map_err(|_| "invalidProfileCells")?;

@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::super::super::{
     apply_project_decode_to_value, production_instance_base, read_disk_object_for_write_typed,
     AppSettings, CodingAgentProfilesConfig, SettingsSaveError, SettingsSaveStage,
@@ -161,6 +163,11 @@ pub(crate) fn coding_agent_identity_physical_from_raw(
 
 /// Borrow the caller's settings file lock; never reenter a locking loader.
 /// Physical overlay bytes retain identity fields unknown to the typed view.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "serialized settings are always a JSON object"
+)]
 pub(crate) fn coding_agent_identity_with_physical_overlay(
     mut value: Value,
     path: &Path,
@@ -199,6 +206,11 @@ pub(crate) fn coding_agent_identity_with_physical_overlay(
 
 /// Refresh clone-based state replacements while borrowing their file lock.
 /// Unavailable raw inputs clear transition evidence rather than retaining a stale seed source.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "serialized settings are always a JSON object"
+)]
 pub(crate) fn refresh_coding_agent_identity_at_locked_path(
     settings: &mut AppSettings,
     path: &Path,

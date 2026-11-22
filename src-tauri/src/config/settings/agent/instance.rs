@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use crate::filesystem::settings_sources;
 mod layer;
 mod overlay;
@@ -412,6 +414,11 @@ pub(crate) fn save_agents_instance_file(
 
 /// Applies the prepared groups and retention rules to the agents-file target,
 /// then validates the physical identity delta.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the retained settings value is always a JSON object"
+)]
 fn finalize_agents_target(
     target: Map<String, Value>,
     before: &Map<String, Value>,

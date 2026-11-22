@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 #[cfg(test)]
 use super::super::SETTINGS_PRESERVE_LOCK_HOOK;
 use super::super::{
@@ -57,6 +59,11 @@ pub(crate) fn preserve_main_window_placement_keys(
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "serialized settings are always a JSON object"
+)]
 pub(crate) fn preflight_duplicate_agents(
     settings: &AppSettings,
     path: &Path,
@@ -182,6 +189,11 @@ pub(crate) fn save_settings_value_locked(
     )
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the profiles value was validated as a JSON object"
+)]
 pub(crate) fn restore_protected_agents_instance_groups(
     out: &mut Map<String, Value>,
     disk: Option<&Map<String, Value>>,
@@ -399,6 +411,11 @@ fn apply_prepared_profile_groups(
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the retained settings value is always a JSON object"
+)]
 fn retain_disk_legacy_commands(
     out: Map<String, Value>,
     settings: &AppSettings,

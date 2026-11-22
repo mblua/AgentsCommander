@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::super::super::{
     configuration_identity, configuration_identity_debug, raw_entries, refresh_agent_id_hashes,
     refresh_pair_id_hashes, AppSettings, CodingAgentProfilesConfig, OVERLAY_DERIVED_ID_CLOSURES,
@@ -253,6 +255,11 @@ fn normalize_overlay_comparison(
     Ok(serde_json::json!({"agents":agents,"codingAgentProfiles":profiles}))
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the known-fields value is a JSON object built from typed settings"
+)]
 pub(crate) fn retain_unknown_registered_agent_fields(
     profile_before: &Value,
     profile_incoming: &mut Value,
@@ -484,6 +491,11 @@ pub(crate) fn prepare_registered_profile_owner(
     Ok(prepared_profiles)
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the retained row is a JSON object built in this function"
+)]
 fn retain_ambiguous_profile_rows(
     settings: &AppSettings,
     profile_before: &Value,

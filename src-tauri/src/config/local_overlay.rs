@@ -17,6 +17,8 @@
 //! by the caller (plan D22), which is also what makes them assertable without a
 //! global logger.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -478,6 +480,11 @@ impl LocalSettingsOverlay {
         )
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "the overlay value and the pushed path segment are set just above their use"
+    )]
     pub(crate) fn from_overlay_object_paired(
         base: &mut Value,
         mut overlay: Map<String, Value>,
@@ -763,6 +770,11 @@ fn walk_existing_object_mut<'a>(
 /// replacing a non-object one, so a present effective value can always be
 /// written (D19). Only `reapply_from`'s present-value arm uses this;
 /// `restore_base` and the removal arm create nothing.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the slot was just replaced with a JSON object"
+)]
 fn walk_creating_object_mut<'a>(
     root: &'a mut Map<String, Value>,
     path: &[String],

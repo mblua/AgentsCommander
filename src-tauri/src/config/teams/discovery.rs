@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::membership::resolve_agent_path;
 use super::membership::resolve_agent_ref;
 use super::note_missing_team_config;
@@ -94,6 +96,11 @@ pub(super) fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<Disc
 }
 
 /// Predicate runs before any followed team-directory or config read.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the team was pushed just before it is read"
+)]
 pub(crate) fn discover_teams_in_project_filtered(
     project_dir: &Path,
     teams: &mut Vec<DiscoveredTeam>,

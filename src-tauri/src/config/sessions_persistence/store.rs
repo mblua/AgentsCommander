@@ -1,5 +1,7 @@
 //! Runtime IO and path owner for persisted session snapshots.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::record::{
     capture_binding_origins, deduplicate, normalize_persisted_session_paths, PersistedSession,
 };
@@ -408,6 +410,11 @@ impl<'a> SnapshotStore<'a> {
     /// out of scope for #280 (observability hardening, not concurrency
     /// rework). File a follow-up if the 260 ms tail latency becomes
     /// user-perceptible.
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "RENAME_ATTEMPTS >= 1, so the retry loop sets last_err at least once"
+    )]
     pub(super) fn rename_with_retry(
         &self,
         tmp: &Path,

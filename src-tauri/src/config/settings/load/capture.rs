@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 #[cfg(test)]
 use super::PROJECT_SOURCE_CAPTURE_HOOK;
 use super::{
@@ -196,6 +198,11 @@ fn capture_default_source(
     )
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "default AppSettings always serializes to JSON"
+)]
 fn capture_lenient_source(
     path: &Path,
     transaction_path: &Path,

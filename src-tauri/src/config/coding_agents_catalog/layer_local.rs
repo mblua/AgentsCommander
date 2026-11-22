@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -501,6 +503,11 @@ fn parse_local_order(
     })
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the definition was checked to be a JSON object before this call"
+)]
 fn parse_schema2_local_layer(bytes: &[u8]) -> Result<LocalLayer, String> {
     let catalog = parse_catalog_schema2(bytes).map_err(|e| e.to_string())?;
     let rows = catalog

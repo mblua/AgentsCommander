@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::{
     collect_skill_index, display_path, is_canonical_agent_matrix_dir, root_context_candidate,
     sanitize_skill_metadata_for_context, truncate_chars, SkillIndex, SkillMetadata,
@@ -107,6 +109,11 @@ pub(crate) fn canonical_skill_member(path: &Path, matrix: &Path) -> bool {
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the project root was validated to have a parent"
+)]
 pub(crate) fn team_skills_for_session(
     agent_root: &str,
     matrix_root: Option<&str>,
@@ -199,6 +206,11 @@ fn apply_amendment_policy(text: String, restrictions: WorkspaceRestrictions) -> 
     format!("{}{}", &text[..start], &text[end..])
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "only teams with a collected skills root reach this point"
+)]
 pub(crate) fn render_team_skills_section(
     sources: &[(String, SkillIndex)],
     restrictions: WorkspaceRestrictions,

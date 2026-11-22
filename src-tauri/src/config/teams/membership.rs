@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::agent_fqn_from_path;
 use super::agent_name_from_path;
 use super::agent_segment_is_filesystem_dir;
@@ -105,6 +107,11 @@ fn resolve_qualified_target(
     Err(ResolutionError::UnknownQualified(target.to_string()))
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the match arm runs only when exactly one candidate exists"
+)]
 fn resolve_unqualified_wg_target(
     target: &str,
     project_paths: &[String],

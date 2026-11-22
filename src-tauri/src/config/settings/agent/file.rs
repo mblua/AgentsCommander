@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 mod authority;
 mod edit;
 
@@ -200,6 +202,11 @@ pub(crate) fn agent_file_decode(
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "both values are JSON objects built or validated in this function"
+)]
 pub(crate) fn agent_file_projection(
     snapshot: &SelectedAgentFileSnapshot,
 ) -> Result<AppSettings, String> {
