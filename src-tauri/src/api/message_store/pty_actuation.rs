@@ -1,3 +1,8 @@
+//! `MessageStore` PTY input actuation and results: `begin_pty_actuating`, `retry_pty_input`,
+//! `terminalize_pty_input`, `mark_host_artifact` and the `query_pty_input*` lookups.
+//! Also compacts terminal rows (`compact_pty_terminal_before`, `compact_pty_terminal_maintenance`).
+//! Enqueue and claim live in `pty_enqueue`; row helpers in `rows`.
+
 use super::rows::{
     actuating_row_from_row, insert_pty_audit, is_lower_hex_64, load_pty_result, reason_code_string,
     retry_backoff_seconds, terminalize_in_transaction, tombstone_matches,

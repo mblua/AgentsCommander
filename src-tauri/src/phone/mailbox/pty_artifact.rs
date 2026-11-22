@@ -1,3 +1,8 @@
+//! Host PTY input artifacts: `MailboxPoller` methods for PTY input files and markers.
+//! Validates envelope shape, correlates host PTY metadata and rejects malformed candidates.
+//! Writes PTY input artifacts, replaces host requests with markers and enqueues candidates.
+//! Entry point is `process_pty_input_file`; envelope validation is in `pty_validation`.
+
 use super::poller::MailboxPoller;
 use super::pty_claim::write_atomic_pty_metadata;
 use super::pty_observation::PtyAuthorityState;

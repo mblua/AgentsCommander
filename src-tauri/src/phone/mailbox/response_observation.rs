@@ -1,3 +1,7 @@
+//! Response observation traits built on `PtyAuthorityState`.
+//! `ResponseAdmissionState` exposes the response tracker for admission checks.
+//! `ResponseCompletionState` exposes the selection coordinator; state stays with its owners.
+
 use super::pty_observation::PtyAuthorityState;
 
 /// Borrowed response admission observations; state ownership stays with the tracker.

@@ -1,3 +1,8 @@
+//! PTY input dispatch: the private `PtyDispatcher` that runs one claimed PTY input operation.
+//! Entry point is `MailboxPoller::dispatch_pty_input_operation_core`.
+//! Steps cover locking, target binding, final authority, the writer, payload and boundary.
+//! Shared context types live in `context`; session selection and boundary logic in `select`.
+
 mod context;
 mod select;
 use crate::phone::mailbox::host::MailboxHost;

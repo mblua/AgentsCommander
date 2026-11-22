@@ -1,3 +1,8 @@
+//! Room purge helpers: peer FQN discovery (`peer_fqns`), live peer info (`PeerLiveInfo`,
+//! `peer_live_info`) and peer gating (`gate_peers`).
+//! Builds the dry-run, busy and completion response bodies; the parent `session_request`
+//! module runs the purge itself.
+
 use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::mailbox::handoff::PURGE_WG_ACTION;
 use crate::phone::mailbox::poller::{PurgeDecision, PurgeGatePeer, PurgeGateSession};

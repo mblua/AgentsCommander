@@ -1,3 +1,9 @@
+//! Wake workers and the poll loop on `MailboxPoller`: claiming and spawning wakes
+//! (`claim_and_spawn_wake`), reaping, draining and settling worker outcomes.
+//! `poll` drives each cycle over outboxes and snapshot roots and records message outcomes.
+//! Also reclaims unowned wake claims and scrubs stale PTY input temp files.
+//! Outbox directory scanning and sorting live in the `outboxes` submodule.
+
 use super::handoff::{
     is_permanent_delivery_error, prune_retry_tracker, wake_claim_has_settled_receipt,
     wake_claim_origin, wake_claim_path, WakeHandoff, WakeOutcomeReport,

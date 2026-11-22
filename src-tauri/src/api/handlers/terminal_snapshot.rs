@@ -1,3 +1,8 @@
+//! Container API handler for terminal snapshots: `post` admits ingress, checks headers,
+//! authenticates the requester and returns the rendered snapshot as JSON.
+//! Failures are audited through `TerminalSnapshotAuditGuard` and mapped by `error_response`.
+//! Snapshot capture itself lives in `crate::pty::terminal_snapshot`, not here.
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 

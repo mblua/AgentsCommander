@@ -1,3 +1,7 @@
+//! `MessageStore` PTY input admission: `enqueue_pty_input` with idempotency and quota checks,
+//! `record_host_pty_input_rejection`, `due_pty_input_ids`, `claim_pty_input` and
+//! `renew_pty_input_lease`. Actuation and terminal states are in `pty_actuation`.
+
 use super::rows::{
     claimed_from_row, insert_pty_audit, is_lower_hex_64, load_pty_result, lookup_idempotency_row,
     reason_code_string, source_plane_str,

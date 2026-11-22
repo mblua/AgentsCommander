@@ -1,3 +1,8 @@
+//! Docker command ownership types: `DockerCommandSpec`, `DockerCommandOwner`,
+//! `DockerCommandOwnership`, output and error types, and timeout/limit constants.
+//! Retains unfinished children and readers and retries their cleanup; drops reap the rest.
+//! Also `redact_command_values` and `redact_command_bytes`. Execution lives in `execution`.
+
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::panic::{catch_unwind, AssertUnwindSafe};

@@ -1,3 +1,7 @@
+//! SQLite schema migration for `MessageStore`, tracked in the `api_message_schema` table.
+//! `migrate` applies `schema_v1`, `schema_v2` and `schema_v3` in order inside one transaction.
+//! A recorded version above 3 is rejected as `MessageStoreError::StoreCorrupt`.
+
 mod schema_v1;
 mod schema_v2;
 mod schema_v3;

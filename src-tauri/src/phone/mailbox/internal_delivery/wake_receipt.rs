@@ -1,3 +1,7 @@
+//! Wake receipt helpers for internal delivery, private to the parent module.
+//! `background_resume` decides resume; `mark_response_submitted` records response wake work.
+//! `check_cancellation` and `check_purge` stop delivery when canceled or purged.
+
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::phone::mailbox::handoff::internal_wake_resumes;
 use crate::phone::mailbox::pty_claim::ResponseWakeWork;

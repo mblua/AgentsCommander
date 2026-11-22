@@ -1,3 +1,7 @@
+//! Schema version 2: creates `pty_input_operations`, `idx_pty_input_due`,
+//! `pty_input_audit` and `pty_input_tombstones` for privileged PTY input.
+//! Called only by `MessageStore::migrate`, which records version 2 afterwards via `apply`.
+
 use super::MessageStoreError;
 use chrono::Utc;
 use rusqlite::Transaction;

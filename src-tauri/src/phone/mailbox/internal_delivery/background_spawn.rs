@@ -1,3 +1,7 @@
+//! Background spawn wait for internal delivery: `await_internal_spawn`.
+//! Races a session spawn future against a `CancellationToken` and returns the new session `Uuid`.
+//! Restoring close markers after a failed create is left to the create path itself.
+
 use crate::session::session::SessionInfo;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
