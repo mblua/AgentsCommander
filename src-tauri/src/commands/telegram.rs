@@ -37,11 +37,32 @@ pub(crate) async fn release_all_reader_demands<R: tauri::Runtime>(
     }
 }
 
+/// #3317 - `Ok(None)`: no reader entry under the lock (no tasks). `Err(())`: no
+/// bridge state (`try_state` is `None`), so the stop is unobserved.
+pub(crate) async fn release_all_reader_demands_observed<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+) -> Result<Option<tokio::task::JoinHandle<bool>>, ()> {
+    let Some(tg_state) = app.try_state::<TelegramBridgeState>() else {
+        return Err(());
+    };
+    let shutdown = {
+        let mut tg = tg_state.lock().await;
+        tg.reader_release_all(session_id)
+    };
+    Ok(shutdown.map(BridgeShutdown::spawn_stop_observation))
+}
+
 impl BridgeShutdown {
     pub fn spawn_wait_or_abort(self) {
         tauri::async_runtime::spawn(async move {
             self.wait_or_abort().await;
         });
+    }
+
+    /// #3317 - the stop proof of `wait_until_stopped`, running in the background.
+    pub(crate) fn spawn_stop_observation(self) -> tokio::task::JoinHandle<bool> {
+        tokio::spawn(self.wait_until_stopped())
     }
 }
 

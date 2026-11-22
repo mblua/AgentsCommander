@@ -413,6 +413,9 @@ pub enum DestructionSource {
     AutoClose,
     SpawnRollback,
     BackgroundCleanup,
+    /// #3317 - mailbox purge/close-session discard; behaves as
+    /// BackgroundCleanup except that it may retire a proven-quiescent response-close Closing.
+    ExplicitDiscard,
 }
 
 impl DestructionSource {
@@ -421,7 +424,7 @@ impl DestructionSource {
             Self::ManualClose => SelectionCause::ManualClose,
             Self::AutoClose => SelectionCause::AutoClose,
             Self::SpawnRollback => SelectionCause::SpawnRollback,
-            Self::BackgroundCleanup => SelectionCause::BackgroundCleanup,
+            Self::BackgroundCleanup | Self::ExplicitDiscard => SelectionCause::BackgroundCleanup,
         }
     }
 
@@ -430,7 +433,7 @@ impl DestructionSource {
             Self::ManualClose => SelectionSource::ManualClose,
             Self::AutoClose => SelectionSource::AutoClose,
             Self::SpawnRollback => SelectionSource::SpawnRollback,
-            Self::BackgroundCleanup => SelectionSource::BackgroundCleanup,
+            Self::BackgroundCleanup | Self::ExplicitDiscard => SelectionSource::BackgroundCleanup,
         }
     }
 }

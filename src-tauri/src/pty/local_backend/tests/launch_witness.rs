@@ -283,3 +283,148 @@ fn default_trait_method_refuses() {
         "{error}"
     );
 }
+
+// #3317 - the native-exit evidence of `kill_observed` and its retained reaper.
+
+#[derive(Debug)]
+struct GatedChild {
+    gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    fail: bool,
+}
+
+#[derive(Debug)]
+struct NoopKiller;
+
+impl portable_pty::ChildKiller for NoopKiller {
+    fn kill(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+        Box::new(NoopKiller)
+    }
+}
+
+impl portable_pty::ChildKiller for GatedChild {
+    fn kill(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+        Box::new(NoopKiller)
+    }
+}
+
+impl portable_pty::Child for GatedChild {
+    fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+        Ok(None)
+    }
+
+    fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+        let _ = self.gate.lock().unwrap().recv();
+        if self.fail {
+            Err(std::io::Error::other("reap failed"))
+        } else {
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+    }
+
+    fn process_id(&self) -> Option<u32> {
+        None
+    }
+
+    #[cfg(windows)]
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        None
+    }
+}
+
+fn gated_reaper(
+    fail: bool,
+) -> (
+    std::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<Result<(), String>>,
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let child = GatedChild {
+        gate: std::sync::Mutex::new(rx),
+        fail,
+    };
+    let handle = liveness::reap_child_in_background(Uuid::new_v4(), None, Box::new(child), None);
+    (tx, handle)
+}
+
+/// Polls `done` with 10 ms sleeps; the 10 s cap only fails the test.
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn issue_3317_reaper_handle_finishes_only_after_wait() {
+    let (tx, handle) = gated_reaper(false);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(
+        !handle.is_finished(),
+        "the reaper ends only after wait returns"
+    );
+    tx.send(()).expect("open the gate");
+    assert!(matches!(handle.join(), Ok(Ok(()))));
+}
+
+#[test]
+fn issue_3317_reaper_wait_error_is_ambiguous() {
+    let (tx, handle) = gated_reaper(true);
+    tx.send(()).expect("open the gate");
+    assert!(matches!(handle.join(), Ok(Err(_))));
+}
+
+#[test]
+fn issue_3317_real_kill_observed_proves_child_exit() {
+    let (backend, _app) = test_backend();
+    #[cfg(windows)]
+    let spec = spawn_spec("cmd.exe", &["/C", "ping", "-n", "30", "127.0.0.1"]);
+    #[cfg(not(windows))]
+    let spec = spawn_spec("/bin/sh", &["-c", "sleep 30"]);
+    let id = spec.id;
+    backend.spawn_sync(spec).expect("spawn a long child");
+    let exit = backend.kill_observed(id).expect("kill the long child");
+    match exit {
+        NativeExit::Observed => {}
+        NativeExit::Reaping(handle) => {
+            wait_until("the reaper", || handle.is_finished());
+            assert!(matches!(handle.join(), Ok(Ok(()))));
+        }
+        NativeExit::Unobserved => panic!("real kill gave no exit evidence"),
+    }
+    assert!(
+        matches!(backend.kill_observed(id), Ok(NativeExit::Unobserved)),
+        "the instance is already removed"
+    );
+}
+
+#[test]
+fn issue_3317_real_kill_of_exited_child_is_observed() {
+    let (backend, _app) = test_backend();
+    #[cfg(windows)]
+    let spec = spawn_spec("cmd.exe", &["/C", "exit", "0"]);
+    #[cfg(not(windows))]
+    let spec = spawn_spec("/bin/sh", &["-c", "exit 0"]);
+    let id = spec.id;
+    backend.spawn_sync(spec).expect("spawn an exiting child");
+    wait_until("the child exit", || match backend.probe_child(id) {
+        ChildLiveness::Exited { .. } => true,
+        ChildLiveness::Alive => false,
+        other => panic!(
+            "child must stay queryable until it exits: {}",
+            other.as_log()
+        ),
+    });
+    assert!(matches!(
+        backend.kill_observed(id),
+        Ok(NativeExit::Observed)
+    ));
+}

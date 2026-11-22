@@ -160,3 +160,16 @@ fn sealed_causes_pin_source_and_user_intent() {
         assert_eq!(cause.user_initiated(), user_initiated);
     }
 }
+
+#[test]
+fn issue_3317_explicit_discard_maps_as_background_cleanup() {
+    let source = DestructionSource::ExplicitDiscard;
+    assert!(matches!(source.cause(), SelectionCause::BackgroundCleanup));
+    assert!(matches!(
+        source.selection_source(),
+        SelectionSource::BackgroundCleanup
+    ));
+    let payload = SessionSelection::none(Uuid::new_v4(), 1, source.cause());
+    let serialized = serde_json::to_value(payload).expect("serialize discard payload");
+    assert_eq!(serialized["source"], "backgroundCleanup");
+}

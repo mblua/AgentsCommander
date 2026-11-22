@@ -396,3 +396,66 @@ async fn a_repeated_bot_transition_is_not_a_watch_update() {
         "the Room demand keeps it"
     );
 }
+
+// ── #3317: the bridge-stop proof of `wait_until_stopped` ──────────────
+
+fn shutdown_of(tasks: Vec<JoinHandle<()>>) -> BridgeShutdown {
+    BridgeShutdown {
+        session_id: Uuid::new_v4(),
+        tasks,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issue_3317_stop_true_when_tasks_end() {
+    let task = tokio::spawn(async {});
+    assert!(shutdown_of(vec![task]).wait_until_stopped().await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issue_3317_stop_true_after_abort_of_pending_task() {
+    let task = tokio::spawn(std::future::pending::<()>());
+    assert!(shutdown_of(vec![task]).wait_until_stopped().await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issue_3317_stop_waits_for_unyielding_task() {
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
+    let task_started = Arc::clone(&started);
+    // No await point: abort cannot stop this task, only the gate can.
+    let task = tokio::spawn(async move {
+        task_started.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = gate_rx.recv();
+    });
+    while !started.load(std::sync::atomic::Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let waiter = tokio::spawn(shutdown_of(vec![task]).wait_until_stopped());
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(!waiter.is_finished(), "an abort is not a stop");
+    gate.send(()).expect("open the gate");
+    let stopped = tokio::time::timeout(Duration::from_secs(10), waiter)
+        .await
+        .expect("the waiter returns once the task ends")
+        .expect("the waiter does not panic");
+    assert!(stopped);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issue_3317_stop_false_when_task_panics() {
+    let task = tokio::spawn(async { panic!("issue 3317 bridge task panic") });
+    assert!(!shutdown_of(vec![task]).wait_until_stopped().await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issue_3317_detach_carries_bridge_tasks() {
+    let captures = Arc::new(CaptureRegistry::new());
+    let mut manager = test_manager(&captures);
+    let id = Uuid::new_v4();
+    manager.insert_test_bridge(id, "bot");
+    manager.insert_test_bridge_task_for_test(id, tokio::spawn(async {}));
+    let shutdown = manager.detach(id).expect("detach the bridge");
+    assert_eq!(shutdown.tasks.len(), 1);
+    assert!(shutdown.wait_until_stopped().await);
+}

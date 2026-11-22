@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 const PREFIX: &str = "commands::session::selection_executor::tests::protected_carrier::closing::";
 
-fn owners(f: &ProtectedFixture) -> Vec<Arc<ResponseEffectOwner>> {
+pub(super) fn owners(f: &ProtectedFixture) -> Vec<Arc<ResponseEffectOwner>> {
     f.native
         .app
         .state::<crate::app_state::AppOwners>()
@@ -29,14 +29,14 @@ fn owners(f: &ProtectedFixture) -> Vec<Arc<ResponseEffectOwner>> {
         .unwrap()
 }
 
-fn owner(f: &ProtectedFixture) -> Arc<ResponseEffectOwner> {
+pub(super) fn owner(f: &ProtectedFixture) -> Arc<ResponseEffectOwner> {
     let owners = owners(f);
     assert_eq!(owners.len(), 1);
     assert_eq!(owners[0].registration().member.session_id, f.native.source);
     owners[0].clone()
 }
 
-fn force(f: &ProtectedFixture) {
+pub(super) fn force(f: &ProtectedFixture) {
     f.native
         .app
         .state::<crate::app_state::AppOwners>()
@@ -44,14 +44,14 @@ fn force(f: &ProtectedFixture) {
         .force_next_settlement_for_test(f.native.source);
 }
 
-fn logger() -> PollLog {
+pub(super) fn logger() -> PollLog {
     let log = Arc::new(Mutex::new(Vec::new()));
     log::set_logger(Box::leak(Box::new(PollLogger(log.clone())))).unwrap();
     log::set_max_level(log::LevelFilter::Debug);
     log
 }
 
-fn records(log: &PollLog, stage: &str) -> Vec<BTreeMap<String, String>> {
+pub(super) fn records(log: &PollLog, stage: &str) -> Vec<BTreeMap<String, String>> {
     log.lock()
         .unwrap()
         .iter()
@@ -74,7 +74,7 @@ fn records(log: &PollLog, stage: &str) -> Vec<BTreeMap<String, String>> {
         .collect()
 }
 
-fn exact(record: &BTreeMap<String, String>, key: &str, value: impl ToString) {
+pub(super) fn exact(record: &BTreeMap<String, String>, key: &str, value: impl ToString) {
     assert_eq!(
         record.get(key),
         Some(&value.to_string()),
@@ -82,7 +82,20 @@ fn exact(record: &BTreeMap<String, String>, key: &str, value: impl ToString) {
     );
 }
 
-async fn veto(f: &ProtectedFixture) -> Vec<DiscardVetoObservation> {
+/// #3317 - default fixture mode has no exit evidence, so every discard stays held.
+fn held_without_exit_evidence(log: &PollLog) {
+    let recovery = records(log, "discard_recovery");
+    assert!(!recovery.is_empty(), "missing discard_recovery");
+    for record in recovery {
+        exact(&record, "outcome", "held");
+        exact(&record, "reason", "native_exit_missing");
+    }
+    for record in records(log, "discard_veto") {
+        exact(&record, "quiescence", "native_exit_missing");
+    }
+}
+
+pub(super) async fn veto(f: &ProtectedFixture) -> Vec<DiscardVetoObservation> {
     let n = &f.native;
     let manager = n.manager.read().await.clone();
     let before = manager.get_session(n.source).await.unwrap();
@@ -191,6 +204,7 @@ async fn issue_3248_terminal_settlement_rejection() {
         assert!(Arc::ptr_eq(&owner, &retry));
         assert!(retry.ticket().committed_binding() == binding);
         assert_eq!(n.backend.kill_count(n.source), 1);
+        held_without_exit_evidence(&log);
         n.coordinator.close_and_join().await;
         complete_isolated(&name);
     })
@@ -302,6 +316,7 @@ async fn issue_3248_diagnostic_reasons() {
                 }
             }
         }
+        held_without_exit_evidence(&log);
         f.native.coordinator.close_and_join().await;
         complete_isolated(&name);
     })

@@ -13,13 +13,15 @@ use portable_pty::{native_pty_system, PtySize};
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::pty::backend::{BackendSpawnSpec, PreflightLaunch, PreflightLaunchRequest, PtyBackend};
+use crate::pty::backend::{
+    BackendSpawnSpec, NativeExit, PreflightLaunch, PreflightLaunchRequest, PtyBackend,
+};
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output::{PtyScreenSnapshot, SessionIoFanout};
 use crate::pty::output_senders::OutputSenderMap;
-use crate::pty::spawn_diagnostics::{self, ChildLiveness, ExitCause, SpawnRecord, SpawnRecordInit};
+use crate::pty::spawn_diagnostics::{self, ChildLiveness, ExitCause, SpawnRecordInit};
 use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 
 mod blocking_spawn;
@@ -54,7 +56,7 @@ use launch::{
 };
 use liveness::{
     context_liveness_from_child_liveness, probe_child_contained, probe_child_in,
-    screen_rows_if_child_alive,
+    reap_child_in_background, screen_rows_if_child_alive,
 };
 
 #[cfg(windows)]
@@ -688,6 +690,10 @@ impl PtyBackend for LocalProcessBackend {
     }
 
     fn kill(&self, id: Uuid) -> Result<(), AppError> {
+        self.kill_observed(id).map(drop)
+    }
+
+    fn kill_observed(&self, id: Uuid) -> Result<NativeExit, AppError> {
         // #942 - probe the child BEFORE we tag the stop and BEFORE we touch job or
         // child. That ordering is the whole trick: nothing AC does can have killed a
         // child this probe already finds dead, so "was it already gone when we asked?"
@@ -702,6 +708,7 @@ impl PtyBackend for LocalProcessBackend {
             self.spawn.as_ref(),
         );
 
+        let mut exit = NativeExit::Unobserved;
         let instance = remove_local_pty(&self.ptys, id);
 
         if let Some(mut instance) = instance {
@@ -745,12 +752,14 @@ impl PtyBackend for LocalProcessBackend {
                                 );
                             }
                         }
+                        exit = NativeExit::Observed;
                     }
                     Ok(None) => {
                         if let Err(e) = child.kill() {
                             log::warn!("[pty] Failed to kill session {id} child pid {pid:?}: {e}");
                         }
-                        reap_child_in_background(id, pid, child, record);
+                        exit =
+                            NativeExit::Reaping(reap_child_in_background(id, pid, child, record));
                     }
                     Err(e) => {
                         log::warn!("[pty] Failed to poll session {id} child pid {pid:?}: {e}");
@@ -760,7 +769,8 @@ impl PtyBackend for LocalProcessBackend {
                                  error: {kill_err}"
                             );
                         }
-                        reap_child_in_background(id, pid, child, record);
+                        exit =
+                            NativeExit::Reaping(reap_child_in_background(id, pid, child, record));
                     }
                 }
             }
@@ -770,7 +780,7 @@ impl PtyBackend for LocalProcessBackend {
         self.git_watcher.remove_session(id);
         spawn_diagnostics::forget(id, self.spawn.as_ref());
 
-        Ok(())
+        Ok(exit)
     }
 
     /// #942 - record who asked for the stop and what the child looked like BEFORE any
@@ -914,44 +924,6 @@ impl PtyBackend for LocalProcessBackend {
         self.fanout
             .register_response_watcher(session_id, request_id, response_dir);
     }
-}
-
-fn reap_child_in_background(
-    session_id: Uuid,
-    pid: Option<u32>,
-    mut child: Box<dyn portable_pty::Child + Send + Sync>,
-    record: Option<Arc<SpawnRecord>>,
-) {
-    std::thread::spawn(move || match child.wait() {
-        Ok(status) => {
-            // #942 - the exit AC asked for. The monitor may have reported this child
-            // first (it died a hair before our stop); then the event is already on
-            // record with the right cause and we only leave a reap crumb.
-            let liveness = ChildLiveness::from(&status);
-            match record.as_ref() {
-                Some(record) => {
-                    let cause = record.attribute_exit(record.stop_snapshot());
-                    if !record.log_child_exit(cause, &liveness, "reaped-after-stop") {
-                        log::debug!(
-                            "[pty] Reaped session {session_id} child pid {pid:?}: {status:?} \
-                             (exit already reported)"
-                        );
-                    }
-                }
-                None => log::info!(
-                    "[pty] child-exit session={} pid={:?} cause=ac-requested \
-                        detail=reaped-after-stop \
-                        child={}",
-                    session_id,
-                    pid,
-                    liveness.as_log()
-                ),
-            }
-        }
-        Err(e) => {
-            log::warn!("[pty] Failed to reap session {session_id} child pid {pid:?}: {e}");
-        }
-    });
 }
 
 #[cfg(test)]

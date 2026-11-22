@@ -150,11 +150,147 @@ enum ResponseGroupWorker {
     ),
 }
 
+/// #3317 - a close stop whose completion is observed by a tokio task.
+#[derive(Clone, Copy)]
+pub(crate) enum StopLane {
+    Telegram,
+    Readers,
+}
+
+impl StopLane {
+    fn index(self) -> usize {
+        match self {
+            Self::Telegram => 1,
+            Self::Readers => 2,
+        }
+    }
+}
+
+/// #3317 - the exact-operation completion evidence of one close lane.
+enum LaneEvidence {
+    Missing,
+    Quiescent,
+    Ambiguous,
+    Native(std::thread::JoinHandle<Result<(), String>>),
+    Task(tokio::task::JoinHandle<bool>),
+}
+
+impl LaneEvidence {
+    /// Turns a finished handle into its verdict. Never blocks: `join` and `now_or_never`
+    /// run only after `is_finished()`.
+    fn settle(&mut self) {
+        let finished = match self {
+            Self::Native(handle) => handle.is_finished(),
+            Self::Task(handle) => handle.is_finished(),
+            Self::Missing | Self::Quiescent | Self::Ambiguous => false,
+        };
+        if !finished {
+            return;
+        }
+        *self = match std::mem::replace(self, Self::Ambiguous) {
+            Self::Native(handle) => match handle.join() {
+                Ok(Ok(())) => Self::Quiescent,
+                _ => Self::Ambiguous,
+            },
+            Self::Task(mut handle) => match futures::FutureExt::now_or_never(&mut handle) {
+                Some(Ok(true)) => Self::Quiescent,
+                Some(Ok(false) | Err(_)) => Self::Ambiguous,
+                None => Self::Task(handle),
+            },
+            settled => settled,
+        };
+    }
+}
+
+/// #3317 - why `discard_quiescence` does not prove the close quiescent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DiscardHold {
+    OwnerRecordUnreadable,
+    OwnerNotSealed,
+    StageRunning,
+    StageAmbiguous,
+    StageMissing,
+    KillNotOk,
+    GroupRunning,
+    GroupAmbiguous,
+    NativeExitMissing,
+    NativeExitRunning,
+    NativeExitAmbiguous,
+    TelegramMissing,
+    TelegramRunning,
+    TelegramAmbiguous,
+    ReadersMissing,
+    ReadersRunning,
+    ReadersAmbiguous,
+    OwnerUnavailable,
+    OwnerIdentityMismatch,
+    TrackerCloseMismatch,
+    CarrierRetireRejected,
+    NotExplicitDiscard,
+}
+
+impl DiscardHold {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::OwnerRecordUnreadable => "owner_record_unreadable",
+            Self::OwnerNotSealed => "owner_not_sealed",
+            Self::StageRunning => "stage_running",
+            Self::StageAmbiguous => "stage_ambiguous",
+            Self::StageMissing => "stage_missing",
+            Self::KillNotOk => "kill_not_ok",
+            Self::GroupRunning => "group_running",
+            Self::GroupAmbiguous => "group_ambiguous",
+            Self::NativeExitMissing => "native_exit_missing",
+            Self::NativeExitRunning => "native_exit_running",
+            Self::NativeExitAmbiguous => "native_exit_ambiguous",
+            Self::TelegramMissing => "telegram_missing",
+            Self::TelegramRunning => "telegram_running",
+            Self::TelegramAmbiguous => "telegram_ambiguous",
+            Self::ReadersMissing => "readers_missing",
+            Self::ReadersRunning => "readers_running",
+            Self::ReadersAmbiguous => "readers_ambiguous",
+            Self::OwnerUnavailable => "owner_unavailable",
+            Self::OwnerIdentityMismatch => "owner_identity_mismatch",
+            Self::TrackerCloseMismatch => "tracker_close_mismatch",
+            Self::CarrierRetireRejected => "carrier_retire_rejected",
+            Self::NotExplicitDiscard => "not_explicit_discard",
+        }
+    }
+}
+
+/// #3317 - per lane (native, telegram, readers): the missing, running and ambiguous holds.
+const LANE_HOLDS: [[DiscardHold; 3]; 3] = [
+    [
+        DiscardHold::NativeExitMissing,
+        DiscardHold::NativeExitRunning,
+        DiscardHold::NativeExitAmbiguous,
+    ],
+    [
+        DiscardHold::TelegramMissing,
+        DiscardHold::TelegramRunning,
+        DiscardHold::TelegramAmbiguous,
+    ],
+    [
+        DiscardHold::ReadersMissing,
+        DiscardHold::ReadersRunning,
+        DiscardHold::ReadersAmbiguous,
+    ],
+];
+
+/// #3317 - the complete stage sequence of a close that reached the auxiliary effects:
+/// `kill` from `execute_response_close_core`, then the order `run_response_close_auxiliary`
+/// writes. Any change to that writer's order must change this list.
+const DISCARD_STAGES: [&str; 8] = [
+    "kill", "detach", "telegram", "manager", "persist", "readers", "window", "events",
+];
+
 struct ResponseEffectRecord {
     stages: Vec<(&'static str, ResponseEffectState<()>)>,
     group: Option<ResponseEffectState<crate::resource_monitor::types::ResourceKillResult>>,
     group_worker: Option<ResponseGroupWorker>,
     sealed: bool,
+    /// #3317 - index 0 native exit, 1 telegram stop, 2 readers stop.
+    lanes: [LaneEvidence; 3],
 }
 
 pub(crate) struct ResponseEffectOwner {
@@ -197,6 +333,13 @@ impl ResponseEffectOwner {
         })
         .join()
         .is_err());
+    }
+
+    /// #3317 - sets a task lane back to `Missing` so a test can call the real
+    /// `record_task_stop`; it never writes `Task`/`Quiescent` itself.
+    #[cfg(test)]
+    pub(crate) fn clear_task_lane_for_test(&self, lane: StopLane) {
+        self.record.lock().unwrap().lanes[lane.index()] = LaneEvidence::Missing;
     }
 
     pub(crate) fn start(&self, name: &'static str) -> Option<usize> {
@@ -248,6 +391,94 @@ impl ResponseEffectOwner {
         Some(())
     }
 
+    /// #3317 - records what the kill proved about the native child; first record wins.
+    pub(crate) fn record_native_exit(&self, exit: crate::pty::backend::NativeExit) -> Option<()> {
+        use crate::pty::backend::NativeExit;
+        let mut record = self.record.lock().ok()?;
+        let lane = &mut record.lanes[0];
+        if !matches!(lane, LaneEvidence::Missing) {
+            return None;
+        }
+        *lane = match exit {
+            NativeExit::Observed => LaneEvidence::Quiescent,
+            NativeExit::Reaping(handle) => LaneEvidence::Native(handle),
+            NativeExit::Unobserved => LaneEvidence::Missing,
+        };
+        Some(())
+    }
+
+    /// #3317 - records the stop observation of a task lane; first record wins.
+    pub(crate) fn record_task_stop(
+        &self,
+        lane: StopLane,
+        stop: Result<Option<tokio::task::JoinHandle<bool>>, ()>,
+    ) -> Option<()> {
+        let mut record = self.record.lock().ok()?;
+        let lane = &mut record.lanes[lane.index()];
+        if !matches!(lane, LaneEvidence::Missing) {
+            return None;
+        }
+        *lane = match stop {
+            Ok(None) => LaneEvidence::Quiescent,
+            Ok(Some(handle)) => LaneEvidence::Task(handle),
+            Err(()) => LaneEvidence::Missing,
+        };
+        Some(())
+    }
+
+    /// #3317 - `Ok` only when the sealed record proves every close effect finished and
+    /// every lane quiescent. Never blocks; settled lanes are stored back.
+    pub(crate) fn discard_quiescence(&self) -> Result<(), DiscardHold> {
+        let Ok(mut record) = self.record.lock() else {
+            return Err(DiscardHold::OwnerRecordUnreadable);
+        };
+        if !record.sealed {
+            return Err(DiscardHold::OwnerNotSealed);
+        }
+        let stages = &record.stages;
+        if stages.iter().any(|(_, stage)| {
+            matches!(
+                stage,
+                ResponseEffectState::NotStarted | ResponseEffectState::Running
+            )
+        }) {
+            return Err(DiscardHold::StageRunning);
+        }
+        if stages
+            .iter()
+            .any(|(_, stage)| matches!(stage, ResponseEffectState::Ambiguous))
+        {
+            return Err(DiscardHold::StageAmbiguous);
+        }
+        if !stages.iter().map(|(name, _)| *name).eq(DISCARD_STAGES) {
+            return Err(DiscardHold::StageMissing);
+        }
+        if !matches!(
+            stages.first(),
+            Some((_, ResponseEffectState::Completed(Ok(()))))
+        ) {
+            return Err(DiscardHold::KillNotOk);
+        }
+        if record.group_worker.is_some()
+            || matches!(record.group, Some(ResponseEffectState::Running))
+        {
+            return Err(DiscardHold::GroupRunning);
+        }
+        if matches!(record.group, Some(ResponseEffectState::Ambiguous)) {
+            return Err(DiscardHold::GroupAmbiguous);
+        }
+        for (lane, [missing, running, ambiguous]) in record.lanes.iter_mut().zip(LANE_HOLDS) {
+            lane.settle();
+            match lane {
+                LaneEvidence::Quiescent => {}
+                LaneEvidence::Missing => return Err(missing),
+                LaneEvidence::Native(_) | LaneEvidence::Task(_) => return Err(running),
+                LaneEvidence::Ambiguous => return Err(ambiguous),
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(
         ticket: crate::pty::manager::ResponseCloseTicket,
         registration: ResponseCloseRegistration,
@@ -264,6 +495,11 @@ impl ResponseEffectOwner {
                 group: None,
                 group_worker: None,
                 sealed: false,
+                lanes: [
+                    LaneEvidence::Missing,
+                    LaneEvidence::Missing,
+                    LaneEvidence::Missing,
+                ],
             }),
         }
     }
