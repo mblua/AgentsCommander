@@ -1,3 +1,8 @@
+//! Validation checks for `role-experiment`: experiment and variant metadata paths, names,
+//! variant files, link or reparse-point rejection, live sessions using a variant, replica
+//! role overrides and diff warnings. Also copies source skills into a variant.
+//! Path resolution and artifact writing belong to `storage`.
+
 use super::artifacts::CliError;
 use super::artifacts::CliWarning;
 use super::artifacts::LoadedExperiment;
