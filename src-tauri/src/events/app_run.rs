@@ -1,3 +1,10 @@
+//! Tauri wiring for app startup: `ExitEvents` emits `terminal_attached`, and
+//! `IdleDetector::for_app_run` builds the idle detector with its idle and busy callbacks.
+//! The idle edge emits `session_idle` (with the Co-managed decision), marks the session idle,
+//! persists state, records the agent turn and wakes the `LoopScheduler`.
+//! The busy edge emits `session_busy`, marks the session busy and persists state.
+//! It also binds the response-close publishers and raw-output observer; it owns no state.
+
 use std::sync::{Arc, OnceLock};
 
 use crate::app_run::exit::ExitEvents;

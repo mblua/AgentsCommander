@@ -1,3 +1,9 @@
+//! `self-handoff-and-switch` CLI verb: queues a respawn of the caller's own Room replica
+//! session on another configured coding agent and/or profile letter, then a resume prompt
+//! from the archived `SELF-HANDOFF.md`. Owns `SelfSwitchArgs` and the
+//! `--list-coding-agents` discovery text built from settings. The CLI sends a
+//! `SELF_SWITCH_ACTION` message and waits only for the queue ack; the switch runs in the daemon.
+
 use clap::Args;
 use std::path::PathBuf;
 use uuid::Uuid;

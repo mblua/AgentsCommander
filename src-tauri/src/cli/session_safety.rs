@@ -1,3 +1,8 @@
+//! Guard for destructive CLI verbs: finds live sessions whose working directory is under a
+//! given root, from `sessions.json`. Owns `LiveSessionBlocker` and
+//! `ensure_no_live_sessions_under`, which returns an error listing blockers (and a stale
+//! state note when no daemon is running). Used by room removal and team member removal.
+
 use std::path::{Path, PathBuf};
 
 use crate::config::daemon_pid::{self, DaemonState};

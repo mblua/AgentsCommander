@@ -1,3 +1,9 @@
+//! `purge-room` CLI verb (`purge_wg`): asks the daemon to destroy every peer session in the
+//! caller's own room, except the caller and the Root Agent. Owns `PurgeWgArgs`; writes a
+//! `PURGE_WG_ACTION` `OutboxMessage` and polls one deadline for the response or a rejection.
+//! Maps response status to exit codes (0 purged / dry-run pass, 3 gate rejected, 4 destroy
+//! failed, 2 unknown, 1 auth/IO). Authorization and the busy gate run in the daemon.
+
 use clap::Args;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;

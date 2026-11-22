@@ -1,3 +1,9 @@
+//! `raise-hand` CLI verb: asks the daemon to raise the caller's Sidebar communication
+//! indicator. Owns `RaiseHandArgs`; sends a `RAISE_HAND_ACTION` `OutboxMessage` through
+//! `outbox_delivery::deliver`, then polls `responses/<request_id>.json` and prints `true` or
+//! `false` from its `raised` field. Eligibility (live orchestrator, visible title slot) is
+//! decided by the daemon.
+
 use clap::Args;
 use std::path::PathBuf;
 use uuid::Uuid;

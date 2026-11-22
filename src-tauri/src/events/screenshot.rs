@@ -1,3 +1,8 @@
+//! Tauri sink for screenshot capture events, built only on Windows, Linux and macOS.
+//! `ScreenshotEvents` emits `screenshot_capture_saved` and `screenshot_capture_failed`,
+//! plus `screenshot_hotkey_status_changed` on Linux only.
+//! It does not capture images; capture lives in `crate::screenshot`.
+
 #![cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 
 use tauri::{AppHandle, Emitter, Runtime};

@@ -1,3 +1,8 @@
+//! `agency-templates` CLI verb: `update`, `list` and `status` for the local Agency Agents
+//! template cache, all printed as JSON. Owns `AgencyTemplatesArgs`, `AgencyTemplatesCommand`
+//! and the list/status argument types. Downloading, cache validation and the manifest live in
+//! `config::agency_cache`; this module only dispatches and serializes.
+
 use clap::{Args, Subcommand};
 use serde::Serialize;
 

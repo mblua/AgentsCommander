@@ -1,3 +1,8 @@
+//! Text injection into agent PTYs: validates privileged input (`validate_pty_input_text`),
+//! picks per-shell injection profiles, resolves logical commands, and writes text with submit
+//! handling and seam observation (`AgentSubmitOutcome`).
+//! Submodules: `host` (host-side injection), `preflight`, and `clear_watch`.
+
 mod clear_watch;
 pub(crate) mod host;
 mod preflight;

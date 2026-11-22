@@ -1,3 +1,9 @@
+//! `loop` CLI verb: `list`, `create`, `update`, `remove`, `enable` and `disable` for
+//! scheduled cron loops that prompt a room's orchestrator. Owns `LoopArgs`, the subcommand
+//! argument structs and the CLI enums `BusyCoordinatorCli` / `SessionStartCli`. Resolves
+//! prompts from `--prompt` or `--prompt-file` (max `MAX_LOOP_PROMPT_FILE_BYTES`). Loop files
+//! and validation live in `config::loops`; this module also emits a project refresh request.
+
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand, ValueEnum};
