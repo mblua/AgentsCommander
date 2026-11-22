@@ -1,3 +1,10 @@
+//! Per-directory publication registry for protected carrier sessions.
+//! Owns the process-wide `PublicationRegistry` of `PublicationSlot`s, each holding a
+//! `PublicationState`: epoch, last `PublicationCheckpoint` and `CarrierProtection` list.
+//! Defines `InitialCarrierIntent`, `PublishedCarrier` and the `ProtectionPhase` states.
+//! It does not write `sessions.json` or confirm readbacks; that lives in `write` and
+//! `persist`. Replacement, closing and discard transitions live in the parent `carrier`.
+
 use super::super::record::PersistedSession;
 use crate::filesystem::directories::canonical_carrier_cwd;
 use crate::session::session::SessionStatus;

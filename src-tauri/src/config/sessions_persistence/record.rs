@@ -1,3 +1,7 @@
+//! Defines `PersistedSession`, the on-disk recipe row, and `CodingAgentBindingSeed`.
+//! Also deduplicates rows by name, cwd and root agent, normalizes paths and captures origins.
+//! Pure data and transforms: no file IO (see `store.rs`) and no live snapshotting (`persist`).
+
 use crate::config::settings::WindowGeometry;
 use crate::session::session::{SessionCommunication, SessionStatus};
 use serde::{Deserialize, Serialize};

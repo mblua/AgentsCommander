@@ -1,3 +1,10 @@
+//! Carrier protection lifecycle on top of the publication registry in `publication`.
+//! Hands out `PublishedCarrier` handles and moves protections between `ProtectionPhase`
+//! states: replacement, closing, dormant retirement and manual discard.
+//! Classifies paths as Foreign, Protected or Waiting via `classify_create_carrier_scope`.
+//! It owns no state of its own and writes no files; slots live in `publication`,
+//! discard veto logs in `discard_diagnostics`, and saves in `persist` and `write`.
+
 mod discard_diagnostics;
 mod publication;
 #[cfg(test)]

@@ -1,3 +1,8 @@
+//! Low-level `sessions.json` write path: save lock, temp-file counters and guarded renames.
+//! Publishes prepared snapshots into a `PublicationSlot`, confirms readback and retries renames.
+//! Defines `PersistMode`, `PersistPreparation` and the owned persist core runner.
+//! Does not build rows (`persist`) or own file paths and temp-file IO (`store.rs`).
+
 use super::carrier::{
     prepare_protected_publication, publication_slot, resolve_publication_slot,
     same_carrier_projection, same_written_projection, CarrierProtection, InitialCarrierIntent,
