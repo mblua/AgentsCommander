@@ -1,3 +1,9 @@
+//! `room` CLI verb (`workgroup`): `list`, `activity`, `add` and `remove` for rooms in a
+//! project. Owns `WorkgroupArgs` and `WorkgroupListItem`, plus helpers shared with `team`
+//! and `loop`: `write_refresh`, `build_new_team_config`, `push_unique` and project
+//! resolution. Removal checks live sessions and dirty repos and holds only the project gate.
+//! Room creation and deletion on disk are delegated to `commands::entity_creation`.
+
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 

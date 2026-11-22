@@ -1,3 +1,10 @@
+//! `send` CLI verb: inter-agent messaging. Validates the sender's message filename, resolves
+//! `--to`, applies routing rules (team membership, Root Agent, Temporary Room), archives the
+//! message file, writes an `OutboxMessage` and prints the `Queued:` / `Delivered:` receipts.
+//! Owns the `SenderKind` classification and `agent_name_from_root` / `sender_for_root`.
+//! Argument parsing, project derivation and `--pty-input` live in submodules; the daemon
+//! mailbox does the actual PTY delivery.
+
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 

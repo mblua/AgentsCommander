@@ -1,3 +1,10 @@
+//! `harness` CLI verb: runs a command (argv after `--`, or `--raw-command` via the platform
+//! shell) through a best-effort policy check. Owns `HarnessArgs`, `PolicyDecision`
+//! (allow / warn / deny) and `PolicyInput`; denies destructive root removals and warns on
+//! nested shells and odd branch names. Every run appends a redacted JSON line to
+//! `harness.log`. It is not a sandbox: process spawning lives in `process::harness`, and
+//! agents can still run shells directly.
+
 use clap::Args;
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;

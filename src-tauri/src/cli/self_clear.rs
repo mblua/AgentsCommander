@@ -1,3 +1,9 @@
+//! `self-handoff-and-clear` CLI verb: queues a deferred, two-phase clear of the caller's own
+//! session (clear after 30s idle, then inject a resume prompt naming the archived
+//! `SELF-HANDOFF.md`). Owns `SelfClearArgs` and `resolve_self_clear_sender`, the shared
+//! sender used by self-clear, switch, restart and raise-hand so the Root Agent sends as
+//! `ROOT_AGENT_SENDER`. The CLI waits only for the queue ack; the clear runs in the daemon.
+
 use clap::Args;
 use std::path::PathBuf;
 use uuid::Uuid;

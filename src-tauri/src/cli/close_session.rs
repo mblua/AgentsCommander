@@ -1,3 +1,10 @@
+//! `close-session` CLI verb: lets a team orchestrator (or the master/root token) close another
+//! agent's sessions. Resolves `--target`, checks orchestrator authorization, writes a
+//! `close-session` `OutboxMessage`, then polls one deadline (`--timeout` + 60s) for the
+//! daemon's `responses/<request_id>.json` or a rejection. Owns `CloseSessionArgs` and the
+//! exit-code contract (0 known status, 1 auth/IO/rejected, 2 outcome unknown). The actual
+//! shutdown runs in the daemon mailbox, not here.
+
 use clap::Args;
 use std::path::PathBuf;
 use uuid::Uuid;

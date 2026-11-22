@@ -1,3 +1,9 @@
+//! `create-agent` CLI verb: creates a full Agent Matrix in a registered project by
+//! `--project` name, with optional role template and `--launch`. Owns `CreateAgentArgs`;
+//! the work is delegated to `create_agent_matrix::execute_matrix_project_create`.
+//! The `session_request` submodule owns `SessionRequest` / `SessionRequestResult`, the
+//! file-based launch requests the daemon consumes.
+
 use clap::Args;
 
 use crate::cli::create_agent_matrix;
