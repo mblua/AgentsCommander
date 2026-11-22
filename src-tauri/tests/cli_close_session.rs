@@ -421,20 +421,15 @@ fn spawn_daemon_simulator(
 }
 
 #[cfg(not(target_os = "windows"))]
-fn simulate_daemon_response(
+fn wait_for_ready_outbox_message(
     outbox_dir: &Path,
-    responses_dir: &Path,
-    response_body: &str,
-    expected_target: &str,
-    expected_timeout_secs: u32,
-    mode: &str,
     overall_timeout: Duration,
-) -> Result<String, String> {
+) -> Result<(PathBuf, String, serde_json::Value, String, String), String> {
     let start = Instant::now();
     let poll = Duration::from_millis(50);
     let mut last_readiness_error = None::<String>;
 
-    let (msg_path, body, msg, msg_id, request_id) = loop {
+    loop {
         if start.elapsed() >= overall_timeout {
             return Err(match last_readiness_error {
                 Some(e) => format!(
@@ -506,8 +501,22 @@ fn simulate_daemon_response(
         let msg_id = msg_id.to_string();
         let request_id = request_id.to_string();
 
-        break (path, body, msg, msg_id, request_id);
-    };
+        break Ok((path, body, msg, msg_id, request_id));
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn simulate_daemon_response(
+    outbox_dir: &Path,
+    responses_dir: &Path,
+    response_body: &str,
+    expected_target: &str,
+    expected_timeout_secs: u32,
+    mode: &str,
+    overall_timeout: Duration,
+) -> Result<String, String> {
+    let (msg_path, body, msg, msg_id, request_id) =
+        wait_for_ready_outbox_message(outbox_dir, overall_timeout)?;
 
     if mode == "reject" {
         // §1440: el daemon rechaza antes de validar el contrato y antes de
