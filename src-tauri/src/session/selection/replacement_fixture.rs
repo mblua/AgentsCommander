@@ -1,3 +1,11 @@
+//! Test-only fixture for owned replacement continuations (compiled under `cfg(test)`).
+//!
+//! Owns `ReplacementFixtureControl`, the named `ReplacementFixtureCut` points, the
+//! pause/panic `ReplacementFixtureAction`s, the receipts tests read back and helpers
+//! that observe or poison the retained owner.
+//! It only records and gates; it grants no product authority and changes no finalizer
+//! accounting. The real replacement state lives in `replacement`.
+
 use std::sync::atomic::Ordering;
 
 use std::sync::{Arc, Mutex, Weak};

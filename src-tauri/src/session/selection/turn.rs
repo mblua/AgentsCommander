@@ -1,3 +1,10 @@
+//! The process-wide selection operation turn and owned operation submission.
+//!
+//! Owns the `SELECTION_OPERATION_TURN` read-write lock, its write/read guards, the
+//! `IN_SELECTION_WORKER` task local that rejects recursive submissions, and the
+//! `[selection-timing]` log line. Runs operations on tasks from `SelectionTasks`;
+//! it does not order coordinator jobs, which the queue in `worker` does.
+
 use std::sync::{Arc, OnceLock};
 
 use super::payload::SelectionCoordinatorError;
