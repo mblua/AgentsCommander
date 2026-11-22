@@ -1,3 +1,9 @@
+//! Discovery-side entry points that keep the Project AC Root `.gitignore` complete.
+//!
+//! Resolves the configured agents' instructions filenames from saved settings (test builds
+//! use none) and delegates. The pattern list and the file write live in
+//! `config::projects::ac_root_gitignore`; this module holds no state.
+
 use std::path::Path;
 
 /// Ensure the Project AC Root .gitignore exists and contains all required exclusion patterns.

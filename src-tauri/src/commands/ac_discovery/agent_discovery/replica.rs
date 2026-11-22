@@ -1,3 +1,10 @@
+//! Builds one `AcAgentReplica` for a `__agent_*` directory found during AC discovery.
+//!
+//! Reads the replica identity, coding-agent/profile selection, `repos` paths, single-repo
+//! branch, coordinator status and the persisted coordinator clocks (by FQN) for one replica.
+//! `DiscoveryContext` carries the per-scan inputs; it owns no state of its own.
+//! The raw file reads live in `replica_read` and `config::coding_agent_profiles`.
+
 use super::super::model::AcAgentReplica;
 use super::super::project_git::detect_repo_branch;
 use super::super::replica_read::{
