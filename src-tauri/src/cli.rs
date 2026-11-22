@@ -1,3 +1,13 @@
+//! Command-line surface: the `clap` definition (`Cli`, `Commands`), one
+//! submodule per verb, and `handle_cli`, which dispatches a parsed command
+//! and returns its exit code.
+//!
+//! It also owns the console helpers for CLI and startup output
+//! (`attach_parent_console`, `present_fatal_startup_message`,
+//! `flush_outputs`, `cli_println!`), the token shape check
+//! `validate_cli_token` and the `plain-clear` verb's runner. It does not
+//! authorize tokens: the daemon mailbox does that for write-path verbs.
+
 pub(crate) mod agency_templates;
 mod api_client;
 mod close_session;
