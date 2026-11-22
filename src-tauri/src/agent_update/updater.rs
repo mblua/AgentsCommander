@@ -52,6 +52,10 @@ impl TargetOwnerSlot {
     }
 
     pub(crate) fn identity(&self) -> (TargetWork, u64) {
+        #[allow(
+            clippy::expect_used,
+            reason = "identity is only called on an armed slot before clear()"
+        )]
         let lease = self.lease.as_ref().expect("active target owner lease");
         (lease.work, lease.epoch)
     }
@@ -221,6 +225,10 @@ async fn wait_and_settle_update_step(
     work: TargetWork,
     epoch: u64,
 ) -> (TargetWait, TargetSettlement) {
+    #[allow(
+        clippy::expect_used,
+        reason = "callers arm the lease and install the updater before waiting"
+    )]
     let waited = {
         let lease = owner_slot.lease.as_mut().expect("installed target lease");
         owner_slot
@@ -230,6 +238,10 @@ async fn wait_and_settle_update_step(
             .wait(step_timeout, &mut lease.cancel)
             .await
     };
+    #[allow(
+        clippy::expect_used,
+        reason = "callers arm the lease and install the updater before settling"
+    )]
     let settlement = {
         let lease = owner_slot.lease.as_mut().expect("settled target lease");
         owner_slot

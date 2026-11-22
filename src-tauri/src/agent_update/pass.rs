@@ -163,6 +163,10 @@ pub(crate) async fn run_target_probe(
     gate.hold_after_step_commit_for_test(&target.command).await;
     owner_slot.arm(work, epoch, cancel);
     let outcome = {
+        #[allow(
+            clippy::expect_used,
+            reason = "owner_slot.arm just stored the lease for this committed step"
+        )]
         let lease = owner_slot.lease.as_mut().expect("committed probe lease");
         probe_command_install_state_cancellable(
             &target.command,
@@ -584,6 +588,10 @@ where
         }
 
         for task in &mut runtime.tasks {
+            #[allow(
+                clippy::expect_used,
+                reason = "each supervisor handle is Some from spawn until this join clears it"
+            )]
             let joined = task
                 .handle
                 .as_mut()
