@@ -1,3 +1,9 @@
+//! Pure resolution of persisted project registrations into selected paths.
+//! Owns `ProjectPathPersistenceState`, `ResolvedPair` and the issue and repair kinds.
+//! `resolve_registrations` applies the side matrix, merges the legacy singular, quarantines
+//! conflicts and dedupes by identity. Filesystem probes come in through `CandidateResolver`;
+//! reading and writing the sidecar live in `project_path/migration.rs`.
+
 use std::path::{Path, PathBuf};
 
 use super::codec::decode_instance_relative;

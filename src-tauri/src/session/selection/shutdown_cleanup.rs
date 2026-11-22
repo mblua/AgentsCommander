@@ -1,3 +1,10 @@
+//! Coordinator shutdown and pending-create cleanup helpers.
+//!
+//! Rolls back pending creates (PTY kill plus manager rollback), signals and drains the
+//! container backend before an absolute deadline, and removes critical admission keys.
+//! Work that misses the deadline is parked on `CoordinatorInner` and reported as retained
+//! strings. It owns no state itself; worker draining lives in `worker`.
+
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Instant;
 

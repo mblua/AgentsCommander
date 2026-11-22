@@ -1,3 +1,10 @@
+//! Detects which trusted coding agent a PTY launch runs, for privileged exact PTY input.
+//!
+//! Owns `PtySubmissionAgent` and the executable-position checks: direct executables and
+//! conservative `cmd.exe /C` wrappers pass; shell evaluators and control operators fail.
+//! Holds no state. It does not write to a PTY or decide who may send input; it only
+//! proves the agent kind, and configured-wrapper provenance must be kept by the caller.
+
 use super::kind::CodingAgentKind;
 
 /// Coding-agent launch kinds that are safe for privileged exact PTY input.

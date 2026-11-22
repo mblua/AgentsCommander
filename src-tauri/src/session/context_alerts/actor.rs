@@ -1,3 +1,11 @@
+//! Single-task context-alert actor loop driven by `run_context_alert_actor`.
+//!
+//! Owns its `ActorState` (per-session policy, latches, error markers, pending batches) and one
+//! `InFlightSlot`, so at most one delivery runs at a time. It consumes `ContextSample`s, latches
+//! threshold crossings into batches, retries failures via `retry_delay`, runs periodic
+//! maintenance and cancels in-flight work on shutdown. It does not resolve policy, build routes
+//! or deliver notices; that goes through the `ContextAlertRuntime` trait (`runtime.rs`).
+
 use super::ActorState;
 use super::AlertBatch;
 use super::AlertClock;

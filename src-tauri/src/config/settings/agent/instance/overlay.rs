@@ -1,3 +1,9 @@
+//! Save-side rules where the agents file meets `settings.local.json` and profile owners.
+//! Owns restoring the `codexHomeKeyByAgent` carrier, rejecting edits to overlay-owned groups,
+//! keeping unknown raw row fields and untouched legacy aliases, limiting split-owner profile
+//! edits, and preparing the registered profile packet with refreshed row `id_hash` metadata.
+//! It does not read or write files; the overlay itself lives in `crate::config::local_overlay`.
+
 use super::super::super::{
     configuration_identity, configuration_identity_debug, raw_entries, refresh_agent_id_hashes,
     refresh_pair_id_hashes, AppSettings, CodingAgentProfilesConfig, OVERLAY_DERIVED_ID_CLOSURES,

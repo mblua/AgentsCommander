@@ -1,3 +1,11 @@
+//! Production `ContextAlertRuntime` backed by `ContextAlertServices`.
+//!
+//! `ProductionContextAlertRuntime` checks session liveness, resolves member policy from the
+//! canonical replica layout and team config (`resolve_member_policy_blocking`), builds the
+//! orchestrator route (`prepare_internal_route_blocking`) and a delivery guard that re-checks
+//! identity before send (`validate_attempt_guard`). It holds only the services handle: latches,
+//! batches and retry timing live in the actor (`actor.rs`); delivery itself is the services'.
+
 use super::AttemptPreparation;
 use super::AttemptSnapshot;
 use super::ContextAlertRuntime;

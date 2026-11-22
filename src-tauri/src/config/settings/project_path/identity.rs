@@ -1,3 +1,9 @@
+//! Filesystem validation and directory identity of project path candidates.
+//! Owns `DirectoryIdentity`, `SideStatus`, `SideOutcome` and the `CandidateResolver` seam;
+//! `FsCandidateResolver` canonicalizes, proves a directory and probes the project kind.
+//! `compare_dirs` decides whether two spellings name the same directory.
+//! Does not decide which side wins; that matrix lives in `project_path/resolution.rs`.
+
 use crate::filesystem::projects;
 use crate::filesystem::settings_sources;
 use std::ops::ControlFlow;

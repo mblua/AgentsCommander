@@ -1,3 +1,9 @@
+//! Validation and repair of a candidate `AppSettings` before it is saved or adopted.
+//! Owns the accepted ranges and shape checks for hotkeys, the room number mask, the API server
+//! bind, typing hold, resource limits and config-seed destinations.
+//! `validate_and_repair_settings` also normalizes agent/profile data in place.
+//! Holds no state and does no file IO: loading lives in `load.rs`, writing in `save.rs`.
+
 use super::{
     adopt_orphaned_profiles, normalize_agent_backend_configs, refresh_agent_id_hashes,
     refresh_pair_id_hashes, repair_coding_agent_profiles_config, validate_agent_commands,

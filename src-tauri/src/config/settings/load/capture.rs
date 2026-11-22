@@ -1,3 +1,9 @@
+//! Locked capture of the settings source for every loader.
+//! Owns `capture_project_settings`: verify and retain the parent directory, run the raw profile
+//! gate, optionally migrate project paths, select the project source, then decode it or fall
+//! back to defaults or an unavailable-project state.
+//! Parsing and composition live in the parent `load` module; this module only picks the path.
+
 #[cfg(test)]
 use super::PROJECT_SOURCE_CAPTURE_HOOK;
 use super::{

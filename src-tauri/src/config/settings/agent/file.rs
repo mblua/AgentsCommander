@@ -1,3 +1,10 @@
+//! Snapshot model of one physical agent file (registered instance or catalog) for the UI.
+//! Owns the wire types such as `SelectedAgentFileSnapshot`, `AgentFileEdits` and
+//! `AgentFileSaveReply`, the decode of a captured file into rows and profile sets, and the
+//! per-menu source choice in `agent_file_sources_reply`.
+//! Owner-locked reads and catalog saves live in `authority`; edit preparation and the
+//! registered save live in `edit`.
+
 mod authority;
 mod edit;
 

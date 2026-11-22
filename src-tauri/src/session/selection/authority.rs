@@ -1,3 +1,10 @@
+//! Sealed capability types that gate selection commits and owned-carry finalization.
+//!
+//! Defines `CommitCapability`, the `CreateBindingTicket` and `FinalizedOwnedCarry` traits,
+//! and `FinalizedOwnedCarryOutcome`. Sealing via `super::seal` keeps outside code from
+//! minting them. Holds no state and does no work; implementations live in the envelope
+//! and replacement modules of `selection`.
+
 use crate::session::session::SessionCommunication;
 use uuid::Uuid;
 

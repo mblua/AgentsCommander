@@ -1,3 +1,9 @@
+//! Lexical codec for the portable instance-relative project path companion.
+//! `encode_instance_relative` and `decode_instance_relative` own the strict `/` wire grammar;
+//! every decode rejection is a `RelDecodeError` and the absolute path is used instead.
+//! No filesystem access and no JSON handling: those live in `project_path/identity.rs` and
+//! `project_path.rs`.
+
 use std::path::{Path, PathBuf};
 
 // ── #1077 portable instance-relative path codec ────────────────────────────

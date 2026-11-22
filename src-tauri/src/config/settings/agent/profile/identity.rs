@@ -1,3 +1,9 @@
+//! Agent identity for profiles (#2450) and the physical identity carrier.
+//! Owns `agent_profile_identity`, orphan adoption in `adopt_orphaned_profiles`, the
+//! `coding_agent_identity_physical` carrier and its refresh under a held lock, the canonical
+//! identity projection hash and bootstrap revisions, and `write_identity_rows` on save.
+//! It does not repair profile cells; that is `repair_coding_agent_profiles_config` in the parent.
+
 use super::super::super::{
     apply_project_decode_to_value, production_instance_base, read_disk_object_for_write_typed,
     AppSettings, CodingAgentProfilesConfig, SettingsSaveError, SettingsSaveStage,
