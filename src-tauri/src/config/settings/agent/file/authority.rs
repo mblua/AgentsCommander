@@ -5,6 +5,8 @@
 //! It never builds an adoptable `AppSettings` projection; edits are prepared in `edit` and the
 //! catalog bytes are published by `crate::config::coding_agents_catalog`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::super::super::{
     capture_source_file, decode_project_state, io_error_kind_as_str, list_active_sources,
     production_instance_base, project_paths_path, raw_project_source_from_bytes,
@@ -311,6 +313,11 @@ impl CatalogSourceOperationGuard<'_, '_> {
         &self.path
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "the agent file path is built under a parent directory"
+    )]
     pub(crate) fn verify_target_parent_chain(&self) -> Result<(), String> {
         crate::path_identity::verify_component_chain(self.path.parent().expect("parent"))
             .map_err(|_| "sourceContextUnavailable".to_owned())

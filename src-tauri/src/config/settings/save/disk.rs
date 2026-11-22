@@ -3,6 +3,8 @@
 //! snapshot gate compare-and-set, the main-window placement writer and project list refresh.
 //! Holds no state; the general project-aware writer lives in `save/value.rs`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::super::{
     agents_instance_groups, agents_instance_path, apply_project_decode_to_value,
     apply_selected_project_state, coding_agent_identity_with_physical_overlay,
@@ -373,6 +375,11 @@ pub(crate) fn compare_and_set_terminal_snapshots_enabled_at_path(
     Ok(written)
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "decoded settings were checked to be a JSON object"
+)]
 pub(crate) fn decode_disk_settings_for_terminal_snapshot_cas(
     object: Map<String, Value>,
     settings_path: &Path,

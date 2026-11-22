@@ -3,6 +3,8 @@
 //! Tests call `register`, `count` and `unregister`; the parent module calls `record`.
 //! It has no effect on production reads.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

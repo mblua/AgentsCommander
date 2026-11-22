@@ -4,6 +4,8 @@
 //! orphan quarantine, catalog decode and `repair_coding_agent_profiles_config`.
 //! Identity and orphan adoption live in `identity`; the registered raw gate lives in `registered`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 mod identity;
 mod registered;
 
@@ -189,6 +191,11 @@ pub(crate) fn validate_profile_orphans(
     Ok(Some(object.clone()))
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the cell values are JSON objects created in this function"
+)]
 pub(crate) fn normalized_profile_cells(value: Option<&Value>) -> Result<Value, String> {
     let mut cells = profile_object(value, "cells")?;
     for (letter, raw) in &mut cells {
@@ -367,6 +374,11 @@ pub(crate) fn physical_profile_sets(
 }
 
 /// A read-only compatibility view. Never serialize this projection as storage.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the projection inserts codingAgentProfiles before reading it"
+)]
 pub(crate) fn project_physical_profiles(source: &Value, registered: bool) -> Result<Value, String> {
     let sets = physical_profile_sets(source, registered)?;
     let mut projected = source.clone();
@@ -535,6 +547,11 @@ pub(crate) fn canonical_profile_source(
 }
 
 /// Write the regrouped physical profile sets into a copy of `before`.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the result root is a JSON object built in this function"
+)]
 fn write_canonical_profile_source(
     before: &Value,
     incoming: &Value,
@@ -600,6 +617,11 @@ fn write_canonical_profile_source(
 }
 
 /// Quarantine legacy profile records whose agent ID no longer has a physical row.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the quarantine value was validated as an array"
+)]
 fn quarantine_orphan_profiles(
     result: &mut PhysicalProfileSets,
     legacy_cells: &Map<String, Value>,
@@ -641,6 +663,11 @@ fn quarantine_orphan_profiles(
 }
 
 /// Carry raw extension keys of unchanged cells into the submitted cells.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the known-fields value is a JSON object built from typed settings"
+)]
 fn preserve_unknown_cell_keys(cells: &mut Value, old_cells: &Value) -> Result<(), String> {
     if let (Some(new_cells), Some(previous)) = (cells.as_object_mut(), old_cells.as_object()) {
         for (letter, cell) in new_cells {

@@ -2,6 +2,8 @@
 //! `(stage, dir)` pair; a cross-process child is armed by environment (a
 //! rendezvous directory with ready/release files, as in the #1938 harness).
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex, OnceLock};

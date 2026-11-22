@@ -3,6 +3,8 @@
 //! A test arms a stage with `arm`; the engine stops in `hook` until the test releases it.
 //! It holds no migration logic; the engine lives in the parent `naming_migration` module.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex, OnceLock};

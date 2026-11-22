@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::super::agents_instance_groups;
 use super::super::agents_instance_path;
 use super::super::apply_project_decode_to_value;
@@ -99,6 +101,11 @@ impl SourceReadContext {
         })
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "the settings path is constructed with a parent"
+    )]
     pub(crate) fn source(&self, kind: SourceKind) -> SourceRef {
         let registered = kind == SourceKind::RegisteredInstance;
         SourceRef {
@@ -158,6 +165,11 @@ impl SourceReadContext {
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the settings path always has a parent"
+)]
 pub(crate) fn list_active_sources(context: &SourceReadContext) -> Vec<SourceRef> {
     let mut contexts = vec![context.clone()];
     if context.project {

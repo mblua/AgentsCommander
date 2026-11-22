@@ -4,6 +4,8 @@
 //! `perform_config_seed_recorded` runs it under the project seed-manifest gate.
 //! Callers must serialize seeding per replica; copy helpers live in `copy`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use crate::filesystem::config_seed as seed_disk;
 use std::path::Path;
 

@@ -1,5 +1,7 @@
 //! Owned, nonauthoritative observations made only after the discard veto.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::publication::{publication_slot_values, ProtectionPhase};
 use crate::session::manager::CarrierMutationPermit;
 use uuid::Uuid;

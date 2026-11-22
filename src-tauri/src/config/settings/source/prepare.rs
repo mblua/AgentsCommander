@@ -4,6 +4,8 @@
 //! `PreparedSourceCandidate`. Also exposes `source_general_field_names`.
 //! Writes nothing; publication and coordination live in other `source` modules.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 #[cfg(test)]
 use super::super::agents_instance_groups;
 #[cfg(test)]
@@ -282,6 +284,11 @@ pub(crate) fn preserve_unknown_fields(before: &Value, after: &Value, model: &Val
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the duplicate group key comes from the same map"
+)]
 pub(crate) fn validate_source_identity_groups(
     before: &Value,
     after: &Value,
@@ -513,6 +520,11 @@ pub(crate) fn prepare_source_candidate(
     prepare_source_candidate_with_original_links(snapshot, expected, candidate, origin, None)
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the catalog value was validated as a JSON object"
+)]
 fn validate_candidate_unknown_fields(
     before: &Value,
     candidate: &Value,

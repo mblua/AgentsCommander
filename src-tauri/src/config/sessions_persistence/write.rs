@@ -3,6 +3,8 @@
 //! Defines `PersistMode`, `PersistPreparation` and the owned persist core runner.
 //! Does not build rows (`persist`) or own file paths and temp-file IO (`store.rs`).
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::carrier::{
     prepare_protected_publication, publication_slot, resolve_publication_slot,
     same_carrier_projection, same_written_projection, CarrierProtection, InitialCarrierIntent,
@@ -405,6 +407,11 @@ pub(super) fn file_preparation_survives(
         })
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the checkpoint is always prepared before this step"
+)]
 pub(super) async fn save_file_snapshot_guarded(
     dir: &Path,
     slot: &PublicationSlot,
@@ -558,6 +565,11 @@ fn prepare_current_checkpoint(
     Some(next)
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the checkpoint is always prepared before this step"
+)]
 pub(super) async fn save_current_snapshot_guarded(
     mgr: &SessionManager,
     permit: &CarrierMutationPermit,

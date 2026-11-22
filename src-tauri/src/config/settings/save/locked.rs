@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::super::{
     agents_instance_path, apply_project_decode_to_value, capture_registered_profile_gate,
     captured_registered_profile_object, coding_agent_identity_with_physical_overlay,
@@ -28,6 +30,11 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "serialized settings are always a JSON object"
+)]
 pub(crate) fn save_settings_value_locked_with_startup(
     settings: &AppSettings,
     path: &Path,
@@ -257,6 +264,11 @@ pub(crate) fn backup_legacy_profiles_before_write(
     Ok(())
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the incoming profile value is always a JSON object"
+)]
 pub(crate) fn prepare_registered_profile_incoming(
     owner: (&AppSettings, &Path),
     profile_before: &Value,
@@ -352,6 +364,11 @@ pub(crate) fn prepare_registered_profile_incoming(
     Ok((profile_incoming, owner_has_active_agents, duplicate_rows))
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "both identity values are JSON objects from serialized settings"
+)]
 pub(crate) fn validate_directional_prepared_identity(
     profile_before: &Value,
     prepared: &Value,
@@ -479,6 +496,11 @@ fn prepare_save(
     clippy::too_many_arguments,
     reason = "profile prep needs settings, disk snapshots, gate, flags, startup"
 )]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "both profile values are JSON objects from serialized settings"
+)]
 fn prepare_save_profiles(
     settings: &AppSettings,
     path: &Path,
@@ -576,6 +598,11 @@ fn serialize_settings_object(
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the written settings value was checked to be a JSON object"
+)]
 fn decode_written_settings(
     settings: &AppSettings,
     path: &Path,

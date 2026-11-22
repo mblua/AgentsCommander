@@ -4,6 +4,8 @@
 //! logs them, so a lock holder never waits on logging.
 //! Does not read or write settings content; writers live in `save.rs` and `save/value.rs`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::{
     SettingsSaveCause, SettingsSaveError, SettingsSaveLegacyOutward, SettingsSaveReason,
     SettingsSaveStage,

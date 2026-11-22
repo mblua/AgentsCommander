@@ -5,6 +5,8 @@
 //! It does not do the low-level file IO: that lives in `crate::filesystem::projects::entities`.
 //! Name and agent-ref normalization rules live in the parent `names` module.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::super::names::{
     normalize_context_alert_percentages, normalize_team_agent_refs, resolve_agent_ref,
     validate_existing_name, RepoAssignment, TeamConfigResult,
@@ -476,6 +478,11 @@ pub(crate) fn config_path(ac_root: &Path, team_name: &str) -> PathBuf {
     crate::config::config_file_path(&ac_root.join(format!("_team_{team_name}")))
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the temporary entry was pushed just before it is read"
+)]
 pub(crate) fn publish_owned_team(
     owned: &mut OwnedCopyArtifacts,
     bytes: &[u8],

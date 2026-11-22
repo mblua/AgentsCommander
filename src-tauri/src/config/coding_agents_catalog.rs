@@ -36,6 +36,8 @@
 //! masters. Already-seeded user-owned files are NEVER rewritten or trimmed by a
 //! `false` row; the read gate covers them.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 

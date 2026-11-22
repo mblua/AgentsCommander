@@ -4,6 +4,8 @@
 //! Also maps commands to executable basenames and account keys.
 //! Copying a master into a replica lives in `crate::config::config_seed`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
@@ -444,6 +446,11 @@ pub(crate) fn replace_selected_personal_bytes(path: &Path, bytes: &[u8]) -> Resu
     publish_replace(path, bytes)
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "the authorized catalog path always has a parent directory"
+)]
 pub(crate) fn publish_selected_personal(
     proof: &mut crate::config::settings::CatalogSourceOperationGuard<'_, '_>,
     edits: &crate::config::settings::AgentFileEdits,

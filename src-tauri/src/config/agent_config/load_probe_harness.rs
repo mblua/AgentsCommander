@@ -4,6 +4,8 @@
 //! Also holds injected faults (`Fault`), pid checks (`pid_state`) and snapshot fixtures.
 //! Test support only; the load probe itself lives in the sibling `load_probe` module.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};

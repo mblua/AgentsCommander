@@ -4,6 +4,8 @@
 //! Also refreshes a stale managed base and fresh-initializes an absent catalog.
 //! Callers hold the catalog lock; atomic file publication lives in `publication`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -386,6 +388,11 @@ pub(crate) fn extract_legacy_local(
     extract_legacy_local_mode(source_bytes, shipped, false)
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "each entry was validated as a JSON object in the first pass"
+)]
 pub(crate) fn extract_legacy_local_mode(
     source_bytes: &[u8],
     shipped: &[CodingAgentDefinition],

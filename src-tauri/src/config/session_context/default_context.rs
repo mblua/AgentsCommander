@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::{
     display_path, read_context_template, resolve_ac_root_context_dir,
     DEFAULT_HOST_PLATFORM_RULES_LINUX, DEFAULT_HOST_PLATFORM_RULES_MACOS,
