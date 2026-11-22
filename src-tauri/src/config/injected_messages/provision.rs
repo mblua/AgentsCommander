@@ -1,3 +1,9 @@
+//! Seeds and reconciles the operator's injected-messages TOML file and its state sidecar.
+//! Refreshes pristine defaults, appends missing ids, keeps user edits, and rewrites the
+//! reference companion; `reseed` forces chosen ids back to the shipped default with a backup.
+//! Every write goes through one publish point and is re-parsed before it reaches disk.
+//! Message specs, parsing and hashing live in `registry`; rendering lives in `render`.
+
 use super::registry::analyze_source;
 use super::registry::canonical_reference_bytes;
 use super::registry::canonical_seed_bytes;

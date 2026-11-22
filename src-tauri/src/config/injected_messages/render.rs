@@ -1,3 +1,9 @@
+//! Pure rendering engine for injected messages: token expansion and sanitization.
+//! Expands known `%TOKEN%` placeholders in one pass, warns once on unknown ones, strips
+//! forbidden PTY scalars, neutralizes the `AC_RESPONSE::` prefix and truncates by size.
+//! Owns no state; it reads templates from the registry and falls back to the shipped default.
+//! Loading and provisioning the template file live in `registry` and `provision`.
+
 use super::registry::registry;
 use super::registry::spec_for;
 use super::registry::warn_once;
