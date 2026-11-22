@@ -1,3 +1,9 @@
+//! Text scanning helpers for PTY output. Owns `ResponseWatcherMap`, which tracks
+//! `%%AC_RESPONSE::<rid>::START/END%%` markers per session and writes the captured response
+//! file. Also holds the ANSI stripper used by the idle detector and the visible-content test the
+//! startup gate asks of a vt100 screen.
+//! It does NOT feed the parser or decide when to open the gate; callers in `screen` do.
+
 use crate::filesystem::{directories, documents};
 
 use std::collections::HashMap;

@@ -1,3 +1,8 @@
+//! Screen capture types for `pty::output`. `ScreenReplayState` is one session's vt100 parser plus
+//! its raw history ring, sequence number and last `ConPTY` size; `CapturedVtScreen` turns a parsed
+//! screen into the `terminal_snapshot_renderer` model.
+//! It does NOT feed bytes to the parser or answer screen queries; `delivery` and `screen` do.
+
 use super::{ParserAvailability, ReaderOperationGate, RegisteredPtyOutputTarget};
 use crate::pty::backend_kind::SessionBackendKind;
 use chrono::{DateTime, Utc};
