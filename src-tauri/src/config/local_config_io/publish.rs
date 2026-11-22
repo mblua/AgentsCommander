@@ -288,7 +288,7 @@ pub(super) fn publish_temp_config_guarded(
 }
 
 #[cfg(windows)]
-#[allow(clippy::expect_used, reason = "ReplaceFileW loop: Ok returns early, last_err is set")]
+#[allow(clippy::expect_used, reason = "Ok returns; else last_err set")]
 pub(super) fn publish_temp_config_retry_with_attempt(
     tmp_path: &Path,
     path: &Path,
