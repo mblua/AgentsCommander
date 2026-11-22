@@ -1,3 +1,9 @@
+//! Thin async client for the Telegram Bot API: `send_message`, `get_updates`, `get_file`,
+//! `download_file`, `send_photo` and `send_document`.
+//! Each call takes an `OutboundNetwork` permit first; request errors are redacted.
+//! Owns the private response types and the public `TelegramUpdate` / `TelegramContent`.
+//! It does no size or type checks on uploads; callers do that.
+
 use crate::errors::AppError;
 use crate::network::{OutboundNetwork, OutboundPermit};
 use crate::telegram::redact::redact;
