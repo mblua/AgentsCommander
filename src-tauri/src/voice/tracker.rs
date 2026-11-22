@@ -1,3 +1,7 @@
+//! Voice recording tracker: `VoiceTracker` (shared as `VoiceTrackingState`) records which
+//! sessions are recording voice input and whether they got PTY writes meanwhile.
+//! It does not capture or transcribe audio.
+
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;

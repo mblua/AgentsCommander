@@ -1,3 +1,7 @@
+//! Spec board path checks: resolves the repo root from settings and validates user paths
+//! into a `ValidatedPath` (under a repo root, no link ancestors, no `.ac` component,
+//! supported extension). Filesystem access goes through `crate::filesystem::spec_board`.
+
 use std::path::{Component, Path, PathBuf};
 
 use crate::config::settings::AppSettings;
