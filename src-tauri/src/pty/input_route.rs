@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 use crate::errors::AppError;
 use crate::pty::backend_kind::SessionBackendKind;
 use crate::pty::response_close::{

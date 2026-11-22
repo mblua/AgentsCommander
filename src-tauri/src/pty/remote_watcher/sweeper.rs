@@ -2,6 +2,7 @@
 //! git facts for every path, grouping them into query keys, and gating rounds on rate-limit
 //! backoff. Also resolves the base branch for a path.
 //! It does NOT parse GitHub answers or apply them; `ci_parse` and `outcome` do.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod round;
 
@@ -185,6 +186,11 @@ impl RemoteSweeper {
 
         let sweeper = Arc::clone(self);
         Some(std::thread::spawn(move || {
+            #[allow(
+                clippy::expect_used,
+                reason = "tokio runtime creation fails only when the OS refuses threads or I/O \
+                          drivers; this worker thread cannot run without its runtime"
+            )]
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

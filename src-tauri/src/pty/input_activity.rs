@@ -14,6 +14,7 @@
 //! way via the `pty_output` event and never reaches here. So we classify the
 //! user's own keystrokes plus xterm-generated input, all ESC-introduced and
 //! skipped below. We do not reconstruct the child agent's rendered line.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

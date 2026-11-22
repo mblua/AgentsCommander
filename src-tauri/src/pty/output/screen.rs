@@ -2,6 +2,7 @@
 //! remove a session, report whether it has rendered visible content, and read snapshots, rows,
 //! rows since a point and the PTY size. Also registers response watchers.
 //! It does NOT resize the real PTY or child; the backends do, and then call into here.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::{
     screen_shows_visible_content, CaptureFailure, CapturedVtScreen, ParserAvailability,
