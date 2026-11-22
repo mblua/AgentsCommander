@@ -1,3 +1,8 @@
+//! Clean of the TASK.md and TASK-status.jsonl pair. Archives both files, stages the
+//! canonical Clean description and a fresh status seed, and publishes them through a
+//! `TASK-clean.pending.json` journal so an interrupted clean can be recovered or refused.
+//! It expects the caller to hold the task lock; non-clean edits are handled by `flow`.
+
 use super::document::apply_clean;
 use super::document::parse_task;
 use super::document::render;

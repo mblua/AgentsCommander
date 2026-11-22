@@ -1,3 +1,7 @@
+//! Cooperative TASK.md lock used by the task verbs. Wraps `crate::filesystem::tasks::TaskLock`
+//! in `LockGuard`, maps its errors to `TaskOpError`, and holds the timeout constants.
+//! It does not read or write TASK.md content; callers in `flow` and `clean` do that.
+
 use std::path::Path;
 use std::time::Duration;
 

@@ -1,3 +1,8 @@
+//! Locked write flow for non-clean TASK.md edits. Takes the lock, recovers any pending
+//! clean, reads the file, applies the user-title guards and no-op checks, writes a
+//! timestamped backup, then publishes through a temp file with an external-write check.
+//! The `Clean` op is handed to `clean`; text editing itself is done by `document`.
+
 use super::clean::clean_pair_locked;
 use super::clean::recover_clean_pair_locked;
 use super::document::apply_edit;
