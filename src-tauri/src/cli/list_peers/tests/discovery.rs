@@ -241,8 +241,8 @@ fn norm_path_lowercases_and_normalizes_slashes() {
 
 // ── compute_peer_status (non-WG, expected_name=None) ─────────────
 
-/// A `temp-room-trNN` folder in the real config dir, removed on drop (#4780: 89, 90).
-/// The lock keeps the tests that share a number from deleting each other's room.
+/// A `temp-room-trNN` folder in the real config dir, removed on drop.
+/// Each test needs its own number because nextest runs tests in separate processes.
 struct TempRoomDir(
     PathBuf,
     #[allow(
@@ -328,7 +328,7 @@ fn coordinator_sees_temp_room_peers() {
 
 #[test]
 fn member_does_not_see_temp_room_peers() {
-    let _room = TempRoomDir::create(90);
+    let _room = TempRoomDir::create(91);
     let (_temp, _wg1_tech_lead, wg1_dev_rust) = make_portable_cross_wg_fixture();
     let wg = detect_wg_replica(wg1_dev_rust.to_str().unwrap())
         .unwrap()
@@ -341,14 +341,14 @@ fn member_does_not_see_temp_room_peers() {
 
 #[test]
 fn root_sees_temp_room_peers() {
-    let _room = TempRoomDir::create(89);
+    let _room = TempRoomDir::create(92);
     let root = crate::config::root_agent::root_agent_dir().expect("root dir");
 
     let names = peer_names(&discover_peers(&root).expect("root peers"));
 
     assert!(names
         .iter()
-        .any(|n| n == "agentscommander://temp-room/tr89"));
+        .any(|n| n == "agentscommander://temp-room/tr92"));
 }
 
 #[test]
