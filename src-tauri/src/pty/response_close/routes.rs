@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 use crate::pty::response_close::ResponseCloseError;
 use crate::pty::response_close::ResponseCloseInner;
 use crate::pty::response_close::ResponseCloseRoute;
@@ -382,6 +383,11 @@ fn record_manager_facts(
     working: bool,
     now: std::time::Instant,
 ) -> bool {
+    #[allow(
+        clippy::unwrap_used,
+        reason = "the only caller, `publish_manager_facts`, found this route under the same \
+                  `inner` borrow"
+    )]
     let route = inner.routes.get_mut(&identity.session_id).unwrap();
     let identity_changed = route.facts.as_ref() != Some(&identity);
     let changed_id = identity.session_id;

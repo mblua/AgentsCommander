@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 use super::{
     screen_shows_visible_content, CaptureFailure, CapturedVtScreen, ParserAvailability,
     PtyScreenSnapshot, ResponseWatcher, SessionIoFanout,

@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 use crate::pty::response_close::ResponseCloseError;
 use crate::pty::response_close::ResponseCloseInner;
 use crate::pty::response_close::ResponseClosePolicy;
@@ -88,7 +89,13 @@ impl ResponseCloseState {
                     .is_some_and(|p| p.nonce == context.nonce)
                 {
                     if submitted {
-                        route.policy.as_mut().unwrap().submitted = true;
+                        #[allow(
+                            clippy::unwrap_used,
+                            reason = "the guard above checked `route.policy` is `Some` under the \
+                                 same `inner` borrow"
+                        )]
+                        let policy = route.policy.as_mut().unwrap();
+                        policy.submitted = true;
                     } else {
                         route.diagnostic_policy_loss("mark_request_submitted", line!());
                         route.policy = None;
@@ -360,7 +367,15 @@ impl ResponseCloseState {
             if !actual_safe {
                 return Err(ResponseCloseError::Unknown);
             }
+            #[allow(
+                clippy::unwrap_used,
+                reason = "`route` was found by `get(&id)` above under the same `inner` borrow"
+            )]
             let route = inner.routes.get_mut(&id).unwrap();
+            #[allow(
+                clippy::unwrap_used,
+                reason = "`Self::safe` returned true, which requires `route.policy` to be `Some`"
+            )]
             let policy = route.policy.as_mut().unwrap();
             let selection_nonce = Uuid::new_v4();
             policy.selected = Some(selection_nonce);
@@ -415,6 +430,11 @@ impl ResponseCloseState {
                 }
                 return Err(ResponseCloseError::Unknown);
             }
+            #[allow(
+                clippy::unwrap_used,
+                reason = "the guard above returned early unless this route exists with a matching \
+                     policy"
+            )]
             let route = inner.routes.get_mut(&ticket.session_id).unwrap();
             route.closing = Some(ticket.selection_nonce);
             route.closing_target = route
@@ -480,6 +500,11 @@ impl ResponseCloseState {
                     original_backend_alive: true,
                     original_manager_identity_intact: true,
                 } => {
+                    #[allow(
+                        clippy::unwrap_used,
+                        reason = "the caller just looked up or checked this route under the same \
+                             `inner` borrow, so it is present"
+                    )]
                     let route = inner.routes.get_mut(&ticket.session_id).unwrap();
                     reopen_after_kill_failure(route, ticket.session_id);
                 }
@@ -573,6 +598,11 @@ fn finish_dormant_settlement(
     inner: &mut ResponseCloseInner,
     ticket: &ResponseCloseTicket,
 ) -> Result<(), StaleOrInvalidSettlement> {
+    #[allow(
+        clippy::unwrap_used,
+        reason = "the only caller matched this ticket against its route under the same `inner` \
+                  borrow"
+    )]
     let route = inner.routes.get(&ticket.session_id).unwrap();
     if route.manager_working != Some(false) || route.eligible {
         if log::log_enabled!(target: DIAG_TARGET, log::Level::Debug) {

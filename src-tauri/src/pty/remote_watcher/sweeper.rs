@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 mod round;
 
 use round::RoundReservations;
@@ -180,6 +181,11 @@ impl RemoteSweeper {
 
         let sweeper = Arc::clone(self);
         Some(std::thread::spawn(move || {
+            #[allow(
+                clippy::expect_used,
+                reason = "tokio runtime creation fails only when the OS refuses threads or I/O \
+                          drivers; this worker thread cannot run without its runtime"
+            )]
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

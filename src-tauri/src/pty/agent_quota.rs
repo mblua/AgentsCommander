@@ -14,6 +14,7 @@
 //! new import: the engine compares the key and never parses it. An import of
 //! `config::settings` here would close `settings -> ... -> lib -> agent_quota -> settings`
 //! and grow the crate's one 89-member cyclic SCC to 90.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 pub(crate) mod source;
 
@@ -187,6 +188,11 @@ impl AgentQuotaEngine {
     ) -> std::thread::JoinHandle<()> {
         let engine = Arc::clone(self);
         std::thread::spawn(move || {
+            #[allow(
+                clippy::expect_used,
+                reason = "tokio runtime creation fails only when the OS refuses threads or I/O \
+                          drivers; this worker thread cannot run without its runtime"
+            )]
             let rt = tokio::runtime::Runtime::new()
                 .expect("Failed to create tokio runtime for AgentQuotaEngine");
             rt.block_on(async move {

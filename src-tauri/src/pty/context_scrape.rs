@@ -6,6 +6,7 @@
 //! context-alert monitor so it can enqueue an informational coordinator notice, but this
 //! scraper cannot route, inject, or remediate the sampled session. That boundary is
 //! structural: it holds four narrow trait objects and no `AppHandle` or `PtyManager`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 pub(crate) mod pattern;
 pub(crate) mod rows;
@@ -207,6 +208,11 @@ impl ContextScraper {
     pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
         let scraper = Arc::clone(self);
         std::thread::spawn(move || {
+            #[allow(
+                clippy::expect_used,
+                reason = "tokio runtime creation fails only when the OS refuses threads or I/O \
+                          drivers; this worker thread cannot run without its runtime"
+            )]
             let rt = tokio::runtime::Runtime::new()
                 .expect("Failed to create tokio runtime for ContextScraper");
             rt.block_on(async move {

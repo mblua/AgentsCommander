@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 use crate::errors::AppError;
 use crate::pty::backend::{SessionBackendKind, TerminalScreenCopyRead, TerminalScreenRead};
 use crate::pty::context_scrape::ContextSessionLiveness;
@@ -14,6 +15,11 @@ pub(super) fn snapshot_route_proof(
     let manager = manager
         .lock()
         .map_err(|_| AppError::PtyError("pty_manager_poisoned".to_string()))?;
+    #[allow(
+        clippy::expect_used,
+        reason = "with `require_route = true` and one session id the registry returns one `Some` \
+                  proof or an `Err`, never `None`"
+    )]
     let proof = manager
         .registry
         .snapshot_route_proof(&[session_id], true)?

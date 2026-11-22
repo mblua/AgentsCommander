@@ -35,6 +35,7 @@
 //! ~200 us `context_scrape` records. A plain `cargo test` build is unoptimized and its
 //! numbers are not comparable to either; `--release` does not build the test target in this
 //! tree, because `load_sessions_raw_from_dir_for_test` is `#[cfg(debug_assertions)]`.
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod activity;
 mod dedupe;
@@ -520,6 +521,11 @@ impl WatcherEngine {
     pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
         let engine = Arc::clone(self);
         std::thread::spawn(move || {
+            #[allow(
+                clippy::expect_used,
+                reason = "tokio runtime creation fails only when the OS refuses threads or I/O \
+                          drivers; this worker thread cannot run without its runtime"
+            )]
             let rt = tokio::runtime::Runtime::new()
                 .expect("Failed to create tokio runtime for WatcherEngine");
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
