@@ -1,3 +1,10 @@
+//! Tauri commands that edit and resolve coding-agent profiles, envs and profile selections.
+//!
+//! Validates and saves profile and per-agent env changes into settings, sets an origin
+//! default profile or a replica instance override, and resolves the effective profile.
+//! Each write emits its matching `coding_agent_*` event; the instance override runs as one
+//! owned selection operation. Selection rules live in `config::coding_agent_profiles`.
+
 use tauri::{AppHandle, Emitter, State};
 
 use crate::commands::session::selection_executor::run_owned_selection_operation;

@@ -1,3 +1,11 @@
+//! Target enumeration and request validation for scoped profile selection operations.
+//!
+//! Validates the anchor (a real `__agent_*` replica in a room), walks the replica, workgroup
+//! or kind scope, reads each replica identity and strict selection state, maps live sessions
+//! by cwd, and builds sorted `ProfileCandidate` entries plus `ScopeFault` records. An unreadable
+//! member makes counts incomplete, never a silent skip. Also checks profile letters and
+//! confirmations. No writes and no state; directory visits live in `filesystem::profile_targets`.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

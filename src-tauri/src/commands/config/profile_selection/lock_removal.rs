@@ -1,3 +1,11 @@
+//! Preview and apply commands that remove replica selection locks across a scope.
+//!
+//! Preview counts locked, unlocked and invalid candidates and returns a fingerprint; apply
+//! re-checks it, then clears only locked targets, each behind its own per-file CAS, inside one
+//! owned selection operation. Removal never assigns a profile and never restarts a session.
+//! Target walk lives in `target`, fingerprints in `fingerprint`, lock writes in
+//! `config::coding_agent_profiles`.
+
 use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
