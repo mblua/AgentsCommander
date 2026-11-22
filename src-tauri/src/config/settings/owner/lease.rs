@@ -1,3 +1,8 @@
+//! Lifecycle lease of the settings owner: an exclusive lock on the owner sidecar.
+//! `SettingsOwnerLease` holds the lock, the retained physical directory and the resolved path.
+//! Dropping it unlocks; the sidecar file is never removed.
+//! Does not capture or compose sources; that lives in `owner/capture.rs`.
+
 use super::{owner_save_error_text, SettingsOwnerError};
 use crate::config::instance_artifacts::SETTINGS_OWNER_LOCK_FILE_NAME;
 use crate::config::settings::{SettingsFileLock, SettingsSaveCause, SettingsSaveReason};

@@ -1,3 +1,10 @@
+//! Owner-side authority for reading and saving agent files under the settings owner.
+//! Owns `BoundedSourceObservation`, the `AgentFileAuthority` capture and recheck of the source
+//! context, `SettingsOwner::read_agent_files`, and `CatalogSourceOperationGuard`, the proof a
+//! personal catalog save runs under.
+//! It never builds an adoptable `AppSettings` projection; edits are prepared in `edit` and the
+//! catalog bytes are published by `crate::config::coding_agents_catalog`.
+
 use super::super::super::{
     capture_source_file, decode_project_state, io_error_kind_as_str, list_active_sources,
     production_instance_base, project_paths_path, raw_project_source_from_bytes,

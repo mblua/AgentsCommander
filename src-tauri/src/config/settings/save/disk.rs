@@ -1,3 +1,8 @@
+//! Narrow settings operations that read or write disk truth under the settings lock.
+//! Owns the strict read-only readers for PTY input and terminal snapshots, the terminal
+//! snapshot gate compare-and-set, the main-window placement writer and project list refresh.
+//! Holds no state; the general project-aware writer lives in `save/value.rs`.
+
 use super::super::{
     agents_instance_groups, agents_instance_path, apply_project_decode_to_value,
     apply_selected_project_state, coding_agent_identity_with_physical_overlay,

@@ -1,3 +1,9 @@
+//! Readability state of the agents file (#2716 B3, option C).
+//! Owns `AgentsLayerState`, the process-wide registry of directories whose agents file could not
+//! be read, its single setter `set_agents_layer_state`, and the user-facing CLI, startup and
+//! session error texts.
+//! It does not read or merge the file's groups; that lives in the parent `instance` module.
+
 use super::super::super::AppSettings;
 use super::{agents_instance_path, read_agents_instance_file_labeled};
 use std::collections::HashSet;

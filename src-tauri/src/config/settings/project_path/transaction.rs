@@ -1,3 +1,9 @@
+//! Commit side of a project-paths write transaction held under the settings lock.
+//! Opens transactions, applies the selected projection to `AppSettings`, writes active and
+//! archived groups, and revalidates under the same lock after an uncertain write.
+//! `repair_fresh_project_paths_at_path` runs the fresh-state repair.
+//! Source selection and migration live in `project_path/migration.rs`.
+
 use super::super::{
     project_lists_from_projection, refresh_coding_agent_identity_at_locked_path,
     replace_project_projection, report_settings_save_error, write_value_atomic, AppSettings,
