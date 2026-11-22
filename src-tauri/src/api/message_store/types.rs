@@ -1,3 +1,8 @@
+//! Plain request and result types for `MessageStore`: `EnqueueRequest`, `EnqueueResult`,
+//! `LeasedMessage`, `PtyInputEnqueueRequest`, `HostPtyInputRejectionRequest`,
+//! `PtyInputEnqueueResult`, `ClaimedPtyInputOperation` and `DuePtyInputCandidate`.
+//! Data only; the store logic lives in the sibling modules.
+
 #[derive(Debug, Clone)]
 pub struct EnqueueRequest {
     pub sender_fqn: String,
