@@ -381,10 +381,6 @@ pub struct CaptureState {
     pub(crate) secret_rules: super::secrets::SecretRules,
     rooms: OnceLock<Mutex<Rooms>>,
 }
-#[allow(
-    clippy::new_without_default,
-    reason = "new() is the explicit constructor managed as Tauri state"
-)]
 impl CaptureState {
     pub fn new() -> Self {
         Self {

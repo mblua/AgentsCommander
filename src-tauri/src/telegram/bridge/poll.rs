@@ -406,10 +406,6 @@ pub(super) fn new_poll_backoff(session_id: &str) -> NetworkBackoff {
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "delivery needs runtime, events, both session ids, text and logger"
-)]
 async fn deliver_text(
     runtime: &dyn TelegramRuntime,
     event_port: &dyn TelegramEvents,

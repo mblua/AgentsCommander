@@ -237,10 +237,6 @@ pub struct RemoteActivityState {
     snapshot: OnceLock<Mutex<HashMap<String, RemoteActivity>>>,
 }
 
-#[allow(
-    clippy::new_without_default,
-    reason = "new() is the explicit constructor for lazily filled remote state"
-)]
 impl RemoteActivityState {
     pub fn new() -> Self {
         Self {

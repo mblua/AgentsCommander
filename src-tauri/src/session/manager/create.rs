@@ -298,10 +298,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "session rename takes permit, id and name; kept for family parity"
-    )]
     pub(crate) async fn rename_session_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -334,10 +330,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pending rename takes permit, binding and name; family parity"
-    )]
     pub(crate) async fn rename_pending_session_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -350,10 +342,6 @@ impl SessionManager {
         .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pending update takes permit, binding and closure; family parity"
-    )]
     pub(super) async fn update_pending_with_carrier_permit<F>(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -387,10 +375,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pending rollback takes only permit and binding; family parity"
-    )]
     pub(in crate::session) async fn rollback_pending_create_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -432,10 +416,6 @@ impl SessionManager {
         .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pending record insert takes permit, session, binding; parity"
-    )]
     pub(in crate::session) async fn insert_transaction_pending_record_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
