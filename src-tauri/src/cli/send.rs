@@ -5,6 +5,7 @@
 //! Argument parsing, project derivation and `--pty-input` live in submodules; the daemon
 //! mailbox does the actual PTY delivery.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -39,7 +40,7 @@ impl<'a> SenderKind<'a> {
         if root_is_root_agent {
             return Self::RootAgent;
         }
-        let name = Path::new(root).file_name().and_then(|name| name.to_str());
+        let name = Path::new(root).file_name().and_then(OsStr::to_str);
         match name {
             Some(name) if root_is_temp_room(root) => Self::TempRoom(name),
             _ => Self::Agent,

@@ -5,6 +5,7 @@
 use crate::filesystem::directories;
 use clap::Args;
 use serde::Serialize;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use super::window_placement::TESTABLE_EXE_NAME;
@@ -63,7 +64,7 @@ fn execute_inner(args: TestResetArgs) -> Result<TestResetOutput, String> {
             serde_json::json!({"message": e.to_string()}),
         )
     })?;
-    let exe_name = exe_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let exe_name = exe_path.file_name().and_then(OsStr::to_str).unwrap_or("");
     if exe_name != TESTABLE_EXE_NAME {
         return Err(error_json(
             "refusing_non_testeable_binary",
