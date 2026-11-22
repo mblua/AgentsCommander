@@ -25,9 +25,7 @@
   <a href="docs/quickstart.md"><b>Your first team</b></a>
 </p>
 
-<p align="center">
-  <img src="docs/screenshots/hero.png" alt="AgentsCommander desktop with agent terminals and the active agent sidebar" />
-</p>
+https://github.com/user-attachments/assets/649e6449-4e5d-4393-a43d-123cb3c27d65
 
 ## Get started
 
