@@ -70,7 +70,10 @@ impl std::fmt::Debug for BotTarget {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "watch task owns rollout search inputs, network, dest, cancel, sink"
+)]
 pub fn spawn_watch_task(
     search_root: PathBuf,
     expected_cwd: String,
@@ -235,7 +238,10 @@ fn extract_assistant_final(line: &str) -> Option<String> {
 // Eight parameters: phase 1's seven plus the attachment. Grouping them into a
 // builder would hide which of them the record copies verbatim, which is the one
 // thing the phase-1 tests read this function for.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "record capture combines text, turn, origin, file and reader state"
+)]
 fn capture_record(
     text: String,
     turn_id: Option<String>,
@@ -298,7 +304,10 @@ fn deliver_capture_record(
 ///
 /// The caller appends `record.text` and a newline to the Telegram buffer,
 /// exactly as the pre-#2232 code appended the extractor text.
-#[allow(clippy::too_many_arguments)] // phase 1's seven plus the turn accumulator.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "capture_record's inputs plus the live turn accumulator"
+)]
 fn capture_live_lines(
     new_lines: Vec<(u64, String)>,
     session_id: &str,
@@ -560,7 +569,10 @@ struct CodexWatchState {
     line_remainder: String,
     search_warned: bool,
 }
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "loop receives every input spawn_watch_task moves into it"
+)]
 async fn watch_loop(
     search_root: PathBuf,
     expected_cwd: String,

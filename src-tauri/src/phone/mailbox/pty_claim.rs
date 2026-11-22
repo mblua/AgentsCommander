@@ -26,7 +26,10 @@ use uuid::Uuid;
 /// eight fields because the text and its validation need all eight, and boxing
 /// them would add an allocation per notice to buy nothing measurable. The peer
 /// arm is a borrow, so it is small either way.
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "notice variant is large by design; boxing adds a per-notice alloc"
+)]
 pub(crate) enum WakeDelivery<'a> {
     Peer {
         message: &'a OutboxMessage,

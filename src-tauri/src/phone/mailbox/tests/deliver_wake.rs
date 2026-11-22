@@ -6,7 +6,10 @@ use super::*;
 // cross-test serialization lock (a std `Mutex` on purpose — the sync
 // C1-C5 tests in `cli::create_agent` share the same static) and must be
 // held across the poll await; the tests run single-threaded per process.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "test-only lock serializes the process-wide session-requests dir"
+)]
 #[tokio::test]
 async fn session_request_result_sidecar_written_on_success() {
     // #1163: `config_dir()` is process-wide — one shared session-requests
@@ -48,7 +51,10 @@ async fn session_request_result_sidecar_written_on_success() {
 
 /// M2: a failed create (PTY spawn error) answers with a `rejected` result
 /// carrying the error text, and deletes the request.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "test-only lock serializes the process-wide session-requests dir"
+)]
 #[tokio::test]
 async fn session_request_result_sidecar_written_on_rejection() {
     let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
@@ -77,7 +83,10 @@ async fn session_request_result_sidecar_written_on_rejection() {
 
 /// M3: a malformed request file gets a `rejected` result keyed by its
 /// filename stem, and the request file is deleted.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "test-only lock serializes the process-wide session-requests dir"
+)]
 #[tokio::test]
 async fn malformed_request_writes_rejected_result() {
     let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
@@ -107,7 +116,10 @@ async fn malformed_request_writes_rejected_result() {
 
 /// M4: a lone result sidecar is never consumed as a request (no delete,
 /// no spurious rejected result for it).
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "test-only lock serializes the process-wide session-requests dir"
+)]
 #[tokio::test]
 async fn result_sidecars_are_not_consumed_as_requests() {
     let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
@@ -139,7 +151,10 @@ async fn result_sidecars_are_not_consumed_as_requests() {
 
 /// M5: result sidecars older than 5 minutes are swept; fresh ones are
 /// kept.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "test-only lock serializes the process-wide session-requests dir"
+)]
 #[tokio::test]
 async fn stale_result_sidecars_are_swept() {
     let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK

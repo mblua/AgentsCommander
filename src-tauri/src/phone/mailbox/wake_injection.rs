@@ -50,7 +50,10 @@ fn record_spawn_call(hooks: &super::pty_claim::MailboxTestHooks, call: MailboxSp
 }
 
 impl MailboxPoller {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "wake spawn passes resolved command, cwd, shell, args and resume flags"
+    )]
     pub(crate) async fn spawn_wake_session<S: MailboxHost>(
         &self,
         app: &S,
@@ -438,7 +441,10 @@ impl MailboxPoller {
     /// `wake-and-sleep` non-interactive path was removed in 0.7.0). The
     /// `use_markers=true` branch below is retained for future non-interactive
     /// consumers; see _plans/delete-modes.md §2.4.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "compat facade keeps the legacy inject signature for its callers"
+    )]
     #[cfg_attr(
         not(test),
         expect(

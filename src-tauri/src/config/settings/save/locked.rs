@@ -475,7 +475,10 @@ fn prepare_save(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "profile prep needs settings, disk snapshots, gate, flags, startup"
+)]
 fn prepare_save_profiles(
     settings: &AppSettings,
     path: &Path,
