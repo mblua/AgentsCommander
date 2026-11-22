@@ -1,3 +1,8 @@
+//! Test-only rendezvous after a restart or destroy releases the old session.
+//! Owns one process-wide map of `RestartReaderBarrier` keyed by session id.
+//! Restart and destroy call `hit_after_old_release`; tests arm it with
+//! `install_after_old_release`. Compiled only under `#[cfg(test)]`.
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;

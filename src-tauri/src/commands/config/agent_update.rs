@@ -1,3 +1,10 @@
+//! Tauri commands for the app update check and the startup coding-agent update gate.
+//!
+//! Reads the cached npm update info, snapshots `AgentUpdateGate` status and overview, answers
+//! a startup prompt (persisting the per-command auto-update choice) and cancels updates.
+//! It also implements `AgentUpdateTasks` and `AgentUpdateState` for `AppHandle`.
+//! The gate, prompts and probes live in `agent_update`; this module owns no state.
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

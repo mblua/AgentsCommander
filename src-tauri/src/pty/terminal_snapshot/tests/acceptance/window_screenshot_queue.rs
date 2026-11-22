@@ -245,7 +245,10 @@ async fn window_screenshot_fresh_guard_is_released_before_queue_wait() {
 
 #[cfg(target_os = "windows")]
 #[tokio::test]
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "only the audit marker spans awaits; calls lock is dropped first"
+)]
 async fn window_screenshot_queued_revocation_blocks_launch_revalidation() {
     let fixture = create_window_screenshot_fixture().await;
     let token = fixture.api_coordinator_token.secret.clone();

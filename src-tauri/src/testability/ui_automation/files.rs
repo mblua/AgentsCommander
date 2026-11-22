@@ -1,3 +1,8 @@
+//! File helpers for UI automation: atomic JSON writes, retried rename and remove for
+//! transient errors, session file reads that retry on `NotFound`, and
+//! `cleanup_stale_automation_files` for the requests and responses folders.
+//! Test builds add `SessionReadHookGuard` to run a callback on a missing session read.
+
 use super::protocol::{
     FS_RETRY_COUNT, FS_RETRY_DELAY_MS, REQUESTS_DIR, RESPONSES_DIR, SESSION_READ_RETRY_COUNT,
     SESSION_READ_RETRY_DELAY_MS,

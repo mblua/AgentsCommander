@@ -33,7 +33,10 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "turn arm takes permit and id; kept for family parity"
+    )]
     pub(crate) async fn arm_agent_turn_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -105,7 +108,10 @@ impl SessionManager {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "PTY boundary checks target, sender, route, permit and both recipes"
+    )]
     #[cfg_attr(
         not(test),
         expect(

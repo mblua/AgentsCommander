@@ -1,3 +1,7 @@
+//! Window info command: `WindowInfoArgs` and `execute`, which prints app window details
+//! (`WindowSnapshot`, `WindowRect`) as JSON. The real lookup is in `windows_impl` on Windows.
+//! On other platforms `execute` prints `supported: false` instead.
+
 use clap::Args;
 #[cfg(target_os = "windows")]
 use serde::Serialize;

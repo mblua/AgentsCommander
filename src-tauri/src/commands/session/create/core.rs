@@ -51,7 +51,10 @@ mod publication;
 // This accepted core owns every launched effect and its real result.
 // Coordinator shutdown may reject finalization, but cannot drop a pending
 // backend/native effect and manufacture completion for the caller.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "core create receives every spawn, selection and lifecycle input"
+)]
 pub(crate) async fn create_session_inner_core<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,

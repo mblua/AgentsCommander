@@ -1,3 +1,7 @@
+//! Filesystem reads for agent settings sources: agent help text and blocking-menus
+//! definitions, each as text (`read_to_string`) or raw bytes.
+//! Owns no types and does no parsing, validation or writing; callers handle that.
+
 use std::path::Path;
 
 pub(crate) fn read_agent_help_text(path: &Path) -> std::io::Result<String> {

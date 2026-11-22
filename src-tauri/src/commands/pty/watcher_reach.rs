@@ -1,3 +1,9 @@
+//! Draft watcher reach preview types and resolution for the Settings modal (#1171).
+//! `resolve_draft_reach` runs two pure passes over the unsaved draft: one for which agents a
+//! row reaches and one for which rows get a watcher slot.
+//! It does not check pattern compilability (`preview_watcher_pattern` does) and does not save;
+//! watcher resolution itself lives in `crate::pty::watchers`.
+
 /// #1171 - one watcher row of the draft the Settings modal holds in memory.
 ///
 /// Only the three fields `reaches` and the budget depend on (plan 4.8). `pattern`, `mode`,

@@ -173,7 +173,10 @@ fn read_owned_request(
     Some((request, request_id, token, expires_at))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "claimed request carries ownership, paths, identities and permit"
+)]
 pub(super) async fn process_claimed<H: TerminalSnapshotHost>(
     scanner_ownership: ScannerTaskOwnership,
     host: &H,

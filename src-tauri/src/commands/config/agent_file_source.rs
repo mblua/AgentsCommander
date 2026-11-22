@@ -1,3 +1,11 @@
+//! Tauri commands to list, read, save and remember coding-agent file sources.
+//!
+//! On each read or save it attaches selection tickets (default, every profile letter and `A`)
+//! per agent, strips the root token from returned effective settings, and emits
+//! `coding_agent_settings_updated` / `coding_agent_profiles_updated` after a real commit.
+//! File IO, revisions and persistence live in `config::settings`; profile resolution lives in
+//! `config::coding_agent_profiles`. It holds no state.
+
 use std::collections::BTreeMap;
 use tauri::{AppHandle, Emitter, Manager, State};
 

@@ -1,3 +1,10 @@
+//! Mailbox settle and shared delivery helpers: live settle and wake routing
+//! (`live_settle_action`, `LiveWakeRoute`), and the self-clear gate (`SelfClearGateState`).
+//! Archives and restores handoff files, injects handoff prompts, and captures
+//! `SELF-FORGET.md` summaries (`capture_self_forget_summary`).
+//! Also holds error classification, FQN session filtering, restore waits, privileged-token
+//! probes and owned PTY work finishing (`finish_owned_pty_work`).
+
 use super::handoff::{
     next_sustained_idle_state, ForgottenSummary, SettleAction, ARCHIVE_TIMESTAMP_FORMAT,
     SELF_FORGET_SUMMARY_READ_LIMIT_BYTES, SELF_HANDOFF_ROOT_NAME,

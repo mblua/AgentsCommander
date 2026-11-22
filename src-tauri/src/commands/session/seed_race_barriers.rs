@@ -1,3 +1,8 @@
+//! Test-only barriers for races between a create's config seed and project deletion.
+//! Owns two process-wide maps of `SeedRaceBarrier` keyed by normalized cwd: before the project
+//! gate and after the seed, before the PTY spawn.
+//! Compiled only under `#[cfg(test)]`; production never reaches them.
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;

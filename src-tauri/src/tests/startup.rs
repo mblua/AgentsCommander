@@ -610,55 +610,20 @@ fn issue_1577_prepare_app_outbox_creates_the_shared_path() {
 }
 
 #[cfg(target_os = "linux")]
+mod issue_1930_linux;
+
+#[cfg(target_os = "linux")]
 #[test]
 fn issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start() {
     let summary_owner = crate::startup::StartupMigrationSummary::new();
-    use std::fs::OpenOptions;
+    use issue_1930_linux::{
+        assert_child_refuses_startup, prepare_unwritable_case_root, restore_case_root_mode,
+        run_child, verify_child_output, CHILD_SENTINEL,
+    };
     use std::os::unix::fs::PermissionsExt;
-    use std::process::{Command, Stdio};
-    use std::thread;
-    use std::time::{Duration, Instant};
-
-    const CHILD_SENTINEL: &str = "AGENTSCOMMANDER_ISSUE_1577_CHILD";
-    const TEST_NAME: &str =
-        "tests::startup::issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start";
 
     if std::env::var_os(CHILD_SENTINEL).is_some() {
-        let executable = std::env::current_exe().unwrap();
-        let case_root = executable.parent().unwrap();
-        let adjacent = case_root.join(".agentscommander_issue1577_linux_subprocess");
-
-        assert_eq!(crate::config::config_dir(), Some(adjacent.clone()));
-        let Some(crate::config::ConfigStartupError::AdjacentDirectoryUnwritable {
-            config_dir,
-            reason,
-        }) = crate::config::config_startup_error()
-        else {
-            panic!("an unwritable unmarked adjacent directory must refuse startup");
-        };
-        assert_eq!(config_dir, adjacent);
-        let reason_prefix = format!(
-            "write probe could not create configuration directory \"{}\" after 1 attempt(s): ",
-            adjacent.display()
-        );
-        assert!(
-            reason.starts_with(&reason_prefix),
-            "unexpected reason: {reason}"
-        );
-        let refusal =
-            crate::preflight_config_startup(&summary_owner).expect_err("startup must be refused");
-        assert_eq!(
-            refusal.to_string(),
-            format!(
-                "AgentsCommander cannot start because it cannot write its configuration \
-                    directory \"{}\" next to the executable: {}{} Move the executable to a \
-                    writable folder, or set AGENTSCOMMANDER_CONFIG_DIR to a writable directory, \
-                    and restart.",
-                adjacent.display(),
-                reason,
-                if reason.ends_with('.') { "" } else { "." }
-            )
-        );
+        assert_child_refuses_startup(&summary_owner);
         return;
     }
 
@@ -671,202 +636,18 @@ fn issue_1930_linux_unmarked_adjacent_unwritable_refuses_to_start() {
     let adjacent = case_root.join(".agentscommander_issue1577_linux_subprocess");
 
     let body = (|| -> Result<(), String> {
-        let source_executable =
-            std::env::current_exe().map_err(|error| format!("current_exe failed: {error}"))?;
-        std::fs::copy(&source_executable, &copied_executable).map_err(|error| {
-            format!(
-                "copy {} -> {} failed: {error}",
-                source_executable.display(),
-                copied_executable.display()
-            )
-        })?;
-        let mut executable_permissions = std::fs::metadata(&copied_executable)
-            .map_err(|error| format!("copied executable metadata failed: {error}"))?
-            .permissions();
-        executable_permissions.set_mode(executable_permissions.mode() | 0o111);
-        std::fs::set_permissions(&copied_executable, executable_permissions)
-            .map_err(|error| format!("set executable mode failed: {error}"))?;
-
-        if adjacent.exists() {
-            return Err(format!("fixture not fresh adjacent={}", adjacent.display()));
-        }
-
-        let mut read_only_permissions = std::fs::metadata(&case_root)
-            .map_err(|error| format!("case-root metadata failed: {error}"))?
-            .permissions();
-        read_only_permissions.set_mode(0o555);
-        std::fs::set_permissions(&case_root, read_only_permissions)
-            .map_err(|error| format!("chmod 0555 {} failed: {error}", case_root.display()))?;
-
-        let fixture_probe = case_root.join("fixture-write-preflight.tmp");
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&fixture_probe)
-        {
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
-            Err(error) => {
-                return Err(format!(
-                    "0555 preflight returned {:?} instead of PermissionDenied for {}: {error}",
-                    error.kind(),
-                    fixture_probe.display()
-                ));
-            }
-            Ok(file) => {
-                drop(file);
-                let mut restored = std::fs::metadata(&case_root)
-                    .map_err(|error| format!("restore metadata failed: {error}"))?
-                    .permissions();
-                restored.set_mode(original_mode);
-                std::fs::set_permissions(&case_root, restored)
-                    .map_err(|error| format!("restore after false preflight failed: {error}"))?;
-                std::fs::remove_file(&fixture_probe).map_err(|error| {
-                    format!("remove false-positive fixture probe failed: {error}")
-                })?;
-                return Err(format!(
-                    "mode 0555 did not block create_new in {}; refusing false pass",
-                    case_root.display()
-                ));
-            }
-        }
-
-        let mut child = Command::new(&copied_executable)
-            .arg(TEST_NAME)
-            .arg("--exact")
-            .arg("--nocapture")
-            .arg("--test-threads=1")
-            .env("HOME", &home_root)
-            .env_remove("AGENTSCOMMANDER_CONFIG_DIR")
-            .env_remove("AGENTSCOMMANDER_TEST_CONFIG_DIR")
-            .env(CHILD_SENTINEL, "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                format!(
-                    "spawn copied child {} failed: {error}",
-                    copied_executable.display()
-                )
-            })?;
-
-        let deadline = Instant::now() + Duration::from_secs(15);
-        let mut status_poll_error = None;
-        let terminal_status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(25));
-                }
-                Ok(None) => break None,
-                Err(error) => {
-                    status_poll_error = Some(error);
-                    break None;
-                }
-            }
-        };
-
-        if terminal_status.is_none() {
-            let kill_error = child.kill().err();
-            let reap_deadline = Instant::now() + Duration::from_secs(5);
-            let reaped = loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => break true,
-                    Ok(None) if Instant::now() < reap_deadline => {
-                        thread::sleep(Duration::from_millis(25));
-                    }
-                    Ok(None) | Err(_) => break false,
-                }
-            };
-            if !reaped {
-                return Err(format!(
-                    "child did not reap within 5 seconds; kill_error={kill_error:?} \
-                        poll_error={status_poll_error:?} case_root={} home_root={}",
-                    case_root.display(),
-                    home_root.display()
-                ));
-            }
-            let output = child
-                .wait_with_output()
-                .map_err(|error| format!("timed-out child final reap failed: {error}"))?;
-            return Err(format!(
-                "child did not reach a clean terminal status; kill_error={kill_error:?} \
-                    poll_error={status_poll_error:?} status={:?} stdout={:?} stderr={:?} \
-                    case_root={} home_root={}",
-                output.status.code(),
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-                case_root.display(),
-                home_root.display()
-            ));
-        }
-
-        let output = child
-            .wait_with_output()
-            .map_err(|error| format!("child output collection failed: {error}"))?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !output.status.success() {
-            return Err(format!(
-                "child failed status={:?} stdout={stdout:?} stderr={stderr:?} case_root={} \
-                    home_root={}",
-                output.status.code(),
-                case_root.display(),
-                home_root.display()
-            ));
-        }
-        for text in [&*stdout, &*stderr] {
-            if text.contains("panicked at") || text.contains("stack backtrace:") {
-                return Err(format!(
-                    "child emitted panic/backtrace text stdout={stdout:?} stderr={stderr:?}"
-                ));
-            }
-        }
-
-        let home_entries: Vec<_> = std::fs::read_dir(&home_root)
-            .map_err(|error| format!("read home failed: {error}"))?
-            .map(|entry| entry.map(|entry| entry.file_name()))
-            .collect::<Result<_, _>>()
-            .map_err(|error| format!("read home entry failed: {error}"))?;
-        if !home_entries.is_empty() {
-            return Err(format!(
-                "a suffixed build wrote into HOME: {home_entries:?}"
-            ));
-        }
-        if adjacent.exists() {
-            return Err(format!(
-                "adjacent state appeared adjacent={}",
-                adjacent.display()
-            ));
-        }
-        let case_entries: Vec<_> = std::fs::read_dir(&case_root)
-            .map_err(|error| format!("read case root failed: {error}"))?
-            .map(|entry| entry.map(|entry| entry.file_name()))
-            .collect::<Result<_, _>>()
-            .map_err(|error| format!("read case-root entry failed: {error}"))?;
-        if case_entries
-            != [copied_executable
-                .file_name()
-                .expect("copied executable file name")
-                .to_os_string()]
-        {
-            return Err(format!("unexpected case-root entries: {case_entries:?}"));
-        }
-        Ok(())
+        prepare_unwritable_case_root(&case_root, &copied_executable, &adjacent, original_mode)?;
+        let output = run_child(&copied_executable, &case_root, &home_root)?;
+        verify_child_output(
+            &output,
+            &case_root,
+            &home_root,
+            &copied_executable,
+            &adjacent,
+        )
     })();
 
-    let restore_result = (|| -> Result<(), String> {
-        let mut permissions = std::fs::metadata(&case_root)
-            .map_err(|error| format!("mode-restore metadata failed: {error}"))?
-            .permissions();
-        permissions.set_mode(original_mode);
-        std::fs::set_permissions(&case_root, permissions).map_err(|error| {
-            format!(
-                "restore exact mode on {} failed: {error}",
-                case_root.display()
-            )
-        })
-    })();
+    let restore_result = restore_case_root_mode(&case_root, original_mode);
     let case_close = case_temp
         .close()
         .map_err(|error| format!("close case TempDir {} failed: {error}", case_root.display()));

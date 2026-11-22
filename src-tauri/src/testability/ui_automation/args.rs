@@ -1,3 +1,8 @@
+//! `clap` argument structs for the UI automation CLI subcommands, such as `UiQueryArgs`,
+//! `UiClickArgs`, `UiHoverArgs`, `UiTypeArgs`, `UiBackendArgs` and `UiWaitArgs`.
+//! Most default `--window` to `main` and `--timeout-ms` to `DEFAULT_TIMEOUT_MS`.
+//! Only parses flags; building and sending requests is left to the CLI runner.
+
 use super::protocol::DEFAULT_TIMEOUT_MS;
 use clap::Args;
 

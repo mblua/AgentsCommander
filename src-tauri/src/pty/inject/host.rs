@@ -1,3 +1,7 @@
+//! The `InjectionHost` trait: the state and effects the serialized PTY injection path
+//! needs (sessions, routes, menu guard, typing hold, held-wake notes, busy marking). It only
+//! declares the boundary; implementations and the injection flow live elsewhere.
+
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 

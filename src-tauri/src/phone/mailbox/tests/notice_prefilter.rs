@@ -710,7 +710,10 @@ fn b3_unreadable(path: &Path) -> crate::config::settings::AgentsLayerState {
 
 /// E35: a wake for a configured agent under the mark answers the refusal,
 /// which is the value the reply is built from, instead of a bare debug log.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "test-only lock serializes the process-wide session-requests dir"
+)]
 #[tokio::test]
 async fn a_telegram_wake_reports_the_refusal() {
     let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
@@ -741,7 +744,10 @@ async fn a_telegram_wake_reports_the_refusal() {
 
 /// E36: the daemon's response file carries the refusal, so the waiting CLI
 /// verb prints it, and no session is created.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "test-only lock serializes the process-wide session-requests dir"
+)]
 #[tokio::test]
 async fn the_daemon_response_file_carries_the_refusal() {
     let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK

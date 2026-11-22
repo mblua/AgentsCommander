@@ -1,3 +1,7 @@
+//! Schema version 3: rebuilds `pty_input_operations` and `pty_input_tombstones` via
+//! `_v3` copies that are then renamed over the originals, and recreates `idx_pty_input_due`.
+//! Called only by `MessageStore::migrate`; `apply` records version 3.
+
 use super::MessageStoreError;
 use chrono::Utc;
 use rusqlite::Transaction;

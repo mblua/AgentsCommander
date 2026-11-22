@@ -1,3 +1,8 @@
+//! Applies query results to `RemoteSweeper` state: CI and staleness answers, fan-out to the paths
+//! that share a query key, transition events and failure warnings. Also maps state to the
+//! persisted CI shapes and builds the `RemoteActivity` for a path.
+//! It does NOT run queries or parse responses; that is `query` and `ci_parse`.
+
 use std::time::Duration;
 
 use tokio::sync::mpsc;

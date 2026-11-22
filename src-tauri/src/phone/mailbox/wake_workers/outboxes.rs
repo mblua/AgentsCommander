@@ -1,3 +1,7 @@
+//! Outbox scanning for wake workers: `scan_dirs` collects and dedups outbox directories,
+//! `read_entries` splits a directory into message and wake-claim paths, and
+//! `sort_entries` orders entries by send time. It delivers nothing itself.
+
 use super::super::handoff::{
     dedup_outbox_dirs_by_object_id, outbox_message_send_time, WAKE_CLAIM_EXTENSION,
 };

@@ -1,3 +1,9 @@
+//! CLI side of UI automation: `run_cli_request` writes a request file, waits for the
+//! response, and cleans up; plus session loading and liveness checks, preflight and
+//! timeout errors, and trimming of responses before they are printed as JSON.
+//! Also decides if automation is enabled (`resolve_enabled_from_cli_or_env`) and checks
+//! that the current exe is the testable build. The app side that answers is elsewhere.
+
 use super::files::{read_session_file_with_retry, retry_remove_file, write_json_atomic_new};
 #[cfg(target_os = "windows")]
 use super::liveness::process_path;

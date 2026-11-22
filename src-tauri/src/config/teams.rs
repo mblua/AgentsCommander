@@ -1,3 +1,10 @@
+//! Team discovery, peer listing and agent name/FQN helpers.
+//! `DiscoveredTeam` describes a team read from `_team_*/config.json`; `agent_fqn_from_path`
+//! and its siblings derive names from a cwd; `resolve_agent_target` (via `membership`) maps a
+//! `--to` target to a replica and reports a `ResolutionError` if it cannot.
+//! `lean_peers` returns the `list-peers-lean` view (`LeanPeerInfo`).
+//! Discovery only reads the filesystem; it never creates teams or rooms.
+
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

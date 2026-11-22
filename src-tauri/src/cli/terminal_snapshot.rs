@@ -632,7 +632,10 @@ fn remove_response(path: &Path, expected: &crate::path_identity::VerifiedPathIde
     crate::path_identity::remove_regular_file_if_same(path, expected)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "final check needs response, identity, peers, deadline and history"
+)]
 fn finish_response(
     path: &Path,
     identity: &crate::path_identity::VerifiedPathIdentity,

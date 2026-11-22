@@ -1,3 +1,8 @@
+//! Failure reporting for replica-context preparation during a session create.
+//! `notify_replica_context_failure` logs the error and shows the launch-error dialog, or lets a
+//! test fixture observe it instead.
+//! Owns no state; the context preparation itself runs in `create::core::context`.
+
 use crate::session::selection::OwnedReplacementContinuation;
 
 /// Logs a failed replica-context preparation and shows the launch-error

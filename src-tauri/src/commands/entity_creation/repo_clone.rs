@@ -1,3 +1,8 @@
+//! Async `git clone` for room repos, with creation-trace stages for clone and reset.
+//! If `.git/index` is missing after a clone it runs a fallback reset and only logs failures.
+//! The git processes themselves live in `crate::process::git::mutation`; this module owns
+//! no state and only maps their outcomes to trace stages and error strings.
+
 use super::creation_trace::{Outcome, Reason, Stage, StageGuard};
 use crate::process::git::mutation::{self, CloneRepositoryError, ResetCloneError};
 use std::path::{Path, PathBuf};

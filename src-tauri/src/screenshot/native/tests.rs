@@ -1,6 +1,8 @@
 use super::*;
 
 #[cfg(target_os = "linux")]
+mod display_server_cases;
+#[cfg(target_os = "linux")]
 mod wayland;
 #[cfg(target_os = "windows")]
 mod window_screenshot;
@@ -812,125 +814,7 @@ fn macos_screen_recording_gate() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_display_server_classification() {
-    struct Case {
-        n: u32,
-        xdg_session_type: Option<&'static str>,
-        wayland_socket: Option<&'static str>,
-        wayland_display: Option<&'static str>,
-        default_socket_present: bool,
-        expected: LinuxDisplayServer,
-    }
-    let cases = [
-        Case {
-            n: 1,
-            xdg_session_type: Some("x11"),
-            wayland_socket: None,
-            wayland_display: None,
-            default_socket_present: false,
-            expected: LinuxDisplayServer::X11,
-        },
-        Case {
-            n: 2,
-            xdg_session_type: Some("wayland"),
-            wayland_socket: None,
-            wayland_display: None,
-            default_socket_present: false,
-            expected: LinuxDisplayServer::Wayland,
-        },
-        Case {
-            n: 3,
-            xdg_session_type: Some("Wayland"),
-            wayland_socket: None,
-            wayland_display: None,
-            default_socket_present: false,
-            expected: LinuxDisplayServer::Wayland,
-        },
-        Case {
-            n: 4,
-            xdg_session_type: Some("x11"),
-            wayland_socket: None,
-            wayland_display: Some("wayland-0"),
-            default_socket_present: false,
-            expected: LinuxDisplayServer::X11,
-        },
-        Case {
-            n: 5,
-            xdg_session_type: Some("wayland"),
-            wayland_socket: None,
-            wayland_display: Some("wayland-0"),
-            default_socket_present: true,
-            expected: LinuxDisplayServer::Wayland,
-        },
-        Case {
-            n: 6,
-            xdg_session_type: None,
-            wayland_socket: None,
-            wayland_display: Some("wayland-0"),
-            default_socket_present: false,
-            expected: LinuxDisplayServer::Wayland,
-        },
-        Case {
-            n: 7,
-            xdg_session_type: Some(""),
-            wayland_socket: Some(""),
-            wayland_display: Some(""),
-            default_socket_present: false,
-            expected: LinuxDisplayServer::X11,
-        },
-        Case {
-            n: 8,
-            xdg_session_type: None,
-            wayland_socket: None,
-            wayland_display: None,
-            default_socket_present: false,
-            expected: LinuxDisplayServer::X11,
-        },
-        // The measured E5a host, kept as its own row so a change to the
-        // host's shape is visible, not inferred from row 1.
-        Case {
-            n: 9,
-            xdg_session_type: Some("x11"),
-            wayland_socket: None,
-            wayland_display: None,
-            default_socket_present: false,
-            expected: LinuxDisplayServer::X11,
-        },
-        // B4 row A: an inherited Wayland fd via WAYLAND_SOCKET, nothing else set.
-        Case {
-            n: 10,
-            xdg_session_type: None,
-            wayland_socket: Some("7"),
-            wayland_display: None,
-            default_socket_present: false,
-            expected: LinuxDisplayServer::Wayland,
-        },
-        // B4 row B: wl_display_connect(NULL)'s live wayland-0 fallback.
-        Case {
-            n: 11,
-            xdg_session_type: None,
-            wayland_socket: None,
-            wayland_display: None,
-            default_socket_present: true,
-            expected: LinuxDisplayServer::Wayland,
-        },
-        Case {
-            n: 12,
-            xdg_session_type: Some("x11"),
-            wayland_socket: None,
-            wayland_display: None,
-            default_socket_present: true,
-            expected: LinuxDisplayServer::X11,
-        },
-        // E row: WAYLAND_SOCKET must parse as a descriptor number.
-        Case {
-            n: 13,
-            xdg_session_type: None,
-            wayland_socket: Some("abc"),
-            wayland_display: None,
-            default_socket_present: false,
-            expected: LinuxDisplayServer::X11,
-        },
-    ];
+    let cases = display_server_cases::display_server_cases();
 
     // Accumulate and assert once: a panic on the first mismatched row hides
     // every later row, and the §7 probes must name *all* the rows they kill.

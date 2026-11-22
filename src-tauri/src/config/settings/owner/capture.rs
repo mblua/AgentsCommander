@@ -1,3 +1,8 @@
+//! One-shot capture of the four settings sources under the transactional lock.
+//! Owns `CapturedSource` and `CapturedSettingsSources` (base, project paths, agents, overlay)
+//! and composes them into `AppSettings` through the same parsers the loaders use.
+//! Never creates directories, migrates or writes. Locking and lifecycle live in `owner.rs`.
+
 use super::{
     owner_save_error_text, CapturePolicy, SettingsOperationGuard, SettingsOwnerCounters,
     SettingsOwnerError,

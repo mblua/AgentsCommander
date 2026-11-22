@@ -1,3 +1,9 @@
+//! Mailbox poller core: the `MailboxPoller` struct with retry, claim and wake lane state.
+//! Collects project refresh requests and delivers claimed wakes within `WAKE_DELIVERY_DEADLINE`.
+//! Reserves response requests and defines owned peer wake types such as `OwnedPeerWakeStep`.
+//! Evaluates the purge gate (`PurgeGatePeer`, `PurgeDecision`) and reads BOM-tolerant text.
+//! Most delivery logic lives in sibling modules that extend `MailboxPoller`.
+
 use super::handoff::release_wake_claim;
 use super::notice::{
     canonical_project_refresh_path, project_refresh_priority, ProjectRefreshEventPayload,

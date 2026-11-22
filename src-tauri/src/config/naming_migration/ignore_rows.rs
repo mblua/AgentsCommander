@@ -1,3 +1,10 @@
+//! The `.ac/.gitignore` rows needed by the naming-migration renames.
+//! Builds the row tables for project settings, Loop state and agent config state from
+//! the names in `crate::config::instance_artifacts`.
+//! Also offers pure text helpers to find missing rows and to retire old comment-pattern pairs.
+//! It does no file IO; the writers that read and append `.gitignore` live in
+//! `crate::config::projects::ac_root_gitignore`.
+
 use crate::config::instance_artifacts::{
     CONFIG_STATE_TARGET_NAME, LOOP_STATE_TARGET_NAME, LOOP_STATE_TMP_TARGET_GLOB,
     PROJECT_SETTINGS_TARGET_NAME, SET_ASIDE_GLOB,

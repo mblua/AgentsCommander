@@ -1,3 +1,10 @@
+//! Reads, normalizes and writes a team's `config.json` under `_team_<name>`.
+//! Owns the team-config mutation lock (`TeamConfigMutationGuard`, `TEAM_CONFIG_MUTATION_LOCK_NAME`)
+//! and the read error classes in `TeamConfigReadError`.
+//! Also inspects team skill sources and publishes owned team copies (`publish_owned_team`).
+//! It does not do the low-level file IO: that lives in `crate::filesystem::projects::entities`.
+//! Name and agent-ref normalization rules live in the parent `names` module.
+
 use super::super::names::{
     normalize_context_alert_percentages, normalize_team_agent_refs, resolve_agent_ref,
     validate_existing_name, RepoAssignment, TeamConfigResult,

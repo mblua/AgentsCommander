@@ -1,3 +1,10 @@
+//! IPC wire contract for profile assignment, selection-lock removal and selection defaults.
+//!
+//! Defines the camelCase request and result types, `ProfileAssignmentScope`, `AssignmentMode`,
+//! `ConflictDecision`, `SelectionState`, `ScopeFault` and the decision projections. Data only:
+//! no validation, IO or state. The commands that use them live in `assignment`,
+//! `lock_removal` and `selection_default`.
+
 use std::hash::Hash;
 
 /// #2557 - one replica or folder the scope walk could not count, and why.

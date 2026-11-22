@@ -1,3 +1,11 @@
+//! Finalization half of an owned replacement continuation: commit of the new session B,
+//! retirement of the previous session A, and checkpoint publication.
+//!
+//! Adds methods on `OwnedReplacementContinuation` (`commit_finalized`,
+//! `complete_finalized_create`) that advance progress kept in the shared `ReplacementOwner`
+//! state. It owns no state of its own. The continuation types, stages and launch live in
+//! `super::replacement` and `continuation_launch`; cleanup lives in `continuation_cleanup`.
+
 use std::sync::{Arc, Mutex};
 
 use crate::pty::manager::PtyManager;

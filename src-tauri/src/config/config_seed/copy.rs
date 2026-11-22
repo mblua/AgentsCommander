@@ -1,3 +1,9 @@
+//! Tree copy and helpers for config seeding into a replica.
+//! `copy_tree` copies a template dir, skipping links and reparse points, and can expand
+//! `%AC_...%` placeholders in text files; `SeedFileCollector` records copied files.
+//! Also cleans stale `.acseed-*` scratch dirs and maps seed tiers to manifest sources.
+//! Choosing a tier and swapping the result into place lives in `perform`.
+
 use crate::filesystem::config_seed as seed_disk;
 use std::path::{Component, Path, PathBuf};
 

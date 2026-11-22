@@ -1,3 +1,10 @@
+//! Response-close execution: the conditional close of an idle member session.
+//! Commits the close against carrier and route proofs, runs the group kill, PTY kill and the
+//! auxiliary stages (detach, Telegram, manager commit, persist, readers, window, events), then
+//! settles it as dormant or reopened and reconciles pending owners.
+//! Effect ownership lives in `session::selection::response_close`; this module drives it.
+//! Legacy manual destroy stays in the parent `destroy` module.
+
 use crate::app_state::DetachedSessionsState;
 use crate::commands::session::execute_destroy_transaction_common;
 use crate::commands::session::reset_substantive_input;

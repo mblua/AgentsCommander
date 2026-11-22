@@ -1,3 +1,7 @@
+//! Tauri sink for the Telegram bridge: `TelegramEvents` emits `telegram_bridge_error`
+//! (with an optional `kind`), `telegram_incoming` and `last_prompt`.
+//! It only builds JSON payloads; the bridge logic lives in `crate::telegram`.
+
 use tauri::Emitter;
 
 use crate::telegram::output::TelegramEvents;

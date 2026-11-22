@@ -481,7 +481,10 @@ impl<C: SelectionContext> SelectionTransaction<C> {
         Ok(binding)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "facade forwards each spawn field: shell, cwd, agent, repos, backend"
+    )]
     #[expect(
         dead_code,
         reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"

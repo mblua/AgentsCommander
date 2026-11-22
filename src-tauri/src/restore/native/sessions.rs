@@ -1,3 +1,9 @@
+//! Startup restore of non-root persisted sessions, as `RestoreContext::restore_session`.
+//! Skips sessions whose CWD is gone (with an orphan archive record), then defers them as dormant
+//! or wakes them with a full PTY from the persisted recipe, based on `session_wake_decision`.
+//! Also re-attaches Telegram, collects restart resume targets and restores detached windows.
+//! Root agent restore lives in `roots`; it reuses `restore_detached_session` from here.
+
 use super::{
     attach_persisted_telegram_if_configured, collect_restart_resume_target, commands,
     restore_session_should_become_active, session_spawn_recipe, session_wake_decision,

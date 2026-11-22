@@ -1,3 +1,8 @@
+//! Per-container API tokens: `ContainerApiTokenManager` mints session-bound `ContainerApiToken`s
+//! with a 24-hour TTL and fixed scopes, and revokes them singly or all at once.
+//! Tokens are labeled with a `container:` prefix in the auth store. The token secret is
+//! redacted from `Debug` output.
+
 use std::path::{Path, PathBuf};
 
 use chrono::{Duration as ChronoDuration, Utc};

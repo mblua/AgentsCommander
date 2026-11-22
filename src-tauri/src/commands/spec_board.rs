@@ -1,3 +1,9 @@
+//! Tauri commands for the Spec Board Mermaid editor: new, open, save, update content,
+//! snapshots, conflict resolution (`spec_board_apply_external`, `spec_board_keep_mine`)
+//! and close.
+//! Owns `SpecBoardManager` (open documents and their watch tasks) and polls files for
+//! external changes. File and snapshot I/O is delegated to `crate::spec_board`.
+
 use std::collections::HashMap;
 
 use std::path::{Path, PathBuf};

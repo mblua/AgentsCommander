@@ -1,3 +1,9 @@
+//! Plain self-clear: an immediate clear attempt for the caller's own live session, with no
+//! idle wait and no handoff file. Owns `PlainClearArgs` and a pure, callback-driven `run`
+//! loop (`Binding`, `Observation`, `Callbacks`, `Outcome`) that publishes the request, then
+//! checks for a matching accepted receipt or a rejection until one deadline. Exit 0 means
+//! accepted, not that the provider consumed the clear; 2 means outcome unknown.
+
 use clap::Args;
 use std::time::Duration;
 use uuid::Uuid;

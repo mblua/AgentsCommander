@@ -1,3 +1,9 @@
+//! Pure launch-time resolution for a session create.
+//! Resolves idle tuning from the catalog, auto self-clear eligibility, the default create cwd,
+//! and the profile drift badge (`compute_profile_outdated`), and re-exports the configured
+//! agent spawn builders from `config::agent_command`.
+//! Owns no state and performs no spawn; that is `create::core`.
+
 use crate::commands::session::agent_command::effective_restart_requested_profile;
 use crate::commands::session::agent_command::matched_selection;
 use crate::commands::session::agent_command::MatchedSelection;

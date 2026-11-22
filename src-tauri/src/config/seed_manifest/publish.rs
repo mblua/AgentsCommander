@@ -1,3 +1,9 @@
+//! Portable lock, temp and publish helpers for the seed-manifest writer.
+//! Opens or creates the lock file, polls the kernel lock until a deadline, checks temp names,
+//! removes temps only after identity proofs, verifies temp bytes and does the Unix rename.
+//! It owns no state; the guard in `guard.rs` calls these, and Windows publication and
+//! cleanup live in `windows.rs`.
+
 #[cfg(not(any(unix, windows)))]
 use super::atomic_publish_manifest;
 use super::{

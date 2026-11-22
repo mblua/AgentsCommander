@@ -1,3 +1,8 @@
+//! Adds the lowest-precedence `CatalogDefault` config-seed candidates for a destination.
+//! Points at the catalog master under the workspace `.ac` root (or the config dir fallback),
+//! with the OS-specific variant first.
+//! Pure path math: whether a candidate is used is decided by `perform_config_seed`.
+
 use crate::config::config_seed::ConfigSeedCandidate;
 use crate::config::placeholders::PlaceholderContext;
 

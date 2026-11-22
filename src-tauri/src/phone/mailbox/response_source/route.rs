@@ -1,3 +1,7 @@
+//! Response return routing: `response_return_route` picks the single live session in a
+//! `CarrierSnapshot` whose sender name matches the target, skipping pending and exited rows.
+//! Missing or ambiguous matches yield `None`; used by the parent `response_source` module.
+
 use super::super::notice::sender_name_for_session_cwd_with_root_flag;
 use crate::phone::types::OutboxMessage;
 use crate::pty::manager::{ResponseCloseState, ResponseRouteIdentity};

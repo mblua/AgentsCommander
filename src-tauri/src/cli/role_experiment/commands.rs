@@ -1,3 +1,8 @@
+//! Handlers for each `role-experiment` subcommand: init, list, show, variant set/diff,
+//! validate, run and report. They check arguments, load experiments and write the
+//! dry-run artifacts. A real (non-fake) `--execute` is refused because it needs a running
+//! app or daemon; the fake executor path is in `fake_run`, file IO in `storage`.
+
 use super::arguments::ExperimentArgs;
 use super::arguments::InitArgs;
 use super::arguments::ProjectArgs;

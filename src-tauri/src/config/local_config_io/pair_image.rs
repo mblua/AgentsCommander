@@ -1,3 +1,9 @@
+//! Shared types for writing a config pair (decisions file plus state file).
+//! Owns `PhysicalState` (exact disk bytes or absent), the five-stage `PreparedConfigPairPlan`,
+//! `PreparedPairError` and the sticky `PairTargetGuard` validation check.
+//! Reads one pair side's physical image; it does not plan or publish the pair.
+//! Planning and execution live in `prepared_pair`; reservations live in `pair_revision`.
+
 use crate::filesystem::local_config::{inspect_local_config_target, read_local_config_bytes};
 use serde_json::{Map, Value};
 use std::cell::Cell;

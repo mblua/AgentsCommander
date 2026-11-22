@@ -1,3 +1,9 @@
+//! The `delete_team` Tauri command: removes `_team_<name>/` and its room and legacy wg dirs.
+//! Runs dirty-repo checks first, then commits under the project gate and the team-config
+//! guard, pruning config scopes only for rooms that were removed or already absent.
+//! After the guards drop it cleans coordinator clocks and emits a coordinator refresh.
+//! Directory inspection and removal live in `crate::config::entity_creation::directories`.
+
 use super::matrix_layout::{selected_ac_root, validate_existing_name};
 use super::team_config::TeamConfigMutationGuard;
 use super::team_update::emit_coordinator_refresh;

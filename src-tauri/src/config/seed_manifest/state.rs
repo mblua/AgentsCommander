@@ -1,3 +1,9 @@
+//! In-memory seed-manifest state and its strict wire conversion.
+//! Owns `ManifestState` (rows keyed by `ManifestPathKey`), `PublishedManifestRow`,
+//! the mutation journals for rollback, row validation, exact-size serialization and parsing.
+//! Also has bounded file reads and the lock-free `has_catalog_publication` query.
+//! Locking and atomic writes live in `guard.rs`; wire structs live in `wire.rs`.
+
 use super::{
     classify_open_error, is_exact_not_found, open_regular_no_follow, parse_utf8_components,
     ManifestFileKind, ManifestPathEncoding, ManifestPathIdentity, ManifestPathKey, ManifestSource,

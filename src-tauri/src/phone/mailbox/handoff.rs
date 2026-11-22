@@ -1,3 +1,9 @@
+//! Wake handoff helpers: remote PTY command resolution, wake claim files and retry pruning.
+//! Owns `WakeOutcomeReport`, `WakeHandoff`, `WakeAction`, `SettleAction` and `ForgottenSummary`.
+//! Defines self-clear, self-switch and self-restart actions, constants and handoff prompts.
+//! Also validates switch targets, resolves `SelfRestartRecipe` and checks sender anti-spoofing.
+//! Decides wake viability from `SessionStatus`; actual PTY delivery lives in other modules.
+
 use super::notice::{
     logical_command_wire_value, parse_remote_pty_command, ResolvedRemotePtyCommand, RetryState,
     ERR_INVALID_DISPATCH_PROFILE, ERR_INVALID_PEER_TEXT, ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND,

@@ -1,3 +1,7 @@
+//! The `app-outbox-path.txt` pointer in the config directory: `get` reads it and
+//! returns the outbox only if it is an existing directory, `directory` falls back to
+//! `<agent_dir>/outbox`, and `publish` writes the pointer value.
+
 use std::path::{Path, PathBuf};
 
 use super::{directories, documents};

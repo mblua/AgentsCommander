@@ -1,3 +1,8 @@
+//! Cleanup scheduling on `ContainerTransportBackend`. Retains removed session resources,
+//! hands them to shutdown-work producers (or the explicit global sweep once work is sealed),
+//! and reaps pending sessions whose ticket expired. The attempt itself lives in
+//! `retained_cleanup`, and the worker pool and sealing live in `shutdown_work`.
+
 use super::retained_cleanup::RetainedContainerCleanup;
 use super::shutdown_work::ContainerShutdownProducer;
 use super::{

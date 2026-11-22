@@ -1,3 +1,9 @@
+//! The PTY output read loop for a local session. `OutputReader` owns the child's reader and
+//! spawns one thread that feeds every chunk to `SessionIoFanout::handle_output`, records spawn
+//! diagnostics, and opens the startup gate once the screen shows visible content. On Windows it
+//! also answers cursor-position queries via `cursor_query`.
+//! It does NOT parse, buffer or emit output itself; that is `pty::output`.
+
 #[cfg(all(test, windows))]
 use super::cursor_query::CursorReplyObserver;
 #[cfg(windows)]

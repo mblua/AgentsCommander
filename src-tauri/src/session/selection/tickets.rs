@@ -1,3 +1,10 @@
+//! Reserved-capacity tickets for jobs submitted to the selection coordinator.
+//!
+//! Owns `CreateFinalizationTicket` (binds a pending create, then sends `FinalizeCreate`
+//! or, if dropped bound, `RollbackCreate`), `AutoCloseBatchTicket` and the
+//! `WeakContainerLifecycle` route-loss adapter. Tickets only hold queue slots and
+//! permits; the jobs run in `worker` and `execute`.
+
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;

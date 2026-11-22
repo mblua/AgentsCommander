@@ -1,3 +1,11 @@
+//! Locates the Pi executable inside a session shell command line.
+//!
+//! `locate_pi_command` handles a direct Pi shell or a `cmd /C|/K` wrapper (tokenized args or
+//! one embedded text arg), returning a `PiCommandLocation` with option tokens and a
+//! `PiInsertionPoint`, `Ok(None)` when Pi is absent, or `PiCommandParseError` for malformed or
+//! unsupported shapes. Also hosts `is_exact_muse_executable`. Pure parsing, no state; argument
+//! insertion lives in `commands::session::resume_args` and `resume_probe`.
+
 use std::ops::{ControlFlow, Range};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

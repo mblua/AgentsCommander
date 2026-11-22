@@ -1,3 +1,11 @@
+//! The selection coordinator worker loop over `SelectionTransaction`.
+//!
+//! Receives `CoordinatorEnvelope`s, dispatches each `CoordinatorJob` to its handler and
+//! checks every arm released its admission hold. After shutdown it drains the queue:
+//! callers get `Unavailable`, queued rollbacks still run, plain finalizers roll back and
+//! owned finalizers are left retained. Job bodies live in `execute`, the lifecycle
+//! executor and the host; post-join cleanup lives in `shutdown_cleanup`.
+
 use std::sync::Arc;
 
 use tokio::sync::mpsc;

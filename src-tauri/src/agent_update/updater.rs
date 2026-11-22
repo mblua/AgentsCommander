@@ -1,3 +1,8 @@
+//! Update step runner: `run_update_sequence` and `run_update_sequence_cancellable` run a
+//! target's update commands, with `TargetOwnerSlot`/`TargetOwnerLease` tracking the process
+//! owner. Builds `successful_update_result`, `failed_update_result` and
+//! `cancelled_update_result`.
+
 use super::gate::AgentUpdateGate;
 use super::plan::UpdateTarget;
 use super::target::{StepAdmission, TargetWork};

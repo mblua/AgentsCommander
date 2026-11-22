@@ -1,3 +1,9 @@
+//! The registry of file and directory names AC writes in the instance config directory.
+//! Holds plain name and glob constants plus the `layered_name!` and `coding_agents_child!`
+//! macros that compose layered names such as `settings.30.instance.no-git.json`.
+//! Also holds `publication_temp_name_for_destination`, the one temp-name formula.
+//! It does no IO; the writers that use these names live in their own modules.
+
 // ---------------------------------------------------------------------------
 // Artifact names shared with the modules that write them
 // ---------------------------------------------------------------------------

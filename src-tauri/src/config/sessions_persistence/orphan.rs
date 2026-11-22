@@ -1,3 +1,10 @@
+//! Handling of persisted sessions whose cwd is outside the retained project roots.
+//! Owns the per-run WARN and archive dedup registries and the append-only NDJSON
+//! orphan archive (`ORPHAN_ARCHIVE_FILENAME`), including its size-based rotation.
+//! `handle_orphan_drops` archives dormant drops and, under `PruneDormant`, prunes them.
+//! It does not choose which rows are orphans (`project_scope`) or save the snapshot
+//! (`persist` and `write`); raw file IO lives in `filesystem::sessions_persistence_files`.
+
 use super::carrier::{all_carrier_protections, PreparedCarrierRelation};
 #[cfg(test)]
 use super::project_scope::record_filter_project_paths_thread_id;

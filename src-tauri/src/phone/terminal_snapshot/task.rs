@@ -1,3 +1,7 @@
+//! Snapshot task traits: `SnapshotTask` is an abortable future returning `Result<(), String>`,
+//! and `SnapshotTaskHost` spawns one from a boxed future.
+//! Used by the scanner and `shutdown` to spawn and abort tasks without a fixed runtime.
+
 use futures::future::BoxFuture;
 use std::future::Future;
 use std::pin::Pin;

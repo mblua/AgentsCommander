@@ -7,7 +7,10 @@ use crate::phone::mailbox::tests::CodexClearScannerFixture;
 use crate::phone::types::OutboxMessage;
 use crate::session::session::{SessionInfo, SessionRepo};
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test fixture mirrors spawn_wake_session's separate spawn inputs"
+)]
 pub(super) async fn spawn_fixture_wake_session<S: MailboxHost>(
     poller: &MailboxPoller,
     app: &S,

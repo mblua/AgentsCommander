@@ -1,3 +1,8 @@
+//! Room TASK helpers used by entity creation: snapshot JSON, title parsing and new-room setup.
+//! `parse_task_title` is a narrow frontmatter reader for one `title:` field, not a YAML parser.
+//! TASK storage, validation and initialization are owned by `crate::cli::task_ops`; the
+//! functions here only delegate to it.
+
 use crate::cli::task_ops;
 use std::path::Path;
 

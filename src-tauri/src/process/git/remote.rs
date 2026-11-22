@@ -1,3 +1,7 @@
+//! Async local `git` runner: `run_local_git` executes git with a timeout.
+//! `git_command` is the single place the command is built, with `GIT_CEILING_DIRECTORIES`
+//! set to the parent so a broken repo cannot answer with an ancestor's data.
+
 use std::path::Path;
 use std::time::Duration;
 

@@ -1,3 +1,10 @@
+//! Context stage of a session create: credentials, resume args and the instructions file.
+//! `prepare` plans container credential copy-in and an injected `CLAUDE_CONFIG_DIR`;
+//! `prepare_resume` probes Claude transcript storage and injects provider resume or fresh args;
+//! `prepare_instructions` materializes the agent context file and rotates origin memory on a
+//! fresh start. Also binds the pending create (`bind_and_check_target`) and applies profile
+//! and pending options. Owns no state; the PTY spawn is in `backend`.
+
 use super::backend;
 use crate::commands::session::agent_command::executable_basename;
 use crate::commands::session::create::admission::acquire_lifecycle_create_publication_region;

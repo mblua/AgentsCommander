@@ -1,3 +1,11 @@
+//! `DiscoveryBranchWatcher`: the background poll behind discovery git and task events.
+//!
+//! Owns the per-project replica repo map plus the gate caches for `ac_discovery_branch_updated`,
+//! `session_git_repos` and `workgroup_task_updated` (Gates A, B and C). Every 15s tick reads
+//! the shared git snapshot and TASK state, then emits only on change.
+//! It never spawns `git`: the global sweeper in `pty::git_watcher` polls and this module reads.
+//! Payload types and TASK snapshot logic live in `task_snapshot`.
+
 use super::model::AcWorkgroup;
 use super::replica_read::{normalize_projected_path, projected_path_string};
 use super::task_snapshot::{

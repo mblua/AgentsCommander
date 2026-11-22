@@ -1,3 +1,10 @@
+//! Maintains the project `.ac/.gitignore` file.
+//! Writes the full set of required AC rows, retires old managed rows, and migrates the legacy
+//! seed-manifest un-ignore pair; it also escapes custom instructions file names.
+//! Offers append-only sweeps for project settings, Loop state and agent config state rows.
+//! Row tables for the renames live in `crate::config::naming_migration`; raw file IO lives in
+//! `crate::filesystem::projects::discovery`.
+
 use crate::config::instance_artifacts::{
     CODING_AGENTS_BASE_TMP_ARTIFACT, CODING_AGENTS_LOCAL_ARTIFACT,
     CODING_AGENTS_LOCAL_TMP_ARTIFACT, CODING_AGENTS_LOCK_ARTIFACT,

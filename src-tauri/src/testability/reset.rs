@@ -1,3 +1,7 @@
+//! Testable build reset: `TestResetArgs` and `execute` remove the testable config and
+//! project dirs next to the executable after validating each candidate path (including
+//! Windows reparse point checks), printing a JSON result.
+
 use crate::filesystem::directories;
 use clap::Args;
 use serde::Serialize;

@@ -1,3 +1,8 @@
+//! Re-export seam for strict Agent Matrix copying used by entity creation.
+//! Production code only needs `MatrixCopyHooks`; the other items are re-exported for tests.
+//! No copy logic lives here: it is in `crate::config::entity_creation::copies` and
+//! `crate::filesystem::projects::entities::copies`.
+
 #[cfg(test)]
 pub(crate) use crate::config::entity_creation::copies::copy_agent_matrix_strict;
 #[cfg(test)]

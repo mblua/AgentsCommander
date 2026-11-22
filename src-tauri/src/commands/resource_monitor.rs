@@ -1,3 +1,8 @@
+//! Tauri commands for the resource monitor: `get_resource_snapshot` and `kill_resource_group`.
+//! Runs the kill transaction through the selection coordinator, verifies the group settled
+//! and finalizes dead sessions with bounded retries.
+//! Snapshot and termination logic is delegated to `crate::resource_monitor`.
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

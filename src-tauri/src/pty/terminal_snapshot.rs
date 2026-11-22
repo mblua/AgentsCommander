@@ -1,3 +1,9 @@
+//! Terminal snapshot service: prepares, admits and finalizes requests for a rendered snapshot
+//! of a session's terminal, for API and host callers.
+//! Owns request, context and prepared-payload types and the rate, in-flight and artifact limits.
+//! Submodules: `artifacts`, `audit`, `authority` (requester proof and target choice),
+//! `finalization` and `limiter`. Rendering itself comes from `terminal_snapshot_renderer`.
+
 mod artifacts;
 mod audit;
 mod authority;

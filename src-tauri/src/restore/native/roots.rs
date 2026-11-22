@@ -1,3 +1,8 @@
+//! Startup restore of the Root agent session, as `RestoreContext::restore_root` and helpers.
+//! Provisions the Root agent dir, then auto-creates a first Root, wakes or reuses a live one, or
+//! restores it dormant, updating `RestoreProgress` counts and recoverable failures.
+//! Skips spawning once shutdown is underway. Non-root sessions are restored in `sessions`.
+
 use super::{
     attach_persisted_telegram_if_configured, commands, execute_destroy_transaction,
     root_spawn_recipe, sessions_persistence, should_auto_create_root_agent_on_first_restore,

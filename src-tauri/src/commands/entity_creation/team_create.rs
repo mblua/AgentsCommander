@@ -131,7 +131,10 @@ pub(super) fn create_team_from_sources(
 
 /// Create a team directory inside `{project_path}/.ac/_team_{name}/`
 // Tauri command parameters plus injected state exceed Clippy's argument threshold.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Tauri command: each argument is a separate IPC field from the frontend"
+)]
 #[tauri::command]
 pub async fn create_team(
     app: AppHandle,

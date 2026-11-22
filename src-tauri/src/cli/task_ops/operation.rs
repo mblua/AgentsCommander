@@ -1,3 +1,8 @@
+//! Shared types for TASK.md edits: the requested `TaskOp`, the `EditOutcome` a successful
+//! edit returns, and the `TaskOpError` set with its user-facing messages.
+//! Holds no state and does no IO; parsing is in `document` and writing is in `flow`,
+//! `clean` and `status`.
+
 use std::path::PathBuf;
 
 /// Edit operation requested by a verb.

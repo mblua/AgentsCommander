@@ -1,3 +1,8 @@
+//! Test seams for the remote watcher: the `gh` spawner, local git runner, `gh` probe, jitter
+//! source, publication clock and emitter, bundled as `RemoteSweeperSeams`. Also classifies a
+//! `gh` call's output into a `FailureKind` from its text.
+//! It does NOT wire the production seams; `RemoteSweeper::production_seams` in `sweeper` does.
+
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;

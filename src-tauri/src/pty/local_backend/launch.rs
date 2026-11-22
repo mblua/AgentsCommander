@@ -1,3 +1,9 @@
+//! Builds the program and argv for a local PTY launch (`PreparedLaunch`). On Windows it adapts a
+//! resolved agent command to the configured host shell (PowerShell, pwsh, cmd or a custom POSIX
+//! shell), validates every token against a closed grammar before any PTY exists, and rejects
+//! detached launchers such as `git-bash.exe` and `mintty.exe`.
+//! It holds no state and does NOT open the PTY or spawn the child; the parent backend does.
+
 use portable_pty::CommandBuilder;
 
 use crate::errors::AppError;

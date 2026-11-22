@@ -1,3 +1,8 @@
+//! The `Default` implementation of `AppSettings`.
+//! Builds defaults through serde from the per-field `#[serde(default...)]` attributes, adding
+//! only required fields, the platform default shell and the context-history color window.
+//! Field default functions live in `field`; loading and saving live in `load` and `save`.
+
 use super::context_history::DEFAULT_SESSION_WINDOWS;
 use super::AppSettings;
 

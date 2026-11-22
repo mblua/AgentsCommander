@@ -1,3 +1,10 @@
+//! Get and set commands for an Agent Matrix's replica selection default.
+//!
+//! Resolves the replica's Matrix, reads or writes its default coding agent, profile and lock
+//! flag, and binds each write to a fingerprint of the prior default so a stale window fails.
+//! Set emits `coding_agent_profile_selection_updated`. Storage lives in
+//! `config::coding_agent_profiles`; anchor checks in `target`. It holds no state.
+
 use std::path::Path;
 use tauri::{AppHandle, Emitter, State};
 

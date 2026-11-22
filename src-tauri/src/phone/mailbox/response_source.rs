@@ -1,3 +1,9 @@
+//! Mailbox response sources: preparing, admitting, completing and settling response requests
+//! on `MailboxPoller` (`prepare_response_request`, `admit_response_source`,
+//! `complete_response_delivery`, `settle_response_source`).
+//! Owns candidate locking, carrier registration, work reservation and return observation helpers.
+//! Return-route matching lives in the `route` submodule.
+
 mod route;
 
 use super::handoff::wake_claim_origin;

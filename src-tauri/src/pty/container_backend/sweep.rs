@@ -1,3 +1,8 @@
+//! Container sweeps on `ContainerTransportBackend`: the startup sweep of labeled orphan
+//! containers and the blocking stop of every started container at shutdown, including the
+//! global sweep epoch over retained cleanups. It owns no new state; the work queue lives in
+//! `shutdown_work` and per-entry attempts in `retained_cleanup`.
+
 use super::{
     ContainerSessionState, ContainerShutdownReport, ContainerTransportBackend,
     CONTAINER_GLOBAL_SWEEP_RETRY_BACKOFF, CONTAINER_SHUTDOWN_POLL,

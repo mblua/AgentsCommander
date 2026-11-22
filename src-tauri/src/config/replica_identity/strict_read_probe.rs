@@ -1,3 +1,8 @@
+//! Test-only counter of strict replica reads (compiled only under `cfg(test)`).
+//! Owns a global map from a registered root to the number of reads seen under it.
+//! Tests call `register`, `count` and `unregister`; the parent module calls `record`.
+//! It has no effect on production reads.
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

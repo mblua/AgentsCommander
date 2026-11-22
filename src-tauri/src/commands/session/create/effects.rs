@@ -1,3 +1,8 @@
+//! Start rule for lifecycle-owned create effects.
+//! `start_create_effect` starts a `LifecycleEffectSlot` under the inline transaction or the
+//! owned replacement, and returns `CreateEffectStart::Retain` when an owner exists but does not
+//! grant the effect. Owns no state; the effects themselves run in `create::core`.
+
 use crate::session::selection::LifecycleEffectGuard;
 use crate::session::selection::LifecycleEffectSlot;
 use crate::session::selection::OwnedReplacementContinuation;

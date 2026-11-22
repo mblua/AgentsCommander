@@ -1,3 +1,11 @@
+//! Commit-time validation and application of session lifecycle mutations.
+//!
+//! Validates removals, exits, finalizations and prompt transfers
+//! (`validate_lifecycle_mutations`), resolves and checks the selection commit target,
+//! applies mutations to `SessionManagerState` (`apply_lifecycle_mutations`) and records busy
+//! activity for finalized live sessions. It holds no state and takes no locks; callers pass
+//! the state, and binding helpers live in `binding.rs`.
+
 use super::super::session::{SessionCommunicationKind, SessionInfo, SessionStatus};
 use super::binding::binding_matches;
 use super::binding::{clear_failed_recipe_for_runtime_binding, retire_coding_agent_binding};

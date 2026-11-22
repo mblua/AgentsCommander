@@ -1,3 +1,7 @@
+//! Schema version 1: creates the `messages` table, its `idx_messages_due` index and
+//! the `message_audit` table, then records version 1 in `api_message_schema`.
+//! Called only by `MessageStore::migrate`.
+
 use super::MessageStoreError;
 use chrono::Utc;
 use rusqlite::Transaction;

@@ -503,7 +503,10 @@ pub(crate) fn read_disk_object_for_write_typed(
 
 /// Same read and gates as `read_disk_object_for_write_typed`, plus the raw file
 /// contents, so a Preserve save can back up a legacy-shaped file verbatim.
-#[allow(clippy::type_complexity)]
+#[allow(
+    clippy::type_complexity,
+    reason = "returns parsed object plus raw text; used once, alias not worth it"
+)]
 pub(crate) fn read_disk_object_and_contents_for_write_typed(
     path: &Path,
     stage: SettingsSaveStage,

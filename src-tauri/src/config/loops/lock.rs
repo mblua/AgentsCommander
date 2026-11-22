@@ -1,3 +1,10 @@
+//! Cross-process lock for one Loop and the locked create, update and remove sections.
+//! The lock is the sidecar `._loop_<id>.lock` beside the Loop directory, held per section.
+//! Taking it also runs the Loop state file rename through `naming_migration`.
+//! Also appends the Loop state rows to `.ac/.gitignore` before that rename.
+//! Leaf readers and writers of the Loop files live in `storage`; raw IO lives in
+//! `crate::filesystem::loop_files`.
+
 #[cfg(test)]
 use super::pause;
 use super::{

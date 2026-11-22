@@ -1,3 +1,8 @@
+//! Docker command execution: `DockerProcessState::execute` runs a `DockerCommandSpec`
+//! with a timeout, capped output and secret redaction.
+//! Commands that do not finish in time are retained via `DockerCommandOwnership`.
+//! Ownership and redaction types live in `ownership`; tests can record or script commands.
+
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 #[cfg(test)]

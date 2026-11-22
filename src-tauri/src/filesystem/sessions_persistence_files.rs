@@ -1,3 +1,7 @@
+//! Files used by session persistence: the append-only orphan archive (append, length,
+//! exists, rename, ensure) and the retained prompt checkpoint (read, write, remove).
+//! Owns no types; record formats live with the callers.
+
 use std::io::{self, Write};
 use std::path::Path;
 

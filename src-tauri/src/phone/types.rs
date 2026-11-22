@@ -1,3 +1,7 @@
+//! Phone wire types: PTY input enums and records (`PtyInputWirePayload`, `PtyInputResult`,
+//! `PtyInputReasonCode`, `PtyInputHostArtifact`, ...), `OutboxMessage`, outbox receipt
+//! path helpers and the host fingerprint hashing.
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 

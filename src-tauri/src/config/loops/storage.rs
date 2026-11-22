@@ -1,3 +1,9 @@
+//! Reads and writes one Loop's files: `config.toml`, the state file and `audit.jsonl`.
+//! Provides atomic config and state writes, a compare-and-swap state write, and a
+//! de-duplicated audit append; it resolves the old `state.json` name for unmigrated Loops.
+//! These leaf writers take no lock; callers hold the Loop lock from `lock`.
+//! Raw file operations live in `crate::filesystem::loop_files`.
+
 use super::lock::loop_write_pause_hook;
 use super::{
     validate_loop_id, LoopAuditEntry, LoopConfigToml, LoopState, LOOP_AUDIT_FILE, LOOP_CONFIG_FILE,

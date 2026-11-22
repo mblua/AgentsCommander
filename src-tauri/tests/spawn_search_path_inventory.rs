@@ -673,7 +673,12 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 2)],
     ),
-    ("src-tauri/src/tests/startup.rs", 1, 0, &[(TestOnly, 1)]),
+    (
+        "src-tauri/src/tests/startup/issue_1930_linux.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
     (
         "src-tauri/src/web/commands/tests/room_idle.rs",
         1,

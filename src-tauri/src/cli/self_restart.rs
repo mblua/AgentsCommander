@@ -1,3 +1,9 @@
+//! `self-handoff-and-restart` CLI verb: queues a deferred respawn of the caller's own session
+//! on the same coding agent and profile letter, then a resume prompt from the archived
+//! `SELF-HANDOFF.md`. Owns `SelfRestartArgs` and `build_self_restart_outbox_message`, which
+//! reuses `self_clear::resolve_self_clear_sender`. The CLI waits only for the queue ack
+//! (exit 0 queued, 2 unknown); the respawn runs in the daemon.
+
 use clap::Args;
 use std::path::PathBuf;
 use uuid::Uuid;

@@ -1,3 +1,7 @@
+//! Web command dispatch: `WsState`, the `WebOperations` and `AgentUpdateOperations` traits
+//! the web layer calls into, `WebSessionCreate`, and `WebCommandsDispatcher`. Per-area
+//! handlers live in submodules (`session_dispatch`, `settings_dispatch`, `args`, ...).
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};

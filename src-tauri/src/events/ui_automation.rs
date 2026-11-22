@@ -1,3 +1,7 @@
+//! Tauri sink for UI automation: `UiAutomationEvents` sends a `UiAutomationRequest`
+//! to one window as `ui_automation_request` and returns any emit error as a `String`.
+//! It holds no state; request handling lives in `crate::testability::ui_automation`.
+
 use crate::testability::ui_automation::{UiAutomationEvents, UiAutomationRequest};
 use tauri::{AppHandle, Emitter, Runtime};
 

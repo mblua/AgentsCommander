@@ -1,3 +1,7 @@
+//! Spec board data types: `SpecBoardFileKind` (Mermaid or Markdown),
+//! `SpecBoardSnapshot`, its `SpecBoardSnapshotSource`, and the internal `SnapshotFile`.
+//! Data only, serialized in camelCase; paths and file IO live elsewhere.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

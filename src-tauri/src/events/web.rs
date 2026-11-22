@@ -1,3 +1,8 @@
+//! Tauri sinks for event broadcast: `DesktopBroadcastEvents` emits an event to the
+//! desktop windows, and `ManagedBroadcastEvents` also forwards it to the `WsBroadcaster`.
+//! `managed_event` returns `false` when no broadcaster is managed (desktop emit still runs).
+//! It owns no state; broadcast rules live in `crate::web`.
+
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 

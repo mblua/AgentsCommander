@@ -1,3 +1,7 @@
+//! Tauri commands for UI automation: `ui_automation_enabled`, `ui_automation_frontend_ready`
+//! and `ui_automation_complete`. State lives in
+//! `crate::testability::ui_automation::UiAutomationState`, not in this module.
+
 mod window_snapshot;
 
 use tauri::{State, WebviewWindow};

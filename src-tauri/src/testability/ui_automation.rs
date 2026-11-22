@@ -1,3 +1,7 @@
+//! UI automation for tests: `UiAutomationState` polls request files, forwards requests to
+//! frontend windows or the backend through the `UiAutomationHost`/`UiAutomationEvents` traits,
+//! and writes responses. Also the CLI `execute_*` entry points (query, click, type, wait, ...).
+
 mod args;
 pub(crate) mod backend_watchdog;
 mod cli_run;

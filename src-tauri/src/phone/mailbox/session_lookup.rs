@@ -1,3 +1,8 @@
+//! Session lookup for the mailbox: `MailboxPoller` finders for active, live, root and
+//! temp-room sessions (`find_active_session`, `find_live_candidates`, ...).
+//! Also handles close-session requests (`handle_close_session`): token checks, target
+//! resolution, teardown recording via `CloseSessionOutcome`, and the response write.
+
 use super::handoff::{is_viable_root_recipient, is_viable_wake_candidate};
 use super::poller::MailboxPoller;
 use super::pty_observation::PtyAuthorityState;

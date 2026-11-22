@@ -1,3 +1,10 @@
+//! Response-close effect records and the registry that retains them.
+//!
+//! Owns `ResponseCloseRegistration`, `ResponseEffectRegistry` and `ResponseEffectOwner`,
+//! which record each close stage, the native exit and the telegram/readers `StopLane`
+//! stops, and answer `discard_quiescence` with a `DiscardHold` reason. It never blocks
+//! and runs no close itself; the close flow lives in `commands::session::destroy`.
+
 use crate::resource_monitor::registry::termination::CleanupFailure;
 use std::sync::atomic::Ordering;
 

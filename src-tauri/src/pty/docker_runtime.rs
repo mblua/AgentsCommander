@@ -1,3 +1,8 @@
+//! Docker implementation of `ContainerRuntime`: `DockerRuntime` runs the docker CLI to start,
+//! stop, inspect and clean up labeled session containers, including retained cleanup of
+//! ambiguous starts. Command building and process execution live in the `command` and
+//! `execution` submodules. Test hooks can record or script commands instead of running docker.
+
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

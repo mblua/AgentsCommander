@@ -1,3 +1,8 @@
+//! State types of the remote watcher sweeper: `QueryKey`, the per-key CI and staleness axes,
+//! the `gh` call token bucket, warn-once sets, the snapshot warning limiter and the
+//! `RemoteSweeper` handle that owns them. Data and small helpers only; the round logic that
+//! plans, queries and publishes lives in `sweeper/round.rs`.
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

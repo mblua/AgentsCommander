@@ -1,3 +1,8 @@
+//! Serde wire format of the seed-manifest TOML file.
+//! Defines `SeedManifestWire`, `SeedManifestRowWire` and the path encoding, file kind and
+//! source enums, with bounded deserializers for field length and row count.
+//! It does no semantic validation; that lives in `state.rs`.
+
 use super::{ResourceBoundKind, MAX_FIELD_BYTES, MAX_MANIFEST_ROWS};
 use serde::de::{SeqAccess, Visitor};
 use serde::{de, Deserialize, Deserializer, Serialize};

@@ -1,3 +1,8 @@
+//! PTY output fan-out: `SessionIoFanout` feeds session bytes to bridge senders, the idle
+//! detector, response watchers, the web broadcaster and screen parsers, and batches UI output.
+//! Owns UI history replay, `PtyScreenSnapshot`, and output target/registration types.
+//! Submodules: `attachments`, `capture`, `delivery`, `markers`, `screen`.
+
 mod attachments;
 mod capture;
 mod delivery;

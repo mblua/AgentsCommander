@@ -1,3 +1,9 @@
+//! Coding-agent profile resolution and per-replica profile selection.
+//! Defines the request and result types (`ProfileResolutionRequest`, `ProfileResolution`,
+//! `ProfileSelectionResolution`) and re-exports the resolver and selection submodules.
+//! Reads and writes `tooling` strings in an agent's config pair (decisions or state file).
+//! Profile cells themselves live in `AppSettings`; this module does not edit them.
+
 use crate::config::settings::ProfileCellConfig;
 use crate::filesystem::coding_agent_profiles::{profile_path_symlink_metadata, read_profile_text};
 use serde_json::Value;

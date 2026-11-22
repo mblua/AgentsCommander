@@ -1,3 +1,9 @@
+//! Links discovered workgroups to their team after an AC discovery scan.
+//!
+//! `associate_teams` sets `AcWorkgroup::team_name` by replica membership: an exact
+//! `origin_project/name` match across all teams first, then a name-suffix fallback.
+//! It reads nothing from disk; team configs are parsed in the parent discovery module.
+
 use super::super::model::{AcTeam, AcWorkgroup};
 pub(crate) fn associate_teams(workgroups: &mut [AcWorkgroup], teams: &[AcTeam]) {
     // Associate each workgroup with its team by matching replica membership.

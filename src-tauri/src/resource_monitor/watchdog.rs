@@ -1,3 +1,7 @@
+//! Resource watchdog: a background task (`start`) that evaluates agent groups against
+//! limits (`evaluate_watchdog_groups`), produces `ResourceWatchdogDecision`s and kills via
+//! the `SelectionCoordinator`, with quarantine retries (`QuarantineRetryReport`).
+
 use std::time::Duration;
 
 use crate::config::settings::{ResourceWatchdogAction, SettingsState};

@@ -1,3 +1,7 @@
+//! Filesystem access for the spec board: path existence, metadata and link checks,
+//! canonical paths, creating directories, writing and committing stage files,
+//! reading bytes, removing snapshots and visiting snapshot contents. Mostly async.
+
 use std::fs::{self, Metadata};
 use std::io;
 use std::path::{Path, PathBuf};

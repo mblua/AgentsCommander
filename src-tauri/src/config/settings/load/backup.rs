@@ -1,3 +1,9 @@
+//! Backups written beside `settings.json`.
+//! Owns the one-time pre-384 v1 migration backup and the rotation of the last
+//! `SETTINGS_BACKUP_KEEP` replaced generations, which is best effort and never follows a
+//! non-regular slot.
+//! It does not decide when to save; the save path calls `rotate_settings_backups` after a write.
+
 use crate::config::instance_artifacts::{SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_SUFFIX};
 use crate::filesystem::settings_file;
 use std::path::{Path, PathBuf};

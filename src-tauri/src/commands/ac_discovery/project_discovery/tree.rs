@@ -1,3 +1,10 @@
+//! Directory walk behind `discover_project`: builds the `DiscoveryTree` of one AC root.
+//!
+//! Reads `_agent_*` matrices, room/`wg-*` workgroups with their `__agent_*` replicas, and
+//! `_team_*` team configs; per replica it fills identity, selection, repos, single-repo branch,
+//! coordinator flag and persisted clocks. `associate_workgroups_with_teams` links teams.
+//! Sorting, branch-watcher updates and events stay in the parent `project_discovery`.
+
 use super::super::model::{AcAgentMatrix, AcAgentReplica, AcTeam, AcWorkgroup};
 use super::super::project_git::detect_repo_branch;
 use super::super::replica_read::{

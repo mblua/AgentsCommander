@@ -1,3 +1,7 @@
+//! Serialized choice of coding agent remembered for new temporary rooms.
+//! Owns only the `TempRoomAgentChoice` data shape (agent id and optional profile).
+//! Does not pick, launch or validate agents; callers do that elsewhere.
+
 use serde::{Deserialize, Serialize};
 
 /// #4779: coding agent remembered for new temporary rooms.

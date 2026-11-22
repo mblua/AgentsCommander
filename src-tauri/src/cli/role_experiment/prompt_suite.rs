@@ -1,3 +1,7 @@
+//! Prompt suite parser for `role-experiment`. Reads a JSONL file where each non-blank line
+//! is one prompt case, checks required fields, safe ids and duplicates, and returns a
+//! `ParsedPromptSuite` with its SHA-256. It collects errors per line; it does not run prompts.
+
 use super::artifacts::CliError;
 use super::artifacts::ParsedPromptSuite;
 use super::artifacts::PromptCase;

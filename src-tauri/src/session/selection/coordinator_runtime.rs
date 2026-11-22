@@ -1,3 +1,11 @@
+//! Runtime side of `SelectionCoordinator`: spawns the worker loop (`start_with_host`), runs
+//! tracked blocking seed work, submits conditional response-close jobs, and drives restart
+//! and root lifecycle entries through admission to the worker queue.
+//!
+//! Also defines `RestoreBarrierGuard`, which releases the restore barrier on finish or drop.
+//! It does not execute jobs; that happens in `worker` and `execute`. Construction and
+//! retained-entry bookkeeping live in `coordinator_lifecycle`.
+
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 

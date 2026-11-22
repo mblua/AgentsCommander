@@ -1,3 +1,7 @@
+//! Terminal snapshot output files: `create_terminal_snapshot_output` creates a
+//! `VerifiedNewFile` in a verified directory, `write_all_and_sync` writes it, and
+//! `validate_terminal_snapshot_output_path` checks a target path.
+
 use super::identity::retain_immutable_directory;
 use super::identity::same_object;
 use super::identity::verify_directory;

@@ -1,3 +1,9 @@
+//! Web command protocol checks: `route_web_command` maps a command name to a
+//! `WebCommandRoute` (browser project commands or `Other`), and
+//! `validate_client_broadcast` allows only `theme_changed`, `resource_monitor_attach`
+//! and `open_settings` events with strict payloads.
+//! It does not run any command; dispatch happens in other modules.
+
 use serde::Deserialize;
 use serde_json::Value;
 

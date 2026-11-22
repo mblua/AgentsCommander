@@ -84,7 +84,10 @@ impl MailboxPoller {
             && resize_ready)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "readiness wait needs claim, identity, plane, store and heartbeat"
+    )]
     pub(crate) async fn wait_for_pty_input_ready<S: PtyReadinessState + ?Sized>(
         &self,
         app: &S,

@@ -1,3 +1,8 @@
+//! Locked, atomic writes for local JSON config files and config pairs.
+//! Facade over submodules for staging, publish with retry, write locks, pair reservations and
+//! revisions; `update_config_json_object` and `write_file_atomic` are the main entry points.
+//! This file only declares submodules and re-exports; it decides nothing about file contents.
+
 mod config_pair;
 mod json_object;
 mod pair_image;

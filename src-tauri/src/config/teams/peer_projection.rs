@@ -1,3 +1,8 @@
+//! Lean peer projection emitted by `list-peers-lean`.
+//! Defines `LeanPeerInfo`, a serde view of a subset of `PeerInfo` fields, and `is_false`.
+//! Holds only data types; it does no discovery and no filesystem access.
+//! Peers are built in `discovery.rs`; the full `PeerInfo` is defined in the parent module.
+
 use serde::Serialize;
 
 /// serde predicate: omit a `false` flag from the JSON entirely (#1669).

@@ -1,3 +1,9 @@
+//! `team` CLI verb: `create`, `list`, `add-member` and `remove-member` for team configs and
+//! their room replicas. Owns `TeamArgs`, the subcommand argument structs and JSON result
+//! types. Member changes run under `TeamConfigMutationGuard`; removal also takes the project
+//! seed-manifest gate first (#1063 lock order). Disk work is delegated to
+//! `commands::entity_creation` and shared helpers in `cli::workgroup`.
+
 use clap::{Args, Subcommand};
 use serde::Serialize;
 use std::ops::ControlFlow;

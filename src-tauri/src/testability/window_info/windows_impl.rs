@@ -1,3 +1,8 @@
+//! Windows backend for `collect_window_info`: enumerates visible top-level windows with
+//! `EnumWindows` and returns `WindowSnapshot`s (title, rect, maximized, process path)
+//! inside a `WindowInfoOutput`, matched against the app title and current exe.
+//! Uses unsafe Win32 calls; the shared output types live in the parent module.
+
 use super::{WindowInfoOutput, WindowRect, WindowSnapshot};
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};

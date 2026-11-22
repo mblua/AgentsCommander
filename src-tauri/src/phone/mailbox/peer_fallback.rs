@@ -1,3 +1,8 @@
+//! Peer wake fallback: delivers wakes when the direct peer session is not usable.
+//! `MailboxPoller` methods select peer candidates, try injection and spawn fallback sessions.
+//! Includes `execute_owned_peer_replacement` and `deliver_peer_wake_fallback`.
+//! Also routes `deliver_internal_system_notice`; wake action rules come from `handoff`.
+
 use super::handoff::{resolve_remote_pty_command, wake_action_for, WakeAction};
 use super::notice::{
     InternalNoticeGuard, InternalSystemNotice, InternalSystemTarget, ResolvedWakeSpawnPlan,

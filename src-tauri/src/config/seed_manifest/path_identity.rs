@@ -1,3 +1,8 @@
+//! Manifest path identities: parse, validate and encode `.ac`-relative row paths.
+//! Owns `ManifestPathIdentity`, `DecodedPathComponents` and the sortable `ManifestPathKey`,
+//! covering `utf8`, `unix_bytes_hex` and `windows_utf16_hex` encodings.
+//! Pure value logic: no disk access; row kind and scope rules live in `state.rs`.
+
 use super::{ManifestPathEncoding, ResourceBoundKind, SeedManifestError, MAX_FIELD_BYTES};
 use std::path::{Component, Path};
 

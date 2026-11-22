@@ -1,3 +1,9 @@
+//! Guarded publication for source, ledger and journal coordination files.
+//! Publishes coordination bytes under a caller validation callback, and creates new files
+//! through a retained parent directory with object-identity checks.
+//! Owns `PreparedSourcePublication` (a durable stage witness) and `PreparedSourceCapability`.
+//! Shared stage publishing lives in `prepared_pair`; this module never takes locks itself.
+
 use super::pair_image::{
     log_unverified_cleanup_refusal, read_config_pair_physical, PairTargetGuard, PhysicalState,
     PreparedPairError,

@@ -1,3 +1,8 @@
+//! `role-experiment` CLI verb: `init`, `list`, `show`, `variant set|diff`, `validate`, `run`
+//! and `report` for role-variant experiments. This file only dispatches to `commands` and
+//! wraps every result in a JSON `CliEnvelope` (ok, command, data, warnings, errors).
+//! Arguments, artifacts, storage, validation, fake runs and reports live in the submodules.
+
 #[cfg(test)]
 use std::path::PathBuf;
 

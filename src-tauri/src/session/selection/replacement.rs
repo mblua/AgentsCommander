@@ -1,3 +1,12 @@
+//! Data-only owner records for owned session replacements and lifecycle entries.
+//!
+//! Owns `ReplacementOwner` with its `ReplacementState` and `ReplacementProgress`, the
+//! retained `OwnedReplacementWork` source data, per-slot `LifecycleEffectGuard`s and
+//! the transient `OwnedReplacementContinuation` / `SourceExecutorGuard` handles, and the
+//! `RetainedReplacements` root the coordinator keeps them in.
+//! It stores no app, backend, task or future and runs no lifecycle work itself;
+//! execution lives in the continuation and worker modules.
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::AtomicBool;

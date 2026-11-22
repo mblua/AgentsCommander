@@ -1,3 +1,9 @@
+//! Facade for `.ac` discovery and project lifecycle commands, split into private submodules.
+//! Re-exports commands such as `discover_ac_agents`, `discover_project`, `open_project`,
+//! `create_ac_project`, `archive_project` and `task_get_snapshot`, plus the `AcDiscoveryResult`
+//! model types and `DiscoveryBranchWatcher`.
+//! Owns only the `DISCOVERY_CALL_ID` log counter; all logic lives in the submodules.
+
 mod agent_discovery;
 mod branch_watcher;
 mod context_templates;

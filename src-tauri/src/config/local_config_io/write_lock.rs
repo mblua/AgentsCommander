@@ -1,3 +1,9 @@
+//! Locks that serialize local config writes.
+//! Owns the process-wide write `Mutex`, the per-thread re-entrancy flag `ConfigWriterActive`,
+//! and the cross-process `.<name>.lock` sidecar lock with its timeout `CONFIG_LOCK_TIMEOUT`.
+//! It does not read or write config data; the writers live in `json_object` and `prepared_pair`.
+//! The OS lock itself lives in `crate::filesystem::local_config`.
+
 use crate::filesystem::local_config;
 use std::cell::Cell;
 use std::path::Path;

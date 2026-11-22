@@ -8,7 +8,10 @@ use crate::config::sessions_persistence::save_sessions_to_dir;
 /// AC1 loop-regression anchor (test 1): a nonexistent-cwd outside-roots row
 /// is reaped exactly once, recorded (B1), and a SECOND purge is byte-
 /// identical with zero WARN movement and frozen counters.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ORPHAN_TEST_LOCK serializes shared counters across awaits (reap-once test)"
+)]
 #[tokio::test]
 async fn purge_reaps_nonexistent_cwd_outside_roots_once_and_is_byte_idempotent() {
     let _serial = ORPHAN_TEST_LOCK
@@ -81,7 +84,10 @@ async fn purge_reaps_nonexistent_cwd_outside_roots_once_and_is_byte_idempotent()
 
 /// Test 2: an EXISTING-cwd outside-roots row is archived (not reaped) with a
 /// round-trippable session blob; a second purge is clean and byte-identical.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ORPHAN_TEST_LOCK serializes shared counters across awaits (archive test)"
+)]
 #[tokio::test]
 async fn purge_archives_existing_cwd_outside_roots() {
     let _serial = ORPHAN_TEST_LOCK
@@ -132,7 +138,10 @@ async fn purge_archives_existing_cwd_outside_roots() {
 
 /// Test 3: root-agent and archived-root rows survive both purge cycles and
 /// produce NO archive records.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ORPHAN_TEST_LOCK serializes shared counters across awaits (root-row keep test)"
+)]
 #[tokio::test]
 async fn purge_keeps_root_agent_and_archived_root_rows() {
     let _serial = ORPHAN_TEST_LOCK
@@ -206,7 +215,10 @@ async fn create_local_session(
 /// persist and is recorded; a live orphan keeps running in RAM, is dropped
 /// from disk, counts `live_kept`, and is NOT recorded (its recipe is still
 /// live). A second persist is silent with frozen counters.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ORPHAN_TEST_LOCK serializes shared counters across awaits (dormant prune test)"
+)]
 #[tokio::test]
 async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
     let _serial = ORPHAN_TEST_LOCK
@@ -307,7 +319,10 @@ async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
 
 /// Test 5: a persist with nothing orphaned emits no archive file and moves
 /// no counters.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ORPHAN_TEST_LOCK serializes shared counters across awaits (silent persist test)"
+)]
 #[tokio::test]
 async fn persist_is_silent_when_nothing_orphaned() {
     let _serial = ORPHAN_TEST_LOCK
@@ -359,7 +374,10 @@ async fn persist_is_silent_when_nothing_orphaned() {
 /// it once and dropping it from disk; the subsequent STEADY `PruneDormant`
 /// persist removes it from RAM but does NOT re-append the archive record
 /// (B1-once first-sighting tie). warned stays 1 across the boundary.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ORPHAN_TEST_LOCK serializes shared counters across awaits (transition border test)"
+)]
 #[tokio::test]
 async fn transition_border_no_prune_keeps_then_steady_prune_removes() {
     let _serial = ORPHAN_TEST_LOCK
@@ -472,7 +490,10 @@ async fn transition_border_no_prune_keeps_then_steady_prune_removes() {
 /// N4c (test 6): run purge (site A) then persist (site B) in one process for
 /// the SAME orphan cwd; the run-level registry collapses the second sighting
 /// (warned stays 1, `suppressed_repeat` becomes 1).
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ORPHAN_TEST_LOCK serializes shared counters across awaits (dedup warn test)"
+)]
 #[tokio::test]
 async fn cross_site_dedup_purge_then_persist_warns_once() {
     let _serial = ORPHAN_TEST_LOCK
@@ -542,7 +563,10 @@ async fn cross_site_dedup_purge_then_persist_warns_once() {
 
 /// N4a (test 7): the site-C append helper writes the restoreCwdMissing
 /// record with the locking variant and leaves sessions.json untouched.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ORPHAN_TEST_LOCK serializes shared counters across awaits (site C reason test)"
+)]
 #[tokio::test]
 async fn site_c_record_reason_restore_cwd_missing() {
     let _serial = ORPHAN_TEST_LOCK
@@ -584,7 +608,10 @@ async fn site_c_record_reason_restore_cwd_missing() {
 /// force rotations so `.1/.2/.3` shift and nothing beyond `.3` is kept;
 /// appends still work after rotation. Best-effort: a held-open append
 /// handle during rotation must not panic.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ORPHAN_TEST_LOCK serializes shared counters across awaits (archive rotation test)"
+)]
 #[tokio::test]
 async fn archive_appends_and_rotates_best_effort() {
     let _serial = ORPHAN_TEST_LOCK
@@ -675,7 +702,10 @@ fn p05_assert_error_since(start: usize, expected: &str) {
     );
 }
 
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ORPHAN_TEST_LOCK serializes shared counters across awaits (ndjson bytes test)"
+)]
 #[tokio::test]
 async fn characterize_3254_p05_ndjson_bytes() {
     let _serial = ORPHAN_TEST_LOCK
@@ -770,7 +800,10 @@ async fn characterize_3254_p05_ndjson_bytes() {
     );
 }
 
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "ORPHAN_TEST_LOCK serializes shared counters across awaits (rotation characterization)"
+)]
 #[tokio::test]
 async fn characterize_3254_p05_rotation() {
     let _serial = ORPHAN_TEST_LOCK
