@@ -1,3 +1,7 @@
+//! Project resolution for the `workgroup` CLI verbs. Maps a `--project` reference to its
+//! path using the CLI settings and finds the project's existing `.ac` root. It does not
+//! create the `.ac` root; resolution rules live in `config::projects` and `config::ac_root`.
+
 use std::path::{Path, PathBuf};
 
 use crate::config::ac_root::existing_ac_root;

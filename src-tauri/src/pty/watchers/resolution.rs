@@ -1,3 +1,8 @@
+//! Resolves which configured watchers reach which agent, within the per-agent budget, and
+//! returns notices instead of logging them. Pure: no logging, no locks, no I/O, so the engine
+//! and the Settings preview get the same answer. Matching patterns against frames is done in
+//! `evaluation.rs`.
+
 use crate::config::coding_agents_catalog::command_executable_basename;
 use crate::config::settings::WatcherDedupe;
 use crate::config::settings::WatcherEntry;

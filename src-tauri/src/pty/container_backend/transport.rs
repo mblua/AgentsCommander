@@ -1,3 +1,8 @@
+//! Bridge transport handling on `ContainerTransportBackend`: ticket consumption, the hello
+//! handshake, bridge output, exit and disconnect events, outgoing frames, and removal of
+//! session state and routes. It works on the session map owned by the parent module and
+//! hands removed resources to `cleanup`; it does not stop containers itself.
+
 use super::root_key;
 use super::{
     resources_from_state, ActiveSession, AttachingSession, ContainerSessionState,

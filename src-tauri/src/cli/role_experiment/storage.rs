@@ -1,3 +1,8 @@
+//! On-disk layout and IO for `role-experiment`. Resolves the project and AC root, loads
+//! experiment and variant metadata, names and writes run, attempt and report files,
+//! and creates run room directories. Low-level file access goes through
+//! `crate::filesystem`; it does not decide what a command should do (see `commands`).
+
 use super::artifacts::AttemptArtifact;
 use super::artifacts::CliError;
 use super::artifacts::ExperimentMetadata;

@@ -1,3 +1,9 @@
+//! One live local PTY: `PtyInstance` owns the master, writer, child, job object, the last size
+//! sent to the `ConPTY` and the `StartupGate` that holds resizes until the child first renders.
+//! Also builds an instance from a freshly spawned pair (`prepare_spawn_instance`).
+//! It does NOT read PTY output (see `reader`) or decide when the child has rendered; that
+//! question is asked of the vt100 parser in `pty::output`.
+
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};

@@ -1,3 +1,8 @@
+//! TASK-status.jsonl records. Owns the `StatusRecord`, `TaskSnapshot` and `StatusReceipt`
+//! shapes, the size and sequence limits, record validation, reading the latest record
+//! from the file tail, and repair of a partial trailing row (backed up before truncation).
+//! It shares the TASK lock but does not check who may write; callers own authorization.
+
 use super::operation::TaskOpError;
 use crate::filesystem::tasks::{
     create_task_artifact, io_boundary, open_status_repair, read_status_window,

@@ -1,3 +1,8 @@
+//! Evaluates watcher patterns against one session frame: `state` mode over the whole frame
+//! and `occurrence` mode over the diff rows, plus the end-of-tick status. Gate changes are
+//! returned as `StateGateCommit` and applied only when the match is emitted. Frame diffing,
+//! history and dedupe live in their own sibling modules.
+
 use crate::config::settings::WatcherDedupe;
 use crate::pty::watchers::frame;
 use crate::pty::watchers::history;

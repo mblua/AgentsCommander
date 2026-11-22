@@ -1,3 +1,8 @@
+//! One sweeper round of the remote watcher: plan which `QueryKey`s are due, reserve their `gh`
+//! calls from the token budget, run the queries with bounded concurrency, publish the result
+//! and refund unused reservations. Holds no state of its own; it works on `SweeperState` via
+//! `RemoteSweeper`. Parsing `gh` output and building commands live in sibling modules.
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;

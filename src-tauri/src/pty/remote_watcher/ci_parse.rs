@@ -1,3 +1,9 @@
+//! Parsers for the GitHub answers the remote watcher reads: CI run and job responses, the
+//! compare response (staleness, `behind_by`, `ahead_by`) and the `github.com` owner/name from a
+//! remote URL. Also merges CI run observations into `CiCompletionState`, which tracks run
+//! identities and completion proofs.
+//! It does NOT run `gh`; `query` does, and `outcome` applies the parsed answers.
+
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 

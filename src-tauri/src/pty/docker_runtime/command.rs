@@ -1,3 +1,7 @@
+//! Small shared types for `DockerRuntime`: error-text normalization and the registry of
+//! retained Docker start cleanups (handle, in-flight flag, last error). It runs no Docker
+//! commands; execution lives in `execution` and `crate::process::docker`.
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

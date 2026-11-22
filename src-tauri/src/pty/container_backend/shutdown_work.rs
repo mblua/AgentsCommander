@@ -1,3 +1,8 @@
+//! Shutdown work registry for the container backend. Owns the phase (accepting, draining,
+//! global sweep), the producer count, the queued, retained and active work, and the worker
+//! threads with their fallback path. It runs the closures it is given but does not decide
+//! what to clean; `cleanup`, `retained_cleanup` and `sweep` supply that work.
+
 use super::{
     lock_mutex_until, ContainerShutdownReport, CONTAINER_SHUTDOWN_DROP_GRACE,
     CONTAINER_SHUTDOWN_FALLBACK_CAPACITY, CONTAINER_SHUTDOWN_IDLE_RECHECK, CONTAINER_SHUTDOWN_POLL,

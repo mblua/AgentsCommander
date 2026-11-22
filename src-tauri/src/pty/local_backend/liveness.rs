@@ -1,3 +1,9 @@
+//! Child liveness for local sessions. Probes a child through its OS handle (`WaitForSingleObject`
+//! on Windows, `try_wait` elsewhere) with panics contained, gates screen-row reads on the child
+//! being alive, and reaps a stopped child on a background thread.
+//! It owns no state of its own; it works over the backend's `ptys` map and `SessionIoFanout`,
+//! and the exit bookkeeping lives in `spawn_diagnostics`.
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

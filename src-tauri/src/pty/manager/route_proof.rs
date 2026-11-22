@@ -1,3 +1,9 @@
+//! Route proofs for `PtyManager` sessions: snapshot and authority proofs taken under the
+//! manager lock, input-permit acquisition, and permit-checked writes to a session's PTY. Also
+//! reads screen and liveness through the backend a snapshot proof names.
+//! It owns no state; the proofs and permits come from the manager's `registry`, which decides
+//! who may route to a session.
+
 use crate::errors::AppError;
 use crate::pty::backend::{SessionBackendKind, TerminalScreenCopyRead, TerminalScreenRead};
 use crate::pty::context_scrape::ContextSessionLiveness;

@@ -1,3 +1,8 @@
+//! Authority checks for terminal snapshots: prove who the requester is, select the target
+//! session, compare authorities and build the payload. Owns `RequesterProof` and
+//! `SelectedSession`. Re-checking these facts just before the response is sent is done in
+//! `finalization.rs`; rate limits live in `limiter.rs`.
+
 use super::{
     PreparedSnapshotPayload, TerminalSnapshotRequesterSelector, TerminalSnapshotSourcePlane,
 };

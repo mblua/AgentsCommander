@@ -1,3 +1,8 @@
+//! Return and close path of `ResponseCloseState`: policy candidates, request registration,
+//! admitting and settling returns, selecting a ticket and committing, finishing or retiring a
+//! response close. Mutates route state under the shared inner lock. Route lifecycle and the
+//! facts routes are built from live in `routes.rs`; reservations live in `admission.rs`.
+
 use crate::pty::response_close::ResponseCloseError;
 use crate::pty::response_close::ResponseCloseInner;
 use crate::pty::response_close::ResponseClosePolicy;

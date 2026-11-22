@@ -1,3 +1,7 @@
+//! Text preflight for PTY injection. Runs the caller's pre-write check (deferred for peer
+//! wakes, refreshed for internal notices) and strips the wake render's trailing `\n\r` on
+//! `send_enter` shells. It does not write to the PTY or wait on holds; the caller does.
+
 use uuid::Uuid;
 
 use super::HoldPolicy;

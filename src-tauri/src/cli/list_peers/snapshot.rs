@@ -1,3 +1,9 @@
+//! `list-peers --snapshot-targets` discovery. Finds the terminal-snapshot targets a caller
+//! may see (Root Agent: room orchestrators across known projects; room orchestrator: the
+//! non-orchestrator members of its own room), applies the name filter, and prints JSON.
+//! Silent `[]` reasons and skip notes carry only fixed codes or integers, never paths.
+//! Target scanning and identity checks live in `crate::config::teams` and `path_identity`.
+
 use std::collections::HashMap;
 use std::path::Path;
 

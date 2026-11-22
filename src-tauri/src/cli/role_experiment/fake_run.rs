@@ -1,3 +1,8 @@
+//! Fake executor for `role-experiment run --execute --fake-executor`. Builds the execution
+//! plan, creates the run room, fakes each attempt result from `--provider`, and writes the
+//! run, attempts and report artifacts. Also holds the shared experiment validation pass.
+//! It runs no real PTY or provider; real execution is not implemented here.
+
 use super::arguments::RunArgs;
 use super::artifacts::AttemptArtifact;
 use super::artifacts::AttemptExecutionResult;

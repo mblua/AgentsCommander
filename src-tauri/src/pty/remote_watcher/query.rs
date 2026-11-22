@@ -1,3 +1,8 @@
+//! Runs the remote watcher's queries: one compare and one CI query per key through the `gh`
+//! spawner seam, with a per-call timeout, plus the production `gh` and local git spawners and the
+//! room map. It owns no long-lived state.
+//! It does NOT build `gh` arguments (that is `gh_command`) or parse the answers (`ci_parse`).
+
 use std::collections::HashMap;
 use std::path::Path;
 

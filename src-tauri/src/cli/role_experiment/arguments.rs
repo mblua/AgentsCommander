@@ -1,3 +1,7 @@
+//! Clap argument definitions for the `role-experiment` CLI verb and its subcommands
+//! (init, list, show, variant set/diff, validate, run, report).
+//! Only declares flags and defaults; checks such as run-mode rules live in `commands`.
+
 use clap::builder::BoolishValueParser;
 use clap::{Args, Subcommand};
 

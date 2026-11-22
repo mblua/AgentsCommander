@@ -1,3 +1,9 @@
+//! Per-window output attachments for `SessionIoFanout`. `TerminalOutputAttachments` maps each
+//! session to the set of window labels watching it and holds each session's pending output batch
+//! (`SessionAccumulator`), drained by a size-threshold flush or a timer flush.
+//! It does NOT parse output or keep screen state; that is `capture` and `screen`. Window labels
+//! come from Tauri, never from the frontend.
+
 use super::{
     PtyOutputEmitError, PtyOutputPayload, RegisteredPtyOutputTarget, UI_BATCH_LIMIT_BYTES,
 };

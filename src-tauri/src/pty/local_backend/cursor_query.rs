@@ -1,3 +1,8 @@
+//! Windows startup cursor-position query handling for the local PTY reader. Detects a single
+//! `ESC [ 6 n` request in the output stream, skipping string sequences, and writes the cursor
+//! reply back to the PTY. It owns only that one-shot parser state; reading the screen and
+//! forwarding output stay with the existing reader.
+
 use std::io::{Read, Write};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
