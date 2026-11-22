@@ -1,3 +1,8 @@
+//! Probe process ownership: `ProbeProcessOwner` spawns a probe, caps its output at
+//! `PROBE_OUTPUT_CAP` and settles child, readers and native tree before returning.
+//! `RetainedProbeOwner` keeps settling after a panic or cancellation.
+//! Outcome types live in `outcome`; native tree proof in `native_proof`.
+
 use std::time::Duration;
 
 use futures::future::{BoxFuture, Shared};

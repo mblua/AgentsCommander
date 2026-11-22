@@ -1,3 +1,8 @@
+//! Proof that a native process tree is gone: `settle_job` (Windows Job Object) and
+//! `settle_process_group` (Unix process group) poll until empty, killing on the way.
+//! Defects and expiry go to the caller's list within one `SettlementAttempt`.
+//! `NativeProofHooks` lets tests script observations.
+
 use std::time::Duration;
 
 #[cfg(windows)]

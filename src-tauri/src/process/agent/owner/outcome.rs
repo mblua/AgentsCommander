@@ -1,3 +1,7 @@
+//! Probe result types: `ProbeOutcome` (version or failure) and `CancellableProbeOutcome`.
+//! Produced by the probe owner in `containment`; this module has no logic.
+//! Only data definitions with derived traits.
+
 /// Outcome of one probe process. `Failed` carries the sanitized detail.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProbeOutcome {
