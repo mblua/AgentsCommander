@@ -1,3 +1,9 @@
+//! UI automation wire format shared by the CLI and the app: folder and file names, env
+//! var `AC_UI_AUTOMATION`, backend selectors, timeouts and retry limits, plus the
+//! `UiAutomationSession`, `UiAutomationRequest`, `UiAutomationAction` and
+//! `UiAutomationResponse` types and `parse_terminal_operation`.
+//! Defines data only; reading and writing the files is done by other modules.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

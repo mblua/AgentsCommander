@@ -1,3 +1,8 @@
+//! Builds the `ResourceSnapshot` the resource monitor reports to callers.
+//! `build_snapshot` derives per-group warn/kill `ResourceGroupWarning`s and the overall state
+//! (`Enforcing`, `Critical`, `Warn` or `Ok`) from `ResourceLimits`; `disabled_snapshot` reports
+//! `Unknown` when monitoring is off. Pure functions; no process access or locking.
+
 use crate::resource_monitor::types::ProcessMemory;
 use crate::resource_monitor::types::ResourceAgentGroupSnapshot;
 use crate::resource_monitor::types::ResourceGroupState;

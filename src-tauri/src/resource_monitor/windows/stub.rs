@@ -1,3 +1,8 @@
+//! Fallback `PlatformProcessTreeBackend` for platforms without Windows process APIs.
+//! Reports no process tree telemetry, echoes the PID as identity with creation time 0, and
+//! refuses termination; `supports_process_tree_enforcement` returns false.
+//! Current process memory is the default (empty) `ProcessMemory`.
+
 use crate::resource_monitor::registry::{ProcessTreeBackend, ResourceError};
 use crate::resource_monitor::types::{
     ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory, TerminateOutcome,

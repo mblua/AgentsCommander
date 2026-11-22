@@ -1,3 +1,9 @@
+//! Loop scheduler helpers for Loop state files, discovery and delivery checks.
+//! `guarded_state_write` does a compare-and-swap write of `state.json`; `read_state_snapshot` and
+//! `read_raw_loop_state` read it; `generation_key` builds a canonical per-Loop key.
+//! Also lists `LOOP_DIR_PREFIX` dirs, filters archived project candidates, revalidates a Loop
+//! before delivery and names `LoopAuditKind` values. It owns no types.
+
 use std::path::{Path, PathBuf};
 
 use crate::config::loops::{
