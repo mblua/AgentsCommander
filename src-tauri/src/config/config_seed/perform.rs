@@ -1,3 +1,9 @@
+//! Runs one config seed into a replica: pick a source tier, stage it, swap it in.
+//! `perform_config_seed` stages into a temp dir, moves the old dest aside, installs the new
+//! tree, and restores the old one if install fails; it never aborts the spawn.
+//! `perform_config_seed_recorded` runs it under the project seed-manifest gate.
+//! Callers must serialize seeding per replica; copy helpers live in `copy`.
+
 use crate::filesystem::config_seed as seed_disk;
 use std::path::Path;
 
