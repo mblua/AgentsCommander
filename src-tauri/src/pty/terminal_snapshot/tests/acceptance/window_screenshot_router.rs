@@ -735,7 +735,10 @@ async fn window_screenshot_route_local_factory_success_is_raw_png_and_audited() 
 
 #[cfg(target_os = "windows")]
 #[tokio::test]
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "calls mutex is dropped in its block before release.notified().await"
+)]
 async fn window_screenshot_revocation_after_launch_does_not_cancel_in_flight_capture() {
     let temporary = fixture_tempdir("window-screenshot-fixture-");
     let fixture = AcceptanceFixture::new(temporary).await;

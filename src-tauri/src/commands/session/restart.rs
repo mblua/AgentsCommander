@@ -64,7 +64,10 @@ pub(crate) use crate::session::selection::RestartJobRequest;
 ///
 /// The restarted session is automatically activated, Telegram bridges are
 /// re-attached, and state is persisted.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "restart takes state handles plus agent, profile and resume options"
+)]
 pub async fn restart_session_inner<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -89,7 +92,10 @@ pub async fn restart_session_inner<R: tauri::Runtime>(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "adds activate_after to the restart inputs of restart_session_inner"
+)]
 pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -118,7 +124,10 @@ pub async fn restart_session_inner_with_activation<R: tauri::Runtime>(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "full restart takes intent, comms override and gate enforcement too"
+)]
 pub(crate) async fn restart_session_inner_with_intent<R: tauri::Runtime>(
     app: &AppHandle<R>,
     _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,

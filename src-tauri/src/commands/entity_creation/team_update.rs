@@ -24,7 +24,10 @@ use tauri::{AppHandle, Emitter, State};
 
 /// Update an existing team's config.json in `{project_path}/.ac/_team_{name}/`
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Tauri command: managed State plus one IPC field per team attribute"
+)]
 #[tauri::command]
 pub async fn update_team(
     app: AppHandle,

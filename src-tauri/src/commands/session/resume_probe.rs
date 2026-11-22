@@ -299,7 +299,10 @@ pub(crate) fn resume_probe_target(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "probe target depends on agent, backend, spawn, config dir and shell"
+)]
 pub(crate) fn claude_resume_probe_target_for_kind(
     agent_kind: Option<CodingAgentKind>,
     backend_kind: SessionBackendKind,

@@ -50,7 +50,10 @@ pub(crate) fn classify_existing_root(status: &SessionStatus, has_pty: bool) -> E
 
 pub(crate) use crate::session::selection::RootJobRequest;
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "root agent create takes each state handle plus agent and profile"
+)]
 pub(crate) async fn create_root_agent_inner(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -76,7 +79,10 @@ pub(crate) async fn create_root_agent_inner(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "adds trusted intent and select_after to the root agent inputs"
+)]
 pub(crate) async fn create_root_agent_inner_with_intent(
     app: &AppHandle,
     _session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,

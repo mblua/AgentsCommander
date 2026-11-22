@@ -239,7 +239,10 @@ pub(crate) async fn commit_co_managed_effect<H: CoManagedHost + ?Sized>(
 /// snapshot before each; `PreconditionsStale` and `LockBusy` are the only
 /// retryable outcomes. The ceiling is the executable form of the bound: under
 /// contention the feature abstains with a reason instead of looping forever.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "commit CAS needs session, slot, expected seq/key and effect kind"
+)]
 pub(crate) async fn commit_co_managed_with_retries<H: CoManagedHost + ?Sized>(
     app: &H,
     handle: &CoManagedSupervisorHandle,
@@ -517,7 +520,10 @@ async fn report_co_managed_budget_exhausted<F: std::future::Future<Output = ()>>
 /// budget-free text-to-user channel so the user sees the reason; a route
 /// failure after the commit is reported there too (the declared residual: the
 /// reservation is not rolled back).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "routing needs host, supervisor, session, candidate, route and text"
+)]
 pub(crate) async fn perform_co_managed_route<H: CoManagedHost + ?Sized>(
     app: &H,
     handle: &CoManagedSupervisorHandle,

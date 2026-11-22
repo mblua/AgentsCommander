@@ -237,7 +237,10 @@ pub async fn probe_version_cancellable(
 /// runs synchronously only after the real process owner is stored in `owner_slot`;
 /// `cancellation_observed` runs while that owner is still retained and before
 /// settlement is awaited to completion.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "probe needs program, args, timeout, PATH, cancel and owner callbacks"
+)]
 pub(crate) async fn probe_version_cancellable_retained<I, O>(
     program: &Path,
     args: &[&str],

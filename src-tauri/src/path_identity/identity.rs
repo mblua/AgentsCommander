@@ -71,7 +71,10 @@ pub(crate) enum UnixFileWitnessState {
 // the cleanup hook fires, which is BEFORE the step it is named after. Renaming to
 // `Restore` / `ClaimRename` / `ClaimUnlink` would name the steps instead and lose
 // that. clippy's shared-prefix heuristic cannot distinguish the two cases.
-#[allow(clippy::enum_variant_names)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "Before* names test hook points before each cleanup step"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnixTrackedCleanupStage {
     BeforeClaimRename,

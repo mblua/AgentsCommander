@@ -105,7 +105,10 @@ impl Drop for ContainerSpawnCancellationGuard<'_> {
 }
 
 impl ContainerTransportBackend {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pending session needs id, size, cwd, tuning, target, slot and creds"
+    )]
     pub(super) fn create_pending_session(
         &self,
         id: Uuid,

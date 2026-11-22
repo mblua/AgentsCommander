@@ -111,7 +111,10 @@ fn run_ps_script_with_exit_propagation(
     Some((code, stdout, stderr))
 }
 
-#[allow(clippy::assertions_on_constants)] // Plan R2.6 step 3: intentional runtime guard.
+#[allow(
+    clippy::assertions_on_constants,
+    reason = "cfg!(debug_assertions) is a deliberate build-mode runtime guard"
+)] // Plan R2.6 step 3: intentional runtime guard.
 fn debug_guard() {
     assert!(
         !cfg!(debug_assertions),

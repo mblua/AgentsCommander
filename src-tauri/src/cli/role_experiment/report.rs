@@ -212,7 +212,10 @@ pub(super) fn build_attempts(
     attempts
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each field of the report artifact comes from a separate run input"
+)]
 pub(super) fn build_report_artifact(
     run_id: &str,
     experiment: &str,

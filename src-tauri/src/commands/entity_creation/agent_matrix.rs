@@ -221,7 +221,10 @@ pub(super) enum AgentDeleteTransactionOutcome {
 /// it directly with an injected `save_settings_fn` and lock-order barrier. The
 /// `after_project_before_team` barrier fires while the project gate is held and
 /// before the team guard is taken.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "delete transaction takes plan, state handles and test hook closures"
+)]
 pub(super) fn run_agent_delete_transaction(
     base: &Path,
     project_root: &Path,

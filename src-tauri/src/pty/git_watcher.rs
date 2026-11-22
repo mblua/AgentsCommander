@@ -19,7 +19,10 @@ pub struct GitState {
     discovery_rooms: OnceLock<Mutex<Vec<(String, String)>>>,
 }
 
-#[allow(clippy::new_without_default)]
+#[allow(
+    clippy::new_without_default,
+    reason = "new() is the explicit constructor for lazily filled watcher state"
+)]
 impl GitState {
     pub fn new() -> Self {
         Self {
