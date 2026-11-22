@@ -1,3 +1,8 @@
+//! Shared guards for delete commands: link/reparse root checks and live-session blocking.
+//! Builds normalized, lowercased path keys (`path_key_for_delete`, `target_keys_for_delete`)
+//! used to match session working directories against a delete root.
+//! Owns no state; the filesystem probes live in `crate::config::entity_creation::directories`.
+
 #[cfg(test)]
 pub(crate) use crate::config::entity_creation::directories::is_file_in_use_error;
 #[cfg(test)]
