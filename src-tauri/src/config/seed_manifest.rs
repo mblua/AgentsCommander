@@ -13,7 +13,10 @@
 //! this build is NOT readable by an old build (writer strictness is a one-way
 //! door; an old build preserves its bytes exactly).
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "dormant recorder surface kept for later activation phases"
+)]
 
 mod guard;
 mod handles;

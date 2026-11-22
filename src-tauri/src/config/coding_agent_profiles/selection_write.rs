@@ -107,7 +107,10 @@ pub fn write_replica_selection(
 }
 
 /// Dormant source companion; no source IO or runtime activation in this layer.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "dormant source companion; called only by tests until source activation"
+)]
 pub(crate) fn write_prepared_source_selection(
     settings: &AppSettings,
     replica_path: &Path,
@@ -282,7 +285,10 @@ pub(super) fn publish_prepared_reference(
 
 /// Dedicated manual setter companion keeps the existing setter's lock treatment.
 /// The caller has reauthorized/reloaded the source and prepared its fresh pair.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "dormant source companion; called only by tests until source activation"
+)]
 pub(crate) fn set_prepared_source_profile_override(
     settings: &AppSettings,
     replica_path: &Path,

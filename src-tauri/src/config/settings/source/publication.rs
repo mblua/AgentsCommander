@@ -571,7 +571,10 @@ fn encode_validated_source_journal(
 /// can expose the original ID and CAS before a shared fence exists.
 // Test-only today; `#[cfg(test)]` would need edits to the re-exports in
 // `settings/source.rs` and `settings.rs`.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "test-only today; cfg(test) would need edits to the re-exports"
+)]
 pub(crate) fn read_own_source_intent(
     context: &SourceReadContext,
     operation_id: &str,

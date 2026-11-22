@@ -13,7 +13,10 @@ pub(crate) enum IdentityTransitionReadState {
 }
 
 // Fields are read only by tests until the source protocol is activated (#2897).
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "fields read only by tests until the source protocol is activated (#2897)"
+)]
 #[derive(Debug)]
 pub(crate) struct IdentityTransitionRead {
     pub(crate) state: IdentityTransitionReadState,
@@ -161,7 +164,10 @@ pub(crate) struct SourceResumeExpectation {
 /// leases. Any future activated caller must be reviewed against this contract.
 // Inactive entry point (#2897): no production caller until the source protocol is
 // activated; the rest of the transition is reached only from here and from resume.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "inactive entry point until the source protocol is activated (#2897)"
+)]
 pub(crate) fn commit_source_candidate(
     settings: &AppSettings,
     context: &crate::config::settings::SourceReadContext,
@@ -437,7 +443,10 @@ fn continue_candidate_intent(
 /// Reload obeys the same synchronous backend-local, nonblocking contract as Save;
 /// the Fn signature itself does not prove that an arbitrary callback is safe.
 // Inactive entry point (#2897): see `commit_source_candidate`.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "inactive entry point until the source protocol is activated (#2897)"
+)]
 pub(crate) fn resume_identity_transition(
     settings: &AppSettings,
     context: &crate::config::settings::SourceReadContext,

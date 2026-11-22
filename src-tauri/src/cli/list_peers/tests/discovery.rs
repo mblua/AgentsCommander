@@ -245,7 +245,11 @@ fn norm_path_lowercases_and_normalizes_slashes() {
 /// The lock keeps the tests that share a number from deleting each other's room.
 struct TempRoomDir(
     PathBuf,
-    #[allow(dead_code)] std::sync::MutexGuard<'static, ()>,
+    #[allow(
+        dead_code,
+        reason = "guard is held for the value's lifetime, never read"
+    )]
+    std::sync::MutexGuard<'static, ()>,
 );
 
 static TEMP_ROOM_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

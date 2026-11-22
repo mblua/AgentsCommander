@@ -344,7 +344,13 @@ pub(crate) fn validate_session_creation_cwd(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CreationGateEnforcement {
     Enforce,
-    #[allow(dead_code)] // constructed only by test code (§5.5); production sees only Enforce
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "constructed only by test code (§5.5); production sees only Enforce"
+        )
+    )]
     Skip,
 }
 
