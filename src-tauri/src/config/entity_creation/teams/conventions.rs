@@ -1,3 +1,7 @@
+//! Writes the empty `conventions.md` file that every team directory carries.
+//! Owns no state; it only creates the file when absent, for a new team, or in an owned copy.
+//! The actual file IO lives in `crate::filesystem::projects::entities::publication` and `copies`.
+
 use crate::filesystem::projects::entities::publication;
 use std::path::Path;
 

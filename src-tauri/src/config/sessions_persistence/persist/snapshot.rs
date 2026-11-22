@@ -1,3 +1,8 @@
+//! Builds the persisted `sessions.json` rows from the live `SessionManager` aggregate.
+//! Skips temp sessions and rows hidden by a pending carrier replacement, then deduplicates.
+//! Strips AC-injected resume args (Claude, Codex, Antigravity) so they never self-perpetuate.
+//! Owns no state; writing to disk lives in `write.rs` and `store.rs`, row types in `record.rs`.
+
 use super::super::carrier::{all_carrier_protections, ProtectionPhase};
 use super::super::record::{deduplicate, PersistedSession};
 use crate::session::manager::SessionManager;

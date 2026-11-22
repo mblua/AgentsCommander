@@ -1,3 +1,9 @@
+//! Identity-transition packets: prepares and verifies per-target identity reference patches.
+//! `TransitionPackets::prepare` builds or recovers one packet per target and records its
+//! revision digests; `verify_original` and `verify_completed` check them later.
+//! Holds only borrowed lease, authority and callbacks; packet storage and the source
+//! transition state machine live in the parent module and `crate::config::settings`.
+
 #[cfg(test)]
 use super::IdentityTransitionTestControls;
 use super::{source_before_fence_boundary, source_durable_boundary, SourceTransitionError};

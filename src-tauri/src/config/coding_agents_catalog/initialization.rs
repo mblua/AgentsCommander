@@ -1,3 +1,9 @@
+//! Startup initialization of the coding-agents catalog for a project or the instance.
+//! Under the catalog lock it recovers interrupted migrations, renames the old `agents.*`
+//! files, then refreshes, migrates or fresh-seeds the managed base, and seeds masters.
+//! It also records the catalog publication in the project seed manifest.
+//! Migration steps live in `migration`; the lock and atomic writes live in `publication`.
+
 use std::path::Path;
 
 use chrono::{DateTime, Utc};

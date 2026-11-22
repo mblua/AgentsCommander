@@ -1,3 +1,8 @@
+//! Prepares and publishes the `sessions.json` snapshot for an owned carrier replacement (A to B).
+//! Checks replacement authority, builds the B destination key and protection, then renames once.
+//! Post-rename recovery only reads back the same file; it never prepares A or renames again.
+//! Holds only transient prepared values; slot state lives in `carrier`, rename logic in `write.rs`.
+
 use super::carrier::{
     all_carrier_protections, prepare_protected_publication, renew_carrier_replacement,
     same_carrier_projection, CarrierProtection, ProtectionPhase, PublicationCheckpoint,

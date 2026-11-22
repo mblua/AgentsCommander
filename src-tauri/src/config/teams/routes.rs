@@ -1,3 +1,10 @@
+//! Privileged route checks for PTY input and terminal snapshots, plus synthetic reply peers.
+//! Proves the sender replica from its cwd, resolves the target, and applies the route policy
+//! in `verify_pty_input_route` and `verify_terminal_snapshot_route`.
+//! Also lists verified snapshot targets and builds Root and temp-room `PeerInfo` rows.
+//! Owns no state. Identity parsing and replica checks live in `replica.rs`;
+//! broad message routing (`can_communicate`) lives in `membership.rs`.
+
 use super::agent_fqn_from_path;
 use super::discovery::WgReplicaInfo;
 use super::enumerate_project_dirs_strict;

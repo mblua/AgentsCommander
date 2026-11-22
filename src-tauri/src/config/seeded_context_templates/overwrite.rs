@@ -1,3 +1,9 @@
+//! User actions on a project context template update: dismiss it or overwrite with the default.
+//! Checks the expected file and default hashes, writes a unique `.bak` backup, then replaces
+//! the file and records the new state; also de-duplicates pending update entries.
+//! State loading and hash checks live in the parent `seeded_context_templates` module.
+//! The atomic replace lives in `crate::config::session_context`.
+
 use super::{
     actionable_project_spec_by_filename, display_path, load_state, persist_state_strict,
     read_validated_snapshot, sha256_hex, validate_expected_hashes, validate_project_ac_root,

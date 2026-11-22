@@ -1,3 +1,9 @@
+//! File helpers for the Root Agent: role file and default skill file staging and publishing.
+//! Writes, replaces and syncs `Role.md` atomically, and publishes missing default skill files.
+//! Also repairs the Root `config.json` `context` array and reads `lastCodingAgent`.
+//! Raw file calls live in `crate::filesystem::agent_files`; the provisioning flow that uses
+//! these helpers lives in `provisioning`.
+
 use super::{
     is_link_or_reparse, ROOT_AGENT_DEFAULT_CONTEXT, ROOT_AGENT_OLD_DEFAULT_CONTEXT,
     ROOT_AGENT_PRE_979_DEFAULT_CONTEXT, SKILL_MD_FILENAME,

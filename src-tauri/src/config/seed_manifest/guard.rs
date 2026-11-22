@@ -1,3 +1,10 @@
+//! Per-project seed-manifest guard: the locked owner of one project's manifest file.
+//! `ProjectSeedManifestGuard` pins the project and `.ac` directories, holds the lock file,
+//! keeps the `CanonicalSnapshot` it loaded, inventories prior temps and runs the v1 -> v2
+//! coverage upgrade. It writes the canonical file via temp, verify, then atomic publish.
+//! Row rules and TOML parsing live in `state.rs`; handle checks in `handles.rs`;
+//! lock and temp helpers in `publish.rs`; Windows publication in `windows.rs`.
+
 #[cfg(all(test, windows))]
 use super::WindowsNamespaceOperation;
 use super::{
