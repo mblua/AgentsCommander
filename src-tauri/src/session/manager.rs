@@ -258,10 +258,6 @@ impl SessionManager {
         Arc::clone(&self.activity)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "carrier-permit idle marker; only permit and id, kept for family parity"
-    )]
     pub(crate) async fn mark_idle_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -310,10 +306,6 @@ impl SessionManager {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "carrier-permit busy marker; only permit and id, kept for family parity"
-    )]
     pub(crate) async fn mark_busy_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -493,10 +485,6 @@ impl SessionManager {
         Ok(route_guard)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "selection commit takes permit, capability, decision, cause, mutations"
-    )]
     pub(super) async fn commit_selection_transition_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -614,10 +602,6 @@ impl SessionManager {
         Ok(result)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "exited-session sweep takes ids, permit and classifier; family parity"
-    )]
     pub(crate) async fn remove_exited_sessions_with_carrier_permit(
         &self,
         ids: &[Uuid],
