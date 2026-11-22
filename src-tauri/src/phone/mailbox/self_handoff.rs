@@ -306,7 +306,7 @@ impl MailboxPoller {
         clippy::too_many_arguments,
         reason = "self-clear needs target, text, root, summary and three timings"
     )]
-    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(test, allow(dead_code, reason = "tests drive it directly"))]
     pub(crate) async fn run_self_clear_after_sustained_idle<S: MailboxHost>(
         host: &S,
         session_id: Uuid,
@@ -492,7 +492,7 @@ impl MailboxPoller {
         clippy::too_many_arguments,
         reason = "self-switch needs target agent/profile, flavor and three timings"
     )]
-    #[cfg_attr(test, allow(dead_code))]
+    #[cfg_attr(test, allow(dead_code, reason = "tests drive it directly"))]
     async fn run_self_switch_after_sustained_idle<S: MailboxHost>(
         host: &S,
         original_session_id: Uuid,
