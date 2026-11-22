@@ -141,6 +141,10 @@ impl ProductionContextAlertRuntime {
         resolution
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "context-alert notices always carry thresholds"
+    )]
     async fn prepare_attempt_inner(
         &self,
         snapshot: AttemptSnapshot,
@@ -220,10 +224,6 @@ impl ProductionContextAlertRuntime {
         let guard_services = Arc::clone(&self.services);
         let guard_fingerprint = snapshot.fingerprint.clone();
         let guard_target = target.clone();
-        #[allow(
-            clippy::expect_used,
-            reason = "context-alert notices always carry thresholds"
-        )]
         let guard_thresholds = notice
             .thresholds()
             .expect("a context-alert notice always carries thresholds")
