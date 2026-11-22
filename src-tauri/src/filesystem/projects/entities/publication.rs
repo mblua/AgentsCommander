@@ -1,3 +1,8 @@
+//! Small filesystem steps for creating and publishing team and room directories and files.
+//! Covers team config bytes, team and memory directories, conventions, roles, room messaging
+//! dirs and the initial room task, plus link/unlink of an owned team config temporary.
+//! `publish_team_config` runs a caller-given publish closure; it holds no state or types.
+
 use std::io;
 use std::path::Path;
 
