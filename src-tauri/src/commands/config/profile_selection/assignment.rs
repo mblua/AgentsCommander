@@ -1,3 +1,11 @@
+//! Preview and apply commands for a broad-scope coding-agent profile assignment.
+//!
+//! Preview enumerates targets and returns fingerprints; apply re-enumerates under the owned
+//! selection turn, checks the confirmed fingerprint, prevalidates restarts, writes each replica
+//! selection with a per-target CAS, skips locked or invalid ones, then restarts live sessions.
+//! `ProfileAssignmentWrites` carries one apply's outcome. Target walk lives in `target`,
+//! fingerprints in `fingerprint`, and the result/event payload in `publication`.
+
 mod publication;
 
 use std::collections::BTreeSet;

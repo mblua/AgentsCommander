@@ -1,3 +1,11 @@
+//! AC agent discovery: the `discover_ac_agents` Tauri command and its project scan.
+//!
+//! Walks each configured project path (and its non-hidden children) for a Project AC Root and
+//! collects `_agent_*` matrices, room/`wg-*` workgroups with their `__agent_*` replicas,
+//! `_team_*` teams, loops and context-template updates into an `AcDiscoveryResult`.
+//! It also feeds `DiscoveryBranchWatcher` per project and refreshes live coordinator flags.
+//! Per-replica fields live in `replica`, team matching in `teams`; it owns no persisted state.
+
 mod replica;
 mod teams;
 #[cfg(test)]

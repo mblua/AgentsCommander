@@ -1,3 +1,11 @@
+//! Whole-settings writers: `update_settings`, `save_settings_draft` and the snapshot toggle.
+//!
+//! Both writers restore protected fields from live memory (root token, project lists and state,
+//! overlay, rail collapse, terminal snapshots), keep the live agent order, validate and save,
+//! then purge out-of-project sessions, re-register the screenshot hotkey and emit change
+//! events. `set_terminal_snapshots_enabled` is a separate compare-and-set owner.
+//! Narrow single-field setters live in `preferences`; storage lives in `config::settings`.
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager, State};

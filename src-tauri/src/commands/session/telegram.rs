@@ -1,3 +1,9 @@
+//! Telegram bridge attach and intent handling for created and restarted sessions.
+//! Re-attaches a persisted bot, keeps a deferred session's intent when the bot still exists,
+//! or attaches the bot named in the replica's local config.
+//! Owns no state; it updates `telegram_bot_id` on the manager and persists it.
+//! Bridge management lives in `telegram::manager` and `commands::telegram`.
+
 use crate::config::agent_config;
 use crate::config::sessions_persistence::persist_current_state;
 use crate::config::settings::SettingsState;

@@ -1,3 +1,11 @@
+//! Tauri commands to archive, unarchive and list archived projects.
+//!
+//! Archive refuses while any non-root-agent session or pending spawn under the project is
+//! live, then re-checks after the settings write and rolls back if one appeared meanwhile.
+//! Unarchive re-registers the path and reseeds the coding-agent catalog.
+//! The settings mutation and change broadcast live in `project_registry`; path rules live in
+//! `config::projects`. This module keeps no state between calls.
+
 use super::project_registry::{
     broadcast_project_archive_changed, mutate_project_paths_with_settings_path, ArchiveChangeReason,
 };

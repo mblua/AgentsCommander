@@ -1,3 +1,7 @@
+//! Restart agent selection: which agent and spawn recipe a restart launches.
+//! `resolve_restart_selection` uses `matched_selection` and the configured spawn resolver, and
+//! pairs it with the default host shell. Pure over `AppSettings`; owns no state.
+
 use crate::commands::session::agent_command::{matched_selection, MatchedSelection};
 use crate::commands::session::create::launch::resolve_configured_agent_spawn_for_cwd;
 use crate::config::agent_command::AgentSpawnCommand;

@@ -1,3 +1,10 @@
+//! Agent Matrix creation on disk: `create_agent_matrix_on_disk` and
+//! `create_agent_matrix_from_role` build `_agent_<name>/`, write `Role.md` and the local config.
+//! Also holds small helpers: repo dir names from git URLs, team agent matching and
+//! `Role.md` frontmatter parsing.
+//! Layout, naming and role-writing primitives live in `crate::config::entity_creation`
+//! (`matrices`, `names`, `roles`); role templates live in `crate::commands::role_templates`.
+
 pub(crate) use crate::config::entity_creation::matrices::{
     create_agent_matrix_layout, create_agent_replica_layout, default_agent_matrix_config,
 };

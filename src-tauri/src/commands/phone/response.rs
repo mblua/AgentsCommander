@@ -1,3 +1,7 @@
+//! Tauri `AppHandle` adapters for the phone mailbox response observation traits.
+//! They expose the managed `ResponseCloseState` and `SelectionCoordinator`, when present.
+//! Response admission and completion logic lives in `crate::phone::mailbox::response_observation`.
+
 use crate::phone::mailbox::response_observation::{
     ResponseAdmissionState, ResponseCompletionState,
 };

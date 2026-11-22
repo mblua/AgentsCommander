@@ -1,3 +1,11 @@
+//! Room TASK snapshot commands plus the payload and cache types of the discovery poll.
+//!
+//! `task_get_snapshot` and `task_get_snapshot_at` resolve a room from a session or a validated
+//! room root and return its TASK snapshot JSON. `poll_task_snapshot` and `deliver_poll_task`
+//! re-read only when sentinels change and emit only on content change.
+//! Defines `ReplicaBranchEntry`, `DiscoveryBranchPayload` and `TaskUpdatedPayload`, but owns no
+//! live state: the caches sit in `branch_watcher`, and snapshot IO in `entity_creation`.
+
 use super::replica_read::extract_task_first_line;
 pub(crate) use crate::cli::task_ops::{task_sentinels, TaskSentinels};
 use crate::config::settings::SettingsState;

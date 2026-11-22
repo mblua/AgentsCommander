@@ -1,3 +1,8 @@
+//! Windows CWD scan for room-delete diagnostics: finds processes whose current directory
+//! is inside the room being deleted, including the AC process itself.
+//! Reads each process's current directory from its PEB (64-bit and WOW64) via Win32 calls.
+//! It owns no state, and file-handle blockers are found by the `restart_manager` module.
+
 use super::canonicalize_for_compare;
 use super::path_is_under_windows;
 use super::strip_long_prefix_str;

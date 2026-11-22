@@ -1,3 +1,8 @@
+//! Tauri `AppHandle` adapters for the PTY input observation traits of the phone mailbox.
+//! Each method only reads managed app state (sessions, PTY routes, settings, idle detector,
+//! restore/purge guards, message store, selection).
+//! No delivery logic lives here: it is in `crate::phone::mailbox::pty_observation`.
+
 use crate::app_state::RestoreInProgress;
 use crate::config::settings::SettingsState;
 use crate::phone::mailbox::pty_observation::{

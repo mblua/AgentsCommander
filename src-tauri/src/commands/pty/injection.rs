@@ -1,3 +1,8 @@
+//! Tauri `AppHandle` implementation of `InjectionHost` for PTY injection.
+//! It exposes the managed session manager, PTY routes and menu guard, and forwards typing
+//! hold and busy-mark calls to the parent `pty` command module.
+//! The injection logic itself lives in `crate::pty::inject`.
+
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;

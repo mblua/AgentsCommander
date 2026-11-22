@@ -1,3 +1,8 @@
+//! Execution context for a lifecycle-owned restart.
+//! Defines `LifecycleExecutionContext` (external entry or restore entry) and resolves the root
+//! agent directory under the transaction (`ensure_lifecycle_root_directory`).
+//! Owns no state; the restart flow itself is in `restart::execution`.
+
 use super::super::lifecycle::LifecycleEntryAuthority;
 use crate::session::selection::SelectionTransaction;
 

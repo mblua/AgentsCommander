@@ -1,3 +1,9 @@
+//! Builds the result and event payload of one applied profile assignment.
+//!
+//! `assignment_publication` turns `ProfileAssignmentWrites` plus restart outcomes into an
+//! `ApplyCodingAgentProfileSelectionResult` and the `coding_agent_profile_selection_updated`
+//! JSON payload. Pure mapping: no IO, no state; the caller in `assignment` emits it.
+
 use super::super::wire::{
     ApplyCodingAgentProfileSelectionRequest, ApplyCodingAgentProfileSelectionResult, AssignmentMode,
 };
