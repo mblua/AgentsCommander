@@ -361,9 +361,11 @@ export function renderMarkdown(report) {
     out.push(`| ${name} | ${report.tests.filter((row) => row.class === name).length} |`);
   }
   const rows = report.tests.filter((row) => row.class !== 'stable').sort(rowOrder);
-  out.push('', '## Tests', '');
-  out.push('| class | test | suite | platform | executed | fails | flaky SHAs |');
-  out.push('| --- | --- | --- | --- | --- | --- | --- |');
+  out.push(
+    '', '## Tests', '',
+    '| class | test | suite | platform | executed | fails | flaky SHAs |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
+  );
   for (const row of rows.slice(0, MARKDOWN_ROWS)) {
     const fields = [row.class, codeSpan(row.test_id), cell(row.suite), cell(row.platform)];
     fields.push(row.executed, row.fails, row.flaky_shas);
