@@ -2,6 +2,8 @@
 //! `bind_response_close` re-reserves response work for in-flight messages and PTY operations.
 //! Schema setup is in `migration`; delivery and PTY queue logic live in sibling modules.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 #[cfg(test)]
 use super::PtyInputStoreTestFaults;
 use super::{

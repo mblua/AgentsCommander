@@ -4,6 +4,8 @@
 //! Evaluates the purge gate (`PurgeGatePeer`, `PurgeDecision`) and reads BOM-tolerant text.
 //! Most delivery logic lives in sibling modules that extend `MailboxPoller`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::handoff::release_wake_claim;
 use super::notice::{
     canonical_project_refresh_path, project_refresh_priority, ProjectRefreshEventPayload,

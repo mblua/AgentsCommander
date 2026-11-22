@@ -6,6 +6,8 @@
 //! It never spawns `git`: the global sweeper in `pty::git_watcher` polls and this module reads.
 //! Payload types and TASK snapshot logic live in `task_snapshot`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::model::AcWorkgroup;
 use super::replica_read::{normalize_projected_path, projected_path_string};
 use super::task_snapshot::{
@@ -267,6 +269,10 @@ impl DiscoveryBranchWatcher {
                 "[DiscoveryBranchWatcher] thread started, polling every {}s",
                 BRANCH_POLL_INTERVAL.as_secs()
             );
+            #[allow(
+                clippy::expect_used,
+                reason = "existing failure mode: the watcher thread panics if no runtime can be built"
+            )]
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

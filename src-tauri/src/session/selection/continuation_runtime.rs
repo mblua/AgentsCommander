@@ -6,6 +6,8 @@
 //! state. It owns no state of its own. The continuation types, stages and launch live in
 //! `super::replacement` and `continuation_launch`; cleanup lives in `continuation_cleanup`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::sync::{Arc, Mutex};
 
 use crate::pty::manager::PtyManager;
@@ -285,6 +287,10 @@ impl OwnedReplacementContinuation {
         drop(permit);
         let activity = self.retirement_activity()?;
         crate::config::activity_log::append_batch(&activity, &activity_owner);
+        #[allow(
+            clippy::expect_used,
+            reason = "selection start contract binds the lifecycle executor before any job runs"
+        )]
         transaction
             .lifecycle_executor()
             .expect("selection start contract violated: lifecycle executor binding missing")

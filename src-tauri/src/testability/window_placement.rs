@@ -2,6 +2,8 @@
 //! and validate a placement from CLI or env. Only allowed in a testable binary
 //! (`PLACEMENT_REQUIRES_TESTABLE`).
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -80,6 +82,10 @@ fn resolve_from_cli_or_env_for_exe(
         .map(Some);
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "input exists only when the env value exists"
+    )]
     let raw = env_value.expect("env value exists when input exists");
     let parsed: TestWindowPlacement = serde_json::from_str(raw)
         .map_err(|e| format!("invalid_AC_TEST_WINDOW_PLACEMENT_json: {e}"))?;

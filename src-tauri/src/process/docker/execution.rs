@@ -3,6 +3,8 @@
 //! Commands that do not finish in time are retained via `DockerCommandOwnership`.
 //! Ownership and redaction types live in `ownership`; tests can record or script commands.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 #[cfg(test)]

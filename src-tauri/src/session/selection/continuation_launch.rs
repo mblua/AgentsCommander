@@ -6,6 +6,8 @@
 //! state (see `replacement`), nor publish checkpoints, build the carry capability or clean
 //! up pending runtimes (see `continuation_cleanup`).
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;

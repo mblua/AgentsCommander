@@ -3,6 +3,8 @@
 //! Owns per-task ownership states (`ScannerTaskOwnership`), the task cap and abort grace,
 //! and `SnapshotScannerTaskStartControl` for tests that gate task start.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::failure::record_host_ingress_failure;
 use super::task::{SnapshotTask, SnapshotTaskHost};
 use std::collections::HashMap;

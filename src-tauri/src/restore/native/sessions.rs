@@ -4,6 +4,8 @@
 //! Also re-attaches Telegram, collects restart resume targets and restores detached windows.
 //! Root agent restore lives in `roots`; it reuses `restore_detached_session` from here.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::{
     attach_persisted_telegram_if_configured, collect_restart_resume_target, commands,
     restore_session_should_become_active, session_spawn_recipe, session_wake_decision,
@@ -165,6 +167,10 @@ impl RestoreContext {
         };
 
         // Wake: full PTY restore inside the restore transaction.
+        #[allow(
+            clippy::expect_used,
+            reason = "restore binding metadata is validated before spawn"
+        )]
         match commands::session::create_session_inner_for_restore(
             &self.restore_transaction_for_task,
             &self.session_mgr_clone,

@@ -6,6 +6,8 @@
 //! identity before send (`validate_attempt_guard`). It holds only the services handle: latches,
 //! batches and retry timing live in the actor (`actor.rs`); delivery itself is the services'.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::AttemptPreparation;
 use super::AttemptSnapshot;
 use super::ContextAlertRuntime;
@@ -218,6 +220,10 @@ impl ProductionContextAlertRuntime {
         let guard_services = Arc::clone(&self.services);
         let guard_fingerprint = snapshot.fingerprint.clone();
         let guard_target = target.clone();
+        #[allow(
+            clippy::expect_used,
+            reason = "context-alert notices always carry thresholds"
+        )]
         let guard_thresholds = notice
             .thresholds()
             .expect("a context-alert notice always carries thresholds")

@@ -4,6 +4,8 @@
 //! Also logs monitors and applies a Windows-only test window placement.
 //! It does not save geometry; settings loading and migration live in `config::settings`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use crate::config::settings::WindowGeometry;
 use crate::testability::window_placement::TestWindowPlacement;
 use crate::{
@@ -94,6 +96,10 @@ pub(super) fn create_main_window(
     app: SetupApp<'_>,
     test_window_placement: Option<&TestWindowPlacement>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    #[allow(
+        clippy::expect_used,
+        reason = "existing startup failure mode: abort if the embedded app icon fails to load"
+    )]
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../../icons/icon.png"))
         .expect("Failed to load app icon");
 
@@ -126,6 +132,10 @@ pub(super) fn create_main_window(
     );
 
     // Create the unified Main window (replaces sidebar + terminal windows).
+    #[allow(
+        clippy::expect_used,
+        reason = "existing startup failure mode: abort if the main window icon is rejected"
+    )]
     let main_win = WebviewWindowBuilder::new(
         &*app,
         "main",
