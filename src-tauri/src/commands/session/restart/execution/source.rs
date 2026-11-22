@@ -1,3 +1,7 @@
+//! Split of a restart source and request into preparation input and continuation data.
+//! `RestartSource::into_preparation` returns `RestartPreparation` and `RestartContinuation`.
+//! Pure data movement; owns no state and performs no I/O.
+
 use super::{RestartPreparation, RestartSource};
 use crate::config::sessions_persistence::CreationGateEnforcement;
 use crate::session::selection::{RestartJobRequest, TrustedRestartIntent};

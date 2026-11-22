@@ -1,3 +1,8 @@
+//! Test-only seam that forces a create to treat a cwd as a coordinator or a root agent.
+//! Owns one process-wide `FORCED` set of keys; root keys are stored with a `root:` prefix.
+//! `create::core` ORs `forced` and `forced_root` into its real detection.
+//! Compiled only under `#[cfg(test)]`; it changes no production behavior.
+
 use std::collections::HashSet;
 use std::sync::Mutex;
 

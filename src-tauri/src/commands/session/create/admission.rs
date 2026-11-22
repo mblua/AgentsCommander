@@ -1,3 +1,11 @@
+//! Admission state for one session create: target lease, carrier reservation and resources.
+//! Owns `OwnedCreateAdmission`, `OwnedCreateTargetLease`, `CreateResourceAdmission` and the
+//! coordinator marker ticket `CoordinatorCreateTicket`, which restores cleared close markers
+//! when a create fails before any PTY may exist.
+//! Acquires the create publication region (carrier permit plus target and capacity checks) and
+//! seeds coordinator clocks in `note_coordinator_create_on_app`.
+//! It does not spawn or publish; that is `create::core` and `create::publication`.
+
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 #[cfg(test)]
 use crate::commands::session::restore_emit_seam;

@@ -1,3 +1,10 @@
+//! Create-side helpers around destination proof, target lease, samplers and cleanup.
+//! Resolves and proves the create destination, acquires the PTY input target lease, registers
+//! and purges per-session sampler state, and settles the final create result in
+//! `finish_create_core_result` (marker ticket, owned replacement rollback, inline rollback).
+//! Owns no state; `rollback_pre_created_session` only logs, as the ticket or transaction owns
+//! teardown.
+
 use super::admission::{CoordinatorCreateTicket, OwnedCreateAdmission, OwnedCreateTargetLease};
 use super::contracts::CreateCompletion;
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;

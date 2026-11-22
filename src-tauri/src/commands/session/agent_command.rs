@@ -1,3 +1,11 @@
+//! Coding-agent command and selection resolution for session create and restart.
+//! Pure lookups over `AppSettings`: map agent ids to normalized shell commands, labels, profile
+//! cells and descriptors, detect the agent behind a launched shell, and pick what a restart
+//! launches (`matched_selection`, `resolve_restart_selected_agent_id`).
+//! Also holds the small named fresh/resume rules (`mirror_forces_fresh`, `restart_skip_*`).
+//! Owns no state; the only write is `save_last_coding_agent` via `config::agent_config`.
+//! Spawning and argument injection live in `create` and `resume_args`.
+
 use crate::config::agent_config;
 use crate::config::settings::AppSettings;
 use crate::session::session::SessionCommunication;

@@ -1,3 +1,10 @@
+//! Setup helpers for the pending session record of a create.
+//! Defines `CreateInput`, `LaunchState`, `PendingState` and `MetadataInput`, and builds the
+//! create owner, binding, ticket (`reserve_create_ticket`) and `PendingLaunch`.
+//! Writes pending fields (coding-agent binding, trusted spawn, root and fresh designation)
+//! through the carrier permit. Owns no state; the later stages are `context`, `backend` and
+//! `publication`.
+
 use crate::commands::session::create::admission::CreateCapacityContext;
 use crate::commands::session::create::contracts::CreateSelectionIntent;
 use crate::config::settings::SettingsState;

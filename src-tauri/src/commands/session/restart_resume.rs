@@ -1,3 +1,9 @@
+//! Agent-turn stamps and the post-restore resume prompt pass (#1682, #1793).
+//! `record_agent_turn_completed` persists `lastAgentMessageAt` and broadcasts it, behind gates.
+//! `run_restart_resume` waits for restored sessions to reach their prompt and injects the
+//! configured resume prompt once each, failing closed after `RESTART_RESUME_DEADLINE`.
+//! Owns no state; PTY writes go through `pty::inject` and stamps through `config::agent_config`.
+
 use crate::config::agent_config;
 use crate::config::settings::AppSettings;
 use crate::session::manager::SessionManager;

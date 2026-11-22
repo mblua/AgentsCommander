@@ -1,3 +1,10 @@
+//! Lifecycle entry authority for restart and other replace-in-place operations.
+//! Owns `LifecycleEntryAuthority`: the target lease, verified source identity, create-owner
+//! reservation and an optional manual-discard carrier, plus the `interrupted` flag.
+//! Prepares, revalidates and finally retires that protection before teardown, and prepares the
+//! restore variant. It never tears down or creates sessions itself; restart and create use it.
+//! Target-lease acquisition and discard comparison live in the `admission` submodule.
+
 mod admission;
 
 use crate::pty::manager::PtyManager;

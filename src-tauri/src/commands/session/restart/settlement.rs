@@ -1,3 +1,9 @@
+//! Restart settlement: old runtime teardown, replacement finalization and publication.
+//! Tears down the old PTY and resource group, detaches Telegram, releases reader demands,
+//! commits the replacement with the old row removed, and publishes created, destroyed and
+//! selection events. `finalize_failed_restart` removes the old row when the restart fails.
+//! Owns no state; the flow order lives in `restart::execution`.
+
 use super::super::co_managed::raise_room_reader_demand;
 use super::super::create::{purge_session_side_state, CreateCompletion, DeferredCreateOutput};
 use super::super::telegram::{
