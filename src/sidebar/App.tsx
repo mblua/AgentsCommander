@@ -66,6 +66,7 @@ import { workgroupGroupsStore } from "./stores/workgroup-groups";
 import { normalizeProjectPathForCompare } from "./stores/project-refresh";
 import { startTeamIdleWatcher } from "./stores/team-idle-watcher";
 import { primeAudio } from "../shared/sound";
+import { checkAudioSink } from "./audio-sink-warning";
 import { voiceRecorder } from "../shared/voice-recorder";
 import { settingsStore } from "../shared/stores/settings";
 import { railCollapseStore } from "./stores/rail-collapse";
@@ -871,10 +872,9 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     bailIfDisposed();
     await settingsStore.load();
     bailIfDisposed();
-
     primeAudio();
+    void checkAudioSink();
     stopTeamIdleWatcher = startTeamIdleWatcher();
-
     if (
       (!appSettings.agents || appSettings.agents.length === 0) &&
       !appSettings.onboardingDismissed

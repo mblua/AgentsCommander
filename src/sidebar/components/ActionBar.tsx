@@ -8,6 +8,12 @@ import { settingsStore } from "../../shared/stores/settings";
 import { resourceMonitorStore } from "../../shared/stores/resourceMonitor";
 import { setSoundsEnabled } from "../../shared/sound";
 import { isBrowser } from "../../shared/platform";
+import {
+  audioSinkStatus,
+  showAudioSinkToast,
+  soundButtonLabel,
+  soundButtonState,
+} from "../audio-sink-warning";
 import { sidebarCompact } from "../../shared/sidebar-compact";
 import { homeStore } from "../../main/stores/home";
 import { centralViewStore } from "../../main/stores/centralView";
@@ -192,7 +198,10 @@ const ActionBar: Component = () => {
 
   const isSoundsEnabled = (): boolean =>
     settingsStore.current?.soundsEnabled ?? true;
+  const soundState = () =>
+    soundButtonState(!!settingsStore.current, isSoundsEnabled(), audioSinkStatus());
   const handleToggleMute = async () => {
+    if (soundState() === "alert") showAudioSinkToast();
     const previousValue = isSoundsEnabled();
     const newValue = !previousValue;
     setSoundsEnabled(newValue);
@@ -244,7 +253,7 @@ const ActionBar: Component = () => {
 
   const homeLabel = () => (homeStore.visible ? "Hide Home" : "Show Home");
   const browserLabel = () => (centralViewStore.isBrowser ? "Hide web browser" : "Show web browser");
-  const soundsLabel = () => (isSoundsEnabled() ? "Mute all app sounds" : "Unmute app sounds");
+  const soundsLabel = () => soundButtonLabel(soundState());
   return (
     <>
       <div
@@ -384,7 +393,7 @@ const ActionBar: Component = () => {
             aria-pressed={!isSoundsEnabled()}
             data-ac-testid="actionBar.sounds"
             data-ac-role="button"
-            data-ac-state={triState(!settingsStore.current, () => isSoundsEnabled(), ["disabled", "audible", "muted"])}
+            data-ac-state={soundState()}
           >
             {isSoundsEnabled() ? "🔊" : "🔇"}
           </button>

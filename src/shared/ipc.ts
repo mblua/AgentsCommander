@@ -154,17 +154,16 @@ import type {
 } from "./context-history";
 import { createPreflightTestAPI } from "./preflightTestApi";
 import { createTempRoomAPI } from "./temp-rooms";
+import { createAudioSinkAPI } from "./audio-sink";
 import { decodeSessionSelection } from "./session-selection";
 export type { UiTerminalOperation } from "./terminal-viewport";
 export interface SessionRepoInput {
   label: string;
   sourcePath: string;
 }
-
 function createDefaultTransport(): Transport {
   return isTauri ? TauriTransport.create() : new WsTransport();
 }
-
 let defaultTransport: Transport | null = null;
 let testTransport: Transport | null = null;
 
@@ -577,6 +576,7 @@ export function assertCodingAgentMoveOrder(
 /** #3516 - the saved preflight chain test; the same transport serves Tauri and WS. */
 export const PreflightTestAPI = createPreflightTestAPI(transport);
 export const TempRoomAPI = createTempRoomAPI(transport);
+export const AudioSinkAPI = createAudioSinkAPI(transport);
 
 export const SettingsAPI = {
   // #1077: get_settings returns the flattened SettingsSnapshot (AppSettings +
