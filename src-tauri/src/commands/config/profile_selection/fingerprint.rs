@@ -308,7 +308,7 @@ pub(crate) fn source_selection_fingerprint(
 
 /// Prepare a manual setter from a freshly authorized physical source. Publication
 /// remains a separate guarded step so no source IO enters the config layer.
-#[allow(dead_code)] // no caller; deleting it unuses an import outside #3595
+#[allow(dead_code, reason = "no caller; deleting it unuses code outside #3595")]
 pub(crate) async fn prepare_source_profile_override(
     settings: &SettingsState,
     replica_path: &Path,
