@@ -2,6 +2,7 @@
 
 pub mod ac_discovery;
 pub(crate) mod agent_creator;
+pub(crate) mod audio_sink;
 pub(crate) mod co_managed;
 pub(crate) mod codex_resolver;
 pub(crate) mod config;

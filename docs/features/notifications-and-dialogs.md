@@ -94,7 +94,7 @@ Two settings govern every sound AC makes.
 
 `soundsEnabled` is the master switch for all app-emitted sounds, and it is `true` by default. Turn it off and AC makes no sound at all.
 
-You do not have to edit `settings.30.instance.no-git.json` for that one: the sidebar action bar carries a mute button whose tooltip and accessible label follow the current value, reading `Mute all app sounds` while sounds are on and `Unmute app sounds` once they are off. It writes the same setting.
+You do not have to edit `settings.30.instance.no-git.json` for that one: the sidebar action bar carries a mute button whose tooltip and accessible label follow the current value, reading `Mute all app sounds` while sounds are on and `Unmute app sounds` once they are off. On Linux, when sounds are on and the GStreamer element `autoaudiosink` is missing, the button shows a ⚠ badge and reads `Sound alerts cannot play. Click for details and to mute.`; pressing it shows a sticky message with the install commands and mutes. It writes the same setting.
 
 `teamIdleBeepEnabled`, also `true` by default, beeps when a team transitions from busy to all-idle. It is gated by `soundsEnabled`: with the master switch off, this one changes nothing.
 

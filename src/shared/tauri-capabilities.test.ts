@@ -63,13 +63,15 @@ const CREATED_LABELS = [
 const UNGRANTED_LABELS = ["web-browser", "sidebar", "terminal"];
 const NEVER_GRANTED = [w("create"), w("set-title"), w("show"), w("hide"), w("unminimize")];
 
-/** Every production `WebviewWindowBuilder::new(` per file. A new window builder fails this
- *  test until its label is added to CREATED_LABELS or UNGRANTED_LABELS and here. */
+/** Every `WebviewWindowBuilder::new(` per non-test file. A new window builder fails this
+ *  test until its label is added to CREATED_LABELS or UNGRANTED_LABELS and here.
+ *  test_support.rs: the `#[cfg(test)]` mock-runtime "main" webview of mock_ipc_response. */
 const BUILDERS: Record<string, number> = {
   "app_run/setup/geometry.rs": 1,
   "commands/screenshot.rs": 1,
   "commands/web_browser.rs": 1,
   "commands/window.rs": 5,
+  "test_support.rs": 1,
 };
 /** `?window=` routes in src/main.tsx; a new route needs a decision here. */
 const ROUTES = ["terminal", "detached", "resource-monitor", "watchers", "screenshot-overlay",

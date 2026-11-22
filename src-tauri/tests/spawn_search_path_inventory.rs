@@ -105,16 +105,19 @@ enum Reason {
     PosixBaseUtility,
     /// An `open::` call handing a path or URL to the desktop handler.
     DesktopOpener,
+    /// #4843: probes what the app's own processes (WebKitGTK) see, so it keeps
+    /// the app's `PATH`.
+    AppEnvProbe,
 }
 
 use Reason::{
-    ContainerInternal, CoveredBy2589, CoveredByP1, DesktopOpener, Owner, PosixBaseUtility,
-    TestOnly, WindowsOnly,
+    AppEnvProbe, ContainerInternal, CoveredBy2589, CoveredByP1, DesktopOpener, Owner,
+    PosixBaseUtility, TestOnly, WindowsOnly,
 };
 
 const REASON_VOCABULARY: &str = "owner, covered-by-2589, covered-by-p1, container-internal, \
-windows-only, test-only, posix-base-utility, desktop-opener (precedence in that order, \
-test-only first)";
+windows-only, test-only, posix-base-utility, desktop-opener, app-env-probe \
+(precedence in that order, test-only first)";
 
 /// file, total constructor occurrences, covered, and the exempt breakdown.
 /// Sum of `covered` plus every reason count MUST equal `total`.
@@ -127,6 +130,7 @@ type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 // #4752 P02 adds one TestOnly row, for 101 classified rows.
 // #4788 adds two TestOnly rows (lock holder child, wrapper child), for 103
 // classified rows.
+// #4843 adds one AppEnvProbe site to the process.rs row (gst-inspect-1.0 probe).
 const FAKE_SHELL_RS: &str = "src-tauri/src/process/host/login/fake_shell.rs";
 const PROFILE_TESTS_RS: &str = "src-tauri/src/config/profile/tests.rs";
 const LOCK_TESTS_RS: &str = "src-tauri/src/filesystem/single_instance_lock/tests.rs";
@@ -517,9 +521,9 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/process.rs",
-        3,
+        4,
         1,
-        &[(WindowsOnly, 1), (PosixBaseUtility, 1)],
+        &[(WindowsOnly, 1), (PosixBaseUtility, 1), (AppEnvProbe, 1)],
     ),
     (
         "src-tauri/src/process/host/credentials/tests.rs",

@@ -119,8 +119,11 @@ vi.mock("./SettingsModal", () => ({
   default: () => null,
 }));
 
-import { onOpenSettings } from "../../shared/ipc";
+import { onOpenSettings, SettingsAPI } from "../../shared/ipc";
 import { resourceMonitorStore } from "../../shared/stores/resourceMonitor";
+import { setSoundsEnabled } from "../../shared/sound";
+import { toastStore } from "../../shared/stores/toasts";
+import { __setAudioSinkStatusForTests } from "../audio-sink-warning";
 
 import ActionBar, { activeClass, computeResourceBadgeState, triState } from "./ActionBar";
 import { projectStore } from "../stores/project";
@@ -576,6 +579,126 @@ describe("ActionBar toggle button labels (#4693)", () => {
     mockState.settings = { soundsEnabled, themeLight: true, specBoardEnabled: false };
     const { dispose } = renderActionBar();
     expect(labels("actionBar.sounds")).toEqual([expected, expected]);
+    dispose();
+  });
+});
+
+describe("ActionBar sound sink alert (#4843)", () => {
+  const ALERT_LABEL = "Sound alerts cannot play. Click for details and to mute.";
+  const MESSAGE =
+    "Sound alerts cannot play: the GStreamer element autoaudiosink is missing. Install GStreamer good plugins, then restart AgentsCommander:\n" +
+    "- Arch: sudo pacman -S gst-plugins-good\n" +
+    "- Debian/Ubuntu: sudo apt install gstreamer1.0-plugins-good\n" +
+    "- Fedora: sudo dnf install gstreamer1-plugins-good";
+  const soundButton = () =>
+    document.body.querySelector<HTMLButtonElement>('[data-ac-testid="actionBar.sounds"]')!;
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const expectButton = (state: string, label: string) => {
+    const button = soundButton();
+    expect(button.getAttribute("data-ac-state")).toBe(state);
+    expect(button.title).toBe(label);
+    expect(button.getAttribute("aria-label")).toBe(label);
+  };
+  const expectOneSinkToast = () => {
+    expect(toastStore.items).toHaveLength(1);
+    expect(toastStore.items[0]?.tag).toBe("audio-sink-missing");
+    expect(toastStore.items[0]?.kind).toBe("error");
+    expect(toastStore.items[0]?.message).toBe(MESSAGE);
+  };
+
+  afterEach(() => {
+    toastStore.clear();
+    __setAudioSinkStatusForTests("unknown");
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+    mockState.settings = { soundsEnabled: true, themeLight: true, specBoardEnabled: false };
+  });
+
+  it("shows the alert state when sounds are on and the sink is missing", () => {
+    __setAudioSinkStatusForTests("missing");
+    const { dispose } = renderActionBar();
+    expectButton("alert", ALERT_LABEL);
+    expect(soundButton().getAttribute("class")).toBe("toolbar-gear-btn ");
+    expect(soundButton().getAttribute("aria-pressed")).toBe("false");
+    expect(soundButton().textContent).toBe("🔊");
+    dispose();
+  });
+
+  it("follows the sink status without a re-render", () => {
+    const { dispose } = renderActionBar();
+    expectButton("audible", "Mute all app sounds");
+    __setAudioSinkStatusForTests("missing");
+    expectButton("alert", ALERT_LABEL);
+    __setAudioSinkStatusForTests("ok");
+    expectButton("audible", "Mute all app sounds");
+    dispose();
+  });
+
+  it("a click in alert shows the sticky toast before it mutes", async () => {
+    __setAudioSinkStatusForTests("missing");
+    const spy = vi.spyOn(toastStore, "error");
+    const { dispose } = renderActionBar();
+    soundButton().click();
+    await flush();
+    expectOneSinkToast();
+    expect(setSoundsEnabled).toHaveBeenCalledWith(false);
+    expect(SettingsAPI.setSoundsEnabled).toHaveBeenCalledWith(false);
+    expect(spy.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(setSoundsEnabled).mock.invocationCallOrder[0]!,
+    );
+    spy.mockRestore();
+    dispose();
+  });
+
+  it("two clicks in alert keep one toast", async () => {
+    __setAudioSinkStatusForTests("missing");
+    const { dispose } = renderActionBar();
+    soundButton().click();
+    await flush();
+    soundButton().click();
+    await flush();
+    expectOneSinkToast();
+    dispose();
+  });
+
+  it("sounds off with a missing sink stays muted and unmutes without a toast", async () => {
+    mockState.settings = { soundsEnabled: false, themeLight: true, specBoardEnabled: false };
+    __setAudioSinkStatusForTests("missing");
+    const { dispose } = renderActionBar();
+    expectButton("muted", "Unmute app sounds");
+    expect(soundButton().getAttribute("class")).toBe("toolbar-gear-btn active");
+    soundButton().click();
+    await flush();
+    expect(toastStore.items).toHaveLength(0);
+    expect(setSoundsEnabled).toHaveBeenCalledWith(true);
+    dispose();
+  });
+
+  it.each(["ok", "unknown"] as const)("sounds on with sink %s is audible", (sink) => {
+    __setAudioSinkStatusForTests(sink);
+    const { dispose } = renderActionBar();
+    expectButton("audible", "Mute all app sounds");
+    dispose();
+  });
+
+  it("a failed mute save reverts, reports and keeps the sticky toast", async () => {
+    __setAudioSinkStatusForTests("missing");
+    vi.mocked(SettingsAPI.setSoundsEnabled).mockRejectedValueOnce(new Error("boom"));
+    const { dispose } = renderActionBar();
+    soundButton().click();
+    await flush();
+    expect(vi.mocked(setSoundsEnabled).mock.calls).toEqual([[false], [true]]);
+    expect(soundButton().getAttribute("data-ac-state")).toBe("alert");
+    expect(document.body.textContent).toContain("Failed to mute sounds: boom");
+    expectOneSinkToast();
+    dispose();
+  });
+
+  it("settings not loaded is disabled even with a missing sink", () => {
+    mockState.settings = null;
+    __setAudioSinkStatusForTests("missing");
+    const { dispose } = renderActionBar();
+    expect(soundButton().getAttribute("data-ac-state")).toBe("disabled");
     dispose();
   });
 });

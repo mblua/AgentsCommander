@@ -43,3 +43,62 @@ pub fn test_builder_with_owners(owners: crate::app_state::AppOwners) -> TestBuil
 pub fn test_builder_with_owners(owners: crate::app_state::AppOwners) -> TestBuilder {
     crate::commands::session::selection_executor::install(tauri::Builder::default().manage(owners))
 }
+
+/// Invoke type of the Tauri mock runtime (unit tests only).
+#[cfg(test)]
+pub(crate) type MockInvoke = tauri::ipc::Invoke<tauri::test::MockRuntime>;
+
+/// Build a mock app from `builder`, open the `main` webview and send one IPC
+/// request `cmd` with JSON `body` from the local origin (unit tests only).
+#[cfg(test)]
+pub(crate) fn mock_ipc_response(
+    builder: tauri::Builder<tauri::test::MockRuntime>,
+    cmd: &str,
+    body: serde_json::Value,
+) -> Result<tauri::ipc::InvokeResponseBody, serde_json::Value> {
+    let app = builder
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .expect("webview");
+    tauri::test::get_ipc_response(
+        &webview,
+        tauri::webview::InvokeRequest {
+            cmd: cmd.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: LOCAL_IPC_ORIGIN.parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(body),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        },
+    )
+}
+
+/// Send `cmd` through `route`, whose fallback counts its calls and leaves the
+/// invoke unhandled. Returns the IPC response and the fallback count.
+#[cfg(test)]
+pub(crate) fn invoke_counting_fallback<D>(
+    builder: tauri::Builder<tauri::test::MockRuntime>,
+    route: D,
+    cmd: &str,
+    body: serde_json::Value,
+) -> (
+    Result<tauri::ipc::InvokeResponseBody, serde_json::Value>,
+    usize,
+)
+where
+    D: Fn(MockInvoke, &dyn Fn(MockInvoke) -> bool) -> bool + Send + Sync + 'static,
+{
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = std::sync::Arc::new(AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&calls);
+    let fallback = move |_invoke: MockInvoke| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        false
+    };
+    let builder = builder.invoke_handler(move |invoke| route(invoke, &fallback));
+    let response = mock_ipc_response(builder, cmd, body);
+    (response, calls.load(Ordering::SeqCst))
+}

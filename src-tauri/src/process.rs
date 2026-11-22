@@ -80,5 +80,58 @@ pub(crate) async fn hyprctl(args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// #4843 What GStreamer says about `autoaudiosink`, the sink WebKitGTK plays sound through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AudioSinkStatus {
+    Ok,
+    Missing,
+    Unknown,
+}
+
+/// #4843 The GStreamer inspector used to look up `autoaudiosink`.
+const GST_INSPECT: &str = "gst-inspect-1.0";
+
+/// #4843 `gst-inspect-1.0 --exists` exit code: 0 present, 1 missing, anything else unknown.
+fn status_from_exit(code: Option<i32>) -> AudioSinkStatus {
+    match code {
+        Some(0) => AudioSinkStatus::Ok,
+        Some(1) => AudioSinkStatus::Missing,
+        _ => AudioSinkStatus::Unknown,
+    }
+}
+
+/// #4843 `Ok` off Linux; `Unknown` inside an AppImage (its bundled GStreamer may differ).
+pub(crate) async fn audio_sink_status(in_appimage: bool) -> AudioSinkStatus {
+    audio_sink_status_with(in_appimage, std::ffi::OsStr::new(GST_INSPECT)).await
+}
+
+/// #4843 `audio_sink_status` with the inspector as a parameter (tests pass a stub).
+async fn audio_sink_status_with(in_appimage: bool, program: &std::ffi::OsStr) -> AudioSinkStatus {
+    if cfg!(not(target_os = "linux")) {
+        return AudioSinkStatus::Ok;
+    }
+    if in_appimage {
+        return AudioSinkStatus::Unknown;
+    }
+    probe_audio_sink(program).await
+}
+
+/// #4843 Run `<program> --exists autoaudiosink` with the app's own environment (no
+/// login-shell PATH). 5 s timeout, no stdin, output discarded, killed on drop.
+async fn probe_audio_sink(program: &std::ffi::OsStr) -> AudioSinkStatus {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(["--exists", "autoaudiosink"])
+        .stdin(process::Stdio::null())
+        .stdout(process::Stdio::null())
+        .stderr(process::Stdio::null())
+        .kill_on_drop(true);
+    let timeout = std::time::Duration::from_secs(5);
+    match tokio::time::timeout(timeout, cmd.status()).await {
+        Ok(Ok(status)) => status_from_exit(status.code()),
+        _ => AudioSinkStatus::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests;
