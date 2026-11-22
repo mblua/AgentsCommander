@@ -25,7 +25,7 @@ impl ResourceMonitorState {
     }
 
     // P03 wires this additive constructor; old composition remains disabled in P02.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "P03 wires this additive constructor")]
     pub(crate) fn with_spawn_registry_and_diagnostics(
         spawn: Arc<crate::pty::spawn_diagnostics::SpawnRegistry>,
         diagnostics: Arc<crate::cleanup_diagnostics::store::Diagnostics>,

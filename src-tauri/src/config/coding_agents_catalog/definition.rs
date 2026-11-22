@@ -482,7 +482,7 @@ fn populate_catalog_profile_hashes(catalog: &mut CodingAgentCatalogSchema2) {
 
 /// #2893: source-local decoding. Schema1 is a complete base only; project and
 /// personal patches cannot donate commands or inherit another source's fields.
-#[allow(dead_code)] // P02 reader; production activation is a later cut.
+#[allow(dead_code, reason = "P02 reader; production activation is a later cut")]
 pub(crate) fn parse_independent_catalog(
     bytes: &[u8],
     base: bool,
@@ -522,7 +522,7 @@ pub(crate) fn parse_independent_catalog(
     })
 }
 
-#[allow(dead_code)] // P02 reader; production activation is a later cut.
+#[allow(dead_code, reason = "P02 reader; production activation is a later cut")]
 pub(crate) fn independent_catalog_path(
     ac_dir: &Path,
     kind: crate::config::settings::SourceKind,

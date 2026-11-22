@@ -13,13 +13,17 @@ use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager};
 
+#[cfg(test)]
 use crate::capture::catalog::Catalog;
+#[cfg(test)]
 use crate::capture::jev::{ClassifyOutcome, JevSettings};
+#[cfg(test)]
 use crate::capture::secrets;
 use crate::config::co_managed::{self, CoManagedConfig, CoManagedState};
 use crate::config::entity_prefix::ROOM_DIR_PREFIX;
 use crate::config::settings::SettingsState;
 use crate::filesystem::projects::{canonical_project_path, project_path_is_dir};
+#[cfg(test)]
 use crate::network::OutboundNetwork;
 
 /// Canonicalise `room_root` and prove it is a Room of a registered project
@@ -195,7 +199,7 @@ pub async fn co_managed_effective_state<R: tauri::Runtime>(
 /// supervisor calls `capture::jev` directly, never `commands::co_managed`. Registering it
 /// would add `lib.rs` to this phase and
 /// would put a network-calling entry point on the IPC surface with no UI asking for it.
-#[allow(dead_code)] // Test-only helper; --all-targets also compiles the lib without cfg(test).
+#[cfg(test)]
 pub(crate) async fn classify_dry_run(
     catalog: &Catalog,
     text: &str,
