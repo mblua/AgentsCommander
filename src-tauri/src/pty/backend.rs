@@ -216,6 +216,16 @@ impl LaunchWitness {
     }
 }
 
+/// #3317 - what one `kill_observed` call proves about the native child.
+pub(crate) enum NativeExit {
+    /// The child exit was observed during this kill.
+    Observed,
+    /// The retained reaper of this kill; `Ok` once `wait` returned an exit status.
+    Reaping(std::thread::JoinHandle<Result<(), String>>),
+    /// No child exit is known to this call (no instance, no child, or no support).
+    Unobserved,
+}
+
 pub(crate) trait PtyBackend: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
 
@@ -231,6 +241,11 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
     fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), AppError>;
 
     fn kill(&self, id: Uuid) -> Result<(), AppError>;
+
+    /// #3317 - `kill` plus the evidence of this exact call. Default: no evidence.
+    fn kill_observed(&self, id: Uuid) -> Result<NativeExit, AppError> {
+        self.kill(id).map(|()| NativeExit::Unobserved)
+    }
 
     fn has_session(&self, id: Uuid) -> bool;
 

@@ -12,6 +12,7 @@ use crate::resource_monitor::ResourceMonitorState;
 use crate::session::manager::acquire_carrier_mutation_permit;
 use crate::session::manager::SessionManager;
 use crate::session::selection::response_close::ResponseEffectOwner;
+use crate::session::selection::response_close::StopLane;
 use crate::session::selection::SelectionSource;
 use crate::session::selection::SelectionTransaction;
 use crate::session::session::SessionCommunicationKind;
@@ -31,80 +32,6 @@ pub(crate) fn response_effect_owners<R: tauri::Runtime>(
     app.state::<crate::app_state::AppOwners>()
         .response_effects
         .clone()
-}
-
-fn diagnostic_value<T: std::fmt::Display>(value: Option<T>) -> String {
-    value.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
-}
-
-pub(crate) fn log_discard_veto<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    permit: &crate::session::manager::CarrierMutationPermit,
-    id: Uuid,
-) {
-    use crate::config::sessions_persistence::{observe_discard_veto, DiscardVetoReason};
-    // This returns owned data and drops all lower locks before consulting owners.
-    let observations: Vec<crate::config::sessions_persistence::DiscardVetoObservation> =
-        observe_discard_veto(permit, id);
-    let owners = app
-        .try_state::<crate::app_state::AppOwners>()
-        .and_then(|state| state.response_effects.snapshot());
-    let tracker = app.try_state::<crate::pty::manager::ResponseCloseState>();
-    for observed in observations {
-        let mut owner_reason = "owner_unavailable";
-        let mut close_nonce = None;
-        let mut generation = None;
-        let mut recorded_terminal = None;
-        if observed.reason == DiscardVetoReason::ProtectionClosing {
-            let owner = owners.as_ref().and_then(|owners| {
-                owners.iter().find(|owner| {
-                    Some(owner.registration().member.session_id) == observed.protected_session
-                })
-            });
-            if let Some(owner) = owner {
-                let registration = owner.registration();
-                let binding = owner.ticket().committed_binding();
-                let carrier = &registration.carrier;
-                if binding.member == registration.member
-                    && observed.protected_session == Some(carrier.session_id)
-                    && observed.token == Some(binding.member.token)
-                    && observed.token == Some(carrier.token)
-                    && observed.target.as_ref() == Some(&binding.member.target)
-                    && observed.target.as_ref() == Some(&carrier.target)
-                    && observed.protection_nonce == Some(carrier.nonce)
-                    && tracker
-                        .as_ref()
-                        .is_some_and(|t| registration.tracker.same_state(t))
-                {
-                    close_nonce = Some(binding.close_nonce);
-                    generation = Some(binding.member.generation);
-                    recorded_terminal = owner.diagnostic_terminal();
-                    owner_reason = if recorded_terminal.is_some() {
-                        "observed"
-                    } else {
-                        "owner_record_unreadable"
-                    };
-                } else {
-                    owner_reason = "owner_identity_mismatch";
-                }
-            }
-        }
-        log::warn!(
-            target: "agentscommander_lib::response_close_diag",
-            "stage=discard_veto reason={} session={} protected_session={} target={} \
-             phase={} protection_nonce={} epoch={} version={} owner_reason={} \
-             close_nonce={} generation={} recorded_terminal={} owner_nonce={} \
-             previous={} replacement={}",
-            observed.reason.code(), observed.session,
-            diagnostic_value(observed.protected_session),
-            diagnostic_value(observed.target), diagnostic_value(observed.phase),
-            diagnostic_value(observed.protection_nonce),
-            diagnostic_value(observed.epoch), diagnostic_value(observed.version), owner_reason,
-            diagnostic_value(close_nonce), diagnostic_value(generation),
-            diagnostic_value(recorded_terminal), diagnostic_value(observed.owner_nonce),
-            diagnostic_value(observed.previous), diagnostic_value(observed.replacement)
-        );
-    }
 }
 
 pub(crate) async fn response_group_effect(
@@ -393,7 +320,10 @@ pub(crate) async fn execute_response_close_core<R: tauri::Runtime>(
     };
     let kill_result = owner
         .backend()
-        .kill(binding.member.session_id)
+        .kill_observed(binding.member.session_id)
+        .map(|exit| {
+            let _ = owner.record_native_exit(exit);
+        })
         .map_err(|error| error.to_string());
     let kill_error = kill_result.as_ref().err().cloned();
     if owner.complete(kill, kill_result).is_none() {
@@ -444,12 +374,33 @@ async fn settle_evidence_veto<R: tauri::Runtime>(
         .unwrap_or(ResponseCloseDisposition::ReconcilePending)
 }
 
+/// #3317 - the telegram stage outcome plus the stop observation of its bridge tasks.
+pub(crate) struct TelegramDetach {
+    pub(crate) publication: Result<(), String>,
+    pub(crate) stop: Result<Option<tokio::task::JoinHandle<bool>>, ()>,
+}
+
+#[cfg(test)]
 pub(crate) async fn detach_response_close_telegram<R: tauri::Runtime>(
     app: &AppHandle<R>,
     id: Uuid,
 ) -> Result<(), String> {
+    detach_response_close_telegram_observed(app, id)
+        .await
+        .publication
+}
+
+pub(crate) async fn detach_response_close_telegram_observed<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: Uuid,
+) -> TelegramDetach {
+    let Some(telegram) = app.try_state::<TelegramBridgeState>() else {
+        return TelegramDetach {
+            publication: Ok(()),
+            stop: Err(()),
+        };
+    };
     let bridge_shutdown = {
-        let telegram = app.state::<TelegramBridgeState>();
         let mut telegram = telegram.lock().await;
         if telegram.has_bridge(id) {
             telegram
@@ -470,11 +421,19 @@ pub(crate) async fn detach_response_close_telegram<R: tauri::Runtime>(
                     serde_json::json!({ "sessionId": id.to_string() }),
                 )
                 .map_err(|error| error.to_string());
-            shutdown.spawn_wait_or_abort();
-            result
+            TelegramDetach {
+                publication: result,
+                stop: Ok(Some(shutdown.spawn_stop_observation())),
+            }
         }
-        Ok(None) => Ok(()),
-        Err(error) => Err(error),
+        Ok(None) => TelegramDetach {
+            publication: Ok(()),
+            stop: Ok(None),
+        },
+        Err(error) => TelegramDetach {
+            publication: Err(error),
+            stop: Err(()),
+        },
     }
 }
 
@@ -502,31 +461,29 @@ pub(crate) async fn run_response_close_auxiliary<R: tauri::Runtime>(
     let Some(bridge) = owner.start("telegram") else {
         return;
     };
-    let bridge_result = detach_response_close_telegram(transaction.app(), id).await;
-    if let Err(error) = &bridge_result {
+    let detach = detach_response_close_telegram_observed(transaction.app(), id).await;
+    if let Err(error) = &detach.publication {
         log::warn!(
             "[session] telegram detach publication failed session={id} \
              source=ResponseClose: {error}"
         );
     }
-    if owner.complete(bridge, bridge_result).is_none() {
+    let _ = owner.record_task_stop(StopLane::Telegram, detach.stop);
+    if owner.complete(bridge, detach.publication).is_none() {
         return;
     }
 
     let Some(commit) = owner.start("manager") else {
         return;
     };
-    let committed = transaction.commit_response_close_retained(id).await;
-    let committed = match committed {
-        Ok(committed) => {
-            let _ = owner.complete(commit, Ok(()));
-            committed
-        }
+    let committed = match transaction.commit_response_close_retained(id).await {
+        Ok(committed) => committed,
         Err(error) => {
             let _ = owner.complete(commit, Err(error));
             return;
         }
     };
+    let _ = owner.complete(commit, Ok(()));
     let Some(persist) = owner.start("persist") else {
         return;
     };
@@ -547,7 +504,9 @@ pub(crate) async fn run_response_close_auxiliary<R: tauri::Runtime>(
     let Some(readers) = owner.start("readers") else {
         return;
     };
-    crate::commands::telegram::release_all_reader_demands(transaction.app(), id).await;
+    let stop =
+        crate::commands::telegram::release_all_reader_demands_observed(transaction.app(), id).await;
+    let _ = owner.record_task_stop(StopLane::Readers, stop);
     if owner.complete(readers, Ok(())).is_none() {
         return;
     }
