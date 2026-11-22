@@ -3,6 +3,8 @@
 //! Also owns notice retries (`retry_notice`, `NoticeDelivery`) and the inject signal registry
 //! (`register_inject_signal`, `signal_inject`).
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;

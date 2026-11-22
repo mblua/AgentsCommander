@@ -3,6 +3,8 @@
 //! `RetainedProbeOwner` keeps settling after a panic or cancellation.
 //! Outcome types live in `outcome`; native tree proof in `native_proof`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::time::Duration;
 
 use futures::future::{BoxFuture, Shared};
@@ -352,6 +354,10 @@ impl ProbeProcessOwner {
         timeout: Duration,
         cancel: &mut tokio::sync::watch::Receiver<bool>,
     ) -> ProbeWait {
+        #[allow(
+            clippy::expect_used,
+            reason = "wait runs only while the probe child is owned"
+        )]
         let child = self.child.as_mut().expect("probe child owner");
         tokio::select! {
             result = child.wait() => ProbeWait::Exited(result),

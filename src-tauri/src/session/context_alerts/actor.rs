@@ -6,6 +6,8 @@
 //! maintenance and cancels in-flight work on shutdown. It does not resolve policy, build routes
 //! or deliver notices; that goes through the `ContextAlertRuntime` trait (`runtime.rs`).
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::ActorState;
 use super::AlertBatch;
 use super::AlertClock;
@@ -915,6 +917,10 @@ fn ready_attempt_matches(
         // Only a context alert ever reaches this actor, so the invariant
         // is named rather than defaulted: a remote notice must never
         // silently count as "no thresholds crossed".
+        #[allow(
+            clippy::expect_used,
+            reason = "only context-alert attempts reach this actor; they carry thresholds"
+        )]
         let attempt_thresholds = attempt
             .thresholds()
             .expect("a context-alert attempt always carries thresholds");

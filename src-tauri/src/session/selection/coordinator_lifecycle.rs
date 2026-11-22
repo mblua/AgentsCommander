@@ -7,6 +7,8 @@
 //! `finish_lifecycle_entry`, and sealing and inspecting retained entries at shutdown.
 //! Other submitters live in `coordinator_requests`; worker start in `coordinator_runtime`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};

@@ -6,6 +6,8 @@
 //! state. It owns no state of its own. The continuation types, stages and launch live in
 //! `super::replacement` and `continuation_launch`; cleanup lives in `continuation_cleanup`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::sync::{Arc, Mutex};
 
 use crate::pty::manager::PtyManager;
@@ -197,6 +199,10 @@ impl OwnedReplacementContinuation {
         true
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "selection start contract binds the lifecycle executor before any job runs"
+    )]
     async fn retire_previous<C: SelectionContext>(
         &self,
         transaction: &SelectionTransaction<C>,

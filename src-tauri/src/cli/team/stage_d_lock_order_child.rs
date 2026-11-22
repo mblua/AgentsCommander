@@ -3,6 +3,7 @@
 //! the reached/release marker barrier plus the owned workgroup fixture a child runs against.
 //! It does not spawn children or assert on ordering; the Stage E parent tests do that.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 #![cfg(test)]
 
 use std::path::PathBuf;

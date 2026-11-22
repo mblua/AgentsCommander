@@ -6,6 +6,8 @@
 //! owned finalizers are left retained. Job bodies live in `execute`, the lifecycle
 //! executor and the host; post-join cleanup lives in `shutdown_cleanup`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -27,6 +29,11 @@ use super::replacement_fixture::{
     ReplacementFixtureControl, ReplacementFixtureCut, ReplacementFixtureEnvelopeTrace,
 };
 
+#[allow(
+    clippy::expect_used,
+    reason = "selection start contract binds the lifecycle executor \
+              before any job runs"
+)]
 impl<C: SelectionContext> SelectionTransaction<C> {
     pub(super) async fn worker_loop(
         host: C::Host,

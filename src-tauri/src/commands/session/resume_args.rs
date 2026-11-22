@@ -5,6 +5,8 @@
 //! Owns no state; Claude `--continue` and `--session-id` injection lives in
 //! `create::core::context`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::agent_command::executable_basename;
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::pty::backend::SessionBackendKind;
@@ -525,6 +527,10 @@ fn expand_powershell_env_refs(buf: &str) -> String {
             }
         }
         // Default: copy one full UTF-8 char.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "i < buf.len() on a char boundary, so one char remains"
+        )]
         let ch = buf[i..].chars().next().unwrap();
         out.push(ch);
         i += ch.len_utf8();

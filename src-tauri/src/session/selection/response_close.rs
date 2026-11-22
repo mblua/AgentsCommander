@@ -5,6 +5,8 @@
 //! stops, and answer `discard_quiescence` with a `DiscardHold` reason. It never blocks
 //! and runs no close itself; the close flow lives in `commands::session::destroy`.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use crate::resource_monitor::registry::termination::CleanupFailure;
 use std::sync::atomic::Ordering;
 

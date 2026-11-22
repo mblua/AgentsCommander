@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::env;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};

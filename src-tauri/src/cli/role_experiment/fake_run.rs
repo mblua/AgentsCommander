@@ -3,6 +3,8 @@
 //! run, attempts and report artifacts. Also holds the shared experiment validation pass.
 //! It runs no real PTY or provider; real execution is not implemented here.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::arguments::RunArgs;
 use super::artifacts::AttemptArtifact;
 use super::artifacts::AttemptExecutionResult;
@@ -238,6 +240,10 @@ fn prepare_execution_plan(
     }
     let suite = parse_prompt_suite(Path::new(&args.prompt_suite))?;
     let (run_id, run_dir) = if args.resume_run {
+        #[allow(
+            clippy::expect_used,
+            reason = "resume_run args are validated to carry a run id"
+        )]
         let run_id = args.run_id.clone().expect("validated run id");
         validate_run_id(&run_id)?;
         let dir = run_dir(&loaded, &run_id);

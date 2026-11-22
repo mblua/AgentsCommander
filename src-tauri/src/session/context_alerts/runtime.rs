@@ -6,6 +6,8 @@
 //! identity before send (`validate_attempt_guard`). It holds only the services handle: latches,
 //! batches and retry timing live in the actor (`actor.rs`); delivery itself is the services'.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::AttemptPreparation;
 use super::AttemptSnapshot;
 use super::ContextAlertRuntime;
@@ -139,6 +141,10 @@ impl ProductionContextAlertRuntime {
         resolution
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "context-alert notices always carry thresholds"
+    )]
     async fn prepare_attempt_inner(
         &self,
         snapshot: AttemptSnapshot,

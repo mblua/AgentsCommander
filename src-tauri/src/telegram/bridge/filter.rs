@@ -4,6 +4,8 @@
 //! `ClaudeCodeFilter` by default and `AgyFilter` for Antigravity, chosen by `filter_for_agent`.
 //! It does not send messages; the bridge does that with the returned lines.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use crate::session::profile::CodingAgentKind;
 use std::collections::HashSet;
 use tokio::time::Duration;
@@ -349,6 +351,7 @@ impl AgentFilter for AgyFilter {
         }
 
         // Bare single non-alphanumeric glyph (loose `●` / `○` decoration).
+        #[allow(clippy::unwrap_used, reason = "count() == 1 guarantees a first char")]
         if trimmed.chars().count() == 1 && !trimmed.chars().next().unwrap().is_alphanumeric() {
             return false;
         }
