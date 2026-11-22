@@ -1,3 +1,8 @@
+//! Thread-local override of the journal directory for the current thread.
+//! `set` installs a directory and returns a `Guard` that restores the previous one on drop;
+//! `current` reads the active override, if any.
+//! Owns only the per-thread `DIR` cell; it reads and writes no files.
+
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 

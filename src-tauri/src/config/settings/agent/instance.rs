@@ -1,3 +1,9 @@
+//! The agents file `agents.30.instance.no-git.json` beside `settings.json` (#2716 B3).
+//! Owns reading and decoding it, merging its `agents` and `codingAgentProfiles` groups into the
+//! load base, the atomic write, the one-shot export from `settings.json`, and the agents half of
+//! a save in `save_agents_instance_file`.
+//! Readability state lives in `layer`; overlay and profile comparison rules live in `overlay`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use crate::filesystem::settings_sources;

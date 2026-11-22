@@ -1,3 +1,10 @@
+//! Owner-side authority for reading and saving agent files under the settings owner.
+//! Owns `BoundedSourceObservation`, the `AgentFileAuthority` capture and recheck of the source
+//! context, `SettingsOwner::read_agent_files`, and `CatalogSourceOperationGuard`, the proof a
+//! personal catalog save runs under.
+//! It never builds an adoptable `AppSettings` projection; edits are prepared in `edit` and the
+//! catalog bytes are published by `crate::config::coding_agents_catalog`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::super::super::{

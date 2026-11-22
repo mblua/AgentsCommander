@@ -1,3 +1,7 @@
+//! `MessageStore` lifecycle: `open`, `at_config_dir`, `path` and response-close binding.
+//! `bind_response_close` re-reserves response work for in-flight messages and PTY operations.
+//! Schema setup is in `migration`; delivery and PTY queue logic live in sibling modules.
+
 #[cfg(test)]
 use super::PtyInputStoreTestFaults;
 use super::{

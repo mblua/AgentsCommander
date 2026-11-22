@@ -1,3 +1,8 @@
+//! Verification of the original evidence stored with a source inventory.
+//! Validates that a `SourceLocalInventory` matches its recorded topology and digest, rebuilds a
+//! `SourceInventoryProof` on resume, and checks discovery and classification against it.
+//! Holds no state and writes nothing; capture lives in `source/inventory.rs`.
+
 use super::super::IdentityReferenceError;
 use super::super::IdentityReferencePhysicalState;
 use super::coordination::SourceDiscoveryWitness;

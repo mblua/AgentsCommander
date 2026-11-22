@@ -1,3 +1,8 @@
+//! Log-only heuristic warning for a config-seed destination and the agent's config-dir env.
+//! Warns when that env (`CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `OPENCODE_CONFIG_DIR`) is unset,
+//! names another folder, or names the same folder (the seed then overwrites the active dir).
+//! Compares folder names only; it never inspects the filesystem and never blocks a launch.
+
 use std::collections::BTreeMap;
 use std::path::Path;
 

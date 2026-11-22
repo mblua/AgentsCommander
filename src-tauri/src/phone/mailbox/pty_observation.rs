@@ -1,3 +1,8 @@
+//! PTY observation traits used by mailbox delivery to read host state.
+//! `PtyAuthorityState` exposes sessions, PTY routes and settings.
+//! `PtyTargetState`, `PtyReadinessState` and `WakeDeliveryState` add idle, menu and store access.
+//! Traits only; the host types implement them elsewhere.
+
 use crate::app_state::RestoreInProgress;
 use crate::config::settings::SettingsState;
 use crate::pty::idle_detector::IdleDetector;

@@ -1,3 +1,10 @@
+//! Windows `PlatformProcessTreeBackend`: process tree walk, identity, memory and termination.
+//! Uses ToolHelp snapshots and Win32 process APIs; `build_observed_tree` walks from the root and
+//! drops its subtree when the root identity cannot be proven (PID reuse guard).
+//! `observe_identity` is corpse-aware for kill paths; `observe_identity_queryable` serves the walk.
+//! `terminate_with_calls` runs termination through the `TerminationCalls` port, with optional
+//! cleanup diagnostics evidence. `OwnedHandle` closes each Win32 handle on drop.
+
 use crate::cleanup_diagnostics::{operation::Operation, schema};
 use crate::resource_monitor::registry::{
     termination::DiagnosticTerminationError, validate_diagnostic_row,

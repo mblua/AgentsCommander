@@ -1,3 +1,7 @@
+//! Test window placement: `TestWindowPlacement` and `resolve_from_cli_or_env`, which read
+//! and validate a placement from CLI or env. Only allowed in a testable binary
+//! (`PLACEMENT_REQUIRES_TESTABLE`).
+
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

@@ -282,10 +282,6 @@ pub(crate) fn render_agent_context_template_inner(
         )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "default render takes the same context inputs as the template path"
-)]
 pub(crate) fn render_default_agent_context(
     agent_root: &str,
     matrix_root: Option<&str>,

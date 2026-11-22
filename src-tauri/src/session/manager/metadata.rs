@@ -18,10 +18,6 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "agent-kind set takes permit, id and kind; kept for family parity"
-    )]
     pub(crate) async fn set_agent_kind_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -51,10 +47,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pending agent-kind set takes permit, binding, kind; parity"
-    )]
     pub(crate) async fn set_pending_agent_kind_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -85,10 +77,6 @@ impl SessionManager {
         .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pending trusted-spawn set takes permit, binding, flag; parity"
-    )]
     pub(crate) async fn set_pending_trusted_configured_spawn_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -241,10 +229,6 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "projects-dir set takes permit, id and path; family parity"
-    )]
     pub(crate) async fn set_resolved_claude_projects_dir_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -278,10 +262,6 @@ impl SessionManager {
         .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pending projects-dir set takes permit, binding, path; parity"
-    )]
     pub(crate) async fn set_pending_resolved_claude_projects_dir_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -344,10 +324,6 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "telegram bot set takes permit, id and bot id; family parity"
-    )]
     pub(crate) async fn set_telegram_bot_id_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -384,10 +360,6 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "detached flag set takes permit, id and value; family parity"
-    )]
     pub(crate) async fn set_was_detached_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -427,10 +399,6 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "shell-args set takes permit, id and args; family parity"
-    )]
     pub(crate) async fn set_effective_shell_args_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -460,10 +428,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pending shell-args set takes permit, binding, args; parity"
-    )]
     pub(crate) async fn set_pending_effective_shell_args_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -484,10 +448,6 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "git-repos set takes permit, id and repos; family parity"
-    )]
     pub(crate) async fn set_git_repos_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -519,10 +479,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "generation-checked repos set: permit, id, repos, gen; parity"
-    )]
     pub(crate) async fn set_git_repos_if_gen_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -560,10 +516,6 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "coordinator flag set takes permit, id and value; parity"
-    )]
     pub(crate) async fn set_is_coordinator_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -591,10 +543,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "coordinator refresh takes permit and teams; family parity"
-    )]
     pub(crate) async fn refresh_coordinator_flags_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -630,10 +578,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "bulk repos refresh takes permit and updates; family parity"
-    )]
     pub(crate) async fn refresh_git_repos_for_sessions_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,

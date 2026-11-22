@@ -13,7 +13,10 @@ pub mod profile;
 pub(crate) mod purge_guard;
 pub(crate) mod remote_alerts;
 pub mod selection;
-#[allow(clippy::module_inception)]
+#[allow(
+    clippy::module_inception,
+    reason = "session::session is the existing public path of the Session type"
+)]
 pub mod session;
 pub(crate) mod status;
 pub(crate) mod warnings;

@@ -1,3 +1,9 @@
+//! Agent identity for profiles (#2450) and the physical identity carrier.
+//! Owns `agent_profile_identity`, orphan adoption in `adopt_orphaned_profiles`, the
+//! `coding_agent_identity_physical` carrier and its refresh under a held lock, the canonical
+//! identity projection hash and bootstrap revisions, and `write_identity_rows` on save.
+//! It does not repair profile cells; that is `repair_coding_agent_profiles_config` in the parent.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::super::super::{

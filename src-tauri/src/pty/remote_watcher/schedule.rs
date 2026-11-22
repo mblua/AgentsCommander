@@ -1,3 +1,7 @@
+//! Scheduling math for the remote watcher: interval clamping, due checks, the CI base interval,
+//! per-key per-axis failure backoff and jitter. Pure functions over `Instant` and `Duration`.
+//! It owns no state and does NOT keep the next-due times; the sweeper state does.
+
 use std::time::{Duration, Instant};
 
 use super::{

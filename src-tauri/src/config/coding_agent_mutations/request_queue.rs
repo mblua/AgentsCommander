@@ -1,3 +1,9 @@
+//! File queue for coding-agent mutation requests sent from the CLI to the running app.
+//! Writes requests and results atomically, lists pending requests, and handles expiry.
+//! `process_coding_agent_request` claims one request, applies it and writes its result.
+//! Owns the request/result wire types and dir names; applying ops lives in `agent_op`.
+//! Raw file IO lives in `crate::filesystem::coding_agent_requests`.
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};

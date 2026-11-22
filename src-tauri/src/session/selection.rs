@@ -1,3 +1,8 @@
+//! Session selection and lifecycle coordination: the `SelectionCoordinator`, host and
+//! effect traits (`SelectionHost`, `SelectionEvents`, `LifecycleExecutor`), response-close
+//! registrations, and session-communication events. Admission, authority, payload,
+//! replacement and seal logic live in the `selection/` submodules.
+
 use shutdown_cleanup::{
     begin_container_shutdown, cleanup_pending_creates_after_join, remove_critical_key,
     seal_and_drain_container_shutdown_work_after_join,

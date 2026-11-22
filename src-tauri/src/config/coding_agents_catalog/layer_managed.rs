@@ -1,3 +1,9 @@
+//! Building blocks of the managed catalog base: constants, content hash and strict JSON.
+//! Defines file names, report codes and the managed marker; builds managed base bytes and
+//! the `managed_content_sha256` revision of the shipped definitions.
+//! Holds `parse_strict_json` (rejects duplicate members) and the `LocalFieldPatch` type.
+//! It writes no files; publishing lives in `publication`, migration in `migration`.
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

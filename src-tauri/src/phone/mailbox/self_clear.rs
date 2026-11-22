@@ -1,3 +1,8 @@
+//! Plain self-clear requests: the `Request` and its on-disk `Receipt`, caller validation
+//! (`validate_caller`) and the `accept` flow driven through injected `Callbacks`.
+//! Defines `PLAIN_SELF_CLEAR_ACTION`, `Prepared`, `PlainError` and the `Driver` future type.
+//! Lease and reservation types come from `crate::session::maintenance`; it does no PTY work itself.
+
 use crate::session::maintenance::{Lease, PendingSelfClear, PlainIdentity, PlainReservation};
 use serde::{Deserialize, Serialize};
 use std::future::Future;

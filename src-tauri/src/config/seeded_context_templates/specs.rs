@@ -1,3 +1,9 @@
+//! Static specs for every seeded context template: `project_specs`, `platform_specs`
+//! and `root_spec`, plus filename lookups that decide which templates are actionable.
+//! Also holds the exact-match recognizers for known generated content per template.
+//! Owns only constant data; it reads and writes no files.
+//! Sync, state and retirement logic live in `sync.rs`, `state.rs` and `retire.rs`.
+
 use super::{
     SeededContextTemplateSpec, COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE,
     COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME,

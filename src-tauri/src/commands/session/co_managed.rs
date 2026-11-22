@@ -1,3 +1,10 @@
+//! SCC-side gathering for the Co-managed predicates and the Room reader demand (#2232).
+//! Collects session, settings, orchestrator and reader-kind inputs (`CoManagedInputs`) and calls
+//! the leaf `config::co_managed` for `effective_state` and `capturable`.
+//! Raises and releases the Room reader demand, and implements `ReaderDemandHost` for `AppHandle`.
+//! Owns no state of its own; the on-disk contract lives in `config::co_managed`, the Tauri
+//! wrappers in `commands::co_managed`, and reader supervision in `commands::telegram`.
+
 #[cfg(test)]
 use crate::commands::session::room_raise_seam;
 use crate::config::co_managed::CoManagedState;

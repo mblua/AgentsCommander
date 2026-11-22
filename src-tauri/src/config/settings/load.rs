@@ -1,3 +1,9 @@
+//! Settings loading: parse, compose layers and run startup migrations.
+//! Owns `compose_settings_parts` (project projection, agents file, overlay, decode with base
+//! fallback), `load_settings` with its root-token and migration save, the #248 and window
+//! migrations, and read-only probes such as `read_log_level_only`.
+//! Source capture, CLI loaders, backups and validation live in submodules; writing lives in `save`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::project_path as projects;

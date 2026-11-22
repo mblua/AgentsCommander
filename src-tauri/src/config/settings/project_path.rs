@@ -153,7 +153,7 @@ pub(crate) const OVERLAY_KEY_MAIN_DISPLAY_STATE: &str = "mainWindowDisplayState"
 pub(crate) const OVERLAY_KEY_MAIN_ZOOM: &str = "mainZoom";
 pub(crate) const OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE: &str = "restoreCoordinatorWakeState";
 // Read only from test code: the suppressions name the five constants individually.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code, reason = "read only from test code"))]
 pub(crate) const OVERLAY_MIGRATION_DESTINATION_KEYS: &[&str] = &[
     OVERLAY_KEY_AGENTS,
     OVERLAY_KEY_MAIN_ALWAYS_ON_TOP,

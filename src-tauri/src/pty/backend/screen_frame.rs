@@ -1,3 +1,7 @@
+//! Screen-frame types for `PtyBackend::screen_rows_since`. Defines `FrameStamp`,
+//! `ScreenFrame` and `ScreenRowsSince`, plus the default mapping from `ScreenRowsRead`.
+//! It owns no parser state and never changes `output_sequence`; backends read the screen.
+
 /// Identifies one frame of one session's screen mirror.
 ///
 /// **The size is part of the stamp on purpose.** `resize_screen_and_broadcast` reflows the

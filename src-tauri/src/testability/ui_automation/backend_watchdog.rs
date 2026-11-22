@@ -1,3 +1,9 @@
+//! Backend UI automation requests that need no webview: the resource monitor watchdog
+//! (`BackendWatchdogMode`: sample, warn, killGroup, tick, quarantineRetry) and window
+//! snapshots, routed by `handle_backend_request`.
+//! `BackendWatchdogHost` gives access to the `ResourceMonitorState` and the
+//! `SelectionCoordinator`, so tests can supply their own host.
+
 use super::{
     UiAutomationAction, UiAutomationRequest, UiAutomationResponse,
     RESOURCE_WATCHDOG_BACKEND_SELECTOR, WINDOW_SNAPSHOT_BACKEND_SELECTOR,

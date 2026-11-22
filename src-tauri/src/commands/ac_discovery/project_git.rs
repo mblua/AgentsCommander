@@ -1,3 +1,10 @@
+//! Read-only Git queries for discovery: replica branch and project file difference.
+//!
+//! `get_project_file_difference` counts distinct paths in the Project's own repository that
+//! differ from cached `origin/main`, untracked files included, under one 5s bound. A nested
+//! project or any failed read yields `None`, never zero. It holds no state.
+//! Spawning `git` lives in `process::git::read`; ongoing branch polling is in `branch_watcher`.
+
 use crate::config::ac_root::existing_ac_root;
 use serde::Serialize;
 use std::path::{Path, PathBuf};

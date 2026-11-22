@@ -1,3 +1,9 @@
+//! CLI settings loaders, which never write `settings.json`.
+//! Owns `load_settings_for_cli`, which falls back to defaults, and
+//! `load_settings_for_cli_strict`, which refuses an unparseable file. Both mirror the GUI
+//! loader's in-memory migrations.
+//! Neither generates a `root_token` nor saves; the GUI path `load_settings` does that.
+
 use super::{
     adopt_orphaned_profiles, apply_issue_248_migration, capture_project_settings, default_zoom,
     refresh_pair_id_hashes, repair_coding_agent_profiles_config, settings_path,

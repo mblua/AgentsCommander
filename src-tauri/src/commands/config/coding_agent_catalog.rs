@@ -1,3 +1,11 @@
+//! Tauri commands over the persisted coding-agent catalog: read, welcome status, install, reseed.
+//!
+//! Reads resolve the primary project's `.ac/coding-agents` catalog (or the legacy config dir)
+//! from one settings snapshot taken before any filesystem work, and never substitute the
+//! embedded default. `install_coding_agent` only spawns the host install command.
+//! Catalog parsing, seeding and reseed live in `config::coding_agents_catalog`; installs run
+//! in `agent_update`. This module holds no state.
+
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
 

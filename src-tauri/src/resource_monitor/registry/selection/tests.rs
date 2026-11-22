@@ -211,10 +211,6 @@ impl Fixture {
             .publish_arm_metadata(reservation, self.binding())
             .unwrap();
     }
-    #[allow(
-        clippy::result_large_err,
-        reason = "test helper returns the real kill_group_diagnostic error unchanged"
-    )]
     fn run(&self) -> Result<crate::resource_monitor::types::ResourceKillResult, CleanupFailure> {
         self.monitor
             .kill_group_diagnostic(self.id, ResourceKillReason::User)

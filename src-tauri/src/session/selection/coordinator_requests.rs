@@ -1,3 +1,11 @@
+//! Public and crate-level request entry points of `SelectionCoordinator` that enqueue a
+//! `CoordinatorEnvelope`: resource kill, detach/attach, snapshot, create reservations,
+//! restore barrier, route loss, watchdog kill, background destroy, and `close_and_join`.
+//!
+//! Holds no state; it reserves admission and queue slots on `CoordinatorInner` and awaits
+//! the reply. Jobs run in the worker (`worker`, `execute`); construction and retained-entry
+//! bookkeeping live in `coordinator_lifecycle`.
+
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

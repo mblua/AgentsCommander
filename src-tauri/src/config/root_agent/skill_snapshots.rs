@@ -1,3 +1,8 @@
+//! Frozen byte-exact snapshots of older default Root skill files.
+//! They let a pristine older `SKILL.md` on disk be recognized and repaired; never edit them.
+//! Also has test-only accessors for the default skill table.
+//! It does no file IO; the skill provisioning lives in `provisioning`.
+
 #[cfg(test)]
 use super::DEFAULT_ROOT_SKILLS;
 

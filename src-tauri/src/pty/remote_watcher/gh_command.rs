@@ -1,3 +1,8 @@
+//! Builds the `gh` command spec for each remote-watcher query (`GhQuery`). This is the only
+//! place a `gh` argument string is built, and it validates the repo `nwo` and 40-char SHAs first,
+//! so bad input gives `Err` and no spec.
+//! It does NOT spawn `gh`; `query` runs the spec it returns.
+
 use std::path::Path;
 
 #[cfg(windows)]

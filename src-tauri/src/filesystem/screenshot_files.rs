@@ -1,3 +1,7 @@
+//! Screenshot files: creating the screenshots directory, creating PNG files,
+//! validating saved screenshots, bounded reads of portal screenshots and removing
+//! partial files. Does not capture the screen.
+
 #![cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 
 use std::path::{Path, PathBuf};

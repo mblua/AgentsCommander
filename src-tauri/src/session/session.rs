@@ -1,3 +1,8 @@
+//! Session records: the live `Session`, its serializable `SessionInfo` view, repos
+//! (`SessionRepo`) and communication data (`SessionCommunication`). Also helpers for
+//! working state (`is_working`), workgroup `TASK.md` lookup by cwd and Claude cwd mangling.
+//! It does not spawn or manage PTYs.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

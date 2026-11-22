@@ -1,3 +1,9 @@
+//! Cross-process settings file lock and its DEBUG diagnostics.
+//! `SettingsFileLock` opens and verifies a lock sidecar beside the settings file, retries until
+//! a deadline, and unlocks on drop. Lock phases go to a bounded channel and one worker thread
+//! logs them, so a lock holder never waits on logging.
+//! Does not read or write settings content; writers live in `save.rs` and `save/value.rs`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::{

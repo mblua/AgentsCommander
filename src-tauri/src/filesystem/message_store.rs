@@ -1,3 +1,8 @@
+//! Filesystem safety for the message store: creating and verifying the message
+//! directory, checking the SQLite file and its `-wal`, `-shm` and `-journal` sidecars
+//! are regular files, and taking stripe locks (`MessageStripeLease`). Errors are
+//! `MessagePathError`. Does not open or query the database.
+
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 

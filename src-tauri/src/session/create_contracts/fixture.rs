@@ -1,3 +1,9 @@
+//! Test-only fixture types for owned replacement creates.
+//!
+//! Defines the inputs, results and PTY-input lock leases (`FixturePtyCutLease`) that tests
+//! pass across the create cut. Leases are never stored in the retained operation record.
+//! No create logic runs here; the contracts live in the parent `create_contracts` module.
+
 use super::{OwnedReplacementCreateRequest, OwnedReplacementCreateStep};
 use std::sync::Arc;
 

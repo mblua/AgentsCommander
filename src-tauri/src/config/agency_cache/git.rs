@@ -1,3 +1,9 @@
+//! Git operations for the Agency templates cache: resolve a ref to a commit and fetch it.
+//! `resolve_commit_with_git` runs `git ls-remote`; `fetch_repo_with_git` makes a temp download
+//! dir, then does a shallow fetch and detached checkout of one commit.
+//! Owns only the per-step timeouts; running git lives in `crate::process::git::cache`.
+//! The parent `agency_cache` module decides when to fetch and uses the returned temp dir.
+
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::Duration;

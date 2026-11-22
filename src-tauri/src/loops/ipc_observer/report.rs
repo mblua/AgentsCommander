@@ -1,3 +1,8 @@
+//! Pure log-block builders for the IPC observer's silence and black-box reports.
+//! Builds `record_block`, `marker_only_block`, `silence_block` and `summary_line` text from
+//! `BlackBoxRecord`, `FreezeMarker`, `TickSnapshot` and `Verdict` values.
+//! Wraps lines at `MAX_LOG_LINE` and repeats `COVERAGE_LINE`; it writes no logs itself.
+
 use chrono::{Local, TimeZone};
 
 use super::observation::{BlackBoxRecord, FreezeMarker, TickSnapshot, Verdict, LOOP_OUTLIVED_MS};

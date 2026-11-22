@@ -1,3 +1,9 @@
+//! The `delete_workgroup` Tauri command: deletes one room directory after safety checks.
+//! Checks link/reparse roots, live sessions and dirty repos, then renames and removes the room
+//! under the project gate (`gated_workgroup_delete_with`) and prunes its config scope.
+//! A blocked rename runs the diagnostic in `crate::commands::wg_delete_diagnostic`.
+//! The rename/remove primitives live in `crate::config::entity_creation::directories`.
+
 use super::delete_guard::{
     ensure_no_live_sessions_under_manager, validate_delete_root_not_link_or_reparse,
 };

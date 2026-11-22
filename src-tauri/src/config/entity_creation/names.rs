@@ -1,3 +1,9 @@
+//! Name and reference rules for creating teams and other entities.
+//! `sanitize_name` and `validate_existing_name` keep names to safe path parts;
+//! `resolve_agent_ref` turns an agent ref into a checked `_agent_<name>` matrix ref.
+//! Also holds team config wire types and context-alert percentage checks.
+//! It creates no directories; creation lives in sibling modules such as `teams`.
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 

@@ -1,3 +1,9 @@
+//! Frozen byte-exact snapshots of older global and coordinator context templates.
+//! They let a pristine older `Context.AgentsCommander.md` or `Context.coordinator.md` be
+//! recognized for auto-update and for standalone retirement; never edit them.
+//! It holds only constants; recognition and seeding logic live in the parent
+//! `seeded_context_templates` module.
+
 pub(crate) const OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND: &str =
     "You are the coordinator for your \
     team. You must:\n\

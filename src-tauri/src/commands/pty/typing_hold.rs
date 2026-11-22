@@ -1,3 +1,9 @@
+//! Typing-hold glue (#2336): records qualifying keystrokes and answers whether a peer wake
+//! must wait because the user is typing.
+//! Reads the hold window from settings on each check and tracks held wake message IDs, also
+//! publishing hold changes to the response close-hold publisher.
+//! The hold state itself is `crate::pty::input_activity::TypingHoldState`.
+
 use super::response_close_hold_publisher;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};

@@ -1,3 +1,8 @@
+//! Last step of a terminal snapshot: re-verify the requester and the selected session before
+//! the deadline, then build the API or host response, or publish a failure. Holds no long-lived
+//! state beyond `TerminalSnapshotFinalization` controls. First proof and target selection are
+//! done in `authority.rs`.
+
 use super::{
     augment_coordinator_project, same_authority, PreparedSnapshotPayload, RequesterProof,
     RequesterSnapshotPermit, SelectedSession, TerminalSnapshotAuditGuard,

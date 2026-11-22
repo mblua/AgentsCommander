@@ -1,3 +1,8 @@
+//! Narrow settings operations that read or write disk truth under the settings lock.
+//! Owns the strict read-only readers for PTY input and terminal snapshots, the terminal
+//! snapshot gate compare-and-set, the main-window placement writer and project list refresh.
+//! Holds no state; the general project-aware writer lives in `save/value.rs`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::super::{

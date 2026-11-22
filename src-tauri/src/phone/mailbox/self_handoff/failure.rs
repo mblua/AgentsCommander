@@ -1,3 +1,8 @@
+//! Self-handoff failure handling: `SelfHandoffOutcome`, `SelfHandoffFailure` and
+//! `consume_outcome`, which reports a driver's result.
+//! Also owns notice retries (`retry_notice`, `NoticeDelivery`) and the inject signal registry
+//! (`register_inject_signal`, `signal_inject`).
+
 use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;

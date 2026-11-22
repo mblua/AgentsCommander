@@ -1,3 +1,10 @@
+//! Seed-manifest publication and temp cleanup for Windows, plus a fallback.
+//! On Windows it publishes the temp with `ReplaceFile` or `MoveFileEx`, checks the final
+//! identity and bytes, classifies failures for recovery, and deletes owned temps by handle.
+//! On targets that are neither Unix nor Windows it holds the plain rename fallback.
+//! Holds no state of its own; the guard flow lives in `guard.rs` and the native calls in
+//! `crate::filesystem::seed_manifest`.
+
 #[cfg(not(any(unix, windows)))]
 use super::SeedManifestError;
 #[cfg(windows)]

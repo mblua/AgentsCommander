@@ -1,3 +1,8 @@
+//! Row helpers shared by the `MessageStore` modules: row mapping (`ActuatingRow`,
+//! `IdempotencyRow`, `claimed_from_row`, `result_from_row`), audit inserts and tombstones.
+//! Also `terminalize_in_transaction`, `retry_backoff_seconds` and source-plane/reason parsing.
+//! It holds no connection; callers pass in the transaction or connection.
+
 use super::types::ClaimedPtyInputOperation;
 use super::{
     response_work_key, MessageStoreError, ResponseTerminalPersistence, PTY_STATUS_ACTUATING,

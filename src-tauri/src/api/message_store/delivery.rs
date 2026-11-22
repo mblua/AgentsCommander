@@ -1,3 +1,8 @@
+//! `MessageStore` delivery of queued inter-agent messages in the `messages` table.
+//! Covers `enqueue`, `lease_due`, `mark_delivered`, `mark_delivery_failed`,
+//! `release_delivery_lease` and `reap_terminal_before`, with audit rows and retry backoff.
+//! PTY input operations are handled in the `pty_*` sibling modules.
+
 use super::rows::{insert_audit, retry_backoff_seconds};
 use super::sha256_hex;
 use super::types::{EnqueueRequest, EnqueueResult, LeasedMessage};

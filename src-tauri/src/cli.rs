@@ -275,7 +275,10 @@ pub enum Commands {
 /// useful (the user double-clicked the GUI exe in explorer.exe, etc.). For PIPE,
 /// CHAR, DISK, REMOTE — the inherited handle is already routable, leave it alone.
 #[cfg(target_os = "windows")]
-#[allow(clippy::collapsible_if)]
+#[allow(
+    clippy::collapsible_if,
+    reason = "Windows-only; the destination gate stays separate from the unsafe console calls"
+)]
 pub fn attach_parent_console() {
     use windows_sys::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
 

@@ -1,3 +1,11 @@
+//! The `discover_project` Tauri command: AC discovery for one project folder.
+//!
+//! Unlike `discover_ac_agents`, it scans only the given path's Project AC Root: it ensures the
+//! root `.gitignore`, scans context templates and loops, builds the tree, sorts it, links teams
+//! and updates `DiscoveryBranchWatcher` for this project only. Coordinator-flag refresh runs
+//! in a spawned task so the returned tree never waits on session locks.
+//! The directory walk and per-replica fields live in `tree`; it owns no state.
+
 mod tree;
 
 use super::agent_discovery::scan_project_context_templates_recorded;

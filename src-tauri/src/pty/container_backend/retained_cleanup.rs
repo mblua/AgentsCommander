@@ -1,3 +1,8 @@
+//! Registry of retained container cleanups. Each entry keeps a removed session's runtime
+//! handle, route removal, credential file, API client id and resource slot until a cleanup
+//! attempt succeeds; attempts are deduped per epoch and record their last error. It does not
+//! schedule attempts; `cleanup` and `sweep` decide when they run.
+
 use super::{lock_mutex_until, RemovedSessionResources, RouteRemovalError, RouteRemover};
 use crate::errors::AppError;
 use crate::pty::container_runtime::{

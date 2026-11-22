@@ -1,3 +1,7 @@
+//! Filesystem primitives for settings sources: text and byte reads, metadata probes,
+//! canonical paths, creating, writing, syncing and removing stage files, renaming
+//! backups and syncing the parent directory. Owns no types and does no parsing.
+
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};

@@ -629,7 +629,10 @@ fn acquire_route_lifecycle(
 
 impl PtyAuthorityRouteProof {
     // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "dormant until P05 integration; remove with real callers"
+    )]
     pub(crate) fn try_commit_response_close(
         &self,
         state: &ResponseCloseState,

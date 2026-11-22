@@ -1,3 +1,9 @@
+//! Main window geometry at startup: picks test, saved or default placement and builds the window.
+//! `resolve_main_geometry` validates saved physical geometry against monitors and converts it to
+//! logical pixels; `create_main_window` builds the Main `WebviewWindowBuilder` window.
+//! Also logs monitors and applies a Windows-only test window placement.
+//! It does not save geometry; settings loading and migration live in `config::settings`.
+
 use crate::config::settings::WindowGeometry;
 use crate::testability::window_placement::TestWindowPlacement;
 use crate::{

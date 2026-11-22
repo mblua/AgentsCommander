@@ -1,3 +1,9 @@
+//! Coding-agent profile cells and their physical storage by base hash.
+//! Owns `ProfileCellConfig`, `ProfileSlotConfig`, `PhysicalProfileSets`, the read-only ID
+//! projection `project_physical_profiles`, regrouping edits in `canonical_profile_source`,
+//! orphan quarantine, catalog decode and `repair_coding_agent_profiles_config`.
+//! Identity and orphan adoption live in `identity`; the registered raw gate lives in `registered`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod identity;

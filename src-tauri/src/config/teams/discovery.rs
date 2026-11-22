@@ -1,3 +1,10 @@
+//! Team and peer discovery from the filesystem.
+//! Scans registered project paths for `_team_*/config.json` into `DiscoveredTeam` values, and
+//! builds `PeerInfo` lists for room replicas, origin agents, Root and temp rooms.
+//! Owns no state: each call rereads disk and session status via `build_session_index`.
+//! Membership and routing rules (`is_in_team`, `can_communicate`) live in `membership.rs`.
+//! Root and temp-room synthetic peers are built in `routes.rs`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::membership::resolve_agent_path;

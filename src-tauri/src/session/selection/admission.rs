@@ -1,3 +1,11 @@
+//! Admission bookkeeping for the selection coordinator.
+//!
+//! Owns critical-admission keys, guards and reservations, the `CoordinatorPhase` enum,
+//! `WatchdogKillOutcome`, and `BlockingSeedWorkTracker`, which counts queued and started
+//! blocking seed work so shutdown can seal it and wait until it is quiescent.
+//! It does not run requests or own the coordinator; `CoordinatorInner` and the request
+//! queue live in the parent `selection` module and its coordinator files.
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};

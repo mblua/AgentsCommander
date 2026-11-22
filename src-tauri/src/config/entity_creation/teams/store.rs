@@ -1,3 +1,10 @@
+//! Reads, normalizes and writes a team's `config.json` under `_team_<name>`.
+//! Owns the team-config mutation lock (`TeamConfigMutationGuard`, `TEAM_CONFIG_MUTATION_LOCK_NAME`)
+//! and the read error classes in `TeamConfigReadError`.
+//! Also inspects team skill sources and publishes owned team copies (`publish_owned_team`).
+//! It does not do the low-level file IO: that lives in `crate::filesystem::projects::entities`.
+//! Name and agent-ref normalization rules live in the parent `names` module.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::super::names::{

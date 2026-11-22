@@ -1,3 +1,8 @@
+//! Self-switch phases: `persist_and_restart`, `restart_with_alias`, `inject_handoff` and
+//! `begin_switch`, plus `abandon_reason` and `switch_outcome` helpers.
+//! Persistence, restart and injection are passed in as closures; handoff prompt injection
+//! reuses `inject_handoff_prompt_with_archive` from `settle`.
+
 use super::resolve_restarted_session;
 use super::{ForgottenSummary, SelfClearBoundary, SelfHandoffFlavor};
 use crate::phone::mailbox::settle::inject_handoff_prompt_with_archive;

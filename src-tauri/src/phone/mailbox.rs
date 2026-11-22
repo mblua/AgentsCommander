@@ -1,3 +1,7 @@
+//! Mailbox: `MailboxPoller` and the submodules for message delivery, wake injection, PTY
+//! input dispatch and validation, self-clear and handoff, outbox auth and teardown.
+//! This file only declares submodules and re-exports their items.
+
 #[macro_use]
 mod diagnostics;
 pub(crate) mod browser;

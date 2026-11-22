@@ -1,3 +1,7 @@
+//! Session git context: `detect_session_branch` returns the current branch of a directory.
+//! It returns `None` on error, empty output or a detached `HEAD`.
+//! Runs `git` synchronously with scrubbed credentials and the agent search path.
+
 /// Detect git branch for a given directory path.
 pub(crate) fn detect_session_branch(dir: &str) -> Option<String> {
     #[cfg(windows)]

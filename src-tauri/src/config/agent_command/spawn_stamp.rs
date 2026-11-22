@@ -1,3 +1,8 @@
+//! Debug log line that records what the profile hash covered at spawn time.
+//! `log_profile_stamp` logs the agent, profile, hash, effective and canonical command,
+//! and the env keys; env values are left out on purpose because they may hold secrets.
+//! It owns no state; computing the hash lives in `profile_hash`.
+
 use super::{canonical_command_text, raw_merged_profile_env};
 use crate::config::coding_agent_profiles::ProfileResolution;
 use crate::config::settings::AgentConfig;

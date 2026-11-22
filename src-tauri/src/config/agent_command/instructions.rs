@@ -1,3 +1,9 @@
+//! Picks the instructions filename (for example `CLAUDE.md` or `AGENTS.md`) for a coding agent.
+//! Uses an explicit, safe `instructions_filename` when set, else a default derived from the
+//! command via `CodingAgentKind::detect`; `resolve_target_filename` handles launch-time choice.
+//! Pure functions: it owns no state and writes no files.
+//! Writing the instructions file lives in `crate::config::session_context`.
+
 use super::normalize_legacy_agent_command;
 use crate::config::session_context::ManagedContextTarget;
 use crate::config::settings::{AgentConfig, AppSettings};

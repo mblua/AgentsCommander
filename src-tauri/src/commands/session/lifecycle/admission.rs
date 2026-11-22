@@ -1,3 +1,8 @@
+//! Helpers for lifecycle entry admission.
+//! Acquires the PTY input target lease (`acquire_target_lease`), derives the source gate key,
+//! and compares discard carriers (`same_discard`).
+//! Owns no state; the authority itself is defined in the parent `lifecycle` module.
+
 use std::sync::Arc;
 
 use tauri::{AppHandle, Manager};

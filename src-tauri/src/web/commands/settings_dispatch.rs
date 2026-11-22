@@ -1,3 +1,8 @@
+//! Web command dispatch for settings and agent files: get, update and draft-save
+//! settings, terminal snapshot and rail collapse toggles, agent help, and listing,
+//! reading, saving and remembering agent file sources.
+//! Changes are sent to web clients with `broadcast_all`.
+
 use super::args::require_json;
 use super::WsState;
 use crate::web::event_broadcast::broadcast_all;

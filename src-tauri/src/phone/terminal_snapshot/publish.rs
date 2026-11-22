@@ -1,3 +1,8 @@
+//! Terminal snapshot response publication: `publish_response_bytes` writes, verifies,
+//! finalizes and reconciles response files with retention limits.
+//! Also owns cleanup helpers (`safe_remove`, `sweep_directory`, `cleanup_tracked_artifact`)
+//! and protocol file name checks (`protocol_cleanup_name`, `protocol_request_name`).
+
 use super::MAX_DIRECTORY_ENTRIES;
 use super::RESPONSE_TTL;
 use crate::filesystem::terminal_snapshots;

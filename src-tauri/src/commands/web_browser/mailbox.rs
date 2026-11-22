@@ -1,3 +1,7 @@
+//! Re-export seam for the web browser mailbox action names and helpers.
+//! Production code uses the navigate, reload and status action constants; the rest is test-only.
+//! The action handling itself lives in `crate::phone::mailbox::browser`.
+
 #[cfg(test)]
 pub(crate) use crate::phone::mailbox::browser::is_web_browser_action;
 #[cfg(test)]

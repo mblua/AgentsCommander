@@ -1,3 +1,9 @@
+//! Handle-pinned file and directory types for seed-manifest disk access.
+//! Owns `PinnedDirectory`, `OpenedRegularFile`, `PinnedOwnerChain`, `HandleFacts` and
+//! `CanonicalSnapshot`, plus open-error classification and exact not-found checks.
+//! It holds no lock and writes nothing; raw OS calls live in `crate::filesystem::seed_manifest`
+//! and the locked write flow lives in `guard.rs`.
+
 use super::{FileIdentity, ManifestDegradedReason, ManifestState, SeedManifestError};
 use crate::filesystem::seed_manifest::{self as manifest_disk, ManifestFile as File};
 use std::path::{Path, PathBuf};

@@ -385,13 +385,22 @@ pub(crate) enum SourcePreparationError {
     #[error("sourceReadOnly")]
     ReadOnly,
     // Removing this variant also requires changing source/read.rs.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "kept for source/read.rs; constructed after source activation"
+    )]
     #[error("independentFormatRequired")]
     IndependentFormatRequired,
     #[error("invalidSourceCandidate")]
     InvalidCandidate,
     // Constructed by the general-only preparation, which is currently test-only.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "constructed by the general-only preparation, which is test-only"
+        )
+    )]
     #[error("protectedSettingsField")]
     ProtectedSettingsField,
     #[error("{0}")]

@@ -23,7 +23,10 @@ pub(crate) use super::DiagnosticTerminationError;
 
 #[derive(Debug)]
 // P04 consumes the metadata; P02's compatible adapter only needs the result.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "P04 consumes the metadata; P02 only needs the result"
+)]
 pub(crate) enum CleanupFailure {
     Ordinary(String),
     EvidenceVeto {
@@ -775,7 +778,10 @@ impl ResourceMonitorState {
     }
 
     // P05 supplies public/local session authorization before this registry-only read.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "P05 supplies session authorization before wiring this read"
+    )]
     pub(crate) fn inspect_group(
         &self,
         session_id: Uuid,

@@ -1,3 +1,8 @@
+//! Test-only counter of strict replica reads (compiled only under `cfg(test)`).
+//! Owns a global map from a registered root to the number of reads seen under it.
+//! Tests call `register`, `count` and `unregister`; the parent module calls `record`.
+//! It has no effect on production reads.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::BTreeMap;

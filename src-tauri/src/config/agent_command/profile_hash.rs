@@ -1,3 +1,9 @@
+//! Profile identity hashing: composes the effective command and merged env, then hashes them.
+//! Key items: `compose_effective_command`, `raw_merged_profile_env`, `cell_identity`,
+//! `canonical_command_text` and `profile_content_hash` (16 hex chars of SHA-256).
+//! Pure functions over raw, unexpanded input; it owns no state and does no IO.
+//! The real spawn env is built by `merge_env_layers`; drift checks and storage live elsewhere.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::BTreeMap;

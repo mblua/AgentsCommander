@@ -1,3 +1,7 @@
+//! PTY input recovery for `MessageStore`: `recover_pty_input_startup` and
+//! `recover_pty_input_runtime` settle stale `preparing`, `actuating` and expired rows.
+//! Also exposes `try_operation_lock` and `try_target_lock` built on stripe locks from `locks`.
+
 use super::locks::{try_stripe_lock_at, PtyInputStripeGuard};
 use super::rows::{insert_pty_audit, reason_code_string};
 use super::{

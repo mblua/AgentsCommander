@@ -1,3 +1,8 @@
+//! The `room activity` / `workgroup activity` CLI verb. Lists every room of a project with
+//! its aggregate working state, CI state and TASK title, and applies the parsed
+//! `ActivityFilter`. It only reads persisted sessions and the `remote-activity.json`
+//! snapshot, gated by `CiGate`; it never writes TASK, cache, session or daemon state.
+
 use std::collections::{BTreeSet, HashMap};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};

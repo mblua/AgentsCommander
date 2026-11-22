@@ -1,3 +1,8 @@
+//! Creates fresh temp stage files for config writes and publishes pair sides.
+//! Owns the process-wide staging sequence and the bounded attempt count `MAX_STAGING_ATTEMPTS`.
+//! Also reads one pair side as a JSON map and writes changed pair sides, state first.
+//! The final publish lives in `publish`; raw file calls live in `crate::filesystem::local_config`.
+
 use super::pair_image::{ConfigPublisher, PairTargetGuard, PreparedPairError};
 #[cfg(test)]
 use super::publish::publish_temp_config;

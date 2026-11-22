@@ -1,3 +1,7 @@
+//! Docker command processes: re-exports `DockerCommandSpec`, `DockerProcessState`,
+//! command control, output, errors, shutdown behavior and timeout limits from the
+//! private `execution` and `ownership` submodules.
+
 mod execution;
 mod ownership;
 

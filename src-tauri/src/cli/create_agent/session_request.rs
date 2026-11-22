@@ -1,3 +1,9 @@
+//! Session-request handoff between the `create-agent` CLI and the running app. Owns the
+//! `SessionRequest` file written to the config dir's session-requests folder, the
+//! `<id>.result.json` sidecar the app answers with, and the CLI's `LaunchOutcome` poll.
+//! It does not spawn sessions itself; the running app consumes the request. File IO goes
+//! through `crate::filesystem::documents` and `crate::filesystem::directories`.
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 

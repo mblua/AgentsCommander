@@ -1,3 +1,9 @@
+//! Reading, selecting and migrating the project-paths sidecar under the settings lock.
+//! Owns `ProjectPathsWriteTransaction`, `RawProjectSource` and `SelectedProjectSource`; the
+//! destination sidecar wins, and a differing legacy projection is a conflict.
+//! `ensure_project_paths_migrated_locked` moves legacy fields out with an immutable backup.
+//! Does not decode or resolve paths; commits live in `project_path/transaction.rs`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::super::{

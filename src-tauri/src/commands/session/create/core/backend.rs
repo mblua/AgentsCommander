@@ -1,3 +1,10 @@
+//! Backend stage of a session create: environment, config seed, preflight and PTY spawn.
+//! `spawn` records effective args, builds the child environment and resource registration,
+//! runs the config seed under `ConfigSeedLockState`, gates preflight stages, then calls
+//! `PtyManager::spawn` and hands off to `publication::complete`.
+//! Owns no long-lived state; on failure it releases the launch permit and rolls back.
+//! Resume-argument injection and context files are in `context`; publication in `publication`.
+
 use crate::app_state::ConfigSeedLockState;
 use crate::commands::session::create::admission::acquire_lifecycle_create_publication_region;
 use crate::commands::session::create::admission::release_resource_launch_permit;

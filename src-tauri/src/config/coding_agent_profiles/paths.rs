@@ -1,3 +1,9 @@
+//! Path validation for profile selection: Agent Matrix dirs, Room replicas and AC roots.
+//! `validate_profile_selection_agent_path` checks a launch path is a real `_agent_*` matrix
+//! or `__agent_*` replica under a configured project `.ac` root and finds its origin matrix.
+//! Also lists configured AC roots and normalizes profile letters from each source.
+//! It reads replica identity but writes nothing; profile resolution lives in `resolve`.
+
 use super::{read_json_object, ValidatedProfileAgentPath};
 use crate::config::ac_root::{
     ensure_authoritative_ac_root, is_ac_root_name, CANONICAL_AC_ROOT_DIR,

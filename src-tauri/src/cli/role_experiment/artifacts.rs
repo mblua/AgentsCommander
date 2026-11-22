@@ -1,3 +1,8 @@
+//! Data shapes for `role-experiment`: the JSON CLI envelope with warnings and errors,
+//! experiment and variant metadata, prompt cases, and the run, attempt and report
+//! artifacts written to disk, plus in-memory plan and validation types.
+//! Types only; reading and writing them is done by `storage`.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};

@@ -1,3 +1,9 @@
+//! Protected revisions and reservation packets for a config pair write.
+//! Builds canonical JSON revisions that ignore the `lastAgentMessageAt` timestamp, merges
+//! activity timestamps monotonically, and validates `PairReservation` packets and pair paths.
+//! Owns the packet types; it does not publish any file or hold any lock.
+//! Executing a plan lives in `prepared_pair`; disk images live in `pair_image`.
+
 use super::pair_image::{
     read_config_pair_physical, PhysicalState, PreparedConfigPairPlan, PreparedPairError,
 };

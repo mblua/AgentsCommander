@@ -1,3 +1,8 @@
+//! Team config entry point: declares the team submodules and re-exports their API.
+//! Holds no logic or state of its own.
+//! Reading and writing `config.json` lives in `store`; creation from sources lives in `sources`;
+//! raw agent-team mutations live in `raw`; the `conventions.md` file lives in `conventions`.
+
 mod conventions;
 mod raw;
 mod sources;

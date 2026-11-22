@@ -1,3 +1,9 @@
+//! Save-side rules where the agents file meets `settings.local.json` and profile owners.
+//! Owns restoring the `codexHomeKeyByAgent` carrier, rejecting edits to overlay-owned groups,
+//! keeping unknown raw row fields and untouched legacy aliases, limiting split-owner profile
+//! edits, and preparing the registered profile packet with refreshed row `id_hash` metadata.
+//! It does not read or write files; the overlay itself lives in `crate::config::local_overlay`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::super::super::{

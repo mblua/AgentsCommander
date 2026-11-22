@@ -1,3 +1,9 @@
+//! Team membership, coordinator checks and routing rules over `DiscoveredTeam` values.
+//! Resolves agent targets and team-config refs (`resolve_agent_target`, `resolve_agent_ref`).
+//! Decides who may talk to whom with `is_in_team`, `is_coordinator` and `can_communicate`.
+//! Owns no state; it only reads directories to check that a target replica exists.
+//! Team discovery lives in `discovery.rs`; verified PTY-input routes live in `routes.rs`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::agent_fqn_from_path;

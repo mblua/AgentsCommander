@@ -1,3 +1,9 @@
+//! Config-folder masters shipped for built-in agents, stored under `coding-agents/_seed/`.
+//! Seeds absent masters at boot from embedded defaults or a legacy copy, and re-seeds one
+//! to its embedded default from Settings, with a `.bak` copy first.
+//! Also maps commands to executable basenames and account keys.
+//! Copying a master into a replica lives in `crate::config::config_seed`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::path::{Path, PathBuf};

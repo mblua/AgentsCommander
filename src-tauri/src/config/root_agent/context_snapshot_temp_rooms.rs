@@ -1,3 +1,7 @@
+//! Holds one frozen snapshot: the Root context before Temporary Rooms were added.
+//! `ROOT_CONTEXT_BEFORE_TEMP_ROOMS_MD` keeps a pristine copy of that generation recognizable.
+//! It holds no logic; the recognizer lives in `context_snapshots`.
+
 /// #4780 P07: `Context.root-agent.md` exactly as it shipped at planning base a3393353,
 /// before the Temporary Room pair was allowed. Frozen so a pristine copy keeps being
 /// recognized and replaced on provisioning. Never edit; pinned by

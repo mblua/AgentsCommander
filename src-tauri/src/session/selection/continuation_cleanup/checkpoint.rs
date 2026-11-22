@@ -1,3 +1,10 @@
+//! Checkpoint helpers for `OwnedReplacementContinuation` used by `continuation_cleanup`.
+//!
+//! Starts a checkpoint publication after source validation, records the pending carrier,
+//! captures transferred work once the finalized publish is fully settled, and checks
+//! pending-cleanup claims and runtime absence. State is read from the continuation's owner
+//! lock; the publish, reconcile and cleanup flows themselves live in the parent module.
+
 use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;

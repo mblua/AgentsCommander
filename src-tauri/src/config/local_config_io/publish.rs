@@ -1,3 +1,9 @@
+//! Publishes a staged temp config file over its target.
+//! Uses rename on Unix and `ReplaceFileW` (with verbatim long paths) on Windows.
+//! Retries transient lock errors with a short bounded backoff and formats clear errors.
+//! Owns the retry budget constants only; it does not stage or write the temp file.
+//! Staging lives in `staging`; raw OS calls live in `crate::filesystem::local_config`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::pair_image::{ordinary_publish_result, PairTargetGuard, PreparedPairError};

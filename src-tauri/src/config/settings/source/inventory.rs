@@ -1,3 +1,9 @@
+//! Backend inventory of the targets an identity-changing source edit affects.
+//! Owns `SourceInventoryCapture`, `SourceInventoryProof` and the membership topology digest,
+//! plus recovery and completion checks for each target packet.
+//! `SourceInventoryProof::validate` rechecks directories, slots and origin before each step.
+//! Original-evidence and resume checks live in `source/proof.rs`.
+
 use super::super::raw_configuration_command;
 use super::super::AppSettings;
 use super::super::CodingAgentEnv;

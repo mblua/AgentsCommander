@@ -1,0 +1,27 @@
+# Describes the formatting already in use. rustfmt.toml and .prettierrc.json stay authoritative.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.rs]
+indent_style = space
+indent_size = 4
+max_line_length = 100
+
+[*.{ts,tsx,js,mjs,cjs,json,css,yml,yaml}]
+indent_style = space
+indent_size = 2
+max_line_length = 100
+
+[*.md]
+trim_trailing_whitespace = false
+
+# Byte-exact HTTP fixture with CRLF line endings (.gitattributes: -text).
+[crates/session-bridge/src/bin/agentscommander-api-helper/snapshot/tests/fixtures/response-head.http]
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

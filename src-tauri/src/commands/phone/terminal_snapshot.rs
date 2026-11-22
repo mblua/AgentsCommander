@@ -1,3 +1,8 @@
+//! Tauri `AppHandle` adapters for terminal snapshot hosting.
+//! Spawns snapshot tasks on the Tauri async runtime (`TauriSnapshotTask`, abortable) and
+//! exposes the managed snapshot, session, PTY, settings, restore and purge state.
+//! Snapshot logic lives in `crate::phone::terminal_snapshot` and `crate::pty::terminal_snapshot`.
+
 use crate::config::settings::SettingsState;
 use crate::phone::terminal_snapshot::task::{SnapshotTask, SnapshotTaskHost};
 use crate::phone::terminal_snapshot::TerminalSnapshotHost;

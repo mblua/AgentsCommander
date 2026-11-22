@@ -1,3 +1,10 @@
+//! Publication stage of a session create, after the PTY has spawned.
+//! `complete` registers samplers, saves `lastCodingAgent` and the profile hash, initializes the
+//! pending prompt, then finalizes through the create ticket or inline transaction (or defers).
+//! After a finalized non-restart create it raises the Room reader demand.
+//! Also `await_startup` (startup gates) and `mirror_fresh_intent` (#756 fresh mirror).
+//! Owns no state; spawn and rollback live in `backend` and `create::publication`.
+
 use crate::commands::session::agent_command::mirror_forces_fresh;
 use crate::commands::session::agent_command::prepare_last_coding_agent_write;
 use crate::commands::session::agent_command::save_last_coding_agent;

@@ -1,3 +1,8 @@
+//! Idle-team auto-close: a background `AutoClose` task that ticks every minute, tracks
+//! per-team idle anchors and closes members of teams idle past the configured policy.
+//! Host access goes through the `AutoCloseServices` trait; it also emits idle and
+//! auto-closed badges. It does not decide idleness itself; `IdleDetector` does.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -1,3 +1,10 @@
+//! Frozen byte-exact snapshots of older Root context and role templates.
+//! Lets a pristine older copy on disk be recognized and upgraded; the constants must never change.
+//! `is_known_generated_root_context_template` checks content against every known generation,
+//! and `default_root_context_template` returns the current shipped template.
+//! It does no file IO; provisioning lives in `provisioning` and other snapshots live in
+//! `legacy_contexts` and `context_snapshot_temp_rooms`.
+
 use super::context_snapshot_temp_rooms::ROOT_CONTEXT_BEFORE_TEMP_ROOMS_MD;
 use super::legacy_contexts::ROOT_CONTEXT_BEFORE_SELF_HANDOFF_SKILL_MD;
 use super::{

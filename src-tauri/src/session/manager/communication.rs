@@ -41,10 +41,6 @@ impl SessionManager {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "raise-hand mutator takes permit, id and timestamp; family parity"
-    )]
     pub(crate) async fn raise_hand_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -90,10 +86,6 @@ impl SessionManager {
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "raise rollback takes only permit and receipt; kept for family parity"
-    )]
     // Dormant until P05 integration; remove with real callers.
     pub(crate) async fn rollback_raise_with_carrier_permit(
         &self,
@@ -127,10 +119,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "conditional clear takes permit, id and kind; kept for family parity"
-    )]
     pub(crate) async fn clear_communication_if_kind_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -168,10 +156,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "blocked-menu set takes permit, id, message, time; family parity"
-    )]
     pub(crate) async fn set_blocked_menu_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -216,10 +200,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "blocked-menu clear takes permit and id; kept for family parity"
-    )]
     pub(crate) async fn clear_blocked_menu_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -251,10 +231,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "co-managed set takes permit, id, message, time; family parity"
-    )]
     pub(crate) async fn set_co_managed_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -308,10 +284,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "co-managed clear takes permit and id; kept for family parity"
-    )]
     pub(crate) async fn clear_co_managed_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -343,10 +315,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "communication restore takes permit, id, snapshot; family parity"
-    )]
     pub(crate) async fn restore_communication_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -378,10 +346,6 @@ impl SessionManager {
             .await;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "start-fresh flag set takes permit, id, value; family parity"
-    )]
     pub(crate) async fn set_start_fresh_on_restore_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -411,10 +375,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pending start-fresh set takes permit, binding, value; family parity"
-    )]
     pub(crate) async fn set_pending_start_fresh_on_restore_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -441,10 +401,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pending communication set takes permit, binding, value; parity"
-    )]
     pub(crate) async fn set_pending_communication_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -466,10 +422,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "start-fresh clear-if-set takes permit and id; family parity"
-    )]
     pub(crate) async fn clear_start_fresh_on_restore_if_set_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -503,10 +455,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "start-fresh set-if-unset takes permit and id; family parity"
-    )]
     pub(crate) async fn set_start_fresh_on_restore_if_unset_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,
@@ -550,10 +498,6 @@ impl SessionManager {
             .await
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "user-input clear takes permit, id and clear_fresh; family parity"
-    )]
     pub(crate) async fn clear_user_input_transitions_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,

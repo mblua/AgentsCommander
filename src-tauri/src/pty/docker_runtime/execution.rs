@@ -1,3 +1,8 @@
+//! Docker command execution entry points on `DockerRuntime`. Bridges
+//! `ContainerRuntimeControl` to `DockerCommandControl` and computes each command's hard
+//! deadline from the default timeout and any shutdown deadline. It owns no state; the
+//! process work itself runs in `process_state` from `crate::process::docker`.
+
 use std::time::Instant;
 
 use uuid::Uuid;

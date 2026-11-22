@@ -1,3 +1,8 @@
+//! The `Default` implementation of `AppSettings`.
+//! Builds defaults through serde from the per-field `#[serde(default...)]` attributes, adding
+//! only required fields, the platform default shell and the context-history color window.
+//! Field default functions live in `field`; loading and saving live in `load` and `save`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::context_history::DEFAULT_SESSION_WINDOWS;

@@ -1,3 +1,7 @@
+//! Filesystem access for coding-agent profiles: reading profile text and selection
+//! defaults, metadata and canonical paths, and listing profile directories through
+//! the `ProfileDirectory` and `ProfileDirectoryEntry` wrappers. No profile parsing.
+
 use std::ffi::OsString;
 use std::fs::{self, DirEntry, FileType, Metadata, ReadDir};
 use std::io;

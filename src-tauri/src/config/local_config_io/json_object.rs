@@ -1,3 +1,9 @@
+//! Atomic local config writers: `write_file_atomic` and `update_config_json_object`.
+//! Runs a read-modify-write of a JSON object file under the process lock and the sidecar lock.
+//! Owns the writer error type `ConfigJsonError`.
+//! Staging lives in `staging`, publishing in `publish`, and locks in `write_lock`.
+//! Raw filesystem calls live in `crate::filesystem::local_config`.
+
 use super::pair_image::PairTargetGuard;
 use super::publish::publish_temp_config;
 use super::staging::{acquire_fresh_config_stage, ordinary_staging_error};

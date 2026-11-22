@@ -1,3 +1,9 @@
+//! Serializable wire types returned by AC discovery to the frontend.
+//!
+//! Defines `AcAgentMatrix`, `AcTeam`, `AcAgentReplica`, `AcReplicaSavedPair`, `AcWorkgroup`
+//! and `AcDiscoveryResult`, all camelCase over IPC. Data only: no logic and no disk access.
+//! The discovery scan that fills them lives in `agent_discovery` and `project_discovery`.
+
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]

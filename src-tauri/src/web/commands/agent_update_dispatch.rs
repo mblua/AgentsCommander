@@ -1,3 +1,8 @@
+//! Web command dispatch for agent updates and the coding agent catalog, such as
+//! `get_agent_update_status`, `agent_update_answer`, `install_coding_agent` and
+//! `list_reseedable_agent_commands`.
+//! `dispatch_agent_update_command` returns `None` for commands it does not own.
+
 use serde_json::{json, Value};
 
 use super::args::{require_json, require_str};

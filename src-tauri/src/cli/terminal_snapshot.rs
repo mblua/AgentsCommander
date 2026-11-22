@@ -81,7 +81,7 @@ enum TerminalSnapshotField {
     /// to it: every format mistake is a mistake about `--output` given the
     /// chosen format, so those sites name `output`. Kept so the vocabulary a
     /// consumer parses is the declared one.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "declared vocabulary; no site emits `format` yet")]
     Format,
     Output,
     Timeout,

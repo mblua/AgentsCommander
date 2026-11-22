@@ -1,3 +1,9 @@
+//! Read path of the coding-agents catalog: base analysis, snapshots and resolution.
+//! `analyze_base_bytes` classifies a base as managed, foreign-managed or legacy and checks
+//! its content hash; `resolve_catalog_snapshot` composes project and local layers on it.
+//! Also has the sanitized validation reasons and unknown-field warnings.
+//! Read-only: writing, migration and refresh live in `publication` and `migration`.
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 

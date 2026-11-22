@@ -1,3 +1,8 @@
+//! Data model for the IPC observer: what the backend and renderer record about a silence episode.
+//! Owns `FreezeMarker`, `PendingEntry`, the serde `BlackBoxRecord` per window, `Verdict` with its
+//! `tag` and `explanation` texts, `TickSnapshot` and the `LOOP_OUTLIVED_MS` bound.
+//! It does no I/O or log formatting; `report` turns these values into log blocks.
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};

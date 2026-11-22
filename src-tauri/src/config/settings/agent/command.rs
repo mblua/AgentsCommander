@@ -1,3 +1,9 @@
+//! Base-command and profile-argument rules for coding-agent configuration.
+//! Owns canonical vs legacy `command` selection (`select_configuration_command`), leaf
+//! retention on save, duplicate-row correspondence via `StartupAgentRows`, and
+//! `validate_agent_commands`, which rejects manual resume flags for Claude, Codex and Antigravity.
+//! It does not compose or launch commands; composition lives in `crate::config::agent_command`.
+
 use super::super::{config_seed_dest_os_token_stem, validate_config_seed_dest, AppSettings};
 use super::{
     agent_order_permutation, finalize_agent_order, is_valid_profile_letter, validate_env_map,

@@ -1,3 +1,11 @@
+//! Publication, rollback and cleanup steps of `OwnedReplacementContinuation`.
+//!
+//! Builds the finalized carry capability, publishes and reconciles replacement checkpoints,
+//! finishes rolled-back or transferred work, and claims and kills pending runtimes.
+//! Also gates lifecycle effect slots via `start_effect`. It mutates the owner state but
+//! does not define it (see `replacement`); launch steps and applying the carry live in
+//! `continuation_launch`, on-disk writes in `crate::config::sessions_persistence`.
+
 mod checkpoint;
 
 use std::sync::{Arc, Mutex};

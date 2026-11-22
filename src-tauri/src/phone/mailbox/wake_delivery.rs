@@ -1,3 +1,8 @@
+//! Wake delivery on `MailboxPoller`: outbox action/mode validation, `deliver_outbox_tail`,
+//! and the wake engine (`deliver_wake`, `deliver_validated_wake`, `deliver_wake_engine`).
+//! Covers peer wakes, cold peer text admission and owned peer replacement, with
+//! snapshot and source-currency checks for replacements.
+
 use super::handoff::resolve_remote_pty_command;
 use super::notice::{
     internal_system_envelope, parse_remote_pty_command, sender_name_for_session_cwd_with_root_flag,

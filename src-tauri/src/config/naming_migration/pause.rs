@@ -1,3 +1,8 @@
+//! Test-only pause points for the naming migration (compiled only under `cfg(test)`).
+//! Owns an in-process registry of armed pauses and an env-var based cross-process rendezvous.
+//! A test arms a stage with `arm`; the engine stops in `hook` until the test releases it.
+//! It holds no migration logic; the engine lives in the parent `naming_migration` module.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::HashMap;

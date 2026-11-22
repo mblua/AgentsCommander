@@ -1,3 +1,9 @@
+//! Session destroy: legacy destroy transaction, root retention and manual close helpers.
+//! Routes destroy requests through `SelectionCoordinator`, retires each carrier, tears down
+//! Telegram, resource group and PTY, then commits removals or retained-exited root rows and
+//! picks a selection fallback. Also counts working members for coordinator close.
+//! Owns no state; conditional response closes are in the `response_close` submodule.
+
 use crate::app_state::DetachedSessionsState;
 use crate::commands::session::publish_legacy_destroy_outcome;
 #[cfg(test)]

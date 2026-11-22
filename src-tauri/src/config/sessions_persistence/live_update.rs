@@ -1,3 +1,10 @@
+//! Atomic "mutate one session field, then persist" helpers for live UI and CLI events.
+//! Covers raise-hand, blocked-menu set and clear, user-input clears and the
+//! `start_fresh_on_restore` flag, each under one carrier mutation permit.
+//! Defines the outcome types and the per-path rollback policy on save failure.
+//! It owns no state; the mutations live in `SessionManager` and the snapshot and save
+//! in `persist::snapshot_and_save_locked`.
+
 use super::persist::snapshot_and_save_locked;
 use super::project_scope::session_retention_project_paths;
 use super::write::run_owned_persist_core;

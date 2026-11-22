@@ -129,10 +129,6 @@ where
     ))
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "router wires token, sessions, dispatcher, socket and dist inputs"
-)]
 pub(super) fn build_router(
     web_token: Arc<WebAccessToken>,
     session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,

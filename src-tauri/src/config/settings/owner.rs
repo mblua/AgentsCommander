@@ -1,3 +1,10 @@
+//! The settings owner: the single authoritative `AppSettings` behind a `RwLock`.
+//! Owns availability, epoch, read permits, managed operations and the lifecycle lease.
+//! `with_operation_blocking` runs a locked builder and adopts the effective on-disk result.
+//! `StagedCompatibility` owners keep plain lock forwarding for consumers not yet migrated.
+//! Source capture lives in `owner/capture.rs`, the lease in `owner/lease.rs`, and the actual
+//! file writers in `save.rs`.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::{

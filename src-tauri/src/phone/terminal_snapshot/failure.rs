@@ -1,3 +1,7 @@
+//! Terminal snapshot failure publishing: records host ingress failures and publishes
+//! correlated, trusted and host outcome failure responses.
+//! Payloads come from `terminal_snapshot_renderer`; writing goes through `publish_response_bytes`.
+
 use super::publish::publish_response_bytes;
 use std::path::Path;
 use terminal_snapshot_renderer::canonical_timestamp;

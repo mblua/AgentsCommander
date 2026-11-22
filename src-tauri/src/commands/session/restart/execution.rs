@@ -1,3 +1,10 @@
+//! Restart flow: read the old session, prepare, retire, tear down and create the replacement.
+//! `execute_restart_transaction_in_context` resolves the selection and fresh intent, retires the
+//! lifecycle protection, releases the old runtime, spawns a pending replacement through
+//! `create_session_inner_impl`, then finalizes and publishes it.
+//! Owns only per-call data (`RestartSource`, `RestartPreparation`); teardown, finalization and
+//! publication are in `restart::settlement`.
+
 mod selection;
 mod source;
 

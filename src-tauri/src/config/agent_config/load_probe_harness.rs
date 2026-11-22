@@ -1,3 +1,9 @@
+//! Test harness that re-runs this test binary for one ignored inner test in a child process.
+//! `run_inner` spawns the child with the load probe armed, supervises it with a timeout,
+//! and returns its log; a guard kills and reaps the child on every exit path.
+//! Also holds injected faults (`Fault`), pid checks (`pid_state`) and snapshot fixtures.
+//! Test support only; the load probe itself lives in the sibling `load_probe` module.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::io::Read;

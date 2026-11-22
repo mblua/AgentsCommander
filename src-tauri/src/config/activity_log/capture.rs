@@ -1,3 +1,8 @@
+//! Thread-local capture of activity records emitted on the current thread.
+//! `note` appends records and `drain` takes everything noted since the last drain.
+//! Owns only the per-thread `CAPTURED` buffer; it never writes logs or files.
+//! Building and persisting `ActivityRecord` values lives in the parent `activity_log` module.
+
 use super::ActivityRecord;
 use std::cell::RefCell;
 

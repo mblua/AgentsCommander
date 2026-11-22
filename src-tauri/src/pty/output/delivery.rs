@@ -1,3 +1,9 @@
+//! Output delivery for `SessionIoFanout`: `handle_output` ingests each PTY chunk, notifies output
+//! observers and queues it for attached windows. Also activates, detaches and releases window
+//! attachments and arms the output flush timer.
+//! It does NOT read from the PTY (the backends' reader threads do) or own the attachment map's
+//! types; those live in `attachments`.
+
 #[cfg(test)]
 use super::FanoutTraceEvent;
 use super::{

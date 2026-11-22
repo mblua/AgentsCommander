@@ -1,3 +1,8 @@
+//! PTY target authority: `MailboxPoller` methods that resolve and validate PTY targets.
+//! Prepares replacements, resolves spawn targets and validates created targets.
+//! Classifies spawn failures and checks spawn authority and live or retained targets.
+//! Uses `PtyManager` and `SessionManager` state; it does not write PTY input.
+
 use super::{
     owned_replacement_launch_recipe, read_guarded_agent_state,
     select_persistent_exited_pty_candidate, session_has_current_pty_submission_provenance, Arc,

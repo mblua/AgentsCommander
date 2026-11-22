@@ -530,10 +530,6 @@ pub struct MessageWarnings {
     pub(super) warned: OnceLock<Mutex<HashSet<String>>>,
 }
 
-#[allow(
-    clippy::new_without_default,
-    reason = "one warning registry per AppState; no implicit default instance"
-)]
 impl MessageWarnings {
     pub fn new() -> Self {
         Self {

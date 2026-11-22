@@ -925,6 +925,6 @@ pub(crate) struct ResponseWakeWork {
         crate::pty::manager::ResponseRouteIdentity,
     )>,
     // P05 creates the nonce-bound context at the actual pre-write boundary.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "dormant until P05; read only by tests")]
     pub(crate) delivery_context: Option<crate::pty::manager::ResponseDeliveryContext>,
 }
