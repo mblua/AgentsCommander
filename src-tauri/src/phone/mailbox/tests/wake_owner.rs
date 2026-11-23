@@ -1,17 +1,22 @@
 use super::super::handoff::wake_claim_path;
 use super::super::poller::{deliver_claimed_wake, OwnedPeerWakeStep, ValidatedWake};
 use super::super::pty_observation::WakeDeliveryState;
+use super::claim_and::prime_route_tracker;
 use super::support_core::make_mailbox_fixture_in;
 use super::*;
 use crate::config::sessions_persistence::{classify_create_carrier_scope, CreateCarrierScope};
 use crate::phone::mailbox::host::MailboxHost;
-use crate::pty::manager::{CreateAdmission, CreateClassification, ResponseRouteIdentity};
+use crate::pty::manager::{
+    CreateAdmission, CreateClassification, ResponseCloseState, ResponseDeliveryProof,
+    ResponseRouteIdentity, ReturnDeliveryProof,
+};
 use crate::session::selection::{
-    OwnedReplacementContinuation, PreparedOwnedReplacement, ReplacementFixtureControl,
-    SourceExecutorGuard,
+    OwnedReplacementContinuation, ReplacementFixtureControl, SourceExecutorGuard,
 };
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 type WakeCoreResult = Result<OwnedPeerWakeStep, String>;
 type WakeCoreFuture = Pin<Box<dyn Future<Output = WakeCoreResult> + Send>>;
@@ -22,34 +27,15 @@ struct CapturedCore {
     future: Mutex<Option<WakeCoreFuture>>,
 }
 
-enum WakeOwnerProbe {
-    RefuseBinding(Mutex<Option<Uuid>>),
-    CaptureCore(CapturedCore),
-}
-
 tokio::task_local! {
-    static WAKE_OWNER_PROBE: Arc<WakeOwnerProbe>;
-}
-
-pub(in crate::phone::mailbox) fn fixture_source_binding(
-    mut candidate: PreparedOwnedReplacement,
-) -> PreparedOwnedReplacement {
-    let _ = WAKE_OWNER_PROBE.try_with(|probe| {
-        if let WakeOwnerProbe::RefuseBinding(reserved) = probe.as_ref() {
-            let mut reserved = reserved.lock().unwrap();
-            reserved.get_or_insert_with(|| candidate.fixture_mismatch_wake_executor());
-        }
-    });
-    candidate
+    static WAKE_CORE_CAPTURE: Arc<CapturedCore>;
 }
 
 pub(in crate::phone::mailbox) fn fixture_capture_owner(
     continuation: &OwnedReplacementContinuation,
 ) {
-    let _ = WAKE_OWNER_PROBE.try_with(|probe| {
-        if let WakeOwnerProbe::CaptureCore(captured) = probe.as_ref() {
-            *captured.owner.lock().unwrap() = Some(continuation.clone());
-        }
+    let _ = WAKE_CORE_CAPTURE.try_with(|captured| {
+        *captured.owner.lock().unwrap() = Some(continuation.clone());
     });
 }
 
@@ -57,12 +43,10 @@ pub(in crate::phone::mailbox) async fn run_owned_persist_core(
     operation: impl Future<Output = WakeCoreResult> + Send + 'static,
 ) -> WakeCoreResult {
     let mut operation = Some(operation);
-    let _ = WAKE_OWNER_PROBE.try_with(|probe| {
-        if let WakeOwnerProbe::CaptureCore(captured) = probe.as_ref() {
-            *captured.future.lock().unwrap() = operation
-                .take()
-                .map(|operation| -> WakeCoreFuture { Box::pin(operation) });
-        }
+    let _ = WAKE_CORE_CAPTURE.try_with(|captured| {
+        *captured.future.lock().unwrap() = operation
+            .take()
+            .map(|operation| -> WakeCoreFuture { Box::pin(operation) });
     });
     match operation {
         Some(operation) => {
@@ -141,6 +125,82 @@ async fn reacquire_lexical_guards(app: &impl MailboxHost, target: &str) {
     drop((exact, stripe));
 }
 
+fn assert_dispatch_released(tracker: &ResponseCloseState, msg: &OutboxMessage) {
+    // The real carrier is retired. Arm a temporary route on the same tracker and target.
+    let member = ResponseRouteIdentity {
+        target: msg.to.clone(),
+        session_id: Uuid::new_v4(),
+        token: Uuid::new_v4(),
+        generation: 1,
+        backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+        carrier_version: 1,
+    };
+    let coordinator = ResponseRouteIdentity {
+        target: msg.from.clone(),
+        session_id: Uuid::new_v4(),
+        token: Uuid::new_v4(),
+        ..member.clone()
+    };
+    let now = Instant::now();
+    prime_route_tracker(tracker, &member, &coordinator, now);
+    let key = "wake-owner-release-probe";
+    let digest = "release-probe-body";
+    let mut request = tracker.reserve_work(&member.target, key).unwrap();
+    assert_eq!(request.accept_durable(digest), Ok(true));
+    drop(request);
+    let context = tracker
+        .reserve_policy_candidate(
+            member.clone(),
+            coordinator.clone(),
+            key.into(),
+            digest.into(),
+            now,
+        )
+        .unwrap();
+    tracker.mark_request_submitted(&context, true);
+    tracker
+        .register_request(
+            ResponseDeliveryProof {
+                context,
+                member: member.clone(),
+                coordinator: coordinator.clone(),
+                published_carrier_version: member.carrier_version,
+            },
+            now,
+        )
+        .unwrap();
+    let context = tracker
+        .admit_return(
+            &member,
+            &coordinator,
+            "wake-owner-release-return".into(),
+            "release-return-body".into(),
+            now,
+        )
+        .unwrap();
+    tracker
+        .observe_return_success(ReturnDeliveryProof { context }, now)
+        .unwrap();
+
+    let held = tracker.begin_delivery(&member.target).unwrap();
+    let eligible_at = Instant::now() + Duration::from_secs(60);
+    assert!(
+        tracker
+            .select_ticket(member.session_id, eligible_at)
+            .is_err(),
+        "a held dispatch must block response close",
+    );
+    drop(held);
+    assert!(
+        tracker
+            .select_ticket(member.session_id, eligible_at)
+            .is_ok(),
+        "the refused wake must leave no dispatch reservation",
+    );
+    tracker.remove_route(member.session_id, member.generation);
+    tracker.remove_route(coordinator.session_id, coordinator.generation);
+}
+
 async fn assert_unpublished_and_reacquire(
     app: &impl MailboxHost,
     msg: &OutboxMessage,
@@ -189,10 +249,8 @@ async fn assert_unpublished_and_reacquire(
         .reserve_create_owner(&msg.to, Uuid::new_v4(), classification)
         .unwrap();
     assert!(matches!(create, CreateAdmission::Reserved(_)));
-    let work = tracker
-        .begin_delivery(&msg.to)
-        .expect("can reserve delivery again");
-    drop((create, work, permit));
+    drop((create, permit));
+    assert_dispatch_released(&tracker, msg);
     reacquire_lexical_guards(app, &msg.to).await;
 }
 
@@ -225,11 +283,11 @@ async fn wake_owner_bind_refusal_leaves_current_carrier_and_counts_retry() {
         message: msg,
         response: None,
     };
-    let probe = Arc::new(WakeOwnerProbe::RefuseBinding(Mutex::new(None)));
+    let observed = Arc::new(OnceLock::new());
     let outcome = tokio::time::timeout(
         WAIT,
-        WAKE_OWNER_PROBE.scope(
-            probe.clone(),
+        SelectionCoordinator::fixture_refuse_wake_binding(
+            observed.clone(),
             deliver_claimed_wake(&poller, app, &claim, &origin, &wake),
         ),
     )
@@ -241,13 +299,7 @@ async fn wake_owner_bind_refusal_leaves_current_carrier_and_counts_retry() {
     );
     assert_eq!(WARNINGS.0.load(Ordering::Relaxed), 1);
     assert_eq!(coordinator.fixture_root_count(), Some(0));
-    let WakeOwnerProbe::RefuseBinding(reserved) = probe.as_ref() else {
-        unreachable!()
-    };
-    let reserved = reserved
-        .lock()
-        .unwrap()
-        .expect("fixture selected reserved B");
+    let reserved = *observed.get().expect("pre-bind probe observed reserved B");
     assert_unpublished_and_reacquire(app, &wake.message, &fixture.target_cwd, previous, reserved)
         .await;
 
@@ -284,10 +336,10 @@ async fn wake_owner_dropped_before_poll_stops_without_effects() {
     let app = fixture.app.handle();
     let msg = wake_message_to_target();
     let poller = MailboxPoller::default();
-    let probe = Arc::new(WakeOwnerProbe::CaptureCore(CapturedCore::default()));
+    let captured = Arc::new(CapturedCore::default());
     let result = tokio::time::timeout(
         WAIT,
-        WAKE_OWNER_PROBE.scope(probe.clone(), poller.deliver_wake(app, &msg)),
+        WAKE_CORE_CAPTURE.scope(captured.clone(), poller.deliver_wake(app, &msg)),
     )
     .await
     .expect("producer captured");
@@ -295,9 +347,6 @@ async fn wake_owner_dropped_before_poll_stops_without_effects() {
         result.unwrap_err(),
         "fixture captured wake core before poll"
     );
-    let WakeOwnerProbe::CaptureCore(captured) = probe.as_ref() else {
-        unreachable!()
-    };
     let owner = captured.owner.lock().unwrap().take().unwrap();
     let before = owner.fixture_wake_source_observation();
     assert!(before.active && !before.stopped);

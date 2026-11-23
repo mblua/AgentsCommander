@@ -17,7 +17,7 @@ use super::poller::{
 use super::pty_claim::MailboxTestHooks;
 use super::pty_claim::{ResponseWakeWork, WakeDelivery};
 #[cfg(test)]
-use super::tests::{fixture_capture_owner, fixture_source_binding, run_owned_persist_core};
+use super::tests::{fixture_capture_owner, run_owned_persist_core};
 #[cfg(not(test))]
 use crate::config::sessions_persistence::run_owned_persist_core;
 use crate::config::teams;
@@ -770,8 +770,6 @@ impl MailboxPoller {
                 }
             }
             if let Some(candidate) = prepared.take() {
-                #[cfg(test)]
-                let candidate = fixture_source_binding(candidate);
                 let tracker = pty
                     .lock()
                     .map_err(|_| "targetCreateGateUnavailable".to_string())?

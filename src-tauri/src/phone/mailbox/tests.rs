@@ -45,9 +45,7 @@ mod the_pty;
 mod wake_dispatch;
 mod wake_dispatch_2;
 mod wake_owner;
-pub(super) use wake_owner::{
-    fixture_capture_owner, fixture_source_binding, run_owned_persist_core,
-};
+pub(super) use wake_owner::{fixture_capture_owner, run_owned_persist_core};
 
 use super::*;
 use crate::config::settings::AppSettings;

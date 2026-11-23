@@ -38,6 +38,11 @@ use super::{
 };
 
 #[cfg(test)]
+use crate::pty::manager::{CreateOwnerReservation, WorkDeliveryReservation};
+#[cfg(test)]
+use std::sync::OnceLock;
+
+#[cfg(test)]
 use super::replacement::FixtureRootReservation;
 
 pub(crate) enum WakeReplacementAdmissionError {
@@ -55,12 +60,25 @@ impl WakeReplacementAdmissionError {
 }
 
 #[cfg(test)]
-impl PreparedOwnedReplacement {
-    pub(crate) fn fixture_mismatch_wake_executor(&mut self) -> Uuid {
-        self.executor_nonce = Uuid::new_v4();
-        let state = self.owner.state.lock().unwrap();
-        state.replacement.as_ref().unwrap().binding.session_id()
-    }
+tokio::task_local! {
+    static WAKE_BIND_REFUSAL: Arc<OnceLock<Uuid>>;
+}
+
+#[cfg(test)]
+fn fixture_wake_binding(
+    continuation: OwnedReplacementContinuation,
+    binding: PendingCreateBinding,
+    // Borrow both handles so the probe is tied to this attempt's live reservations.
+    _held: (&CreateOwnerReservation, &WorkDeliveryReservation),
+) -> OwnedReplacementContinuation {
+    WAKE_BIND_REFUSAL
+        .try_with(|observed| {
+            observed
+                .set(binding.session_id())
+                .expect("wake bind probe reached once");
+            continuation.fixture_mismatched_wake_executor()
+        })
+        .unwrap_or(continuation)
 }
 
 #[cfg(test)]
@@ -460,6 +478,14 @@ impl SelectionCoordinator {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) async fn fixture_refuse_wake_binding<T>(
+        observed: Arc<OnceLock<Uuid>>,
+        wake: impl std::future::Future<Output = T>,
+    ) -> T {
+        WAKE_BIND_REFUSAL.scope(observed, wake).await
+    }
+
     fn admit_owned_replacement_with_source(
         &self,
         permit: &crate::session::manager::CarrierMutationPermit,
@@ -509,6 +535,12 @@ impl SelectionCoordinator {
             source_validation: None,
             #[cfg(test)]
             fixture: None,
+        };
+        #[cfg(test)]
+        let continuation = if source.is_some() {
+            fixture_wake_binding(continuation, binding, (&reservation, &work))
+        } else {
+            continuation
         };
         if source
             .as_mut()
