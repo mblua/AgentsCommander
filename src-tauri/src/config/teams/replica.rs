@@ -442,7 +442,7 @@ pub(super) fn team_members(
         }
         crate::path_identity::verify_directory(&ac_root.join(format!("_agent_{member}")))?;
         seen.push(member.clone());
-        // #1245: the application's team-config writer requires the coordinator
+        // The application's team-config writer requires the coordinator
         // to appear in `agents` (commands/entity_creation.rs::
         // normalize_team_config_for_project, and rule 4 of
         // docs/agent-matrix-conventions.md). The coordinator is returned

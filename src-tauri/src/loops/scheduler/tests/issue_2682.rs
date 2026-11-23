@@ -1,6 +1,6 @@
 use super::*;
 
-// #2682 T2b - the CAS window in `commit_scan_section`, under the Loop lock.
+// T2b - the CAS window in `commit_scan_section`, under the Loop lock.
 
 const SCAN_CHILD_DIR_ENV: &str = "AC_2682_SCAN_CHILD_DIR";
 
@@ -61,7 +61,7 @@ fn assert_update_survived(dir: &Path, update: LoopState) {
     );
 }
 
-/// #2682 T2b, in-process - the scan commit stops between its CAS compare
+/// T2b, in-process - the scan commit stops between its CAS compare
 /// and its replace while an update runs. With the Loop lock the update
 /// waits and lands after; without it the commit clobbers the update.
 #[test]
@@ -85,7 +85,7 @@ fn issue_2682_t2b_scan_commit_does_not_clobber_an_update() {
     assert_update_survived(&dir, update);
 }
 
-/// #2682 - the child half of T2b's cross-process leg: a scan commit that
+/// The child half of T2b's cross-process leg: a scan commit that
 /// pauses (armed by environment) after its CAS compare. A no-op without
 /// the child-only environment.
 #[test]
@@ -98,7 +98,7 @@ fn issue_2682_scan_commit_child() {
     println!("AC_2682_SCAN_CHILD_WRITTEN");
 }
 
-/// #2682 T2b, cross-process - the lost update #2682 names: the scan commit
+/// T2b, cross-process - the lost update #2682 names: the scan commit
 /// runs in a child process, the update in this one.
 #[test]
 fn issue_2682_t2b_cross_process_scan_commit_does_not_clobber_an_update() {
@@ -159,4 +159,4 @@ fn issue_2682_t2b_cross_process_scan_commit_does_not_clobber_an_update() {
     assert_update_survived(&dir, update);
 }
 
-// #2698 - a failed state write after delivery must not cause re-delivery.
+// A failed state write after delivery must not cause re-delivery.
