@@ -7,6 +7,7 @@
 //! Spawning and argument injection live in `create` and `resume_args`.
 
 use crate::config::agent_config;
+use crate::config::coding_agent_files::ConfigFileLocator;
 use crate::config::settings::AppSettings;
 use crate::session::session::SessionCommunication;
 use crate::session::session::SessionCommunicationKind;
@@ -171,16 +172,37 @@ pub(crate) struct LastCodingAgentWrite {
     agent_id: String,
     label: String,
     descriptor: Option<(String, std::collections::BTreeMap<String, String>)>,
+    /// #4845 - locator JSON of the file the launch came from (`sourceFile`).
+    source: Option<serde_json::Value>,
 }
 
 /// Resolve the label (the provided one, else settings, else "Unknown") and the
 /// descriptor for `agent_id`. Without the label fallback, callers that pass an
 /// agent id but no label (session-requests, web remote) would write
 /// app: "Unknown" into the per-instance config.json.
+#[cfg(test)]
 pub(crate) fn prepare_last_coding_agent_write(
     agent_id: &str,
     agent_label: Option<&str>,
     settings: &AppSettings,
+) -> LastCodingAgentWrite {
+    LastCodingAgentWrite {
+        source: None,
+        ..prepare_last_coding_agent_write_from(
+            agent_id,
+            agent_label,
+            settings,
+            &ConfigFileLocator::RegisteredInstance {},
+        )
+    }
+}
+
+/// #4845 - `prepare_last_coding_agent_write` plus the launch's source file.
+pub(crate) fn prepare_last_coding_agent_write_from(
+    agent_id: &str,
+    agent_label: Option<&str>,
+    settings: &AppSettings,
+    source: &ConfigFileLocator,
 ) -> LastCodingAgentWrite {
     let label = match agent_label {
         Some(l) => l.to_string(),
@@ -195,6 +217,7 @@ pub(crate) fn prepare_last_coding_agent_write(
         agent_id: agent_id.to_string(),
         label,
         descriptor: coding_agent_descriptor(agent_id, settings),
+        source: serde_json::to_value(source).ok(),
     }
 }
 
@@ -204,7 +227,7 @@ pub(crate) fn save_last_coding_agent(
     session_id: &str,
     write: &LastCodingAgentWrite,
 ) -> Result<(), String> {
-    agent_config::set_last_coding_agent(
+    agent_config::set_last_coding_agent_with_source(
         cwd,
         &write.agent_id,
         &write.label,
@@ -213,6 +236,7 @@ pub(crate) fn save_last_coding_agent(
             .descriptor
             .as_ref()
             .map(|(command, identity)| (command.as_str(), identity)),
+        write.source.as_ref(),
     )
 }
 
