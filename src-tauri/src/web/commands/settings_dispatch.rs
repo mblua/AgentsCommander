@@ -241,12 +241,10 @@ fn context_arg(args: &Value) -> Option<String> {
 }
 
 fn settings_path_arg() -> Result<std::path::PathBuf, String> {
-    crate::config::config_dir()
-        .map(|dir| dir.join(crate::config::instance_artifacts::SETTINGS_FILE_NAME))
-        .ok_or_else(|| {
-            "configFileUnavailable: The settings folder is not available. Nothing was changed."
-                .to_owned()
-        })
+    crate::config::settings::settings_path().ok_or_else(|| {
+        "configFileUnavailable: The settings folder is not available. Nothing was changed."
+            .to_owned()
+    })
 }
 
 /// #4845 P02: the six web-allowed config-file commands (`load` is desktop-only, D6).

@@ -374,15 +374,13 @@ fn context_of(settings: &AppSettings, context: Option<&str>) -> Result<ConfigCon
 
 /// Decision 7: the settings path of the read wrappers (same value as the owner's path).
 fn settings_file_path() -> Result<PathBuf, String> {
-    crate::config::config_dir()
-        .map(|dir| dir.join(crate::config::instance_artifacts::SETTINGS_FILE_NAME))
-        .ok_or_else(|| {
-            ConfigFileError::new(
-                "configFileUnavailable",
-                "The settings folder is not available.",
-            )
-            .to_string()
-        })
+    crate::config::settings::settings_path().ok_or_else(|| {
+        ConfigFileError::new(
+            "configFileUnavailable",
+            "The settings folder is not available.",
+        )
+        .to_string()
+    })
 }
 
 fn config_list(

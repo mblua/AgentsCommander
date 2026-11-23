@@ -146,9 +146,6 @@ pub use field::{
 };
 #[cfg(test)]
 pub(crate) use instance::settings_fixture_path;
-#[cfg(not(test))]
-use instance::settings_path;
-#[cfg(test)]
 pub(crate) use instance::settings_path;
 pub(crate) use instance::{
     instance_settings_display_path, instance_settings_target, persisted_instance_token_matches,
