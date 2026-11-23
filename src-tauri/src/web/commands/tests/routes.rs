@@ -37,7 +37,7 @@ fn client_broadcast_allowlist_requires_exact_typed_ui_payloads() {
 
 #[tokio::test]
 async fn get_settings_route_returns_snapshot_and_omits_root_token() {
-    // #1077: the browser get_settings route must reuse the shared snapshot
+    // The browser get_settings route must reuse the shared snapshot
     // helper, so it carries the resolution report and never leaks rootToken.
     let settings = AppSettings {
         root_token: Some("WS-ROUTE-ROOT-TOKEN".to_string()),
@@ -62,7 +62,7 @@ async fn get_settings_route_returns_snapshot_and_omits_root_token() {
     assert!(resolution["reconciliationError"].is_null());
 }
 
-/// #2133 (P4) - the web arm is a real implementation, not the null no-op group. It goes
+/// (P4) - the web arm is a real implementation, not the null no-op group. It goes
 /// through the process config dir, so it asserts only equality with the native command.
 #[tokio::test]
 async fn the_web_arm_serves_the_same_agent_help_payload() {
