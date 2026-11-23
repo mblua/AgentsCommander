@@ -130,7 +130,7 @@ async function flush(): Promise<void> {
 const startupBanner = (root: HTMLElement): HTMLElement | null =>
   root.querySelector<HTMLElement>('[data-ac-testid="watchers.startupDegraded"]');
 
-describe("the watcher activity window (#1171)", () => {
+describe("the watcher activity window", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -478,7 +478,7 @@ describe("the watcher activity window (#1171)", () => {
    * Test 79d, both orderings of the same race. They fail differently, which is why
    * neither one alone is enough.
    */
-  describe("settling the scope on mount (#1171 test 79d)", () => {
+  describe("settling the scope on mount (test 79d)", () => {
     it("adopts the event and never fetches the scope it was about to leave", async () => {
       const pull = deferred<string | null>();
       const fake = transportWith(snapshot());
@@ -539,7 +539,7 @@ describe("the watcher activity window (#1171)", () => {
    * Test 79e, the content guard. Three assertions that fail independently, because a
    * correct selector over the previous session's rows is the failure this exists to prevent.
    */
-  describe("guarding what is painted (#1171 test 79e)", () => {
+  describe("guarding what is painted (test 79e)", () => {
     it("drops the previous scope's rows synchronously, before the new fetch resolves and when it rejects", async () => {
       const second = deferred<WatcherActivitySnapshot>();
       const fake = transportWith(snapshot());
@@ -774,7 +774,7 @@ describe("the watcher activity window (#1171)", () => {
    * list afterwards, so an answer that resolves out of order is not a flicker: it is wrong
    * permanently.
    */
-  describe("reloading the session list (#1171)", () => {
+  describe("reloading the session list", () => {
     const optionValues = (root: HTMLElement) =>
       [
         ...root.querySelectorAll<HTMLOptionElement>(
@@ -929,7 +929,7 @@ describe("the watcher activity window (#1171)", () => {
  * registration that REJECTS strands the earlier one: it never reaches the component's
  * cleanup, and the window is gone with a live move handler still attached to it.
  */
-describe("registering a set of listeners as one unit (#1171)", () => {
+describe("registering a set of listeners as one unit", () => {
   it("hands over a single release when every registration succeeds", async () => {
     const released: string[] = [];
     const release = await registerAll(
@@ -1000,7 +1000,7 @@ describe("registering a set of listeners as one unit (#1171)", () => {
  * rect by the scale factor on every save-and-reopen cycle. The defect is invisible at a scale
  * factor of 1, which is the only one a headless run ever has, so it is pinned here.
  */
-describe("persisting the activity window's geometry (#1171)", () => {
+describe("persisting the activity window's geometry", () => {
   it("converts a physical rect to the logical one the builder restores", () => {
     expect(logicalGeometry({ x: 300, y: 150, width: 2205, height: 1200 }, 1.5)).toEqual({
       x: 200,
@@ -1038,7 +1038,7 @@ describe("persisting the activity window's geometry (#1171)", () => {
  * The failure `withDeadline` exists for needs a promise that never settles, which no real IPC
  * call produces on demand, so it is tested here in isolation rather than through the window.
  */
-describe("bounding one activity round (#1188)", () => {
+describe("bounding one activity round", () => {
   // Fake timers are required even where nothing is advanced: `vi.getTimerCount()` goes through
   // Vitest's `_checkFakeTimers()`, which throws outright when the timer APIs are not mocked.
   beforeEach(() => {
@@ -1087,7 +1087,7 @@ describe("bounding one activity round (#1188)", () => {
  * than blank, and `loadError` is only ever written from a `catch`, which a promise that never
  * settles never reaches.
  */
-describe("the activity poll chain (#1188)", () => {
+describe("the activity poll chain", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -1307,7 +1307,7 @@ describe("the activity poll chain (#1188)", () => {
  * failure", and a `finally` to make the arming unconditional once everything pending has been
  * made to settle. Neither half works alone.
  */
-describe("the watcher window mount chain (#1196)", () => {
+describe("the watcher window mount chain", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

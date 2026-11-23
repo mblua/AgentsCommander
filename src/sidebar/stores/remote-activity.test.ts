@@ -25,7 +25,7 @@ function update(overrides: Partial<RemoteActivityUpdate> = {}): RemoteActivityUp
   };
 }
 
-describe("remoteActivityStore (#2064)", () => {
+describe("remoteActivityStore", () => {
   beforeEach(() => {
     remoteActivityStore.clearAll();
   });

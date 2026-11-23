@@ -69,7 +69,7 @@ describe("replica repo badges", () => {
 // never show Browse Branch. The watcher already computed the per-repo branches
 // and threw them away; B2 keeps them. These tests drive the real seam the sidebar
 // uses: replicaVolatileStore <- event, then configuredReplicaRepoBadges reads it.
-describe("#943 B2 per-repo branches are merged BY PATH", () => {
+describe("B2 per-repo branches are merged BY PATH", () => {
   const REPLICA = "C:\\proj\\.ac\\wg-1-team\\__agent_coord";
   const REPO_A = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
   const REPO_B = "C:\\proj\\.ac\\wg-1-team\\repo-webpage";
@@ -184,7 +184,7 @@ describe("#943 B2 per-repo branches are merged BY PATH", () => {
 // reason. The stake is different though: a transposed BRANCH opens the wrong
 // Browse Branch page, a transposed DIRTY accuses a clean repo of holding
 // uncommitted work (or, worse, clears the accusation from one that does).
-describe("#1028 per-repo dirty is merged BY PATH", () => {
+describe("per-repo dirty is merged BY PATH", () => {
   const REPLICA = "C:\\proj\\.ac\\wg-1-team\\__agent_coord";
   const REPO_A = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
   const REPO_B = "C:\\proj\\.ac\\wg-1-team\\repo-webpage";
@@ -290,7 +290,7 @@ describe("#1028 per-repo dirty is merged BY PATH", () => {
 
 // The tooltip is the only surface that distinguishes all three states, so
 // the colour can stay a binary alarm at 8px.
-describe("#1028 badge title carries the third state", () => {
+describe("badge title carries the third state", () => {
   const REPO = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
 
   it("names local work not confirmed by cached origin tracking when the repo is red", () => {
@@ -316,7 +316,7 @@ describe("#1028 badge title carries the third state", () => {
 // The CI and branch-staleness suffixes on the same tooltip. The second
 // parameter is OPTIONAL with a default, which is what keeps every call site above
 // compiling unedited and every omitted call byte-identical.
-describe("#2064 badge title remote-activity suffixes", () => {
+describe("badge title remote-activity suffixes", () => {
   const REPO = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
 
   /** One repo's published answer; unknown/unknown/null unless overridden, which is
@@ -380,7 +380,7 @@ describe("#2064 badge title remote-activity suffixes", () => {
   });
 });
 
-describe("automationIdPart dash trim (#4456 S8786)", () => {
+describe("automationIdPart dash trim", () => {
   it.each([
     ["", "unknown"],
     ["-", "unknown"],
