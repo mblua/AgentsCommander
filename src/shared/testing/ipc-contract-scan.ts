@@ -40,29 +40,48 @@ function wordEnd(text: string, index: number): number {
   return index;
 }
 
-function* commandHeads(text: string): Generator<CommandHead, void> {
-  let nextOpen = -1;
-  let beforeOpen = -1;
-  for (let start = text.indexOf("fn"); start >= 0; start = text.indexOf("fn", start + 2)) {
-    if (/\w/.test(text.charAt(start - 1)) || !/\s/.test(text.charAt(start + 2))) continue;
-    const nameStart = whitespaceEnd(text, start + 2);
-    const nameEnd = wordEnd(text, nameStart);
-    if (nameStart === nameEnd) continue;
+function readCommandPrefix(
+  text: string,
+  start: number,
+): { nameStart: number; nameEnd: number; next: number } | null {
+  if (/\w/.test(text.charAt(start - 1)) || !/\s/.test(text.charAt(start + 2))) return null;
+  const nameStart = whitespaceEnd(text, start + 2);
+  const nameEnd = wordEnd(text, nameStart);
+  if (nameStart === nameEnd) return null;
+  return { nameStart, nameEnd, next: whitespaceEnd(text, nameEnd) };
+}
 
-    const next = whitespaceEnd(text, nameEnd);
+function readGenericWindow(text: string, next: number): { open: number; beforeOpen: number } {
+  const open = text.indexOf("(", next + 1);
+  if (open < 0) return { open, beforeOpen: -1 };
+
+  let beforeOpen = open - 1;
+  while (beforeOpen > next && /\s/.test(text.charAt(beforeOpen))) beforeOpen--;
+  return { open, beforeOpen };
+}
+
+function isGenericHead(text: string, next: number, beforeOpen: number): boolean {
+  return beforeOpen > next && text[beforeOpen] === ">";
+}
+
+function* commandHeads(text: string): Generator<CommandHead, void> {
+  let window = { open: -1, beforeOpen: -1 };
+  for (let start = text.indexOf("fn"); start >= 0; start = text.indexOf("fn", start + 2)) {
+    const prefix = readCommandPrefix(text, start);
+    if (!prefix) continue;
+    const { nameStart, nameEnd, next } = prefix;
+
     if (text[next] === "(") {
       yield { start, name: text.slice(nameStart, nameEnd), open: next };
-    } else if (text[next] === "<") {
-      // Candidates in the same span share the first parenthesis and its preceding token.
-      if (nextOpen < next) {
-        nextOpen = text.indexOf("(", next + 1);
-        if (nextOpen < 0) return;
-        beforeOpen = nextOpen - 1;
-        while (beforeOpen > next && /\s/.test(text.charAt(beforeOpen))) beforeOpen--;
-      }
-      if (beforeOpen > next && text[beforeOpen] === ">") {
-        yield { start, name: text.slice(nameStart, nameEnd), open: nextOpen };
-      }
+      continue;
+    }
+    if (text[next] !== "<") continue;
+
+    // Candidates in the same span share the first parenthesis and its preceding token.
+    if (window.open < next) window = readGenericWindow(text, next);
+    if (window.open < 0) return;
+    if (isGenericHead(text, next, window.beforeOpen)) {
+      yield { start, name: text.slice(nameStart, nameEnd), open: window.open };
     }
   }
 }
