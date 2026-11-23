@@ -44,8 +44,6 @@ pub mod voice;
 pub mod web;
 
 mod app_run;
-/// The concrete app builder threaded through `app_run`; named here so the
-/// Tauri type stays at the edge (gate 06).
 type AppBuilder = tauri::Builder<tauri::Wry>;
 mod app_state;
 mod co_managed;
