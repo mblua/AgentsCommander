@@ -210,7 +210,7 @@ pub(crate) fn supports_self_handoff_switch(shell: &str) -> bool {
     )
 }
 
-/// #2586 D3 - the readiness decision that preceded an injection, carried only
+/// D3 - the readiness decision that preceded an injection, carried only
 /// so the submit-seam observation can say whether the settle gate timed out.
 /// `Unknown` is for non-wake injection paths, which run no settle gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,11 +220,11 @@ pub(crate) enum SettleReadiness {
     Unknown,
 }
 
-/// #2586 D2 - chars in one redaction window. A row sharing any run of this many
+/// D2 - chars in one redaction window. A row sharing any run of this many
 /// consecutive chars with the payload (after whitespace collapsing) is redacted.
 const REDACTION_WINDOW: usize = 8;
 
-/// #2586 D2 - rows kept per observation: the last non-empty ones.
+/// D2 - rows kept per observation: the last non-empty ones.
 const SEAM_OBSERVATION_ROWS: usize = 6;
 
 /// Trim, then collapse every whitespace run (including `\n` and `\r`) to one
@@ -271,7 +271,7 @@ fn strip_seam_row_decoration(row: &str) -> &str {
         .trim_end()
 }
 
-/// #2586 D2 - render one submit-seam observation. Pure: no timer, no PTY.
+/// D2 - render one submit-seam observation. Pure: no timer, no PTY.
 ///
 /// Stated leak limit, not a no-leak guarantee: no run of `REDACTION_WINDOW` or
 /// more consecutive payload chars (modulo whitespace collapsing) survives, and
@@ -324,7 +324,7 @@ pub(crate) fn format_submit_seam_observation(
     out
 }
 
-/// #2586 D2 - one observation of the submit seam. The `PtyManager` mutex is
+/// D2 - one observation of the submit seam. The `PtyManager` mutex is
 /// taken and released inside this synchronous fn, so no guard crosses an
 /// await; a poisoned mutex answers `None`, never a panic or an error.
 fn observe_submit_seam(

@@ -1,4 +1,4 @@
-//! The single Jev call and its decision rule (#2232 phase 6, plan sections 4
+//! The single Jev call and its decision rule (phase 6, plan sections 4
 //! and 6).
 //!
 //! One candidate becomes one of the catalog's four destinations, or an
@@ -38,8 +38,8 @@ const MAX_ATTEMPTS: u32 = 2;
 /// Everything the call needs, copied field by field from phase 2's
 /// `AppSettings` by the caller.
 ///
-/// Holds the Jev API key: `Debug` redacts `api_key` (#4637); never log
-/// `api_key` in any form (#2455).
+/// Holds the Jev API key: `Debug` redacts `api_key`; never log
+/// `api_key` in any form.
 #[derive(Clone, PartialEq)]
 pub struct JevSettings {
     pub api_key: String,
@@ -295,7 +295,7 @@ async fn send_once(
     }
 }
 
-/// #2455 E2: every reason prefix this module, `capture::catalog` and the
+/// E2: every reason prefix this module, `capture::catalog` and the
 /// supervisor in `lib.rs` build. `safe_reason` emits only these literals.
 const SAFE_REASON_PREFIXES: &[&str] = &[
     // `decide` and `send_once`.
@@ -336,7 +336,7 @@ const SAFE_REASON_PREFIXES: &[&str] = &[
     "AlreadyConsumed",
 ];
 
-/// #2455 E2: the logged projection of a reason this phase did not build.
+/// E2: the logged projection of a reason this phase did not build.
 /// It copies NO byte of `reason`: the output is the longest matching literal
 /// from `SAFE_REASON_PREFIXES`, then `<redacted len=N>` for the byte length of
 /// the rest, or `<unclassified reason len=N>`. A blocklist that tries to keep

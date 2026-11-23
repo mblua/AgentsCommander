@@ -57,9 +57,9 @@ impl MailboxPoller {
         }
     }
 
-    /// (#1399) A delivery-only poller for a detached worker. `deliver_wake` and
+    /// A delivery-only poller for a detached worker. `deliver_wake` and
     /// its whole `&self` callee chain read `app.state::<...>()` (see the
-    /// #791 note at the top of `deliver_wake`), so a fresh instance sharing
+    /// Note at the top of `deliver_wake`), so a fresh instance sharing
     /// the same message warnings is equivalent to `&self` for the tail. Test hooks
     /// are carried across because `MailboxTestHooks` is `Arc`-based and `Clone`.
     pub(crate) fn delivery_poller(&self) -> Self {

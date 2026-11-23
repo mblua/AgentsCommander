@@ -139,7 +139,7 @@ fn session_wake_decision(
 ) -> (String, bool, bool, bool, bool, bool) {
     let agent_name = crate::config::teams::agent_fqn_from_path(&ps.working_directory);
     let live_is_coord = crate::config::teams::is_any_coordinator(&agent_name, teams);
-    // (#630) Backstop a transient empty discover_teams() with the snapshot's
+    // Backstop a transient empty discover_teams() with the snapshot's
     // persisted is_coordinator so a real coordinator is not silently downgraded
     // to "deferred" when project paths were not ready at cold start.
     let is_coord = resolve_is_coord_for_restore(live_is_coord, teams.is_empty(), ps.is_coordinator);
@@ -192,7 +192,7 @@ fn collect_restart_resume_target(
                 name: ps.name.clone(),
                 working_directory: ps.working_directory.clone(),
                 prompt: prompt.to_string(),
-                // (#1793) Stamped HERE, after the PTY was
+                // Stamped HERE, after the PTY was
                 // spawned and therefore after
                 // `register_session` seeded the activity
                 // clock, so "printable output strictly
@@ -234,7 +234,7 @@ fn root_spawn_recipe(
     let mut rebuild_failed = false;
     let resolved_spawn =
         if ps.agent_id.is_some() && settings_snapshot.agents_layer.unreadable_path().is_some() {
-            // #2716 (B3, 4.5b option S): skip, and push nothing to
+            // (B3, 4.5b option S): skip, and push nothing to
             // failed_recoverable, so the row keeps its wake inputs;
             // save_sessions_to_dir suppresses the rewrite.
             log::warn!(
@@ -267,7 +267,7 @@ fn root_spawn_recipe(
         } else {
             None
         };
-    // #1271 - the host shell is rebuilt at restore
+    // The host shell is rebuilt at restore
     // time from the SAME settings snapshot that
     // re-resolved the agent command (no persistence:
     // a persisted shell could pair with a freshly
@@ -290,7 +290,7 @@ fn session_spawn_recipe(
 ) -> Result<Option<crate::config::agent_command::AgentSpawnCommand>, ()> {
     let resolved_spawn =
         if ps.agent_id.is_some() && settings_snapshot.agents_layer.unreadable_path().is_some() {
-            // #2716 (B3, 4.5b option S): skip without pushing to failed_recoverable.
+            // (B3, 4.5b option S): skip without pushing to failed_recoverable.
             log::warn!(
                 "Skipping restore of '{}': the agents layer is unreadable",
                 ps.name
@@ -392,7 +392,7 @@ impl RestoreContext {
             self.restore_session(ps, &archived_roots, &mut progress)
                 .await;
         }
-        // #248 Grinch Z5 — load-bearing summary line. Replaces the per-session
+        // Grinch Z5 — load-bearing summary line. Replaces the per-session
         // info noise demoted to debug above. Must be emitted BEFORE the post-loop
         // active-switch block so the restore-decision summary is grouped with
         // the restore log in chronological order, not interleaved with switch events.
@@ -473,7 +473,7 @@ impl RestoreObservers {
             log::error!("[restore] observer 'idle' start failed: {e}");
         }
 
-        // (#1793) After the idle observer start, because that observer
+        // After the idle observer start, because that observer
         // maintains the `waiting_for_input` this polls, and before the rest
         // of the tail so a later tail panic cannot lose it. This single
         // drain is the whole once-per-app-start latch.

@@ -887,7 +887,7 @@ fn terminal_snapshot_host_process_transport_deadline_collision_and_output_failur
     );
 }
 
-/// #2317: a canonical room target is valid target syntax. The CLI must pass
+/// A canonical room target is valid target syntax. The CLI must pass
 /// target validation and stop at the next gate: requester root verification.
 /// A malformed room-shaped target still returns the fixed
 /// `target_syntax_invalid` error, and neither line may leak caller data.

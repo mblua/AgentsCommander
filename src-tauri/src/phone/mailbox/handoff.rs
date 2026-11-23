@@ -42,14 +42,14 @@ pub(crate) fn is_permanent_delivery_error(error: &str) -> bool {
         || error.starts_with(ERR_INVALID_PEER_TEXT)
 }
 
-/// (#1399) Claim marker for a message handed to a wake worker. Suffix, not a
+/// Claim marker for a message handed to a wake worker. Suffix, not a
 /// subdirectory, so `move_to_delivered` / `reject_message` / the outbox-project
 /// walk-up keep deriving from the same parent directory.
 pub(crate) const WAKE_CLAIM_SUFFIX: &str = ".in-flight";
 
 pub(crate) const WAKE_CLAIM_EXTENSION: &str = "in-flight";
 
-/// (#1399) `<dir>/<id>.json` -> `<dir>/<id>.json.in-flight`. Appends to the
+/// `<dir>/<id>.json` -> `<dir>/<id>.json.in-flight`. Appends to the
 /// `OsString` of `file_name()` and uses `with_file_name`, never
 /// `Path::with_extension`, so an id containing a dot cannot lose a component.
 pub(crate) fn wake_claim_path(path: &Path) -> PathBuf {
@@ -61,7 +61,7 @@ pub(crate) fn wake_claim_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// (#1399) Inverse of `wake_claim_path`. `Some` only when the file name ends
+/// Inverse of `wake_claim_path`. `Some` only when the file name ends
 /// with exactly `.json.in-flight`: reclamation must never resurrect a file this
 /// poller could not have claimed. Strips from `file_name()`, never via
 /// `with_extension`, so an id containing a dot survives; a non-UTF-8 name
@@ -100,7 +100,7 @@ pub(crate) fn wake_claim_has_settled_receipt(origin: &Path) -> Result<bool, Stri
     is_regular_receipt(&rejected, "rejected")
 }
 
-/// (#1399) A failed restore leaves the durable claim in place. An owning drain
+/// A failed restore leaves the durable claim in place. An owning drain
 /// keeps and requeues its outcome; without ledger ownership, a later poll or
 /// process restart retries general reclamation.
 pub(crate) fn release_wake_claim(claim: &Path, origin: &Path) {
@@ -109,7 +109,7 @@ pub(crate) fn release_wake_claim(claim: &Path, origin: &Path) {
     }
 }
 
-/// (#1399) Send time for outbox ordering, or `None` when it cannot be read.
+/// Send time for outbox ordering, or `None` when it cannot be read.
 /// Never a filter: `None` sorts first so an unreadable or malformed document
 /// still reaches the existing rejection path promptly.
 ///
@@ -134,7 +134,7 @@ pub(crate) fn outbox_message_send_time(path: &Path) -> Option<chrono::DateTime<c
         .map(|sent| sent.with_timezone(&chrono::Utc))
 }
 
-/// (#1399) Collapse spellings of one physical outbox to a single entry, keyed
+/// Collapse spellings of one physical outbox to a single entry, keyed
 /// by file-object identity. Two spellings of one directory (case, separator,
 /// 8.3 short name) would otherwise both be scanned, keep two independent
 /// `retry_tracker` counters, and let reclamation under the second spelling
