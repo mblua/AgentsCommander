@@ -7,7 +7,7 @@ import type {
 } from "../shared/types";
 
 /**
- * #1551 - pure derivations for the Settings Auto-update table (plan 5.10) and the
+ * Pure derivations for the Settings Auto-update table (plan 5.10) and the
  * Option 2 startup timeline (plan 5.10, round 5). Types only from `shared/types`;
  * this module never imports a store, so the overlay -> derivations -> types chain
  * stays acyclic (plan 11).
@@ -29,7 +29,7 @@ export interface AutoUpdateRowView {
   managedBy: string | null;
 }
 
-/** round 5 (Option 2 timeline); #1691 adds the two nonterminal states and the cancelled terminal state. */
+/** Option 2 timeline node states: four nonterminal, then terminal `ok`, `failed`, `cancelled`. */
 export type NodeState =
   | "pending"
   | "updating"
@@ -40,7 +40,7 @@ export type NodeState =
   | "cancelled";
 
 /**
- * #1691 - one timeline row. A row shows EXACTLY ONE line of text: a nonterminal row
+ * One timeline row. A row shows EXACTLY ONE line of text: a nonterminal row
  * shows `stateText` (one of the four fixed words), a terminal row shows `detail` (the
  * whole outcome as a single string). Never both, so no middle-dot split can reappear.
  */
@@ -54,9 +54,9 @@ export interface TimelineNodeView {
   /** the terminal outcome string; `null` on a nonterminal row. */
   detail: string | null;
   detailTitle: string | null;
-  /** #1691 - a terminal result was observed for this command (first winner). */
+  /** A terminal result was observed for this command (first winner). */
   terminal: boolean;
-  /** #1691 - nonterminal and no cancellation requested yet: the row action is actionable. */
+  /** Nonterminal and no cancellation requested yet: the row action is actionable. */
   cancellable: boolean;
 }
 
@@ -70,7 +70,7 @@ export interface TimelineHeaderView {
 
 export const CONFIGURED_LABELS = { yes: "Yes", no: "No", ask: "Will ask at startup" } as const;
 export const LIVE_LABELS = { idle: "-", updating: "Updating...", ok: "Updated", failed: "Update failed" } as const;
-/** #1691 - the only four nonterminal words. Terminal rows carry no state word at all. */
+/** The only four nonterminal words. Terminal rows carry no state word at all. */
 export const NODE_STATE_LABELS = {
   pending: "Pending",
   updating: "Updating...",
@@ -79,7 +79,7 @@ export const NODE_STATE_LABELS = {
 } as const;
 export const UNKNOWN_ERROR_LABEL = "unknown error";
 export const NOT_INSTALLED_LABEL = "Not installed";
-/** #1691 - the exact terminal copy. ASCII `-` and `->` only: no Unicode arrow, no middle dot. */
+/** The exact terminal copy. ASCII `-` and `->` only: no Unicode arrow, no middle dot. */
 export const NOTHING_TO_UPDATE_SUFFIX = "(Nothing to update)";
 export const UPDATE_UNVERIFIED_LABEL = "Update completed - Version could not be verified";
 export const CANCELLED_LABEL = "Cancelled";
@@ -128,7 +128,7 @@ export function liveView(
   return { state: "failed", label: LIVE_LABELS.failed, title: result.error ?? UNKNOWN_ERROR_LABEL };
 }
 
-/** #4804 - `get_agent_update_overview` row; `managedBy` is "mise" when the resolved
+/** `get_agent_update_overview` row; `managedBy` is "mise" when the resolved
  *  binary is mise-managed (AC skips its update). Omitted by older backends. */
 export type OverviewRowIn = AgentUpdateOverviewRow & { managedBy?: string | null };
 
@@ -156,7 +156,7 @@ export function deriveAutoUpdateRows(
 }
 
 /**
- * #1691 - the only version value a row may display: the version string of a nonempty
+ * The only version value a row may display: the version string of a nonempty
  * `installed` probe. Every other state (`missing`, `probeFailed`, `unprobed`, `checking`,
  * a version-less `installed`, no state at all) is not comparable and yields `null`, so a
  * row never prints an invented or non-comparable value.
@@ -168,7 +168,7 @@ export function describeInstall(install: InstallState | null | undefined): strin
 }
 
 /**
- * #1691 - the exact single string of a terminal row, from that result's own fields only
+ * The exact single string of a terminal row, from that result's own fields only
  * (never from the one-shot install-cache events):
  *
  * - cancelled -> `Cancelled`;
@@ -196,7 +196,7 @@ export function outcomeText(result: AgentUpdateResult): string {
   return UPDATE_UNVERIFIED_LABEL;
 }
 
-/** #1691 - the terminal state of a result; `ok` keeps the pre-#1691 attribute value for `succeeded`. */
+/** The terminal state of a result; `ok` keeps the legacy attribute value for `succeeded`. */
 export function outcomeState(result: AgentUpdateResult): NodeState {
   if (result.outcome === "cancelled") return "cancelled";
   if (result.outcome === "failed") return "failed";
@@ -204,7 +204,7 @@ export function outcomeState(result: AgentUpdateResult): NodeState {
 }
 
 /**
- * #1691 - first winner, then cancellation, then verification, then running. Cancellation
+ * First winner, then cancellation, then verification, then running. Cancellation
  * outranks verification so a verifying row that was already requested keeps saying
  * `Cancelling...`; both outrank `running` so a stale start never pulls a row backwards.
  */
@@ -279,7 +279,7 @@ export function deriveTimelineNodes(
 }
 
 /**
- * #1691 - `<done> of <total> completed`, plus `, <n> failed` only when failures exist.
+ * `<done> of <total> completed`, plus `, <n> failed` only when failures exist.
  * Every terminal row (cancelled included) counts as done; only `failed` counts as failed.
  */
 export function deriveTimelineHeader(views: TimelineNodeView[]): TimelineHeaderView {

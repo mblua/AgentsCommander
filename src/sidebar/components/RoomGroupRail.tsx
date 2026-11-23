@@ -101,7 +101,7 @@ function roomTooltipLabel(roomName: string): string {
 }
 
 function tooltipFor(folderName: string, rooms: AcWorkgroup[]): string {
-  // #2202 - ONE list and ONE sort over both row kinds: a working replica entry
+  // ONE list and ONE sort over both row kinds: a working replica entry
   // (`replica` set) and a room's CI entry (`replica` null). Room number is the
   // primary key for both, so a CI-only wg1 sorts above a working wg2; an
   // "append CI after the replicas" rule would invert that.
@@ -129,7 +129,7 @@ function buttonContent(
   name: string,
   rooms: AcWorkgroup[]
 ): Pick<GroupButton, "name" | "counter" | "working" | "raiseHand" | "blockedMenu"> {
-  // #2202 - the counter and the dot read the active meaning (session working OR
+  // The counter and the dot read the active meaning (session working OR
   // room CI running). The `working` field name is kept: renaming it would touch
   // RailButton and the dot testids for no behavior gain.
   const active = splitRoomsByActive(projectPath, rooms).active.length;
@@ -168,7 +168,7 @@ function favoriteRailTestIds(folderName: string, groupId: string): RailButtonTes
   };
 }
 
-// (#1257) A DISJOINT prefix on purpose, not `favoriteRailTestIds(folderName, "nonstop")`.
+// A DISJOINT prefix on purpose, not `favoriteRailTestIds(folderName, "nonstop")`.
 // That helper keys on the group id, and nothing reserves the string "nonstop":
 // `createGroupId` falls back to `group-N` (:373-382) and settings.50.personal.no-git.json is
 // hand-editable. A real group with id "nonstop" would then emit a duplicate
@@ -202,7 +202,7 @@ function groupButtonFor(
   };
 }
 
-// (#1257) Built here, not inline in ProjectRailSection, because the Favorites
+// Built here, not inline in ProjectRailSection, because the Favorites
 // section renders the SAME entry. Two copies would drift on display name,
 // counter, running dot, raise-hand or tooltip.
 function nonStopButtonFor(project: ProjectState, nonStop: NonStopGroupConfig): GroupButton {
@@ -219,7 +219,7 @@ function nonStopButtonFor(project: ProjectState, nonStop: NonStopGroupConfig): G
   };
 }
 
-// (#1257) Keyed on the selection, not on `groupId`. The Non-stop button carries
+// Keyed on the selection, not on `groupId`. The Non-stop button carries
 // `groupId: null` because it is not a `groups[]` record, so the previous
 // `button.groupId ? group : project` ternary routed it to the project target and
 // the Favorite item never rendered.
@@ -298,7 +298,7 @@ const RailButton: Component<{
     data-ac-testid={props.testIds.button}
   >
     <span class="workgroup-group-rail-title-line">
-      {/* #1859 - the blocked-menu rollup, mirroring the raise-hand indicator
+      {/* The blocked-menu rollup, mirroring the raise-hand indicator
           right below it. Blocked menu first, then raised hand, in every render
           site. Like the hand it does NOT check collapse: a group holding a
           blocked menu lights whether or not the tab is collapsed, which also
@@ -371,13 +371,13 @@ const FavoritesRailSection: Component<{
       const compiled = compileWorkgroupGroups(config.groups);
       const result: FavoriteEntry[] = [];
       const nonStop = config.nonStop;
-      // (#1257 D3) `show` is part of the condition on purpose. The rail only draws
+      // `show` is part of the condition on purpose. The rail only draws
       // the Non-stop button when `show` (:338) and `normalizeSelection` bounces a
       // {kind:"nonstop"} selection to All/Ungrouped when it is off
       // (workgroup-groups.ts:191-193), so a favorite rendered while Non-stop is off
       // would be a ghost button that jumps elsewhere on click. The flag is kept,
       // not cleared: turning Non-stop back on brings the entry back.
-      // (#1257 D4) Pushed BEFORE the groups so the block mirrors the project
+      // Pushed BEFORE the groups so the block mirrors the project
       // section's order and the list is deterministic.
       if (nonStop?.show && nonStop.favorite) {
         result.push({ kind: "nonstop", project, button: nonStopButtonFor(project, nonStop) });

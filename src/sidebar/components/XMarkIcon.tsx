@@ -1,7 +1,7 @@
 import type { Component } from "solid-js";
 
 /**
- * #895 — the "clear this selection" glyph. Distinct from [[TrashIcon]]: this one
+ * The "clear this selection" glyph. Distinct from [[TrashIcon]]: this one
  * drops a choice, it never deletes anything, so it is never tinted red. Callers
  * size/tint it via the passed-in `class` (fill: currentColor). Heroicons `x-mark`.
  */
