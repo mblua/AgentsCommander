@@ -129,13 +129,13 @@ impl SubstantiveInputTracker {
 
 /// What one chunk did, as observed by the single scan in `classify_chunk`.
 struct ChunkEffect {
-    /// #871 - a CR/LF arrived while non-whitespace printable content was
-    /// pending: a real prompt submission. Unchanged by #1682.
+    /// A CR/LF arrived while non-whitespace printable content was
+    /// pending: a real prompt submission. Unchanged since.
     submitted: bool,
-    /// #1682 - this chunk itself contributed non-whitespace printable content,
+    /// This chunk itself contributed non-whitespace printable content,
     /// i.e. it took the `*pending = true` arm at least once. Derived from the
     /// same scan and the same arm as `pending`, never from a second scan
-    /// beside it, so it cannot drift from #871's rules.
+    /// beside it, so it cannot drift from the tracker's rules.
     contributed: bool,
 }
 
@@ -214,10 +214,10 @@ fn classify_chunk(pending: &mut bool, data: &[u8]) -> ChunkEffect {
     }
 }
 
-/// #4778 - does this chunk submit a line? True iff a CR or LF byte appears outside
+/// Does this chunk submit a line? True iff a CR or LF byte appears outside
 /// an ESC-introduced sequence. Same ESC rules as `classify_chunk`, so Alt+Enter,
 /// mouse reports and focus reports are not Enter. Pending text is not required:
-/// a bare Enter submits too. Stateless; never touches the #871 tracker.
+/// a bare Enter submits too. Stateless; never touches the tracker.
 pub fn chunk_submits_line(data: &[u8]) -> bool {
     let mut i = 0;
     while i < data.len() {
@@ -234,7 +234,7 @@ pub fn chunk_submits_line(data: &[u8]) -> bool {
     false
 }
 
-/// #2336 - the typing-hold snapshot returned to the frontend padlock. `closed`
+/// The typing-hold snapshot returned to the frontend padlock. `closed`
 /// is the EFFECTIVE hold (manual OR the natural window, suppression included),
 /// which is exactly the state the click toggles. `held_count` is the number of
 /// unique peer wake message IDs currently recorded as deferred for the session.
@@ -245,14 +245,14 @@ pub struct TypingHoldSnapshot {
     pub held_count: u32,
 }
 
-/// #2336 - per-session typing-hold state: the automatic window and the manual
+/// Per-session typing-hold state: the automatic window and the manual
 /// padlock. Runtime-only; never persisted and never reconciled from disk.
 ///
 /// Deliberately separate from [`SubstantiveInputTracker`]. That tracker's
 /// `pending_within` clears on Enter, Ctrl-C and Ctrl-U, so it stops being true
 /// exactly when a person submits a line. This hold must survive a submission (a
 /// later key refreshes it), so it owns its own clock. Nothing here is read by
-/// #871/#1682 and nothing there is read here.
+/// the trackers and nothing there is read here.
 #[derive(Default)]
 pub struct TypingHoldTracker {
     sessions: HashMap<Uuid, TypingHoldSession>,
@@ -264,7 +264,7 @@ struct TypingHoldSession {
     /// `note_qualifying_key`, which every desktop `pty_write` chunk that passes
     /// [`chunk_qualifies_typing_hold`] reaches. `None` until the first one.
     last_qualifying_key: Option<Instant>,
-    /// #2379 - when the manual padlock was closed; `None` when no manual hold
+    /// When the manual padlock was closed; `None` when no manual hold
     /// is set. The manual hold has its own clock: it stays closed for twice the
     /// `typing_hold_seconds` window in force at read time, so a forgotten close
     /// cannot defer delivery forever. Only the instant is stored; the deadline
@@ -294,7 +294,7 @@ impl TypingHoldSession {
             .is_some_and(|last| last.elapsed() <= window)
     }
 
-    /// #2379 - the manual padlock window: twice the live `window` since the
+    /// The manual padlock window: twice the live `window` since the
     /// close. Evaluated against the `window` passed at read time, never against
     /// a captured or hardcoded duration, so a settings change moves the
     /// deadline of an existing close.
@@ -425,7 +425,7 @@ pub fn new_typing_hold_state() -> TypingHoldState {
     Arc::new(Mutex::new(TypingHoldTracker::default()))
 }
 
-/// #2336 - does one raw `pty_write` chunk contain a keystroke the typing hold
+/// Does one raw `pty_write` chunk contain a keystroke the typing hold
 /// counts? Qualifying: printable text, whitespace, Enter, Backspace, Delete,
 /// and the human edit controls Ctrl-C / Ctrl-U. Not qualifying: an empty write,
 /// anything introduced by ESC (arrows, focus reports, device replies, mouse

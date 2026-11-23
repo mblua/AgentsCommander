@@ -146,7 +146,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   };
   const supportChipText = (level: CodingAgentTestedLevel): string =>
     SUPPORT_CHIP_PREFIX + ": " + SUPPORT_LABEL[level];
-  /** Per-level Tested tooltip, verbatim from issue #2784. */
+  /** Per-level Tested tooltip, verbatim from the issue. */
   const TESTED_TOOLTIP: Record<CodingAgentTestedLevel, string> = {
     low: "Support for this Coding Agent in AgentsCommander is still experimental. If something does not work well here (blocking menus, etc.), please report it to the AgentsCommander project. Thank you!",
     medium: "Support for this Coding Agent in AgentsCommander is in beta. Most things should work; please report any issue you find to the AgentsCommander project. Thank you!",

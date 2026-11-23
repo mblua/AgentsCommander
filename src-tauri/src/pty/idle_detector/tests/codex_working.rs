@@ -1,7 +1,7 @@
 use super::*;
 
 // -----------------------------------------------------------------
-// #2879 - the Codex Working detector, driven through `evaluate_tick`
+// The Codex Working detector, driven through `evaluate_tick`
 // with injected instants, so no test sleeps.
 // -----------------------------------------------------------------
 

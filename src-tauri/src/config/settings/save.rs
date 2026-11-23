@@ -70,7 +70,7 @@ pub(crate) use value::{
     save_settings_value_with_startup, serialize_settings_component,
 };
 
-/// #774: counter feeding the per-call unique temp filename for settings saves.
+/// Counter feeding the per-call unique temp filename for settings saves.
 /// Combined with the PID it makes `settings.json.<pid>.<op_id>.tmp` distinct from
 /// any concurrent cross-process save (GUI startup, CLI verbs, closing flush) and
 /// from any leftover temp written by a prior crashed run. Mirrors
@@ -121,11 +121,11 @@ pub(crate) fn project_atomic_checkpoint(
     })
 }
 
-/// #1077: atomic tmp+rename writer over an already-built JSON `Value`. Shared by
-/// the raw and the project-aware writers. Preserves the #774 unique-temp +
+/// Atomic tmp+rename writer over an already-built JSON `Value`. Shared by
+/// the raw and the project-aware writers. Preserves the unique-temp +
 /// `rename_with_retry` behavior. The temp IS fsynced
 /// (`temporary.sync_all()`), and the parent directory is fsynced on unix after
-/// the rename. The caller owns #2058 backup rotation of the returned bytes.
+/// the rename. The caller owns backup rotation of the returned bytes.
 pub(crate) fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSaveError> {
     write_value_atomic_labeled(value, path, path)
 }
@@ -460,9 +460,9 @@ pub(crate) fn save_settings_with_project_paths_to_path(
     reconcile_project_state_to_path(settings, path, true, true).map(|_| ())
 }
 
-/// #778/#881 + #1077: the preserve-disk wrapper behind the default
+/// + The preserve-disk wrapper behind the default
 /// `save_settings`. Preserves all six on-disk project fields (materializing a
-/// group only when disk has no truth), then hands off to the #774-hardened
+/// group only when disk has no truth), then hands off to the hardened
 /// atomic writer and returns the fresh-decoded settings.
 pub(crate) fn save_settings_to_path_preserving_project_paths(
     settings: &AppSettings,
@@ -510,11 +510,11 @@ pub(crate) fn persist_loaded_settings_migrations(
         true
     };
     if backup_ok {
-        // #2306 P1 - the migration write is authorized, so persist explicit
+        // P1 - the migration write is authorized, so persist explicit
         // contiguous ordinals. Finalize already ran at load; this renumber is
         // the write-side guarantee and cannot re-sort or revive stale values.
         normalize_agent_order(&mut settings.agents);
-        // #1077: route the startup root-token/migration write through PRESERVE
+        // Route the startup root-token/migration write through PRESERVE
         // mode so it cannot erase project companions/conflicts before the
         // first snapshot, and so a present-but-invalid file is never
         // overwritten (the preserve writer's disk gate returns Err). On
