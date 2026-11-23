@@ -58,7 +58,7 @@ pub use resolution::{
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -576,27 +576,31 @@ impl WatcherEngine {
         }
         let replaced = {
             let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
-            self.registered
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(
-                    id,
-                    RegisteredSession {
-                        agent_id,
-                        activity,
-                        activity_stamp: None,
-                        activity_full_read: false,
-                        reader,
-                        stamp: None,
-                        seq: 0,
-                        diff: frame::FrameDiffState::default(),
-                        watchers: HashMap::new(),
-                    },
-                )
+            self.registered().insert(
+                id,
+                RegisteredSession {
+                    agent_id,
+                    activity,
+                    activity_stamp: None,
+                    activity_full_read: false,
+                    reader,
+                    stamp: None,
+                    seq: 0,
+                    diff: frame::FrameDiffState::default(),
+                    watchers: HashMap::new(),
+                },
+            )
         };
         if let Some(consumer) = replaced.and_then(|session| session.activity) {
             consumer(ActivityObservation::Retired);
         }
+    }
+
+    /// Locks the registration map, recovering the data if the lock was poisoned.
+    fn registered(&self) -> MutexGuard<'_, HashMap<Uuid, RegisteredSession>> {
+        self.registered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Stop sampling a session. Idempotent, so every caller can just call it. #2879 - its
@@ -604,10 +608,7 @@ impl WatcherEngine {
     pub fn retire_session(&self, id: Uuid) {
         let retired = {
             let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
-            self.registered
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&id)
+            self.registered().remove(&id)
         };
         if let Some(consumer) = retired.and_then(|session| session.activity) {
             consumer(ActivityObservation::Retired);
@@ -616,9 +617,7 @@ impl WatcherEngine {
 
     /// #2879 - whether any registered session has an internal consumer to sample for.
     fn samples_activity(&self) -> bool {
-        self.registered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.registered()
             .values()
             .any(|session| session.activity.is_some())
     }
@@ -626,10 +625,7 @@ impl WatcherEngine {
     // Retained for unit-test assertions; production does not query registration.
     #[cfg(test)]
     pub fn is_session_registered(&self, id: Uuid) -> bool {
-        self.registered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(&id)
+        self.registered().contains_key(&id)
     }
 
     /// Compile every watcher this tick resolved, once each, and drop the cache entries of
@@ -693,10 +689,7 @@ impl WatcherEngine {
     /// registration" rule that stops a purged session from being resurrected still holds.
     fn publish_unwatched(&self, resolved: &HashMap<String, AgentResolution>) {
         let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
-        let registered = self
-            .registered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let registered = self.registered();
         for (id, session) in registered.iter() {
             // #2879 - a session registered only for internal observation has no user view.
             let Some(agent_id) = &session.agent_id else {
@@ -725,7 +718,7 @@ impl WatcherEngine {
         // no backend resolved, no liveness probed.
         let Some(resolved) = self.patterns.resolve().await else {
             let mut ids: Vec<(Uuid, bool)> = {
-                let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+                let registered = self.registered();
                 registered
                     .iter()
                     .map(|(id, session)| (*id, session.activity.is_some()))
@@ -772,7 +765,7 @@ impl WatcherEngine {
         // Snapshot first: the loop must not mutate `registered` while iterating it. The ids
         // are the union of sessions a user watcher reaches and those with internal consumers.
         let mut ids: Vec<(Uuid, Option<String>)> = {
-            let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+            let registered = self.registered();
             registered
                 .iter()
                 .filter(|(_, session)| {
@@ -829,7 +822,7 @@ impl WatcherEngine {
         at: chrono::DateTime<chrono::Utc>,
     ) -> (Option<WatcherMatchBatch>, bool, ActivityDelivery) {
         let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registered = self.registered();
         let Some(session) = registered.get_mut(&id) else {
             return (None, false, None);
         };
@@ -976,7 +969,7 @@ impl WatcherEngine {
     /// `(degraded, suspended, count)` for one `(session, watcher)` pair.
     #[cfg(test)]
     fn watcher_state(&self, id: Uuid, watcher_id: &str) -> Option<(bool, bool, u64)> {
-        let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let registered = self.registered();
         let state = registered.get(&id)?.watchers.get(watcher_id)?;
         Some((state.degraded, state.suspended_until.is_some(), state.count))
     }
@@ -985,7 +978,7 @@ impl WatcherEngine {
     /// sleeps for the suspension window.
     #[cfg(test)]
     fn expire_suspension_for_test(&self, id: Uuid, watcher_id: &str) {
-        let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registered = self.registered();
         if let Some(state) = registered
             .get_mut(&id)
             .and_then(|session| session.watchers.get_mut(watcher_id))

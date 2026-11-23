@@ -388,7 +388,7 @@ async fn publish_tooling<R: tauri::Runtime>(
         // #2433 - computed under the settings read lock, written after it drops.
         let write = {
             let settings = app.state::<SettingsState>();
-            let write = match settings.current_read().await {
+            match settings.current_read().await {
                 Ok(cfg) => Some(prepare_last_coding_agent_write(
                     aid,
                     agent_label.as_deref(),
@@ -398,8 +398,7 @@ async fn publish_tooling<R: tauri::Runtime>(
                     log::debug!("[session] skipping lastCodingAgent publication: {error}");
                     None
                 }
-            };
-            write
+            }
         };
         if let Some(write) = write {
             if let Err(e) = save_last_coding_agent(cwd, &id.to_string(), &write) {

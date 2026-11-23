@@ -548,8 +548,7 @@ async fn identity_mutation_rig(
     idle.set_pty_input_ready_for_test(target_id);
     let sessions = {
         let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let manager = state.read().await.clone();
-        manager
+        state.read().await.clone()
     };
     let settings = app.state::<SettingsState>().inner().clone();
     let rig = IdentityMutationRig {

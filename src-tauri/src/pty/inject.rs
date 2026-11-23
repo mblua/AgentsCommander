@@ -755,8 +755,7 @@ where
     // Resolve one public snapshot without retaining a manager guard across an await.
     let manager = {
         let session_mgr = app.sessions();
-        let manager = session_mgr.read().await.clone();
-        manager
+        session_mgr.read().await.clone()
     };
     let (session, send_enter) = session_injection_mode(&manager, session_id).await;
 

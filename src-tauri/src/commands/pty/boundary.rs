@@ -157,8 +157,7 @@ async fn write_start_fresh_mirror_outcome<R: tauri::Runtime>(
 ) -> BoundaryMetadataOutcome {
     let cwd = {
         let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-        let cwd = mgr.read().await.coordinator_cwd(session_id).await;
-        cwd
+        mgr.read().await.coordinator_cwd(session_id).await
     };
     let Some(cwd) = cwd else {
         return BoundaryMetadataOutcome::Unchanged;

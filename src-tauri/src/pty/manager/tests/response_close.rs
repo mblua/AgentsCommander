@@ -277,7 +277,7 @@ fn assert_offloaded_enqueue_consistency(
                  messages WHERE sender_fqn=?1 AND op_id=?2",
             )
             .unwrap();
-        let rows = statement
+        statement
             .query_map(
                 rusqlite::params![request.sender_fqn, request.op_id],
                 |row| {
@@ -296,8 +296,7 @@ fn assert_offloaded_enqueue_consistency(
             )
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        rows
+            .unwrap()
     };
     assert!(rows.len() <= 1, "duplicate sender/op row");
     let inner = tracker.inner.lock().unwrap();

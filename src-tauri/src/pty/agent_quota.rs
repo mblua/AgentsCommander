@@ -291,14 +291,20 @@ impl AgentQuotaEngine {
             .retain(|agent_id, _| configured.contains_key(agent_id));
     }
 
+    /// Snapshot of the registered sessions and their agent ids.
+    fn registered_ids(&self) -> Vec<(Uuid, String)> {
+        let registered = self
+            .registered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        registered
+            .iter()
+            .map(|(id, entry)| (*id, entry.agent_id.clone()))
+            .collect()
+    }
+
     pub(crate) async fn tick(&self) {
-        let mut ids: Vec<(Uuid, String)> = {
-            let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
-            registered
-                .iter()
-                .map(|(id, entry)| (*id, entry.agent_id.clone()))
-                .collect()
-        };
+        let mut ids = self.registered_ids();
 
         // Before `sources()`, so the fully idle app reads nothing at all. With something
         // published it continues: an agent deleted while no terminal is open must still
@@ -375,7 +381,10 @@ impl AgentQuotaEngine {
             .account_readings
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let mut published = self.published.lock().unwrap_or_else(|e| e.into_inner());
+        let mut published = self
+            .published
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
 
         let mut configured: Vec<(&String, &AgentQuotaSource)> = sources.iter().collect();
         configured.sort_unstable_by(|a, b| a.0.cmp(b.0));
