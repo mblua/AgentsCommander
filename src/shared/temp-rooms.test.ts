@@ -45,7 +45,7 @@ function scan(a: AgentConfig, c?: ProfileCellConfig) {
   return tempRoomUnavailablePlaceholders(s, CHOICE);
 }
 
-describe("#4786 tempRoomUnavailablePlaceholders", () => {
+describe("tempRoomUnavailablePlaceholders", () => {
   it("no choice or a clean agent gives []", () => {
     expect(tempRoomUnavailablePlaceholders(settingsSnapshot({ agents: [agent()] }), undefined))
       .toEqual([]);
@@ -88,7 +88,7 @@ describe("#4786 tempRoomUnavailablePlaceholders", () => {
   });
 });
 
-describe("#4805 TempRoomAPI groups", () => {
+describe("TempRoomAPI groups", () => {
   it("getGroups and updateGroups invoke the temp-room group commands", async () => {
     const fake = new FakeTransport();
     const cfg = { groups: [], nonStop: null } as unknown as WorkgroupGroupsConfig;

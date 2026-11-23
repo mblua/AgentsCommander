@@ -71,7 +71,7 @@ describe("launchErrorMessage", () => {
   });
 });
 
-describe("launchErrorMessage counts (#4445 S8786)", () => {
+describe("launchErrorMessage counts", () => {
   const CAP = "Resource Monitor cap reached: ";
   const done = " Close an agent or raise the limit in Settings > Resources.";
   const head = (ratio: string) => `Resource Monitor cap reached${ratio}.${done}`;

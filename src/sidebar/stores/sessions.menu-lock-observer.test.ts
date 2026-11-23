@@ -11,7 +11,7 @@ afterEach(() => {
   for (const node of appended.splice(0)) node.parentNode?.removeChild(node);
 });
 
-it("menu-lock observer callback does not throw once document is gone (#2504)", async () => {
+it("menu-lock observer callback does not throw once document is gone", async () => {
   const errors: unknown[] = [];
   const win = window;
   const body = document.body;

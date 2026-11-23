@@ -77,7 +77,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
-describe("isBusy (#2453)", () => {
+describe("isBusy", () => {
   it("counts a waiting session as busy while it is armed for Co-managed (test 6)", () => {
     const waiting = session({ waitingForInput: true });
     expect(isBusy(waiting, true)).toBe(true);
@@ -91,7 +91,7 @@ describe("isBusy (#2453)", () => {
   });
 });
 
-describe("shouldSuppressBeep (#254)", () => {
+describe("shouldSuppressBeep", () => {
   it("suppresses the focused workgroup", () => {
     expect(shouldSuppressBeep("A", "A", new Map(), 0)).toBe(true);
   });
@@ -119,7 +119,7 @@ describe("shouldSuppressBeep (#254)", () => {
   });
 });
 
-describe("updateGraceOnFocusChange (#254)", () => {
+describe("updateGraceOnFocusChange", () => {
   it("fast switch A→B→A re-arms B's grace and suppresses B inside the window", () => {
     const grace = new Map<string, number>();
     let prev: string | null = null;
@@ -216,7 +216,7 @@ describe("updateGraceOnFocusChange (#254)", () => {
   });
 });
 
-describe("hasBusyToIdleTransition (#2109)", () => {
+describe("hasBusyToIdleTransition", () => {
   it("true when a session that was busy is idle now", () => {
     expect(
       hasBusyToIdleTransition(new Map([["s1", true]]), new Map([["s1", false]])),
@@ -240,7 +240,7 @@ describe("hasBusyToIdleTransition (#2109)", () => {
   });
 });
 
-describe("allSessionsIdle (#2109)", () => {
+describe("allSessionsIdle", () => {
   it("false when there are no sessions", () => {
     expect(allSessionsIdle(new Map())).toBe(false);
   });
@@ -254,7 +254,7 @@ describe("allSessionsIdle (#2109)", () => {
   });
 });
 
-describe("pruneExpiredGrace (#2109)", () => {
+describe("pruneExpiredGrace", () => {
   it("deletes only entries whose grace has expired", () => {
     const grace = new Map([
       ["expired", 200],
