@@ -1,11 +1,11 @@
-//! #714 Native screenshot runtime (Windows / Linux / macOS).
+//! Native screenshot runtime (Windows / Linux / macOS).
 //!
 //! Compiled on Windows, Linux and macOS; Linux Wayland captures through the
-//! xdg-desktop-portal Screenshot selector instead of xcap and overlays (#2774).
+//! xdg-desktop-portal Screenshot selector instead of xcap and overlays.
 //! Owns every native dependency for the feature: `xcap` desktop capture,
 //! `image` crop/encode, the clipboard plugin, the global-shortcut plugin,
 //! overlay window creation, and the capture
-//! lifecycle state machine. Only the #1285 window-capture region stays
+//! lifecycle state machine. Only the window-capture region stays
 //! Windows-only. The every-other-target sibling (`super::unsupported`) mirrors
 //! this public surface without any native screenshot crates.
 //!

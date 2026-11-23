@@ -1,4 +1,4 @@
-//! Scoped, revocable, per-client API token registry (#791 §5).
+//! Scoped, revocable, per-client API token registry.
 //!
 //! The store is host-only (`api-clients.json` in `config_dir()`, outside any
 //! workgroup mount). Tokens are stored HASHED (SHA-256); the plaintext is shown

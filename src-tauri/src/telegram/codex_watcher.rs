@@ -44,7 +44,7 @@ const FILE_MTIME_GRACE_SECS: i64 = 5 * 60;
 /// resumes from week-old sessions. See plan §15 §A for the empirical record.
 const DAY_WALK_DEPTH: i64 = 7;
 
-/// Where a reader sends Telegram messages (#2232 phase 4 section 4.1).
+/// Where a reader sends Telegram messages.
 ///
 /// One `Option<BotTarget>` and not two separate `Option`s: a single `Option`
 /// makes a half-configured send **unrepresentable**, which two `Option`s would
@@ -232,9 +232,7 @@ fn extract_assistant_final(line: &str) -> Option<String> {
 ///
 /// `reader_seq` is a per-reader counter starting at 0: the record keeps the
 /// value it was built with and the counter advances once per produced record.
-/// `attach` carries the reader's epoch and its observation of the file
-/// (#2232 phase 3); phase 1 hardcoded `epoch: 0` and had nowhere to put the
-/// observation.
+/// `attach` carries the reader's epoch and its observation of the file.
 // Eight parameters: phase 1's seven plus the attachment. Grouping them into a
 // builder would hide which of them the record copies verbatim, which is the one
 // thing the phase-1 tests read this function for.
@@ -294,7 +292,7 @@ fn deliver_capture_record(
 
 /// Capture and deliver every accepted record among `new_lines`, in order.
 ///
-/// #2232 phase 5: an accepted `final_answer` with a turn id is handed to
+/// An accepted `final_answer` with a turn id is handed to
 /// `turns` and stays held until its `task_complete` closes the turn; only then
 /// does one assembled record reach the sink, so the slot never holds a
 /// fragment. A `final_answer` with no turn id has nothing to group with and is
@@ -303,7 +301,7 @@ fn deliver_capture_record(
 /// discarded.
 ///
 /// The caller appends `record.text` and a newline to the Telegram buffer,
-/// exactly as the pre-#2232 code appended the extractor text.
+/// exactly as the extractor path appended the extractor text.
 #[allow(
     clippy::too_many_arguments,
     reason = "capture_record's inputs plus the live turn accumulator"

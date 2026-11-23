@@ -381,7 +381,7 @@ async fn settle_evidence_veto<R: tauri::Runtime>(
         .unwrap_or(ResponseCloseDisposition::ReconcilePending)
 }
 
-/// #3317 - the telegram stage outcome plus the stop observation of its bridge tasks.
+/// The telegram stage outcome plus the stop observation of its bridge tasks.
 pub(crate) struct TelegramDetach {
     pub(crate) publication: Result<(), String>,
     pub(crate) stop: Result<Option<tokio::task::JoinHandle<bool>>, ()>,
