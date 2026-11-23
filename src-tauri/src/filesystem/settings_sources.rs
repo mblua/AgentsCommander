@@ -1,5 +1,5 @@
 //! Filesystem primitives for settings sources: text and byte reads, metadata probes,
-//! canonical paths, creating, writing, syncing and removing stage files, renaming
+//! canonical paths, file listings, creating, writing, syncing and removing stage files, renaming
 //! backups and syncing the parent directory. Owns no types and does no parsing.
 
 use std::fs::{File, Metadata, OpenOptions};
@@ -24,6 +24,45 @@ pub(crate) fn marker(path: &Path) -> io::Result<Metadata> {
 
 pub(crate) fn canonical(path: &Path) -> io::Result<PathBuf> {
     std::fs::canonicalize(path)
+}
+
+/// Names of the regular files in `dir` (links followed), sorted, no recursion;
+/// a missing `dir` is empty. Non-UTF-8 names are skipped.
+pub(crate) fn list_file_names(dir: &Path) -> io::Result<Vec<String>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !is_regular_file(&entry.path()) {
+            continue;
+        }
+        if let Ok(name) = entry.file_name().into_string() {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[allow(dead_code, reason = "I4845 staged; removed in P10")]
+pub(crate) fn create_dir_all(dir: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(dir)
+}
+
+/// `true` for a regular file (links followed); `false` on any error.
+#[allow(dead_code, reason = "I4845 staged; removed in P10")]
+pub(crate) fn is_regular_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
+/// `true` for a directory (links followed); `false` on any error.
+#[allow(dead_code, reason = "I4845 staged; removed in P10")]
+pub(crate) fn is_dir(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_dir())
 }
 
 pub(crate) fn agents_stage(path: &Path) -> io::Result<File> {

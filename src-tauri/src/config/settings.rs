@@ -3,7 +3,7 @@
 //! re-exports load, save, agents layer, project paths, owner and source submodules.
 //! Load, validation, migration and atomic save live in those submodules, not here.
 
-mod agent;
+pub(crate) mod agent;
 mod app_defaults;
 pub(crate) mod context_history;
 mod debug;
@@ -919,6 +919,14 @@ pub struct AppSettings {
     /// #4779: agent remembered for temp rooms; `None` writes no key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temp_room_agent: Option<TempRoomAgentChoice>,
+    /// #4845: active coding-agent config file per context; `None` = the 30 file.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::config::coding_agent_files::lenient_selection"
+    )]
+    pub(crate) coding_agent_config_files:
+        Option<crate::config::coding_agent_files::CodingAgentConfigFiles>,
 }
 
 impl AppSettings {
