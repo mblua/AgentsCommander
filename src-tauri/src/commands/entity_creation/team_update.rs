@@ -137,7 +137,7 @@ pub(super) fn build_session_repo(replica_dir: &Path, rel: &str) -> Option<Sessio
     Some(SessionRepo {
         label,
         source_path,
-        // #1028 - undetected, like `branch` above. This literal is emitted straight to
+        // Undetected, like `branch` above. This literal is emitted straight to
         // the UI by `sync_workgroup_repos_inner`, so a user-initiated sync shows a
         // violet badge until the next GitWatcher tick (<=5s, forced by the
         // `invalidate_session_cache` call beside that emit). Same bound `branch`
@@ -151,7 +151,7 @@ pub(super) fn build_session_repo(replica_dir: &Path, rel: &str) -> Option<Sessio
 /// After successful per-replica writes, pushes the new `git_repos` to any matching live session
 /// via `refresh_git_repos_for_sessions` + watcher cache invalidation + `session_git_repos` emit.
 /// Async so it can await the `RwLock` on `SessionManager`.
-/// #2816 (C3) - site 7 lifted out of `sync_workgroup_repos_inner`, body
+/// Lifted out of `sync_workgroup_repos_inner`, body
 /// verbatim, so its refusal of an absent `config.json` and its no-file
 /// guarantee are provable by a unit test.
 #[allow(
@@ -223,10 +223,10 @@ pub(super) async fn sync_workgroup_repos_inner(
     };
 
     // `updates` is built ONLY from replicas whose config.json write succeeded
-    // (Grinch #15 partial-failure filter). In-memory state must match on-disk.
+    // In-memory state must match on-disk.
     let mut updates: Vec<(String, Vec<SessionRepo>)> = Vec::new();
     // Replica paths touched successfully — used for `invalidate_replicas` so the next
-    // discovery poll re-registers them with fresh data (§3.2.5 / Grinch #17).
+    // discovery poll re-registers them with fresh data.
     let mut touched_replica_paths: Vec<String> = Vec::new();
 
     let wg_dirs = team_room_candidates(base, team_name);
@@ -301,7 +301,7 @@ pub(super) async fn sync_workgroup_repos_inner(
     }
 
     // Refresh live sessions' git_repos in-memory so the sidebar updates before the next
-    // discovery poll. CAS-guarded via git_repos_gen bump (Grinch #14 race fix).
+    // discovery poll. CAS-guarded via git_repos_gen bump.
     if !updates.is_empty() {
         let changed = {
             let mgr = session_mgr.read().await;
@@ -309,7 +309,7 @@ pub(super) async fn sync_workgroup_repos_inner(
         };
 
         // Force DiscoveryBranchWatcher to re-register these replicas with fresh data
-        // on the next `discover_project` call (§3.2.5 / Grinch #17).
+        // on the next `discover_project` call.
         discovery_watcher.invalidate_replicas(&touched_replica_paths);
 
         for (session_id, repos) in changed {

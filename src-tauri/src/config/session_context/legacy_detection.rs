@@ -52,7 +52,7 @@ pub(crate) fn looks_like_generated_legacy_default_context(normalized: &str) -> b
     if normalized.contains("{{") || normalized.contains("}}") {
         return false;
     }
-    // #1369 (C4): both spellings. `# Workspace Repos` is frozen: it is what
+    // Both spellings. `# Workspace Repos` is frozen: it is what
     // contexts rendered by v1/v2 builds carry on disk. `# Agent Repos` is what
     // this build renders. Neither is in `is_known_legacy_default_heading`, so
     // this guard is a fast path, not the only rejection - AC-3 pins that.
@@ -176,7 +176,7 @@ pub(crate) fn is_provably_generated_legacy_skills_section(
     let expected = normalize_context_for_compat(&render_skills_section(&discover_skill_index(
         skill_owner_root,
     )));
-    // #1614: a section generated before the Room rename carries the frozen
+    // A section generated before the Room rename carries the frozen
     // pre-rename replica line while `render_skills_section` now emits the
     // current one. CRLF-normalize first as defence in depth, since the byte-
     // pinned constant carries LF; swap while the line still carries its
@@ -189,12 +189,12 @@ pub(crate) fn is_provably_generated_legacy_skills_section(
     if normalized == expected {
         return true;
     }
-    // Two byte-pinned swaps now feed this compare. #1005 S1 swaps the legacy
+    // Two byte-pinned swaps now feed this compare. The first swaps the legacy
     // intro: a legacy context rendered before the intro rewrite embeds the
     // frozen OLD intro while `render_skills_section` now emits the current one.
-    // #1614 swaps the byte-pinned pre-Room-rename replica line, above, for the
+    // The second swaps the byte-pinned pre-Room-rename replica line, above, for the
     // same reason. Either one left un-swapped flips every such file to NotLegacy
-    // and kills #664 healing. Every other literal in `render_skills_section` is
+    // and kills healing. Every other literal in `render_skills_section` is
     // frozen for this project; if one ever changes, this compare must extend
     // with it or healing dies silently.
     let Some(rest) = normalized.strip_prefix(LEGACY_GENERATED_SKILLS_SECTION_INTRO) else {
