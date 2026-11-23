@@ -158,13 +158,7 @@ impl SessionManager {
         clippy::too_many_arguments,
         reason = "pending binding plus each separately stored profile field"
     )]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn set_pending_profile_metadata(
         &self,
         binding: PendingCreateBinding,

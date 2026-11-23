@@ -6,7 +6,9 @@
 //! It owns no state; the maps live in `SessionManagerState`, and the commit path that calls
 //! the free helpers lives in `commit.rs`.
 
-use super::carrier::{acquire_carrier_mutation_permit, CarrierMutationPermit};
+#[cfg(test)]
+use super::carrier::acquire_carrier_mutation_permit;
+use super::carrier::CarrierMutationPermit;
 use super::{CodingAgentBinding, PendingCreateBinding, SessionManager, SessionManagerState};
 use uuid::Uuid;
 
@@ -39,13 +41,7 @@ pub(super) fn binding_matches(state: &SessionManagerState, binding: PendingCreat
 
 impl SessionManager {
     /// Only pending rows accept a birth binding; capture its seed before insertion.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn install_pending_coding_agent_binding(
         &self,
         pending: PendingCreateBinding,
@@ -109,13 +105,7 @@ impl SessionManager {
     }
 
     /// D09 enrolls receipt-affected failures; ordinary retention stays unchanged.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn refresh_failed_binding_recipes(
         &self,
         recipes: Vec<(CodingAgentBinding, serde_json::Value)>,
