@@ -478,9 +478,18 @@ struct ClaudeReader {
     line_remainder: String,
     dir_warned: bool,
     pin_id: Option<String>,
-    first_poll: bool,
-    first_attach_done: bool,
+    attach_phase: AttachPhase,
     wait_deadline: Option<Instant>,
+}
+
+/// Where a reader is in its first attach. The phases only move forward:
+/// `FirstPoll` until the first attach decision runs, `Waiting` until a file
+/// is attached, then `Attached` for the rest of the reader's life.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttachPhase {
+    FirstPoll,
+    Waiting,
+    Attached,
 }
 
 impl ClaudeReader {
@@ -534,8 +543,7 @@ impl ClaudeReader {
             dir_warned: false,
             // The minted transcript id, consulted until the first attach.
             pin_id: transcript_id,
-            first_poll: true,
-            first_attach_done: false,
+            attach_phase: AttachPhase::FirstPoll,
             wait_deadline: None,
         }
     }
@@ -629,57 +637,59 @@ impl ClaudeReader {
         // The first attach goes through `decide_attach`; after
         // it, rotation follows the newest mtime exactly as before.
         let mut pinned_attach = false;
-        let latest =
-            if runs_first_attach_decision(self.first_attach_done, self.current_file.is_some()) {
-                let pinned = self
-                    .pin_id
-                    .as_deref()
-                    .and_then(|id| find_pinned_jsonl(&self.project_dir, id));
-                let decision = decide_attach(AttachInputs {
-                    transcript_id: self.pin_id.as_deref(),
-                    pinned: pinned.as_deref(),
-                    newest: newest.as_deref(),
-                    first_poll: self.first_poll,
-                    deadline_expired: self.wait_deadline.is_some_and(|d| Instant::now() >= d),
-                });
-                self.first_poll = false;
-                let waiting = matches!(decision, AttachDecision::Wait);
-                if waiting && self.wait_deadline.is_none() {
-                    self.wait_deadline =
-                        Some(Instant::now() + Duration::from_secs(PINNED_ATTACH_WAIT_SECS));
-                    log::info!(
-                        "[JSONL_ATTACH] session {} waiting up to {}s for {}",
-                        self.session_id,
-                        PINNED_ATTACH_WAIT_SECS,
-                        self.project_dir
-                            .join(format!(
-                                "{}.jsonl",
-                                self.pin_id.as_deref().unwrap_or_default()
-                            ))
-                            .display()
-                    );
+        let attached = self.attach_phase == AttachPhase::Attached;
+        let latest = if runs_first_attach_decision(attached, self.current_file.is_some()) {
+            let pinned = self
+                .pin_id
+                .as_deref()
+                .and_then(|id| find_pinned_jsonl(&self.project_dir, id));
+            let decision = decide_attach(AttachInputs {
+                transcript_id: self.pin_id.as_deref(),
+                pinned: pinned.as_deref(),
+                newest: newest.as_deref(),
+                first_poll: self.attach_phase == AttachPhase::FirstPoll,
+                deadline_expired: self.wait_deadline.is_some_and(|d| Instant::now() >= d),
+            });
+            if self.attach_phase == AttachPhase::FirstPoll {
+                self.attach_phase = AttachPhase::Waiting;
+            }
+            let waiting = matches!(decision, AttachDecision::Wait);
+            if waiting && self.wait_deadline.is_none() {
+                self.wait_deadline =
+                    Some(Instant::now() + Duration::from_secs(PINNED_ATTACH_WAIT_SECS));
+                log::info!(
+                    "[JSONL_ATTACH] session {} waiting up to {}s for {}",
+                    self.session_id,
+                    PINNED_ATTACH_WAIT_SECS,
+                    self.project_dir
+                        .join(format!(
+                            "{}.jsonl",
+                            self.pin_id.as_deref().unwrap_or_default()
+                        ))
+                        .display()
+                );
+            }
+            match decision {
+                AttachDecision::Pinned(path) => {
+                    pinned_attach = true;
+                    Some(path)
                 }
-                match decision {
-                    AttachDecision::Pinned(path) => {
-                        pinned_attach = true;
-                        Some(path)
-                    }
-                    AttachDecision::Mtime(path) => Some(path),
-                    // Runs once: this attach ends the decision loop.
-                    AttachDecision::MtimeFallback(path) => {
-                        log::warn!(
-                            "[JSONL_ATTACH] session {} pinned transcript absent after {}s; \
+                AttachDecision::Mtime(path) => Some(path),
+                // Runs once: this attach ends the decision loop.
+                AttachDecision::MtimeFallback(path) => {
+                    log::warn!(
+                        "[JSONL_ATTACH] session {} pinned transcript absent after {}s; \
                          falling back to newest by mtime",
-                            self.session_id,
-                            PINNED_ATTACH_WAIT_SECS
-                        );
-                        Some(path)
-                    }
-                    AttachDecision::Wait | AttachDecision::Nothing => None,
+                        self.session_id,
+                        PINNED_ATTACH_WAIT_SECS
+                    );
+                    Some(path)
                 }
-            } else {
-                newest
-            };
+                AttachDecision::Wait | AttachDecision::Nothing => None,
+            }
+        } else {
+            newest
+        };
         (latest, pinned_attach)
     }
 
@@ -716,7 +726,9 @@ impl ClaudeReader {
             );
         }
         self.current_file = latest;
-        self.first_attach_done |= self.current_file.is_some();
+        if self.current_file.is_some() {
+            self.attach_phase = AttachPhase::Attached;
+        }
         self.current_file_mtime = self
             .current_file
             .as_ref()
