@@ -284,8 +284,8 @@ fn frozen_pre_room_rename_global_template_is_recognized() {
 /// re-base both constants really were 539 bytes and F4406596...316A.
 #[test]
 fn both_frozen_global_generations_are_standalone_recognized_and_distinct() {
-    // The ||-chain limb: retiring the global recognizer left one recognizer for these bytes, and neither
-    // generation may be dropped from it.
+    // The ||-chain limb: retiring the global recognizer left one recognizer
+    // for these bytes, and neither generation may be dropped from it.
     assert!(is_known_generated_standalone_global_template(
         GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
     ));
