@@ -1,4 +1,4 @@
-//! #4248 `window.snapshot` backend selector. Checks the output path, asks the host for an
+//! `window.snapshot` backend selector. Checks the output path, asks the host for an
 //! app-rendered PNG of the `main` window and writes it. The host adapter is in the edge.
 use super::{UiAutomationRequest, UiAutomationResponse};
 #[cfg(any(target_os = "windows", target_os = "linux"))]

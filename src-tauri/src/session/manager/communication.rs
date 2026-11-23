@@ -13,7 +13,7 @@ use crate::errors::AppError;
 use uuid::Uuid;
 
 impl SessionManager {
-    /// #1088 - write the scraper's latest context-usage percent onto one
+    /// Write the scraper's latest context-usage percent onto one
     /// session so it rides `Session -> SessionInfo -> snapshot_sessions` into
     /// `sessions.json` for the disk-reading CLI. No logging (unlike
     /// `mark_idle`/`mark_busy`) to avoid a log line up to once per 5s per
@@ -151,7 +151,7 @@ impl SessionManager {
         should_clear
     }
 
-    /// #1646 / #1647 - Sets `session.communication` to `BlockedMenu` with a custom message.
+    /// Sets `session.communication` to `BlockedMenu` with a custom message.
     /// Returns `Some((changed, communication))` or `None` if the session was not found
     /// or is exited.
     pub async fn set_blocked_menu(
@@ -200,7 +200,7 @@ impl SessionManager {
         Some((true, communication))
     }
 
-    /// #1646 / #1647 - Clears `session.communication` if currently `Some` with
+    /// Clears `session.communication` if currently `Some` with
     /// `kind == SessionCommunicationKind::BlockedMenu` and `visible == true`.
     /// Returns `true` if cleared.
     pub async fn clear_blocked_menu(&self, id: Uuid) -> bool {
@@ -222,7 +222,7 @@ impl SessionManager {
         .await
     }
 
-    /// #2232 phase 7 - sets `session.communication` to `CoManaged` with the
+    /// Sets `session.communication` to `CoManaged` with the
     /// visible text the Co-managed feature produced (reason, excerpt and the
     /// messaging-file path). Same shape and dedup rule as `set_blocked_menu`:
     /// re-setting the identical visible message reports `changed == false`.
@@ -275,7 +275,7 @@ impl SessionManager {
         Some((true, communication))
     }
 
-    /// #2232 phase 7 - clears the session's communication **only when the
+    /// Clears the session's communication **only when the
     /// single slot currently holds a visible Co-managed message**, leaving any
     /// other kind untouched; returns whether it cleared one.
     ///
@@ -306,11 +306,11 @@ impl SessionManager {
         .await
     }
 
-    /// (#747) Re-apply a persisted raise-hand onto a restored session record.
+    /// Re-apply a persisted raise-hand onto a restored session record.
     /// Unlike `raise_hand`, this deliberately ACCEPTS records in
     /// `SessionStatus::Exited(_)`: the startup defer arm restores dormant
     /// placeholders that must keep their raised hand until real user input
-    /// (issue #747 supersedes #676's ephemeral-only rule). Gates: coordinator
+    /// (not ephemeral-only). Gates: coordinator
     /// records only, visible `RaiseHand` payloads only. Preserves the caller's
     /// `updated_at` (the original raise time) so the indicator's age stays
     /// truthful. Returns true when the communication was applied.
@@ -347,7 +347,7 @@ impl SessionManager {
         true
     }
 
-    /// (#630/#631) Stamp the durable resume intent. Used by the restart path and
+    /// Stamp the durable resume intent. Used by the restart path and
     /// the restore wake/defer paths.
     pub async fn set_start_fresh_on_restore(&self, id: Uuid, value: bool) {
         let carrier_permit = acquire_carrier_mutation_permit().await;
@@ -422,7 +422,7 @@ impl SessionManager {
         .await
     }
 
-    /// (#630/#631) Re-arm on first real user message: clear the fresh intent.
+    /// Re-arm on first real user message: clear the fresh intent.
     /// Returns true ONLY on the `true -> false` transition, so the caller persists
     /// exactly once (not on every subsequent keystroke).
     pub async fn clear_start_fresh_on_restore_if_set(&self, id: Uuid) -> bool {
@@ -454,7 +454,7 @@ impl SessionManager {
         false
     }
 
-    /// (#756) Stamp the durable fresh intent on an AC-driven clear boundary.
+    /// Stamp the durable fresh intent on an AC-driven clear boundary.
     /// Returns true ONLY on the `false -> true` transition, so the caller
     /// persists exactly once. Missing id -> false. Counterpart of
     /// `clear_start_fresh_on_restore_if_set` (re-arm direction).
@@ -490,9 +490,9 @@ impl SessionManager {
         false
     }
 
-    /// #698: clear BOTH user-input session-state transitions in a SINGLE
+    /// Clear BOTH user-input session-state transitions in a SINGLE
     /// critical section. `clear_fresh` gates re-arming the durable resume intent
-    /// (`start_fresh_on_restore` true -> false, #871); lowering any visible
+    /// (`start_fresh_on_restore` true -> false); lowering any visible
     /// raise-hand remains unconditional. Returns
     /// `(cleared_start_fresh, cleared_raise_hand)` so the caller can persist once
     /// and emit the raise-hand clear event only when a hand was actually lowered.
