@@ -100,7 +100,7 @@ fn execute_inner(args: TestResetArgs) -> Result<TestResetOutput, String> {
         )
     })?;
     if active {
-        // #1773: name the holder so a red test points at its cause. Diagnostic
+        // Name the holder so a red test points at its cause. Diagnostic
         // only: the refusal below does not depend on the lookup's outcome.
         let lookup = crate::testability::mutex_holders::find_holders(&mutex_guard);
         return Err(error_json(
