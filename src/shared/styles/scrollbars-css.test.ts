@@ -26,7 +26,7 @@ const RULE_SHEETS = SHEETS.filter((p) => p !== IMPORT_LIST);
 const rulesOf = (path: string): ScannedRule[] => scanRules(mask(read(path.slice(4))));
 const GLOBAL = rulesOf("src/shared/styles/scrollbars.css");
 
-describe("#2579 global Noir scrollbars", () => {
+describe("global Noir scrollbars", () => {
   it("G1 values", () => {
     const bar = ruleFor(GLOBAL, "::-webkit-scrollbar");
     expect(declValue(bar, "width")).toBe("4px");

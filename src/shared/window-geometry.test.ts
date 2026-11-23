@@ -135,7 +135,7 @@ afterEach(async () => {
   errorSpy.mockRestore();
 });
 
-describe("main window placement observation (#2349)", () => {
+describe("main window placement observation", () => {
   it("persists the persisted seed with maximized state on a start-maximized first observation", async () => {
     setWindowState({ isMaximized: true, geometry: MAXED });
     await mountMain();
@@ -343,7 +343,7 @@ describe("main window placement observation (#2349)", () => {
   });
 });
 
-describe("main window quit flush (#2349)", () => {
+describe("main window quit flush", () => {
   it("resolves noop when no main controller exists", async () => {
     expect(await flushMainWindowGeometry()).toEqual({ kind: "noop" });
   });

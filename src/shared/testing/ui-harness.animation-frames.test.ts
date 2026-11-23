@@ -89,7 +89,7 @@ function installCatching(faults: readonly DefinePropertyFault[]): {
 const INSTALL_FAILURE = "install failure sentinel";
 const RESTORE_FAILURE = "restore failure sentinel";
 
-describe("installDeterministicAnimationFrames partial install (#1206, plan 5.4)", () => {
+describe("installDeterministicAnimationFrames partial install (plan 5.4)", () => {
   const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
   const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
 

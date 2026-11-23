@@ -222,7 +222,7 @@ function loadRealTree() {
 const fx = (text: string, path = "fixture.tsx"): SourceFile[] => [{ path, text }];
 const usedIn = (text: string, path?: string) => [...extractUsedClasses(fx(text, path)).keys()].sort();
 
-describe("class coverage guard (#2410)", () => {
+describe("class coverage guard", () => {
   it("self-test: positive control flags unstyled fixture classes", () => {
     const used = extractUsedClasses(
       fx('const A = () => <div class="zz-probe other" classList={{ "zz-list": x }} />;'),
