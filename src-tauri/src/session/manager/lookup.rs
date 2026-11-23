@@ -117,8 +117,8 @@ impl SessionManager {
             .collect()
     }
 
-    /// Deletion-only pending-inclusive working-directory snapshot (#1063, plan
-    /// sections 5.4/6.3/11.32). The caller has already acquired the outer
+    /// Deletion-only pending-inclusive working-directory snapshot. The caller
+    /// has already acquired the outer
     /// `Arc<tokio::sync::RwLock<SessionManager>>::blocking_read`; this method takes
     /// exactly one inner `SessionManagerState::blocking_read`, walks the stable
     /// `order`, and returns cloned working directories for every non-`Exited` row.
@@ -221,7 +221,7 @@ impl SessionManager {
     }
 
     /// Return the `working_directory` iff the session exists AND is a coordinator.
-    /// Cheap (no full Session clone) for the user-message hot path. (#552)
+    /// Cheap (no full Session clone) for the user-message hot path.
     pub async fn coordinator_cwd(&self, id: Uuid) -> Option<String> {
         let state = self.state.read().await;
         state
@@ -232,7 +232,7 @@ impl SessionManager {
             .map(|s| s.working_directory.clone())
     }
 
-    /// (#552) AGENT-OWNED sessions only, paired with their auto-close team key
+    /// AGENT-OWNED sessions only, paired with their auto-close team key
     /// `<project>:<wg>` (the agent FQN minus the trailing `/agent`). Ad-hoc user
     /// shells (no `agent_id`, not a coordinator) are excluded so they are never
     /// auto-closed. Sessions whose cwd does not yield a `/`-bearing FQN are skipped.
@@ -258,7 +258,7 @@ impl SessionManager {
             .collect()
     }
 
-    /// (#552 auto-closed badge) team key `<project>:<wg>` -> (coordinator FQN,
+    /// (Auto-closed badge) team key `<project>:<wg>` -> (coordinator FQN,
     /// coordinator `working_directory`) for every coordinator session record. The
     /// auto-close task snapshots this BEFORE destroying so it can set the
     /// "auto-closed" marker on the correct coordinator row: the FQN keys the
@@ -286,7 +286,7 @@ impl SessionManager {
         out
     }
 
-    /// (#589) team key `<project>:<wg>` -> the coordinator session's `Uuid`, over
+    /// Team key `<project>:<wg>` -> the coordinator session's `Uuid`, over
     /// the SAME coordinator records that `coordinator_refs_by_team` keys. The
     /// auto-close task uses this to mark a coordinator row AUTO-CLOSED only when
     /// the coordinator's OWN session was the one destroyed, not when any sibling
@@ -336,7 +336,7 @@ impl SessionManager {
             .collect()
     }
 
-    /// #3516 - preflight-test exclusion only: the working directory of every non-`Exited`
+    /// Preflight-test exclusion only: the working directory of every non-`Exited`
     /// row in `order`, pending creates included (a launch pre-creates its row as pending).
     pub async fn working_dirs_including_pending(&self) -> Vec<String> {
         let state = self.state.read().await;
@@ -544,7 +544,7 @@ impl SessionManager {
     }
 }
 
-/// #3532 - the launch facts context history reads for one session, copied under
+/// The launch facts context history reads for one session, copied under
 /// one manager read. `None` in a batch means absent or still pending create.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct HistoryLaunchFact {
@@ -620,7 +620,7 @@ impl SessionManager {
         Some(ids.iter().filter(live).copied().collect())
     }
 
-    /// #3532 test seam: finish a pending create as the commit path would.
+    /// Test seam: finish a pending create as the commit path would.
     #[cfg(test)]
     pub(crate) async fn finish_pending_create_for_test(&self, id: Uuid) {
         self.state.write().await.pending_create.remove(&id);

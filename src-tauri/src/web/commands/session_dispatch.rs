@@ -119,7 +119,7 @@ pub(super) async fn dispatch_session_command(
     }
 }
 
-/// Lock the PTY manager, recovering a poisoned lock (#98 Rule A).
+/// Lock the PTY manager, recovering a poisoned lock.
 fn lock_pty_mgr(state: &WsState) -> std::sync::MutexGuard<'_, crate::pty::manager::PtyManager> {
     state
         .pty_mgr
@@ -184,7 +184,7 @@ async fn create_session_command(state: &WsState, args: &Value) -> Result<Value, 
     };
     let (shell, shell_args, agent_label, resolved_agent_host_shell) =
         if let Some(spawn) = resolved_spawn.as_ref() {
-            // #1271 - same snapshot rule as the native path: the resolved
+            // Same snapshot rule as the native path: the resolved
             // agent stays the command-to-run; the configured default host
             // shell (copied from this same config guard) travels separately
             // to the backend.

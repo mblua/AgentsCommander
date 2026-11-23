@@ -61,17 +61,16 @@ pub trait ProcessTreeBackend: Send + Sync + 'static {
 
     /// Reports the tree as the OS snapshot saw it. Identity resolution here is
     /// corpse-TOLERANT: an exited-but-still-queryable process keeps its identity
-    /// (see #1438 G1); liveness filtering belongs to `observe_identity`.
+    /// while dead; liveness filtering belongs to `observe_identity`.
     fn observe_tree(&self, root: ProcessIdentity) -> Result<ObservedProcessTree, ResourceError>;
     /// `Ok(Some(identity))` means a live process with that identity exists now. An
     /// exited process that is still queryable through open handles MUST yield
-    /// `Ok(None)` (#1438).
+    /// `Ok(None)`.
     fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError>;
     /// MUST return `Ok(Terminated)` when the target verifiably exited, including when
     /// other handles keep the corpse queryable. `Err` is reserved for a target that
     /// demonstrably survives or cannot be verified. Every `TerminateOutcome` variant a
-    /// real backend can produce needs at least one real-process test producing it
-    /// (#1438 Decision 3).
+    /// real backend can produce needs at least one real-process test producing it.
     fn terminate_verified(
         &self,
         process: &ObservedProcess,
@@ -190,13 +189,13 @@ struct ResourceAgentGroup {
     kill_started_at: Option<Instant>,
     last_error: Option<String>,
     permit_released: bool,
-    /// #559 - consecutive samples where `observe_tree` reported the root missing.
+    /// Consecutive samples where `observe_tree` reported the root missing.
     /// Reaped only after two strikes so a single enumeration fluke never frees a
     /// live agent's slot. Reset to 0 whenever the root is observed alive or merely
     /// unreadable, so the counter is consecutive-only by design (a momentarily
     /// unreadable root means the pid still exists, i.e. possibly alive).
     missing_root_strikes: u8,
-    /// #559 - when this group entered Terminated, used to bound retained
+    /// When this group entered Terminated, used to bound retained
     /// terminated rows (prune oldest first) without unbounded map growth.
     terminated_at: Option<Instant>,
 }
@@ -206,7 +205,7 @@ pub struct AgentLaunchPermit {
     generation: u64,
 }
 
-/// #1151 - outcome of `retry_orphaned_quarantine`. `Skipped` performs ZERO backend
+/// Outcome of `retry_orphaned_quarantine`. `Skipped` performs ZERO backend
 /// calls, so an ineligible group costs nothing and cannot be confused with a cleanup
 /// that ran and found the group already gone.
 #[derive(Debug, Clone)]
@@ -215,7 +214,7 @@ pub(crate) enum QuarantineRetryOutcome {
     Skipped(QuarantineRetrySkip),
 }
 
-/// #1151 - why an orphan quarantine retry did not run. `NotRegistered` is defensive
+/// Why an orphan quarantine retry did not run. `NotRegistered` is defensive
 /// only: a Quarantined row can never be removed from the group map, so a UUID sampled
 /// as Quarantined in the same tick is always still there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
