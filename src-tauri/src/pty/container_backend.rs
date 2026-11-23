@@ -290,6 +290,9 @@ pub struct ContainerTransportBackend {
     /// #2158 - per-backend hook run right after a Resize is published, without locks.
     #[cfg(test)]
     resize_published_hook: Arc<Mutex<Option<ResizePublishedHook>>>,
+    /// #2158 - spy: how many times the real prepublish resize mark ran.
+    #[cfg(test)]
+    resize_marks_for_test: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(test)]
@@ -335,12 +338,20 @@ impl ContainerTransportBackend {
             issued_tickets_for_test: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
             resize_published_hook: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            resize_marks_for_test: Arc::default(),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn set_resize_published_hook(&self, hook: ResizePublishedHook) {
         *self.resize_published_hook.lock().unwrap() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resize_marks_for_test(&self) -> usize {
+        self.resize_marks_for_test
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Runs the hook with its own lock released, so it may call back into the backend.

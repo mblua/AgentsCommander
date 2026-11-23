@@ -390,7 +390,6 @@ async fn auto_close_session(
 }
 
 async fn auto_close_fixture() -> AutoCloseFixture {
-    use crate::config::coordinator_clocks::CoordinatorClocks;
     use crate::config::settings::{AppSettings, SettingsState};
     use crate::pty::backend::SessionBackendKind;
     use crate::resource_monitor::ResourceMonitorState;
@@ -827,7 +826,6 @@ fn assert_state_panic<T: Send + Sync + 'static>(
 
 #[test]
 fn tauri_state_adapter_preserves_required_panics_and_optional_clock_identity() {
-    use crate::config::coordinator_clocks::CoordinatorClocks;
     use tauri::Manager;
     let app = tauri::test::mock_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -854,146 +852,148 @@ fn tauri_state_adapter_preserves_required_panics_and_optional_clock_identity() {
     assert!(Arc::ptr_eq(&clocks, &handle.coordinator_clocks().unwrap()));
 }
 
-/// #2158 team activity clock: real `advance_team_activity`, injected time.
-mod issue_2158 {
-    use super::*;
-    use crate::config::coordinator_clocks::CoordinatorClocks;
-    use crate::session::profile::IdleTuning;
-    const U0: i64 = 1_700_000_000;
+// #2158 team activity clock: real `advance_team_activity`, injected time.
+use crate::config::coordinator_clocks::CoordinatorClocks;
+use crate::session::profile::IdleTuning;
+const U0: i64 = 1_700_000_000;
 
-    /// Detector, base instant, team clocks and the "t1"/"t2" coordinator refs.
-    struct Fx(IdleDetector, Instant, CoordinatorClocksState);
+/// Detector, base instant, team clocks and the "t1"/"t2" coordinator refs.
+struct Fx(IdleDetector, Instant, CoordinatorClocksState);
 
-    impl Fx {
-        fn new(anchors: &[(&str, i64)]) -> Self {
-            let mut clocks = CoordinatorClocks::default();
-            for (team, s) in anchors {
-                clocks.note_activity(team, DateTime::from_timestamp(U0 + s, 0).unwrap());
-            }
-            let idle = Arc::into_inner(IdleDetector::new(|_| {}, |_| {})).unwrap();
-            Fx(idle, Instant::now(), Arc::new(Mutex::new(clocks)))
+impl Fx {
+    fn new(anchors: &[(&str, i64)]) -> Self {
+        let mut clocks = CoordinatorClocks::default();
+        for (team, s) in anchors {
+            clocks.note_activity(team, DateTime::from_timestamp(U0 + s, 0).unwrap());
         }
-        fn at(&self, s: f64) -> Instant {
-            self.1 + Duration::from_secs_f64(s)
-        }
-        /// Registered at the base; first non-empty chunk classified at +1 s.
-        fn session(&self, tuning: IdleTuning) -> Uuid {
-            let id = Uuid::new_v4();
-            self.0.register_session_at(id, tuning, self.1);
-            self.out(id, 1.0);
-            id
-        }
-        fn out(&self, id: Uuid, s: f64) {
-            let (d, at) = (&self.0, self.at(s));
-            d.record_output_classified_at(id, 2048, true, at, Some(at));
-        }
-        /// One tick with a coherent monotonic/UTC pair at `base + s`; returns both anchors.
-        fn tick(&self, members: &[(Uuid, String)], s: f64) -> [Option<i64>; 2] {
-            let utc = DateTime::from_timestamp_nanos(U0 * 1_000_000_000 + (s * 1e9) as i64);
-            advance_team_activity(&self.2, members, &self.0, &refs(), self.at(s), utc);
-            let g = self.2.lock().unwrap();
-            ["t1", "t2"].map(|t| g.last_activity_at(t).map(|a| a.timestamp() - U0))
-        }
+        let idle = Arc::into_inner(IdleDetector::new(|_| {}, |_| {})).unwrap();
+        Fx(idle, Instant::now(), Arc::new(Mutex::new(clocks)))
     }
-
-    fn refs() -> HashMap<String, (String, String)> {
-        ["t1", "t2"]
-            .map(|t| (t.into(), (t.into(), t.into())))
-            .into()
+    fn at(&self, s: f64) -> Instant {
+        self.1 + Duration::from_secs_f64(s)
     }
-
-    #[test]
-    fn issue_2158_focus_resize_keeps_team_anchor() {
-        for tuning in [IdleTuning::AGENT_DEFAULT, IdleTuning::DEFAULT] {
-            let fx = Fx::new(&[("t1", 15)]);
-            let id = fx.session(tuning);
-            let members = vec![key(id, "t1")];
-            fx.0.record_resize_at(id, fx.at(30.0));
-            let before = fx.0.silence_age(id).unwrap();
-            fx.out(id, 31.0);
-            assert!(
-                fx.0.silence_age(id).unwrap() <= before,
-                "#2124 counts the repaint"
-            );
-            assert_eq!(fx.tick(&members, 40.0)[0], Some(15), "focus repaint");
-            fx.out(id, 34.0);
-            assert_eq!(fx.tick(&members, 41.0)[0], Some(34), "work after the grace");
-        }
+    /// Registered at the base; first non-empty chunk classified at +1 s.
+    fn session(&self, tuning: IdleTuning) -> Uuid {
+        let id = Uuid::new_v4();
+        self.0.register_session_at(id, tuning, Some(self.1));
+        self.out(id, 1.0);
+        id
     }
-
-    #[test]
-    fn issue_2158_delayed_restore_keeps_team_anchors() {
-        let fx = Fx::new(&[("t1", 3), ("t2", 7)]);
-        let ids = [(); 3].map(|()| Uuid::new_v4());
-        for id in ids {
-            fx.0.register_session_at(id, IdleTuning::AGENT_DEFAULT, fx.1);
-            fx.out(id, 20.0);
-            fx.out(id, 22.0);
-        }
-        let members = vec![key(ids[0], "t1"), key(ids[1], "t1"), key(ids[2], "t2")];
-        assert_eq!(fx.tick(&members, 35.0), [Some(3), Some(7)]);
-        // The final close veto still sees the recent emission; nothing is established.
-        let ages = ids.map(|id| fx.0.silence_age(id).unwrap());
-        assert!(ages.iter().all(|age| *age < REPAINT_GRACE));
-        assert!(established_teams(&members, &fx.0).is_empty());
+    fn out(&self, id: Uuid, s: f64) {
+        let at = self.at(s);
+        self.0
+            .record_output_classified_at(id, 2048, true, at, Some(at));
     }
-
-    #[test]
-    fn issue_2158_work_keeps_advancing_team_anchor() {
-        let fx = Fx::new(&[("t2", 5)]);
-        let [worker, quiet, other] = [(); 3].map(|()| fx.session(IdleTuning::AGENT_DEFAULT));
-        for s in [20.0, 40.0, 60.0] {
-            fx.out(worker, s);
-        }
-        let members = vec![key(worker, "t1"), key(quiet, "t1"), key(other, "t2")];
-        assert_eq!(fx.tick(&members, 61.0), [Some(60), Some(5)]);
+    /// One tick with a coherent monotonic/UTC pair at `base + s`; returns both anchors.
+    fn tick(&self, members: &[(Uuid, String)], s: f64) -> [Option<i64>; 2] {
+        let utc = DateTime::from_timestamp_nanos(U0 * 1_000_000_000 + (s * 1e9) as i64);
+        advance_team_activity(&self.2, members, &self.0, &refs(), self.at(s), utc);
+        let g = self.2.lock().unwrap();
+        ["t1", "t2"].map(|t| g.last_activity_at(t).map(|a| a.timestamp() - U0))
     }
+}
 
-    #[test]
-    fn issue_2158_suppressed_repaint_keeps_anchor_across_ticks() {
-        let fx = Fx::new(&[]);
-        let id = fx.session(IdleTuning::DEFAULT);
+fn refs() -> HashMap<String, (String, String)> {
+    ["t1", "t2"]
+        .map(|t| (t.into(), (t.into(), t.into())))
+        .into()
+}
+
+#[test]
+fn issue_2158_focus_resize_keeps_team_anchor() {
+    for tuning in [IdleTuning::AGENT_DEFAULT, IdleTuning::DEFAULT] {
+        let fx = Fx::new(&[("t1", 15)]);
+        let id = fx.session(tuning);
         let members = vec![key(id, "t1")];
-        fx.out(id, 90.5);
-        assert_eq!(fx.tick(&members, 100.75)[0], Some(90));
-        fx.0.record_resize_at(id, fx.at(120.0));
-        fx.out(id, 121.0);
-        assert_eq!(
-            fx.tick(&members, 160.25)[0],
-            Some(90),
-            "rounded once, after subtracting"
-        );
-        fx.out(id, 150.0);
-        assert_eq!(fx.tick(&members, 170.0)[0], Some(150));
+        fx.0.record_resize_at(id, Some(fx.at(30.0)));
+        let before = fx.0.silence_age(id).unwrap();
+        fx.out(id, 31.0);
+        assert!(fx.0.silence_age(id).unwrap() <= before, "#2124 counts it");
+        assert_eq!(fx.tick(&members, 40.0)[0], Some(15), "focus repaint");
+        fx.out(id, 34.0);
+        assert_eq!(fx.tick(&members, 41.0)[0], Some(34), "work after the grace");
     }
+}
 
-    #[test]
-    fn issue_2158_tick_protects_silent_coordinator() {
-        for seeded in [true, false] {
-            let fx = Fx::new(&[]);
-            let ids @ [coord, member, worker] = [(); 3].map(|()| Uuid::new_v4());
-            let (age, s) = (Duration::from_secs(300), Duration::from_secs);
-            for id in ids {
-                fx.0.set_auto_close_ages_for_test(id, age, age);
-            }
-            let (now, utc) = (Instant::now(), Utc::now());
-            let stamps = [now - s(20), now + Duration::from_millis(1)];
-            for stamp in stamps.into_iter().filter(|_| seeded) {
-                fx.0.record_output_classified_at(worker, 2048, true, stamp, Some(stamp));
-            }
-            let members = vec![key(coord, "t1"), key(member, "t1"), key(worker, "t1")];
-            let stale = utc - chrono::Duration::seconds(600);
-            fx.2.lock().unwrap().note_user_message("t1", stale);
-            advance_team_activity(&fx.2, &members, &fx.0, &refs(), now, utc);
-            let snap = fx.2.lock().unwrap().snapshot();
-            let policy = auto_close_policy(Some((true, 1, false)), utc.timestamp()).unwrap();
-            let teams = established_teams(&members, &fx.0);
-            let none = HashSet::new();
-            let closing = closeable_members(&members, &refs(), &snap, &fx.0, &teams, &none, policy);
-            let anchor = snap["t1"].last_activity_at.map(|t| t.timestamp());
-            assert_eq!(anchor, seeded.then_some(utc.timestamp()));
-            assert_eq!(closing.is_empty(), seeded);
-            assert!(seeded || closing.contains(&coord) && closing.contains(&member));
+#[tokio::test]
+async fn issue_2158_delayed_restore_keeps_team_anchors() {
+    // Base 35 s back, so the +35 s tick is the real `now` that `alive_age` reads.
+    let mut fx = Fx::new(&[("t1", 3), ("t2", 7)]);
+    fx.1 = Instant::now() - Duration::from_secs(35);
+    let ids = [(); 3].map(|()| Uuid::new_v4());
+    for (id, registered) in ids.into_iter().zip([5.0, 5.0, 6.0]) {
+        fx.0.register_session_at(id, IdleTuning::AGENT_DEFAULT, Some(fx.at(registered)));
+        let _ = [20.0, 22.0].map(|s| fx.out(id, s));
+    }
+    let members = vec![key(ids[0], "t1"), key(ids[1], "t1"), key(ids[2], "t2")];
+    assert_eq!(fx.tick(&members, 35.0), [Some(3), Some(7)]);
+    // t1 alive exactly 30 s is established; t2 alive 29 s is not.
+    let t1 = HashSet::from(["t1".to_string()]);
+    assert_eq!(established_teams(&members, &fx.0), t1);
+    // Stale anchor: restore and resize-repaint emissions veto the close, a silent control closes.
+    let (old, now) = (Duration::from_secs(300), Instant::now());
+    let [repaint, control] = [(); 2].map(|()| Uuid::new_v4());
+    let _ = [repaint, control].map(|id| fx.0.set_auto_close_ages_for_test(id, old, old));
+    fx.0.record_resize_at(repaint, Some(now));
+    let quiet = |id| fx.0.silence_age(id).unwrap() >= REPAINT_GRACE;
+    assert!(quiet(repaint));
+    fx.0.record_output_classified_at(repaint, 2048, true, now, Some(now));
+    assert!(!quiet(repaint) && fx.0.team_silence_age_at(repaint, now).is_none());
+    let to_close = vec![ids[0], repaint, control];
+    let team: HashMap<_, _> = to_close.iter().map(|id| (*id, "t1".to_string())).collect();
+    let policy = auto_close_policy(Some((true, 1, false)), U0 + 200).unwrap();
+    let (mgr, refs) = (tokio::sync::RwLock::new(SessionManager::new()), refs());
+    let confirm = confirm_closeable_members(to_close, &fx.2, &team, &refs, &fx.0, &mgr, policy);
+    assert_eq!(confirm.await, vec![control]);
+}
+
+#[test]
+fn issue_2158_work_keeps_advancing_team_anchor() {
+    let fx = Fx::new(&[("t2", 5)]);
+    let [worker, quiet, other] = [(); 3].map(|()| fx.session(IdleTuning::AGENT_DEFAULT));
+    let _ = [20.0, 40.0, 60.0].map(|s| fx.out(worker, s));
+    let members = vec![key(worker, "t1"), key(quiet, "t1"), key(other, "t2")];
+    assert_eq!(fx.tick(&members, 61.0), [Some(60), Some(5)]);
+}
+
+#[test]
+fn issue_2158_suppressed_repaint_keeps_anchor_across_ticks() {
+    let fx = Fx::new(&[]);
+    let id = fx.session(IdleTuning::DEFAULT);
+    let members = vec![key(id, "t1")];
+    fx.out(id, 90.5);
+    assert_eq!(fx.tick(&members, 100.75)[0], Some(90));
+    fx.0.record_resize_at(id, Some(fx.at(120.0)));
+    fx.out(id, 121.0);
+    assert_eq!(fx.tick(&members, 160.25)[0], Some(90), "rounded once");
+    fx.out(id, 150.0);
+    assert_eq!(fx.tick(&members, 170.0)[0], Some(150));
+}
+
+#[test]
+fn issue_2158_tick_protects_silent_coordinator() {
+    for seeded in [true, false] {
+        let fx = Fx::new(&[]);
+        let ids @ [coord, member, worker] = [(); 3].map(|()| Uuid::new_v4());
+        let (age, s) = (Duration::from_secs(300), Duration::from_secs);
+        let _ = ids.map(|id| fx.0.set_auto_close_ages_for_test(id, age, age));
+        let (now, utc) = (Instant::now(), Utc::now());
+        let stamps = [now - s(20), now + Duration::from_millis(1)];
+        for stamp in stamps.into_iter().filter(|_| seeded) {
+            fx.0.record_output_classified_at(worker, 2048, true, stamp, Some(stamp));
         }
+        let members = vec![key(coord, "t1"), key(member, "t1"), key(worker, "t1")];
+        let stale = utc - chrono::Duration::seconds(600);
+        fx.2.lock().unwrap().note_user_message("t1", stale);
+        advance_team_activity(&fx.2, &members, &fx.0, &refs(), now, utc);
+        let snap = fx.2.lock().unwrap().snapshot();
+        let policy = auto_close_policy(Some((true, 1, false)), utc.timestamp()).unwrap();
+        let teams = established_teams(&members, &fx.0);
+        let none = HashSet::new();
+        let closing = closeable_members(&members, &refs(), &snap, &fx.0, &teams, &none, policy);
+        let anchor = snap["t1"].last_activity_at.map(|t| t.timestamp());
+        assert_eq!(anchor, seeded.then_some(utc.timestamp()));
+        assert_eq!(closing.is_empty(), seeded);
+        assert!(seeded || closing.contains(&coord) && closing.contains(&member));
     }
 }

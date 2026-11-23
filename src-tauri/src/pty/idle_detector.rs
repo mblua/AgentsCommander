@@ -284,10 +284,16 @@ impl IdleDetector {
     /// `seed_initial_activity` (#260), seeds `activity[id] = now` so the watcher
     /// evaluates it from t=0 even if no printable chunk ever arrives.
     pub fn register_session(&self, session_id: Uuid, tuning: IdleTuning) {
-        self.register_session_at(session_id, tuning, Instant::now());
+        self.register_session_at(session_id, tuning, None);
     }
 
-    pub(crate) fn register_session_at(&self, session_id: Uuid, tuning: IdleTuning, at: Instant) {
+    /// #2158 - `at` injects the registration instant; `None` samples it under the mutex.
+    pub(crate) fn register_session_at(
+        &self,
+        session_id: Uuid,
+        tuning: IdleTuning,
+        at: Option<Instant>,
+    ) {
         debug_assert!(
             tuning.resize_grace >= tuning.idle_threshold,
             "resize_grace must be >= idle_threshold or a resize repaint can \
@@ -314,31 +320,30 @@ impl IdleDetector {
             );
         }
         drop(activity);
-        // #552 always seed the silence clock so a freshly spawned session has a
-        // baseline age (the auto-close evaluator treats untracked-but-live as a
-        // spawn race; see auto_close.rs). Independent of the #260 activity seed
-        // above, which is gated on `seed_initial_activity`.
+        // #552 always seed silence: auto-close treats untracked-but-live as a spawn race.
         lock(&self.silence).insert(session_id, Instant::now());
-        // (#580) seed the alive-since clock alongside silence so auto-close can
-        // apply WAKE_GRACE (kill-eligibility / anchor-advance gating) from spawn.
-        lock(&self.registered_at).insert(session_id, TeamClock::new(at));
+        // (#580) the alive-since clock lets auto-close apply WAKE_GRACE from spawn.
+        let mut clocks = lock(&self.registered_at);
+        let registered = at.unwrap_or_else(Instant::now);
+        clocks.insert(session_id, TeamClock::new(registered));
     }
 
-    /// Mark that a resize just happened for this session.
-    /// PTY output within `RESIZE_GRACE` will be ignored (prompt repaint noise).
+    /// Mark a resize: PTY output within `RESIZE_GRACE` is ignored (prompt repaint noise).
     pub fn record_resize(&self, session_id: Uuid) {
-        self.record_resize_at(session_id, Instant::now());
+        self.record_resize_at(session_id, None);
     }
 
-    /// #2158 - also marks the team clock, after releasing `resize_grace`.
-    pub(crate) fn record_resize_at(&self, session_id: Uuid, at: Instant) {
+    /// #2158 - also marks the team clock; each mark is sampled under its own mutex.
+    pub(crate) fn record_resize_at(&self, session_id: Uuid, at: Option<Instant>) {
         log::debug!(
             "[idle] RESIZE recorded for {}",
             &session_id.to_string()[..8]
         );
-        lock(&self.resize_grace).insert(session_id, at);
-        if let Some(clock) = lock(&self.registered_at).get_mut(&session_id) {
-            clock.resize = clock.resize.max(Some(at));
+        lock(&self.resize_grace).insert(session_id, at.unwrap_or_else(Instant::now));
+        let mut clocks = lock(&self.registered_at);
+        let mark = at.unwrap_or_else(Instant::now);
+        if let Some(clock) = clocks.get_mut(&session_id) {
+            clock.resize = clock.resize.max(Some(mark));
         }
     }
 
@@ -354,18 +359,14 @@ impl IdleDetector {
         }
     }
 
-    /// #2124 - the injectable core of [`record_output`]. A short periodic burst after
-    /// long silence (a status-line repaint) must neither reset the auto-close silence
-    /// clock nor reopen the #260 busy period. So a chunk that finds `burst_prior_silence` of silence opens a
-    /// PENDING burst instead of counting, and nothing is touched while one is
-    /// pending. The burst is confirmed - and only then counted, with its TOTAL
-    /// byte count - when it reaches `burst_max_bytes` or spans `burst_window`; a
-    /// burst whose next chunk arrives more than `burst_window` after its last is
-    /// discarded as short. Input and inter-agent delivery still touch
-    /// `silence`, so a pending candidate that finds a fresh clock is dropped and
-    /// the current chunk counts immediately (its bytes are not added to the
-    /// candidate's). Order: filter-off, gap discard, fresh-clock drop,
-    /// accumulate/confirm, then open-or-count.
+    /// #2124 - the injectable core of [`record_output`]. A short periodic burst after long
+    /// silence (a status-line repaint) must neither reset the auto-close silence clock nor
+    /// reopen the #260 busy period: a chunk finding `burst_prior_silence` opens a PENDING
+    /// burst and nothing is touched while it pends. It is confirmed, and counted with its
+    /// TOTAL bytes, at `burst_max_bytes` or once it spans `burst_window`; a next chunk more
+    /// than `burst_window` after its last discards it. Input and delivery still touch
+    /// `silence`, so a pending candidate finding a fresh clock is dropped and the chunk counts
+    /// alone. Order: filter-off, gap discard, fresh-clock drop, accumulate/confirm, open-or-count.
     pub(crate) fn record_output_at(
         &self,
         session_id: Uuid,
@@ -610,16 +611,18 @@ impl IdleDetector {
             .map(std::time::Instant::elapsed)
     }
 
-    /// #552 Reset the auto-close silence clock for a session. Does NOT touch
-    /// `activity`/`idle_set`/`on_busy`, so it never affects the #260 idle dot.
-    /// Called for user input and inter-agent delivery; #2158 - it also promotes the team clock.
+    /// #552 Reset the auto-close silence clock (never `activity`, so not the #260 idle dot)
+    /// for input and delivery; #2158 - it also promotes the team clock.
     pub fn touch_silence(&self, session_id: Uuid) {
-        self.touch_silence_at(session_id, Instant::now());
+        self.touch_silence_at(session_id, None);
     }
 
-    pub(crate) fn touch_silence_at(&self, session_id: Uuid, at: Instant) {
-        lock(&self.silence).insert(session_id, at);
-        self.promote_team_explicit(session_id, at);
+    pub(crate) fn touch_silence_at(&self, session_id: Uuid, at: Option<Instant>) {
+        let mut silence = lock(&self.silence);
+        let stamp = at.unwrap_or_else(Instant::now);
+        silence.insert(session_id, stamp);
+        drop(silence);
+        self.promote_team_explicit(session_id, stamp);
     }
 
     /// #2158 - output's silence reset; never promotes the team clock.

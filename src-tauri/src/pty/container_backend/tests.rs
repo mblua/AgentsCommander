@@ -381,11 +381,17 @@ async fn issue_2158_container_resize_marks_before_publish() {
         "the repaint must not move the team stamp"
     );
     assert_eq!(backend.get_pty_size(id), Some((40, 100)));
+    assert_eq!(backend.resize_marks_for_test(), 1);
 
     // Full and Closed: no mark, the original errors and cleanup.
     for full in [true, false] {
         let id = Uuid::new_v4();
         let (backend, idle, rx) = attached_with_idle(id, root).await;
+        let (removed_tx, removed_rx) = std::sync::mpsc::channel();
+        backend.set_route_remover(Arc::new(move |session_id, _| {
+            let _ = removed_tx.send(session_id);
+            Ok(())
+        }));
         if full {
             let authority = crate::pty::manager::BackendWriteAuthority::for_backend_test();
             for _ in 0..8 {
@@ -401,6 +407,14 @@ async fn issue_2158_container_resize_marks_before_publish() {
             assert!(matches!(error, AppError::SessionNotFound(ref t) if t == &id.to_string()));
         }
         assert!(!backend.has_session(id), "queue failure keeps its cleanup");
+        assert_eq!(
+            backend.resize_marks_for_test(),
+            0,
+            "the prepublish mark never ran"
+        );
+        let removed = removed_rx.recv_timeout(Duration::from_secs(1));
+        assert_eq!(removed.ok(), Some(id), "route reconciliation");
+        assert_eq!(backend.get_pty_size(id), None, "dimensions unchanged");
         let readiness = idle.purge_readiness(&[id]);
         assert!(
             readiness.iter().all(|r| r.last_resize_age.is_none()),
