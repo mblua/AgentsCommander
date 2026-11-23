@@ -1,4 +1,4 @@
-//! `POST /api/v1/send` (#791 + #833). Identity is the token's bound replica,
+//! `POST /api/v1/send`. Identity is the token's bound replica,
 //! never client input. The handler queues inline content durably and the
 //! dispatcher performs delivery.
 

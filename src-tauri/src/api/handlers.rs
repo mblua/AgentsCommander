@@ -1,4 +1,4 @@
-//! HTTP handlers for the control-plane API (#791 §6, §7).
+//! HTTP handlers for the control-plane API.
 
 pub(crate) mod list_peers;
 pub(crate) mod pty_input;

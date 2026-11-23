@@ -1,4 +1,4 @@
-//! The lock-free per-session armed flag (#2232 phase 3).
+//! The lock-free per-session armed flag.
 //!
 //! `is_armed` is called from the `IdleDetector` callback, which runs on a
 //! native watcher or PTY-read thread and emits `session_idle` **synchronously**.

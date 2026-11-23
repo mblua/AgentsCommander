@@ -31,7 +31,7 @@ pub(super) fn snapshot_target_projection(
 }
 
 /// Why `--snapshot-targets` returned `[]` without scanning. The vocabulary is
-/// closed and compile-time: no path, name or FQN can reach it (#2228).
+/// closed and compile-time: no path, name or FQN can reach it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SnapshotTargetsSilentReason {
     NotRoomOrchestrator,
@@ -49,7 +49,7 @@ impl SnapshotTargetsSilentReason {
 
 /// Tier B: integers only. Never a path, a name, an FQN or a rule name, because
 /// every one of these candidates was found by scanning the caller's neighbours
-/// rather than supplied by the caller (#2228).
+/// rather than supplied by the caller.
 pub(super) fn snapshot_targets_counts_note(
     skips: crate::config::teams::SnapshotDiscoverySkips,
 ) -> String {
@@ -64,7 +64,7 @@ pub(super) fn snapshot_targets_reason_note(reason: SnapshotTargetsSilentReason) 
 }
 
 /// Tier A: the caller supplied `--root`, so naming the rule that rejected it
-/// discloses nothing the caller does not already own (#2228).
+/// discloses nothing the caller does not already own.
 pub(super) fn verify_snapshot_root(
     root_path: &Path,
 ) -> Result<crate::path_identity::VerifiedPathIdentity, String> {

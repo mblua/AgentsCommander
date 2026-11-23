@@ -1,4 +1,4 @@
-//! Codex turn-boundary parsing and assembly (#2232 phase 5).
+//! Codex turn-boundary parsing and assembly.
 //!
 //! A Codex rollout persists a turn's boundary as `event_msg` records:
 //! `task_started` opens a turn and `task_complete` (or its `turn_complete`
@@ -221,7 +221,7 @@ pub struct TurnAccumulator {
     counters: TurnCounters,
     /// Ids of closed turns a newer `task_started` superseded. Never bounded and
     /// never shrunk: forgetting an id would let a late fragment plus closure
-    /// re-emit it (#2356). Growth is one entry per superseded turn.
+    /// re-emit it. Growth is one entry per superseded turn.
     superseded: HashSet<String>,
 }
 

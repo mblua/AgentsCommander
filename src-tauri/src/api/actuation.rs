@@ -1,12 +1,11 @@
-//! The resolution and routing seam for API sends (#791 §8, §0.5 HIGH-3).
+//! The resolution and routing seam for API sends.
 //!
 //! Both the filesystem poller and the API resolve and route through the SAME
 //! `can_communicate` / `resolve_agent_target`, so the two planes cannot diverge
 //! in canonicalization for the non-root verb set. Actuation is NOT performed
 //! here: `api/handlers/send.rs` queues the send durably and `api/dispatcher.rs`
 //! delivers it through `MailboxPoller::deliver_wake_with_origin` with
-//! `WakeDeliveryOrigin::DbQueue` (#1177 removed the inline delivery path that
-//! used to live in this file). Root-Agent routing is intentionally API-excluded
+//! `WakeDeliveryOrigin::DbQueue`. Root-Agent routing is intentionally API-excluded
 //! in increment 1 (`can_communicate` does not model the root branches) and
 //! rejected at the boundary.
 
