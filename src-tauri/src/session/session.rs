@@ -347,9 +347,9 @@ pub fn is_working(s: &Session) -> bool {
     !s.waiting_for_input && matches!(s.status, SessionStatus::Active | SessionStatus::Running)
 }
 
-/// (#1793) The [`is_working`] rule over a PERSISTED row from `sessions.json`,
+/// The [`is_working`] rule over a PERSISTED row from `sessions.json`,
 /// whose inputs are `Option`. Absence is NOT working: an unknown row must never
-/// be nudged. That is the opposite direction from the #248 wake rule's fail-open
+/// be nudged. That is the opposite direction from the wake rule's fail-open
 /// `None`, deliberately: failing open there costs a woken session, failing open
 /// here costs unrequested work.
 pub fn persisted_is_working(
@@ -437,25 +437,25 @@ pub struct SessionInfo {
     pub profile_fallback_chain: Vec<String>,
     #[serde(default)]
     pub profile_fallback_applied: bool,
-    /// #2434 - how a portable coding-agent reference was matched for this
+    /// How a portable coding-agent reference was matched for this
     /// session. `None` means "not matched by the tiered matcher": a local-id hit,
     /// or a session that never went through it. Wire: `matchTier`.
     #[serde(default)]
     pub match_tier: Option<String>,
-    /// #2434 - the profile letter the stored reference asked for, when it is
+    /// The profile letter the stored reference asked for, when it is
     /// known and differs from the effective one. Wire: `originalProfileLetter`.
     #[serde(default)]
     pub original_profile_letter: Option<String>,
     #[serde(skip)]
     pub effective_codex_home: Option<String>,
-    /// #592 - internal carrier (NOT on the wire) of the session's loaded hash,
+    /// Internal carrier (NOT on the wire) of the session's loaded hash,
     /// read by the `list_sessions` command to compute `profile_outdated`.
     #[serde(skip)]
     pub profile_content_hash: Option<String>,
     /// Internal configured-spawn provenance copied from `Session`.
     #[serde(skip)]
     pub trusted_configured_spawn: bool,
-    /// #592 - true when the loaded profile cell no longer matches the current
+    /// True when the loaded profile cell no longer matches the current
     /// configuration. Computed by the `list_sessions` command (settings-aware);
     /// `From<&Session>` cannot compute it (no settings) so it defaults false.
     #[serde(default)]
@@ -471,13 +471,13 @@ pub struct SessionInfo {
     /// second lock round-trip through `SessionManager::get_session`.
     #[serde(skip)]
     pub detached_geometry: Option<WindowGeometry>,
-    /// (#630/#631) Not serialized to the frontend: internal carrier for
+    /// Not serialized to the frontend: internal carrier for
     /// `snapshot_sessions` so persistence can read the durable resume intent
     /// without a second lock round-trip. Mirrors `detached_geometry`: `#[serde(skip)]`
     /// keeps it off the IPC wire, so the frontend contract is unchanged.
     #[serde(skip)]
     pub start_fresh_on_restore: bool,
-    /// #1088 - internal carrier (NOT on the wire) of the session's live
+    /// Internal carrier (NOT on the wire) of the session's live
     /// context-usage percent, read by `snapshot_sessions` so the CLI can surface
     /// it. Mirrors `detached_geometry` / `start_fresh_on_restore`: `#[serde(skip)]`
     /// keeps it off the IPC wire, so the badge path and frontend contract are

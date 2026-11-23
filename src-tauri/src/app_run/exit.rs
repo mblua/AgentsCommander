@@ -68,12 +68,12 @@ fn on_window_destroyed<H, S, F, FF>(
     F: Fn(S) -> FF + Clone + Send + 'static,
     FF: Future<Output = ()> + Send + 'static,
 {
-    // #2296 - a gate window that dies without answering must not
+    // A gate window that dies without answering must not
     // hold a quit round open. Synchronous: it only drops the
     // registration, clears busy and (if that gate was still
     // unanswered) aborts the round with reason `destroyed`.
     host.quit_window_gone(&label);
-    // #1363 - a destroyed window's terminal-output attachments are released
+    // A destroyed window's terminal-output attachments are released
     // here, in the backend, without any frontend cooperation. It is what keeps
     // a window that died without detaching from leaving a session emitting to
     // a webview that is gone, and it is why the frontend close hook does not
@@ -94,7 +94,7 @@ fn on_window_destroyed<H, S, F, FF>(
             close(state).await;
         });
     }
-    // #566 - when the main window is destroyed (any close path:
+    // When the main window is destroyed (any close path:
     // X, Alt+F4, programmatic, silent- or confirm-quit), close the
     // Resource Monitor window so it cannot orphan and keep the app
     // alive. No-op if it was never opened or already closed.
@@ -138,7 +138,7 @@ fn on_window_destroyed<H, S, F, FF>(
             }
         }
     }
-    // #714 screenshot overlay destroyed (user close, crash, or our
+    // Screenshot overlay destroyed (user close, crash, or our
     // own teardown): clear capture state and destroy sibling
     // overlays. Idempotent — a no-op once state is already Idle.
     if label.starts_with("screenshot-overlay-") {
@@ -150,7 +150,7 @@ fn append_exit_activity(
     session_mgr_for_exit: &Arc<tokio::sync::RwLock<SessionManager>>,
     activity_for_exit: &crate::config::activity_log::ActivityCoalescer,
 ) {
-    // #1149 - close every open activity interval here. `trigger()`
+    // Close every open activity interval here. `trigger()`
     // below stops the IdleDetector before anything else, so this
     // is the only position where the session map is still
     // populated AND the detector is still alive. Without it a
@@ -304,7 +304,7 @@ fn cleanup_exit_resources(
     cleanup_budget_secs: u64,
     jobless_sessions: usize,
 ) {
-    // #632 B2+B4 - run the identity reaper for accounting and as the
+    // B2+B4 - run the identity reaper for accounting and as the
     // backstop for job-less sessions, TIME-BOXED. Fresh-only targets
     // (B2a) make it near-instant for jobbed sessions (their live tree is
     // already dead). Abandoning it on timeout is safe for jobbed
@@ -339,7 +339,7 @@ fn cleanup_exit_resources(
                 jobbed trees were still terminated by the job kill"
         ),
     }
-    // #632 MED-2 - job-less sessions are reaper-only; if the reaper did
+    // MED-2 - job-less sessions are reaper-only; if the reaper did
     // not finish, their trees may be orphaned. Make it visible.
     if cleanup.is_err() && jobless_sessions > 0 {
         log::warn!(
@@ -373,7 +373,7 @@ fn begin_exit<H: ExitHost, S>(
 
     append_exit_activity(session_mgr_for_exit, activity_for_exit);
 
-    // #632 B1 - trigger background-task shutdown FIRST so the resource
+    // B1 - trigger background-task shutdown FIRST so the resource
     // watchdog stops dispatching NEW ticks and the idle detectors stop.
     // (An already-dispatched spawn_blocking kill_group still runs;
     // safety there rests on B2b's bounded set + kill_group's
@@ -410,7 +410,7 @@ fn flush_exit_metadata<S>(ctx: &ExitCtx<S>) {
         ui_automation_state_for_exit,
         ..
     } = ctx;
-    // #552 flush the coordinator badge / auto-closed store on clean
+    // Flush the coordinator badge / auto-closed store on clean
     // exit (the 60s tick can leave up to one tick of recency
     // unpersisted). Sync snapshot + save; best-effort on poison.
     {
@@ -423,7 +423,7 @@ fn flush_exit_metadata<S>(ctx: &ExitCtx<S>) {
         }
     }
 
-    // Issue #231 + grinch G-LOW (#246): remove daemon.pid AFTER
+    // Grinch G-LOW: remove daemon.pid AFTER
     // persist_current_state so a concurrent CLI invocation never
     // observes NoPidFile while sessions.json is being rewritten.
     // Still runs before process exit — subsequent CLI invocations
@@ -476,7 +476,7 @@ pub(crate) fn on_run_event<H, S, F, FF>(
                 }
             }
 
-            // #632 A - kill every agent's Job Object: atomically terminates
+            // A - kill every agent's Job Object: atomically terminates
             // each jobbed session's whole descendant tree via the job handle.
             // This is the durable, orphan-free guarantee for jobbed sessions.
             let pty_mgr = host.required_pty();

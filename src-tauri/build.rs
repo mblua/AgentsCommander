@@ -25,7 +25,7 @@ fn main() {
     }
     embed_windows_test_manifest();
 
-    // #4047: static VC runtime linking is set explicitly here. The Tauri CLI
+    // Static VC runtime linking is set explicitly here. The Tauri CLI
     // (2.10.1) exports the deprecated STATIC_VCRUNTIME=true on every
     // `tauri build`, and tauri-build 2.7.1 lets that variable override
     // WindowsAttributes and prints a deprecation warning. Drop it so this

@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
 
-/// #2786 (C1) - one side of the pair as a map: absent is empty, anything that
+/// (C1) - one side of the pair as a map: absent is empty, anything that
 /// is not a readable JSON object is an error.
 pub(super) fn read_pair_side(path: &Path) -> Result<Map<String, Value>, String> {
     let content = match read_local_config_text(path) {
@@ -33,7 +33,7 @@ pub(super) fn read_pair_side(path: &Path) -> Result<Map<String, Value>, String> 
     }
 }
 
-/// #2786 (C1) - publish the changed sides of one sequence, state first, firing
+/// (C1) - publish the changed sides of one sequence, state first, firing
 /// each side's stage only after its write.
 pub(super) fn publish_pair_sides(
     decisions: (&Path, &Map<String, Value>, &Map<String, Value>),
@@ -51,7 +51,7 @@ pub(super) fn publish_pair_sides(
     Ok(())
 }
 
-/// #2786 (C1) - temp plus `publish_temp_config`, never `write_file_atomic`:
+/// (C1) - temp plus `publish_temp_config`, never `write_file_atomic`:
 /// the pair already holds the process `Mutex`, which is not reentrant.
 #[cfg(test)]
 pub(super) fn publish_pair_side(path: &Path, map: &Map<String, Value>) -> Result<(), String> {
