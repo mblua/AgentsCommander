@@ -340,7 +340,7 @@ fn path_is_under_windows(candidate: &Path, root: &Path) -> bool {
 ///   1. **Directories** — WG root, top-level `repo-*` and `__agent_*` subdirs,
 ///      and `messaging/` if present. Surfaces dir-handle holders (terminal
 ///      cwd, IDE workspace open, file watchers via `ReadDirectoryChangesW`)
-///      that file-only registration misses (#113 follow-up).
+///      that file-only registration misses.
 ///   2. **Hot lock files** — lock-prone git metadata (`.lock`, `index`,
 ///      `HEAD`, etc.) so the budget can't be exhausted on a single
 ///      `.git/objects/` subtree.

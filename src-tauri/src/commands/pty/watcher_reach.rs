@@ -1,10 +1,10 @@
-//! Draft watcher reach preview types and resolution for the Settings modal (#1171).
+//! Draft watcher reach preview types and resolution for the Settings modal.
 //! `resolve_draft_reach` runs two pure passes over the unsaved draft: one for which agents a
 //! row reaches and one for which rows get a watcher slot.
 //! It does not check pattern compilability (`preview_watcher_pattern` does) and does not save;
 //! watcher resolution itself lives in `crate::pty::watchers`.
 
-/// #1171 - one watcher row of the draft the Settings modal holds in memory.
+/// One watcher row of the draft the Settings modal holds in memory.
 ///
 /// Only the three fields `reaches` and the budget depend on (plan 4.8). `pattern`, `mode`,
 /// `dedupe` and `capturedAgainst` take part in neither and are deliberately not sent: the row
@@ -20,7 +20,7 @@ pub struct WatcherDraftEntry {
     pub commands: Option<Vec<String>>,
 }
 
-/// #1171 - one agent row of the same draft.
+/// One agent row of the same draft.
 ///
 /// The modal edits agents and watchers in ONE store and one Save writes both, so resolving
 /// against the SAVED agent list would answer about a state the user has already left. Two of
@@ -35,7 +35,7 @@ pub struct WatcherAgentDraftEntry {
     pub command: String,
 }
 
-/// #1171 - one agent that a draft row's selector reaches.
+/// One agent that a draft row's selector reaches.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WatcherReachEntry {
@@ -52,7 +52,7 @@ pub struct WatcherReachEntry {
     pub allocated: bool,
 }
 
-/// #1171 - the reach of one draft row.
+/// The reach of one draft row.
 ///
 /// Exactly one per requested row, in request order. It carries `id` back because the editor
 /// filters unrecognised rows out of the request, so its table positions do not match the

@@ -1,4 +1,4 @@
-//! #3516 - the launch gate: folder holds (launch share vs. preflight test), the preflight
+//! The launch gate: folder holds (launch share vs. preflight test), the preflight
 //! chain run before a CLI spawn, its user-facing messages and the strict seed rule.
 //! Tauri-free; the create path wires it in `create/core/backend.rs`.
 

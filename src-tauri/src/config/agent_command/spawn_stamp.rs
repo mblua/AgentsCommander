@@ -14,7 +14,7 @@ pub(crate) fn log_profile_stamp(
     effective_command: &str,
 ) {
     let merged_profile_env = raw_merged_profile_env(agent, &profile_resolution.cell.env);
-    // #592/#597 - surface exactly what gets hashed at spawn so a later drift
+    // Surface exactly what gets hashed at spawn so a later drift
     // mismatch can be traced. Kept at debug for support; off the hot path (fires
     // once per spawn). Env VALUES are intentionally omitted (they may hold
     // secrets); the hash already fingerprints them, and the key set + count

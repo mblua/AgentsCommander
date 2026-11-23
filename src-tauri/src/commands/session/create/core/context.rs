@@ -58,7 +58,7 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
     let mut pending = input;
     let id = pending.session.id;
     let effective_continuation = false;
-    // #930 - resolve the host-credential copy-in plan for container coding agents
+    // Resolve the host-credential copy-in plan for container coding agents
     // BEFORE the resume probe and the container env translation, so both consumers
     // observe the CLAUDE_CONFIG_DIR we may inject below. Gated by the global setting
     // (default on) and the per-agent profile descriptor; None when off,
@@ -100,7 +100,7 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
     } else {
         None
     };
-    // #930 - when we WILL copy host creds and the user configured no
+    // When we WILL copy host creds and the user configured no
     // CLAUDE_CONFIG_DIR (respecting an explicit value OR an explicit removal),
     // default it to the copy directory so a default-on container authenticates with
     // zero env rows. Injected as a host path; the container env translation maps it
@@ -272,7 +272,7 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
         create_owner,
         ..
     } = ctx;
-    // #529 - resolve the instructions filename from the configured coding agent
+    // Resolve the instructions filename from the configured coding agent
     // (falling back to detection for ad-hoc launches), plus the union of every
     // configured agent's filename for cleanup. Computed under a single settings
     // read guard that is dropped before any filesystem I/O (no guard across the
@@ -383,7 +383,7 @@ fn inject_claude_continue_args(
     shell_args: &mut Vec<String>,
 ) -> bool {
     let mut effective_continuation = false;
-    // #260: Claude's resume flag from the CodingAgentProfile. resume_tokens
+    // Claude's resume flag from the CodingAgentProfile. resume_tokens
     // is a 1-element const for Claude, so [0] is provably in bounds.
     let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
     if let Some(aid) = agent_id {
@@ -475,7 +475,7 @@ fn inject_other_provider_resume_args(
         }
     }
 
-    // #1873 - Muse workspace-latest resume: only a trusted, exact, empty-argv,
+    // Muse workspace-latest resume: only a trusted, exact, empty-argv,
     // local macOS/Linux recipe with resume intent receives `resume --last`,
     // appended to the LOCAL effective vector only. Fresh intent, configured
     // arguments, wrappers, containers, Windows and ad-hoc launches stay plain.

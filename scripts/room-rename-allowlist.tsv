@@ -1722,7 +1722,7 @@ P0-identifier	src-tauri/src/commands/task.rs	workgroup_root: strip_unc(&wg_root)
 P1-comment	src-tauri/src/commands/task.rs	/// Clear the workgroup TASK.md for the given session to the canonical Clean state.
 P1-comment	src-tauri/src/commands/task.rs	/// AND emits `workgroup_task_updated` for sibling sessions/windows.
 P1-comment	src-tauri/src/commands/task.rs	/// Clear the workgroup TASK.md addressed directly by its `wg-*` root path, for
-P1-comment	src-tauri/src/commands/task.rs	/// cold workgroups with no live/exited session to resolve from (#545). Mirrors
+P1-comment	src-tauri/src/commands/task.rs	/// cold workgroups with no live/exited session to resolve from. Mirrors
 P0-identifier	src-tauri/src/commands/task.rs	workgroup_root: String,
 P0-identifier	src-tauri/src/commands/task.rs	let wg_root = validate_wg_root(&workgroup_root, &project_paths)?;
 P4-log	src-tauri/src/commands/task.rs	log::info!("[task] clean_at for {} -> {:?}", workgroup_root, outcome);

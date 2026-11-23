@@ -61,7 +61,7 @@ pub async fn transcribe_audio(
         }]
     });
 
-    // #280 G-HIGH-2 — pass the API key as a header, not a URL query
+    // G-HIGH-2 — pass the API key as a header, not a URL query
     // parameter. `reqwest::Error::Display` prints the request URL on
     // transport failure, so `?key=<API_KEY>` would leak into error strings
     // that flow to logs, the Telegram chat (bridge.rs:862), and the
