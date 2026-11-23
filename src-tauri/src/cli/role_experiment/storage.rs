@@ -564,7 +564,7 @@ pub(super) fn create_run_workgroup_dirs(
     })
 }
 
-/// #2507 Room directory name for the CLI role-experiment path.
+/// Room directory name for the CLI role-experiment path.
 pub(super) fn role_exp_room_dir_name(
     next: u32,
     sanitized_experiment: &str,

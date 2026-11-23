@@ -1,3 +1,7 @@
+//! Environment and argument helpers for the API helper: API URL, bearer token
+//! and UTF-8 argument parsing. Owns no state; it only reads the process env
+//! and argv.
+
 use std::env;
 use std::ffi::OsString;
 

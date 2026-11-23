@@ -1,3 +1,7 @@
+//! Resource monitor registry: tracks agent process groups, samples their
+//! memory and terminates or quarantines groups over their limits.
+//! It holds runtime state only; the OS process calls live in the backend.
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -73,7 +77,7 @@ pub trait ProcessTreeBackend: Send + Sync + 'static {
         process: &ObservedProcess,
     ) -> Result<TerminateOutcome, ResourceError>;
     // Additive crate-internal diagnostics on an existing public backend port.
-    #[allow(private_interfaces)]
+    #[allow(private_interfaces, reason = "crate-private diagnostics on pub port")]
     fn observe_diagnostic_identity(&self, pid: u32) -> schema::CurrentIdentity {
         match self.observe_identity(pid) {
             Ok(Some(value)) => schema::CurrentIdentity {
@@ -97,7 +101,7 @@ pub trait ProcessTreeBackend: Send + Sync + 'static {
         }
     }
 
-    #[allow(private_interfaces)]
+    #[allow(private_interfaces, reason = "crate-private diagnostics on pub port")]
     fn terminate_verified_diagnostic(
         &self,
         process: &ObservedProcess,

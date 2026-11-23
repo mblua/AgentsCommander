@@ -1,3 +1,6 @@
+//! Default agent and coordinator context templates and their rendering.
+//! It owns template text only; it does not write context files.
+
 use super::{
     classify_legacy_rendered_default_context, coarse_section_dedup_safe,
     default_context_dynamic_values, heal_stale_global_recorded, mandatory_placeholder_aliases,

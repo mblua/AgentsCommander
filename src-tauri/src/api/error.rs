@@ -1,4 +1,4 @@
-//! Typed API errors and their HTTP mapping (#791).
+//! Typed API errors and their HTTP mapping.
 //!
 //! Error bodies never leak host absolute paths: `scrub_host_paths` redacts any
 //! Windows drive-letter path (e.g. an outbox / messaging dir that an internal
@@ -24,7 +24,10 @@ pub(crate) enum WindowScreenshotApiError {
 #[derive(Debug, Clone)]
 pub enum ApiError {
     #[cfg(any(target_os = "windows", test))]
-    #[allow(private_interfaces)]
+    #[allow(
+        private_interfaces,
+        reason = "crate-private screenshot error in pub enum"
+    )]
     WindowScreenshot(WindowScreenshotApiError),
     /// 400 - malformed body, missing/forbidden field, or invalid one-of payload.
     BadRequest(String),

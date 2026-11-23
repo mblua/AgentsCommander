@@ -1,3 +1,6 @@
+//! Picks the platform process-tree backend: the Windows one on Windows and a
+//! stub elsewhere. It owns no data and adds no monitoring logic.
+
 use std::sync::Arc;
 
 use super::registry::ResourceMonitorState;

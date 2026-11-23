@@ -1,3 +1,6 @@
+//! Loop scheduler records: coalesces pending runs, records missed runs and
+//! applies delivery reports. It does not deliver prompts itself.
+
 use std::path::Path;
 
 use chrono::{DateTime, Utc};

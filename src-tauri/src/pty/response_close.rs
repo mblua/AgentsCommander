@@ -1,3 +1,7 @@
+//! Response close state: runtime routes and admissions that decide which
+//! publisher may close an agent response.
+//! Runtime-only; it persists nothing and does not write to the PTY.
+
 use crate::pty::backend_kind::SessionBackendKind;
 use std::collections::HashMap;
 use std::sync::Arc;

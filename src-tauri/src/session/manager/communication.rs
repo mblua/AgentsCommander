@@ -1,3 +1,8 @@
+//! Session manager communication state: context percent, raised hands and
+//! clearing them. It does not send messages between agents.
+
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::super::session::{SessionCommunication, SessionCommunicationKind, SessionStatus};
 use super::carrier::{
     acquire_carrier_mutation_permit, CarrierMutationPermit, RaiseCarrierOutcome,
@@ -87,6 +92,10 @@ impl SessionManager {
     }
 
     // Dormant until P05 integration; remove with real callers.
+    #[allow(
+        clippy::unwrap_used,
+        reason = "the session row was found by the same id just above"
+    )]
     pub(crate) async fn rollback_raise_with_carrier_permit(
         &self,
         carrier_permit: &CarrierMutationPermit,

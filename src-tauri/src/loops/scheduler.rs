@@ -1,3 +1,9 @@
+//! Loop scheduler: scans configured loops, decides which are due and delivers
+//! their prompts to the target sessions, keeping per-loop runtime records.
+//! It does not edit loop configuration files.
+
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};

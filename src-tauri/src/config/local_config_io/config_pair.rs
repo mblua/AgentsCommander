@@ -1,3 +1,6 @@
+//! Writes the decisions file and the state file as one guarded pair, under
+//! one lock. It owns no config keys; callers pass paths and keys.
+
 use super::pair_image::{
     prepared_pair_image, ConfigPairCleanup, ConfigPairFinish, ConfigPublisher, PhysicalState,
 };

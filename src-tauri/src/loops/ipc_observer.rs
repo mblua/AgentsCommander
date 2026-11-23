@@ -39,7 +39,7 @@ mod report;
 
 use crate::shutdown::ShutdownSignal;
 // Preserve the existing type path even though production callers use BlackBoxRecord.
-#[allow(unused_imports)]
+#[allow(unused_imports, reason = "keeps existing PendingEntry type path")]
 pub use observation::PendingEntry;
 pub use observation::{BlackBoxRecord, FreezeMarker, Verdict};
 use observation::{TickSnapshot, LOOP_OUTLIVED_MS};

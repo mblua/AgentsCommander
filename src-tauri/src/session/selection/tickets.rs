@@ -176,13 +176,7 @@ impl CreateFinalizationTicket {
         Ok(binding)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn binding(&self) -> Option<PendingCreateBinding> {
         self.binding
     }

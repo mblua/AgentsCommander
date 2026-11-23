@@ -196,7 +196,10 @@ pub(crate) trait ApiRequestResources:
 /// Shared state injected into every handler.
 #[derive(Clone)]
 pub struct ApiState {
-    #[allow(private_interfaces)]
+    #[allow(
+        private_interfaces,
+        reason = "pub field of pub ApiState holds the crate-private WindowScreenshotLimiter"
+    )]
     #[cfg(any(target_os = "windows", test))]
     pub window_screenshot_limiter: std::sync::Arc<WindowScreenshotLimiter>,
     /// Read-through client-token registry (mtime-gated).
@@ -482,7 +485,7 @@ async fn serve_api<J: ApiJoinTask>(
     dispatcher_handle: J,
 ) {
     log::info!("[api-server] listening on http://{addr}");
-    println!("[api-server] listening on http://{addr}");
+    log::info!("[api-server] listening on http://{addr}");
 
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let server_shutdown = shutdown.clone();
@@ -507,7 +510,6 @@ fn warn_on_non_loopback(addr: SocketAddr) {
 restricts this port to the Docker/WSL subnet."
         );
         log::warn!("{warning}");
-        println!("{warning}");
     }
 }
 

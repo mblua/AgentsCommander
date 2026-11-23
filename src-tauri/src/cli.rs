@@ -58,7 +58,7 @@ use clap::{Parser, Subcommand};
 /// panicking. ANY OTHER write error (`PermissionDenied`, `StorageFull`,
 /// `WriteZero`, `Interrupted`, `Other`, etc.) panics like `println!` does
 /// today — those are real failures and a silent exit-0 would let consumers
-/// believe an empty redirect target is a successful empty result. See #230.
+/// believe an empty redirect target is a successful empty result.
 ///
 /// Use this in CLI verbs anywhere we currently call `println!` for primary
 /// output (JSON results, status lines, response bodies). Continue using
@@ -265,7 +265,7 @@ pub enum Commands {
 /// have invalid/missing handles. When stdio is already valid (inherited pipes,
 /// inherited console handles, or file redirects from the parent), `AttachConsole`
 /// would REBIND the std handles to a fresh console buffer — breaking those
-/// inherited channels. That rebinding is the root cause of issue #129: PS
+/// inherited channels. That rebinding breaks this case: PS
 /// -`NonInteractive` `&` direct calls inherit pipe handles to the GUI-subsystem
 /// child, and `AttachConsole`'s rebind sends subsequent writes to a console buffer
 /// that PS does not surface, dropping all output.
@@ -406,7 +406,7 @@ pub fn present_fatal_startup_message(message: &str) {
 ///
 /// Consequence: any valid UUID-shaped string passes this check. A UUID issued by a
 /// different binary instance will pass here but be rejected by the daemon's mailbox.
-/// Documented in `cli::Cli`'s `after_help` under TOKEN VALIDATION MODEL. See #229.
+/// Documented in `cli::Cli`'s `after_help` under TOKEN VALIDATION MODEL.
 pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), String> {
     let token = match token {
         Some(t) if !t.is_empty() => t.clone(),

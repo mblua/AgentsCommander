@@ -1,3 +1,7 @@
+//! Session bridge inside a container: runs the agent PTY and relays its I/O to
+//! the host over a WebSocket, using the bridge transport frames defined here.
+//! It owns only the live PTY and socket; it does not persist sessions or settings.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use std::env;

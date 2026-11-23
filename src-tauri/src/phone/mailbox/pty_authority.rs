@@ -1,3 +1,7 @@
+//! Mailbox PTY spawn authority: decides when the mailbox poller may spawn or
+//! replace a PTY session for a delivery target.
+//! It owns no persistent data; it does not deliver message bodies.
+
 mod target;
 
 use super::poller::{owned_replacement_launch_recipe, read_guarded_agent_state, MailboxPoller};
@@ -150,8 +154,7 @@ impl MailboxPoller {
         }
         let in_memory_paths = {
             let settings = app.pty_settings();
-            let paths = settings.read().await.project_paths.clone();
-            paths
+            settings.read().await.project_paths.clone()
         };
         let mut paths =
             match crate::config::settings::read_pty_input_project_paths_strict_offloaded().await {

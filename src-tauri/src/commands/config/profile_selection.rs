@@ -4,8 +4,6 @@
 //! `selection_default` submodules and re-exports their Tauri commands, inner functions and
 //! wire types. It holds no logic or state of its own; each submodule owns its part.
 
-use super::read_agent_file_source_inner;
-
 mod wire;
 pub use wire::{
     ApplyCodingAgentProfileSelectionRequest, ApplyCodingAgentProfileSelectionResult,

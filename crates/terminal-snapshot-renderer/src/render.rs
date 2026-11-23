@@ -1,3 +1,7 @@
+//! Renders a terminal screen model to PNG with the bundled font and palette.
+//! Owns the font, color tables and glyph cache. Does not decode or validate
+//! incoming protocol messages.
+
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::OnceLock;

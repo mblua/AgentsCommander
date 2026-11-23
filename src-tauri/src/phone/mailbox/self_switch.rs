@@ -1,3 +1,9 @@
+//! Mailbox self-switch: handles an agent request to switch its own session,
+//! finding the target replica and restarting the session there.
+//! It owns no persistent data; it does not handle peer-to-peer messages.
+
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 mod phase;
 
 use super::handoff::{
@@ -582,6 +588,10 @@ impl MailboxPoller {
     /// with §DR2-4 composition: `matches.push(...); break;` within a single
     /// `rp` iteration (FQN can only match one replica dir per project) while
     /// the outer loop continues so cross-project ambiguity is still detected.
+    #[allow(
+        clippy::unwrap_used,
+        reason = "the match arm guarantees exactly one element"
+    )]
     pub(crate) async fn resolve_repo_path<S: MailboxHost>(
         &self,
         agent_name: &str,

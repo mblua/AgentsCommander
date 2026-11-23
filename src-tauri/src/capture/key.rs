@@ -1,4 +1,4 @@
-//! Consumption key, file-observation fingerprint and cut (#2232 phase 3).
+//! Consumption key, file-observation fingerprint and cut.
 //!
 //! This module is a leaf: it names nothing in the phone, session or commands
 //! subtrees and neither config module named in section 4, and it performs no
@@ -132,7 +132,7 @@ pub fn extend_observation(stored: &mut FileObservation, current: &FileObservatio
 }
 
 /// What a reader knows about the file it just read, carried on every record it
-/// emits (#2232 phase 3).
+/// emits.
 ///
 /// One definition, shared by both watchers. It used to be copied verbatim into
 /// each of them, which put two copies of the epoch predicate's caller in the

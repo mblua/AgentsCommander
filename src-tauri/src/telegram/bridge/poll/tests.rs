@@ -175,8 +175,7 @@ async fn trace_for(text: &str) -> Vec<String> {
         &mut logger,
     )
     .await;
-    let calls = trace.lock().unwrap().calls.clone();
-    calls
+    trace.lock().unwrap().calls.clone()
 }
 
 #[tokio::test]

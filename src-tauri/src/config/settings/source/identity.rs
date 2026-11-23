@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::super::is_valid_profile_letter;
 use super::super::physical_profile_rows;
 use super::super::project_physical_profiles;
@@ -422,6 +424,10 @@ pub(crate) fn collect_profile_identity_violations(
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    reason = "both projections always build a JSON object"
+)]
 pub(crate) fn validate_physical_identity_delta(
     before: &Map<String, Value>,
     after: &Map<String, Value>,

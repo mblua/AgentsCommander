@@ -86,7 +86,7 @@ impl ProcessTreeBackend for PlatformProcessTreeBackend {
         }
     }
 
-    #[allow(private_interfaces)]
+    #[allow(private_interfaces, reason = "crate-private diagnostics on pub port")]
     fn observe_diagnostic_identity(&self, pid: u32) -> schema::CurrentIdentity {
         match query_identity(pid) {
             Ok(Some((handle, _))) => {
@@ -112,7 +112,7 @@ impl ProcessTreeBackend for PlatformProcessTreeBackend {
         }
     }
 
-    #[allow(private_interfaces)]
+    #[allow(private_interfaces, reason = "crate-private diagnostics on pub port")]
     fn terminate_verified_diagnostic(
         &self,
         process: &ObservedProcess,

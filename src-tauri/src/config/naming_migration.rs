@@ -848,7 +848,10 @@ pub(crate) fn rename_prefix_family(
     )
 }
 
-#[cfg_attr(test, allow(clippy::too_many_arguments))]
+#[cfg_attr(
+    test,
+    allow(clippy::too_many_arguments, reason = "test-only faults parameter")
+)]
 fn rename_prefix_family_with_faults(
     dir: &Path,
     old_prefix: &str,

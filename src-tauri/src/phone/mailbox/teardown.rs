@@ -1,3 +1,6 @@
+//! Watches a session close attempt for a bounded time and reports whether
+//! the teardown was confirmed. It owns no state; it does not kill processes.
+
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::purge_guard::PurgeGuard;

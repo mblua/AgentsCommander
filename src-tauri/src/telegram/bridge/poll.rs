@@ -1,3 +1,6 @@
+//! Telegram poll loop: fetches bot updates, skips old ones, delivers new
+//! ones and backs off on network errors. It does not send replies.
+
 use super::PollNetworkErrorState;
 use super::PollNetworkLogAction;
 use super::TelegramRuntime;

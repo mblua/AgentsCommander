@@ -1,3 +1,6 @@
+//! On-disk room (workgroup) layout: allocation, replicas, repo clones and
+//! scope pruning. Owns no long-lived state. Does not expose Tauri commands.
+
 use super::creation_trace::{CreationTrace, Origin, Outcome, Reason, Stage, StageGuard};
 use super::matrix_layout::{
     agent_matches, create_agent_replica_layout, repo_dir_name_from_url, sanitize_name,

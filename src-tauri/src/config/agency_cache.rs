@@ -170,8 +170,8 @@ impl CacheLock {
 impl Drop for CacheLock {
     fn drop(&mut self) {
         if let Err(e) = remove_agency_file(&self.path) {
-            eprintln!(
-                "Warning: failed to remove Agency template cache lock {}: {}",
+            log::warn!(
+                "Failed to remove Agency template cache lock {}: {}",
                 self.path.display(),
                 e
             );
