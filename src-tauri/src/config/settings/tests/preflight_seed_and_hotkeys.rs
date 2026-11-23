@@ -265,7 +265,7 @@ pub(super) fn settings_with_agents(commands: &[(&str, &str)]) -> AppSettings {
     }
 }
 
-/// #2162 test 10: the save-time collision predicate. Decision logic only --
+/// Test 10: the save-time collision predicate. Decision logic only --
 /// the `log::warn!` emission itself is declared not verified by test.
 #[test]
 fn dest_os_token_stem_detects_collisions() {
@@ -461,7 +461,7 @@ fn validate_and_repair_rejects_leading_dash_container_image() {
 
 #[test]
 fn screenshot_hotkey_defaults_when_absent() {
-    // #714 an old settings file without the key deserializes to "Ctrl+Q".
+    // An old settings file without the key deserializes to "Ctrl+Q".
     let mut value = serde_json::to_value(AppSettings::default()).unwrap();
     value
         .as_object_mut()
@@ -498,7 +498,7 @@ fn validate_and_repair_rejects_invalid_screenshot_hotkey() {
     assert!(super::super::validate_and_repair_settings(&mut s).is_ok());
 }
 
-/// #2281 Cross-language parity contract (plan section "Cross-language
+/// Cross-language parity contract (plan section "Cross-language
 /// validator parity"): the 22 accepted letters `A-Z` minus `W/R/C/V` in
 /// upper case, plus four mixed-case/padded spellings, so 26 entries.
 /// `src/shared/app-hotkey.test.ts` (phase 5) re-asserts this list verbatim.
@@ -531,7 +531,7 @@ const PARITY_ACCEPTED: [&str; 26] = [
     " Ctrl + Shift + E ",
 ];
 
-/// #2281 The 13 rejected literals in the plan's numbered order. Entry 6 is
+/// The 13 rejected literals in the plan's numbered order. Entry 6 is
 /// the digit leak, entry 5 proves the reserved check is case-insensitive and
 /// entry 13 is the Kelvin sign U+212A, which a `to_uppercase()` mirror would
 /// wrongly accept as `K`.
@@ -553,7 +553,7 @@ const PARITY_REJECTED: [&str; 13] = [
 
 #[test]
 fn sidebar_compact_hotkey_defaults_when_absent() {
-    // #2281 an old settings file without the key deserializes to "Ctrl+Shift+E".
+    // An old settings file without the key deserializes to "Ctrl+Shift+E".
     let mut value = serde_json::to_value(AppSettings::default()).unwrap();
     value
         .as_object_mut()
@@ -628,7 +628,7 @@ fn sidebar_compact_hotkey_call_site_rejects_an_invalid_value() {
 
 #[test]
 fn room_number_mask_defaults_when_absent() {
-    // #2507 an old settings file without the key deserializes to "#".
+    // An old settings file without the key deserializes to "#".
     let mut value = serde_json::to_value(AppSettings::default()).unwrap();
     assert!(value
         .as_object_mut()
@@ -696,7 +696,7 @@ fn screenshot_and_sidebar_compact_hotkeys_are_independent() {
 
 #[test]
 fn typing_hold_seconds_defaults_to_30_when_absent() {
-    // #2336 an old settings file without the key deserializes to 30.
+    // An old settings file without the key deserializes to 30.
     let mut value = serde_json::to_value(AppSettings::default()).unwrap();
     value.as_object_mut().unwrap().remove("typingHoldSeconds");
     let parsed: AppSettings = serde_json::from_value(value).unwrap();
@@ -741,7 +741,7 @@ fn validate_and_repair_accepts_typing_hold_bounds_and_rejects_out_of_range() {
     }
 }
 
-/// #2336 - the Settings update path rejects an out-of-range typing-hold
+/// The Settings update path rejects an out-of-range typing-hold
 /// window and leaves the live value unchanged: the error returns before the
 /// save, so the persisted (and live) window stays at the old value. The
 /// valid 1/3600 boundaries are covered by the validation test above.

@@ -262,7 +262,7 @@ async fn menu_edge_resolves_current_settings_and_tolerates_missing_state() {
     assert_eq!(events.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
-/// #3948 - the edge adapter keeps the `session_git_repos` event name and the exact
+/// The edge adapter keeps the `session_git_repos` event name and the exact
 /// camelCase payload: one emit per call, ordered repos, null branch/dirty preserved.
 #[test]
 fn issue_3948_git_events_adapter_preserves_session_git_repos_payload() {
