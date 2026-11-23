@@ -363,7 +363,7 @@ pub(crate) fn load_catalog_report_with_context(
 /// `<config_dir>/coding-agents/agents.json` is read (reads never write; the
 /// no-project boot path initializes or refreshes that file).
 /// A failure in the primary project is never retried against another project.
-/// P5 (#1968) extends this resolver to compose the local layer.
+/// P5 extends this resolver to compose the local layer.
 pub fn load_catalog_report_for_settings(settings: &AppSettings) -> CatalogReport {
     load_catalog_report_for_settings_with_config_dir(settings, crate::config::config_dir())
 }

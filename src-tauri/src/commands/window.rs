@@ -38,7 +38,7 @@ impl WindowDestroyAudit {
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const RESOURCE_MONITOR_WINDOW_LABEL: &str = "resource-monitor";
-/// #1171 - the singleton watcher activity window.
+/// The singleton watcher activity window.
 ///
 /// `pub(crate)` because the watcher sink checks for this window before emitting: when it does
 /// not exist, no `watcher_matches` event is produced at all, which is the case that holds
@@ -49,7 +49,7 @@ const RESOURCE_MONITOR_FLOATING_HEIGHT: u32 = 560;
 const RESOURCE_MONITOR_DOCK_WIDTH: u32 = 420;
 const RESOURCE_MONITOR_MIN_WIDTH: u32 = 520;
 const RESOURCE_MONITOR_MIN_HEIGHT: u32 = 420;
-/// #1171 - the size the activity window opens at when no geometry was ever saved. Wider
+/// The size the activity window opens at when no geometry was ever saved. Wider
 /// than tall because the table is four columns (time, watcher, session, captures) and the
 /// captures cell is the one that must not be cramped.
 const WATCHERS_DEFAULT_WIDTH: f64 = 980.0;
@@ -556,7 +556,7 @@ pub async fn set_detached_geometry(
     Ok(())
 }
 
-/// #1171 - record the geometry of the watcher activity window.
+/// Record the geometry of the watcher activity window.
 ///
 /// A DEDICATED single-field command, following `set_detached_geometry` above, and
 /// deliberately not `initWindowGeometry` (`src/shared/window-geometry.ts:26-47`), which
@@ -576,7 +576,7 @@ pub async fn set_watchers_geometry(
     .await
 }
 
-/// #2348 - the narrow owner of the main window's saved placement pair
+/// The narrow owner of the main window's saved placement pair
 /// (`mainGeometry` + `mainWindowDisplayState`).
 ///
 /// Holds the managed settings write guard across the persistence call, so the
@@ -855,7 +855,7 @@ pub async fn dock_resource_monitor_window(app: AppHandle) -> Result<(), String> 
     Ok(())
 }
 
-/// #1171 - the most recently requested scope of the watcher activity window, and the one
+/// The most recently requested scope of the watcher activity window, and the one
 /// critical section that keeps it and the last emitted `watchers_scope_request` in agreement.
 ///
 /// An event alone cannot carry a re-scope. The window label exists the moment
@@ -877,7 +877,7 @@ pub struct WatchersScopeState {
     scope: tokio::sync::Mutex<Option<Uuid>>,
 }
 
-/// #1171 - the durable half of the scope handover: what `open_watchers_window` last asked for.
+/// The durable half of the scope handover: what `open_watchers_window` last asked for.
 ///
 /// The window calls this in `onMount`, AFTER registering its `watchers_scope_request`
 /// listener, and adopts the answer unless an event has been handled since the call was issued.
@@ -891,7 +891,7 @@ pub async fn get_watchers_scope(
     Ok(scope.as_ref().map(std::string::ToString::to_string))
 }
 
-/// #1171 - open the singleton watcher activity window, or focus it and re-scope it to
+/// Open the singleton watcher activity window, or focus it and re-scope it to
 /// `session_id`.
 ///
 /// Mould: `open_resource_monitor_window` above, minus the main-window-relative placement,
@@ -903,7 +903,7 @@ pub async fn get_watchers_scope(
 /// singleton and its URL never changes afterwards, and it is the window's INITIAL scope only -
 /// `get_watchers_scope` is the authoritative one.
 ///
-/// Generic over the runtime like its #1171 sibling `get_watcher_activity`
+/// Generic over the runtime like its sibling `get_watcher_activity`
 /// (`commands/pty.rs:545`) and `kill_resource_group` (`commands/resource_monitor.rs:45`), so
 /// the singleton and re-scope halves are reachable from a `MockRuntime` test.
 #[tauri::command]
