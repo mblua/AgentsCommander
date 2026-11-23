@@ -50,7 +50,7 @@ function setup(value: AppSettings): FakeTransport {
   return fake;
 }
 
-describe("ActionBar CTX visibility follows contextHistoryEnabled (#4049)", () => {
+describe("ActionBar CTX visibility follows contextHistoryEnabled", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

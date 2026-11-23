@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// #4143: never-grow site ratchet for clippy::struct_excessive_bools.
+// Never-grow site ratchet for clippy::struct_excessive_bools.
 // Native mode compares one host's validated capture with the reviewed baseline; ratchet mode
 // compares committed base/HEAD baseline blobs. Exit 0 equality, 1 policy mismatch, 2 input.
 import fs from 'node:fs';
@@ -20,7 +20,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FIELDS = ['version', 'lint', 'toolchain', 'threshold', 'seedCommit', 'platforms', 'entries'];
 const PREFIX_CAP = 4096;
 
-// Frozen adoption seed (#4143 plan v3), independent of baseline contents.
+// Frozen adoption seed (plan v3), independent of baseline contents.
 export const SEED = Object.freeze([
   'rust:crates/terminal-snapshot-renderer/src/protocol.rs::TerminalCellStyle',
   'rust:crates/terminal-snapshot-renderer/src/protocol.rs::TerminalSnapshotFidelity',

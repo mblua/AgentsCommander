@@ -996,10 +996,10 @@ const ProjectPanel: Component = () => {
           document.addEventListener("keydown", handleDeleteModalKeyDown);
           onCleanup(() => document.removeEventListener("keydown", handleDeleteModalKeyDown));
         });
-        const applyWgDeleteFailure = (e: any, forceDelete: boolean, myGen: number) => {
+        const applyWgDeleteFailure = (e: unknown, forceDelete: boolean, myGen: number) => {
           if (myGen !== retryGen) return;
           console.error("delete_workgroup failed:", e);
-          const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
+          const msg = typeof e === "string" ? e : (e as Error | null | undefined)?.message ?? "Failed to delete room";
           if (msg.startsWith("BLOCKERS:")) {
             try {
               const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
@@ -1026,8 +1026,8 @@ const ProjectPanel: Component = () => {
           setWgDeleteError(msg);
           setWgDeleteInProgress(false);
         };
-        const applyWgRetryFailure = (e: any) => {
-          const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
+        const applyWgRetryFailure = (e: unknown) => {
+          const msg = typeof e === "string" ? e : (e as Error | null | undefined)?.message ?? "Failed to delete room";
           if (msg.startsWith("BLOCKERS:")) {
             try {
               const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
@@ -1070,7 +1070,7 @@ const ProjectPanel: Component = () => {
             await projectStore.reloadProject(proj.path);
             if (myGen !== retryGen) return;
             closeWgDeleteModal();
-          } catch (e: any) {
+          } catch (e: unknown) {
             if (myGen !== retryGen) return;
             applyWgRetryFailure(e);
           }
@@ -1300,7 +1300,7 @@ const ProjectPanel: Component = () => {
           if (dismissCtx) {
             window.removeEventListener("click", dismissCtx);
             window.removeEventListener("contextmenu", dismissCtx);
-            window.removeEventListener("keydown", dismissCtx as any);
+            window.removeEventListener("keydown", dismissCtx);
             dismissCtx = null;
           }
         };
@@ -2510,7 +2510,7 @@ const ProjectPanel: Component = () => {
           setTimeout(() => {
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -2663,7 +2663,7 @@ const ProjectPanel: Component = () => {
           setTimeout(() => {
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -2704,7 +2704,7 @@ const ProjectPanel: Component = () => {
           setTimeout(() => {
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -2731,7 +2731,7 @@ const ProjectPanel: Component = () => {
           setTimeout(() => {
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -2773,7 +2773,7 @@ const ProjectPanel: Component = () => {
             positionReplicaCtxMenu(e.clientX, e.clientY);
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -2806,7 +2806,7 @@ const ProjectPanel: Component = () => {
             positionReplicaCtxMenu(e.clientX, e.clientY);
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -3494,7 +3494,7 @@ const ProjectPanel: Component = () => {
                     setTimeout(() => {
                       window.addEventListener("click", dismiss);
                       window.addEventListener("contextmenu", dismiss);
-                      window.addEventListener("keydown", dismiss as any);
+                      window.addEventListener("keydown", dismiss);
                     });
                   };
 
@@ -3712,7 +3712,7 @@ const ProjectPanel: Component = () => {
                     setTimeout(() => {
                       window.addEventListener("click", dismiss);
                       window.addEventListener("contextmenu", dismiss);
-                      window.addEventListener("keydown", dismiss as any);
+                      window.addEventListener("keydown", dismiss);
                     });
                   };
 
@@ -3739,7 +3739,7 @@ const ProjectPanel: Component = () => {
                     setTimeout(() => {
                       window.addEventListener("click", dismiss);
                       window.addEventListener("contextmenu", dismiss);
-                      window.addEventListener("keydown", dismiss as any);
+                      window.addEventListener("keydown", dismiss);
                     });
                   };
 
@@ -3914,9 +3914,9 @@ const ProjectPanel: Component = () => {
                                   try {
                                     await EntityAPI.deleteAgentMatrix(proj.path, agent.path);
                                     await projectStore.reloadProject(proj.path);
-                                  } catch (e: any) {
+                                  } catch (e: unknown) {
                                     console.error("delete_agent_matrix failed:", e);
-                                    const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete agent";
+                                    const msg = typeof e === "string" ? e : (e as Error | null | undefined)?.message ?? "Failed to delete agent";
                                     if (msg.startsWith(AGENT_DELETE_PARTIAL_REMOVAL_PREFIX)) {
                                       toastStore.info(formatAgentDeletePartialRemovalWarning(msg), { durationMs: null });
                                       closeAgentDeleteModal();
@@ -3975,7 +3975,7 @@ const ProjectPanel: Component = () => {
                     setTimeout(() => {
                       window.addEventListener("click", dismiss);
                       window.addEventListener("contextmenu", dismiss);
-                      window.addEventListener("keydown", dismiss as any);
+                      window.addEventListener("keydown", dismiss);
                     });
                   };
 
@@ -4770,7 +4770,7 @@ const ProjectPanel: Component = () => {
                             if (myGen !== retryGen) return;
                             await projectStore.reloadProject(proj.path);
                             if (myGen !== retryGen) return;
-                          } catch (e: any) {
+                          } catch (e: unknown) {
                             applyWgDeleteFailure(e, forceDelete, myGen);
                             return;
                           }
@@ -4827,9 +4827,9 @@ const ProjectPanel: Component = () => {
                           try {
                             await EntityAPI.deleteTeam(proj.path, team.name);
                             await projectStore.reloadProject(proj.path);
-                          } catch (e: any) {
+                          } catch (e: unknown) {
                             console.error("delete_team failed:", e);
-                            setDeleteError(typeof e === "string" ? e : e?.message ?? "Failed to delete team");
+                            setDeleteError(typeof e === "string" ? e : (e as Error | null | undefined)?.message ?? "Failed to delete team");
                             setDeleteInProgress(false);
                             return;
                           }

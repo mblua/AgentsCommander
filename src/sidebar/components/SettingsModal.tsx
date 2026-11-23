@@ -1944,8 +1944,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const chatId = await TelegramAPI.sendTest(bot.token);
       updateBot(index, "chatId", chatId);
       setTestResult({ id: bot.id, ok: true });
-    } catch (e: any) {
-      setTestResult({ id: bot.id, ok: false, msg: e?.toString() });
+    } catch (e: unknown) {
+      setTestResult({ id: bot.id, ok: false, msg: (e as { toString(): string } | null | undefined)?.toString() });
     }
     setTestingBot(null);
   };

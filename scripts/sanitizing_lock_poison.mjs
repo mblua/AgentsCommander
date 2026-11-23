@@ -1,7 +1,7 @@
 import { gateCli, isMain } from './sanitizing_baseline.mjs';
 import { runMeasuredGate, metric, hit } from './sanitizing_gate_support.mjs';
 
-// #98: `.lock()/.read()/.write()` + `.unwrap()/.expect(..)` panics on a poisoned lock, so one
+// `.lock()/.read()/.write()` + `.unwrap()/.expect(..)` panics on a poisoned lock, so one
 // panic cascades into every later caller. Forbidden in production code, existing debt included.
 export function runGate(snapshot) {
   return runMeasuredGate(snapshot, { gate, rules, newFileRules: rules, inUniverse, measure,

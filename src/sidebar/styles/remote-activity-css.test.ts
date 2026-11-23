@@ -114,7 +114,7 @@ const BRANCH_DIRTY_BODY = "\n  color: var(--status-exited);\n";
 const COMPOSED_SELECTOR =
   ".ac-discovery-badge.branch.ci-running,\n.ac-discovery-badge.branch.stale";
 
-describe("#2064 remote-activity chip markers (bytes on disk)", () => {
+describe("remote-activity chip markers (bytes on disk)", () => {
   it("stale_marker_occupies_no_layout_box", () => {
     const rules = chipSignalRules();
     expect(rules.map((rule) => rule.selector)).toEqual([

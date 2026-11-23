@@ -102,7 +102,7 @@ const AcDiscoveryPanel: Component = () => {
     if (dismissCtxMenu) {
       window.removeEventListener("click", dismissCtxMenu);
       window.removeEventListener("contextmenu", dismissCtxMenu);
-      window.removeEventListener("keydown", dismissCtxMenu as any);
+      window.removeEventListener("keydown", dismissCtxMenu);
       dismissCtxMenu = null;
     }
   };
@@ -124,7 +124,7 @@ const AcDiscoveryPanel: Component = () => {
     setTimeout(() => {
       window.addEventListener("click", dismiss);
       window.addEventListener("contextmenu", dismiss);
-      window.addEventListener("keydown", dismiss as any);
+      window.addEventListener("keydown", dismiss);
     });
   };
 

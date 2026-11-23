@@ -362,7 +362,7 @@ describe("CodingAgentQuickConfiguration", () => {
     dispose();
   });
 
-  it("closes on Escape in the success state without re-entering the cancel path (#975)", async () => {
+  it("closes on Escape in the success state without re-entering the cancel path", async () => {
     const onCancel = vi.fn();
     const onClose = vi.fn();
     const root = document.createElement("div");
@@ -590,7 +590,7 @@ describe("CodingAgentQuickConfiguration", () => {
     dispose();
   });
 
-  describe("Welcome status chips (#2736)", () => {
+  describe("Welcome status chips", () => {
     const welcomeCatalog = () => [
       catalogDef("codex", "Codex", "codex"),
       catalogDef("claude", "Claude Code", "claude"),
@@ -1145,7 +1145,7 @@ describe("CodingAgentQuickConfiguration", () => {
     });
   });
 
-  describe("Welcome install actions (#2736)", () => {
+  describe("Welcome install actions", () => {
     const CODEX_CMD = "npm install -g @openai/codex";
     const MINE_CMD = "npm install -g mine-agent";
 

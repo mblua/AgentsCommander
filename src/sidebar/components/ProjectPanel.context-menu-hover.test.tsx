@@ -159,7 +159,7 @@ function domRect(left: number, top: number, width: number, height: number): DOMR
  *  without flushing first would hit a menu that is not yet listening. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("ProjectPanel replica context menu - close on pointer leave (#977)", () => {
+describe("ProjectPanel replica context menu - close on pointer leave", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

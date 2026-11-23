@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-// Decides whether a red `npm test` run is the known #480 unhandled WebSocket
-// rejection and nothing else (#1206).
+// Decides whether a red `npm test` run is the known unhandled WebSocket
+// rejection and nothing else.
 //
 // Whitelist, not denylist. The question is "is exactly the one known-good state
 // present?", never "is anything known-bad present?". The rule every check here
@@ -250,7 +250,7 @@ function checkCounts(report) {
   return null;
 }
 
-// C: the unhandled-error section holds exactly one block, and it is exactly #480.
+// C: the unhandled-error section holds exactly one block, and it is exactly the known one.
 export function parseUnhandledBlocks(log) {
   const lines = String(log).split('\n');
   let declared = null;
@@ -312,7 +312,7 @@ function checkUnhandled(log) {
 }
 
 // D is a prohibition, not a check: no producer-asserted verdict is read.
-// `success` is the named instance and the ban is permanent — a real #480 run
+// `success` is the named instance and the ban is permanent — a real known-flake run
 // reports "success": true while exiting 1, so consulting it would tolerate
 // exactly the runs this guard exists to catch.
 //

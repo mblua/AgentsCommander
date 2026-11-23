@@ -141,7 +141,7 @@ impl BridgeShutdown {
         }
     }
 
-    /// #3317 - proof variant of `wait_or_abort`: same deadline, but an aborted task is
+    /// Proof variant of `wait_or_abort`: same deadline, but an aborted task is
     /// then awaited too. True only if every task ended `Ok` or cancelled; a panicked task
     /// is false. Never returns while a task still runs.
     pub(crate) async fn wait_until_stopped(self) -> bool {
@@ -202,7 +202,7 @@ impl TelegramBridgeManager {
         }
     }
 
-    // ── Reader demands (#2232 phase 4 section 5) ──────────────────────────
+    // ── Reader demands (phase 4 section 5) ──────────────────────────
 
     /// The shared capture registry, so the supervisor can `open` a session's
     /// endpoints before spawning its reader.
@@ -366,7 +366,7 @@ impl TelegramBridgeManager {
         })
     }
 
-    // The 8-argument signature is the frozen plan spec (#1549 §5.4): the PTY-bridge
+    // The 8-argument signature is the frozen plan spec (§5.4): the PTY-bridge
     // chain threads `agent_kind` as a loose parameter by design (no struct grouping).
     #[allow(
         clippy::too_many_arguments,
@@ -383,7 +383,7 @@ impl TelegramBridgeManager {
         reader_mode: bool,
         agent_kind: Option<CodingAgentKind>,
     ) -> Result<BridgeInfo, AppError> {
-        // #2232 phase 4 section 5: attaching is **idempotent**. A persisted bot
+        // Phase 4 section 5: attaching is **idempotent**. A persisted bot
         // re-attaching and a local auto-attach no longer treat "a bridge
         // already exists" as an error when it is the same bot on the same
         // session; they simply re-register the same demand.
@@ -531,7 +531,7 @@ impl TelegramBridgeManager {
             senders.clear();
         }
         self.bot_assignments.clear();
-        // #2232 phase 4 section 5: shutdown releases **both** demands, so every
+        // Phase 4 section 5: shutdown releases **both** demands, so every
         // reader is cancelled and its capture entry dropped.
         for (session_id, entry) in self.readers.drain() {
             entry.cancel.cancel();

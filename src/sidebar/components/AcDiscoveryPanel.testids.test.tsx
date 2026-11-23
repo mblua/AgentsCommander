@@ -12,7 +12,7 @@ import { acDiscoveryTransport, agentRowSel, filterSel, replicaRowSel } from "./a
 
 // Automation testids on the AcDiscoveryPanel rows that open the Coding Agent picker.
 
-describe("AcDiscoveryPanel automation testids (#2528)", () => {
+describe("AcDiscoveryPanel automation testids", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport>;
 

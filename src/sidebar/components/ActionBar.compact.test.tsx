@@ -48,7 +48,7 @@ function gearButtons(root: ParentNode): HTMLButtonElement[] {
   return Array.from(root.querySelectorAll<HTMLButtonElement>(".toolbar-gear-btn"));
 }
 
-describe("ActionBar compact composition (#2236)", () => {
+describe("ActionBar compact composition", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
