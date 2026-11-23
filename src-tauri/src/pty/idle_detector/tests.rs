@@ -634,3 +634,221 @@ fn convenience_detectors_have_separate_activity_owners() {
         &second.activity_log_owner
     ));
 }
+
+// ---- #2158 team clock projection ----
+
+fn secs(base: Instant, s: f64) -> Instant {
+    base + Duration::from_secs_f64(s)
+}
+
+/// Registered at `base`, first non-empty chunk classified at `base + 1 s`.
+fn team_session(detector: &IdleDetector, tuning: IdleTuning, base: Instant) -> Uuid {
+    let id = Uuid::new_v4();
+    detector.register_session_at(id, tuning, Some(base));
+    let first = secs(base, 1.0);
+    detector.record_output_classified_at(id, 8, true, first, Some(first));
+    assert_eq!(
+        detector.team_silence_age_at(id, first),
+        None,
+        "first chunk is repaint"
+    );
+    id
+}
+
+fn eligible_at(detector: &IdleDetector, id: Uuid, base: Instant) -> Option<Instant> {
+    let probe = secs(base, 10_000.0);
+    detector
+        .team_silence_age_at(id, probe)
+        .map(|age| probe - age)
+}
+
+fn chunk(detector: &IdleDetector, id: Uuid, stamp: Instant, classify: Instant) {
+    detector.record_output_classified_at(id, 2048, true, stamp, Some(classify));
+}
+
+#[test]
+fn issue_2158_clock_boundaries_and_lifecycle() {
+    let detector = IdleDetector::new(|_| {}, |_| {});
+    let base = Instant::now();
+    let id = team_session(&detector, IdleTuning::DEFAULT, base);
+    let other = team_session(&detector, IdleTuning::DEFAULT, base);
+
+    // Restore window: classified exactly 10 s after the first chunk is still repaint.
+    let edge = secs(base, 11.0);
+    let before = edge - Duration::from_nanos(1);
+    chunk(&detector, id, before, before);
+    assert_eq!(
+        eligible_at(&detector, id, base),
+        None,
+        "just before the cutoff"
+    );
+    chunk(&detector, id, edge, edge);
+    assert_eq!(
+        eligible_at(&detector, id, base),
+        None,
+        "window is inclusive"
+    );
+    let after = edge + Duration::from_nanos(1);
+    chunk(&detector, id, after, after);
+    assert_eq!(eligible_at(&detector, id, base), Some(after));
+    assert_eq!(
+        eligible_at(&detector, other, base),
+        None,
+        "sessions are distinct"
+    );
+
+    // Resize grace (3 s): just before is suppressed, at the boundary counts.
+    detector.record_resize_at(id, Some(secs(base, 20.0)));
+    let inside = secs(base, 23.0) - Duration::from_nanos(1);
+    chunk(&detector, id, inside, inside);
+    assert_eq!(
+        eligible_at(&detector, id, base),
+        Some(after),
+        "inside grace"
+    );
+    chunk(&detector, id, secs(base, 23.0), secs(base, 23.0));
+    assert_eq!(eligible_at(&detector, id, base), Some(secs(base, 23.0)));
+
+    // The newest eligible stamp never moves back; empty and pre-registration chunks never count.
+    chunk(&detector, other, secs(base, 30.0), secs(base, 30.0));
+    chunk(&detector, other, secs(base, 20.0), secs(base, 31.0));
+    detector.record_output_classified_at(other, 0, false, secs(base, 40.0), Some(secs(base, 40.0)));
+    assert_eq!(eligible_at(&detector, other, base), Some(secs(base, 30.0)));
+    let late = Uuid::new_v4();
+    detector.register_session_at(late, IdleTuning::DEFAULT, Some(secs(base, 5.0)));
+    chunk(&detector, late, secs(base, 4.0), secs(base, 4.0));
+    assert!(detector.registered_at.lock().unwrap()[&late]
+        .first_output
+        .is_none());
+
+    // A stamp after the tick instant is age zero.
+    assert_eq!(
+        detector.team_silence_age_at(id, secs(base, 22.0)),
+        Some(Duration::ZERO)
+    );
+
+    // Explicit input: strictly after 10 s from registration (just before and at the edge
+    // are not), before any output and during a resize grace.
+    let fresh = Uuid::new_v4();
+    detector.register_session_at(fresh, IdleTuning::DEFAULT, Some(base));
+    detector.record_resize_at(fresh, Some(secs(base, 9.0)));
+    detector.touch_silence_at(fresh, Some(secs(base, 10.0) - Duration::from_nanos(1)));
+    detector.touch_silence_at(fresh, Some(secs(base, 10.0)));
+    assert_eq!(eligible_at(&detector, fresh, base), None);
+    let input = secs(base, 10.0) + Duration::from_nanos(1);
+    detector.touch_silence_at(fresh, Some(input));
+    assert_eq!(eligible_at(&detector, fresh, base), Some(input));
+
+    // Unregistered output creates no projection; remove and a new generation reset it.
+    let stray = Uuid::new_v4();
+    detector.record_output_at(stray, 64, true, secs(base, 50.0));
+    detector.touch_silence(stray);
+    assert!(!detector.registered_at.lock().unwrap().contains_key(&stray));
+    detector.remove_session(id);
+    assert_eq!(detector.team_silence_age_at(id, secs(base, 60.0)), None);
+    detector.register_session_at(id, IdleTuning::DEFAULT, Some(secs(base, 70.0)));
+    assert_eq!(detector.team_silence_age_at(id, secs(base, 80.0)), None);
+}
+
+type ObserverAction = Box<dyn FnOnce(&IdleDetector) + Send>;
+
+/// Binds a raw-output observer that runs one queued action between classification and
+/// promotion.
+fn pausing_observer(detector: &Arc<IdleDetector>) -> Arc<Mutex<Option<ObserverAction>>> {
+    let slot: Arc<Mutex<Option<ObserverAction>>> = Arc::new(Mutex::new(None));
+    let weak = Arc::downgrade(detector);
+    let observer_slot = Arc::clone(&slot);
+    assert!(detector.bind_raw_output_observer(1, move |_, _| {
+        let action = observer_slot.lock().unwrap().take();
+        if let (Some(action), Some(detector)) = (action, weak.upgrade()) {
+            action(&detector);
+        }
+    }));
+    slot
+}
+
+#[test]
+fn issue_2158_second_resize_classification_order() {
+    let base = Instant::now();
+    // R1 +20, capture +21, R2 +22, classification +26 after R2's grace: still repaint.
+    let detector = IdleDetector::new(|_| {}, |_| {});
+    let id = team_session(&detector, IdleTuning::AGENT_DEFAULT, base);
+    detector.record_resize_at(id, Some(secs(base, 20.0)));
+    detector.record_resize_at(id, Some(secs(base, 22.0)));
+    let silence_before = detector.silence_age(id).unwrap();
+    chunk(&detector, id, secs(base, 21.0), secs(base, 26.0));
+    assert!(
+        detector.silence_age(id).unwrap() <= silence_before,
+        "#2124 counted it"
+    );
+    assert_eq!(eligible_at(&detector, id, base), None);
+
+    // Work classified before R2 keeps its decision when promoted after it.
+    let detector = IdleDetector::new(|_| {}, |_| {});
+    let slot = pausing_observer(&detector);
+    let id = team_session(&detector, IdleTuning::AGENT_DEFAULT, base);
+    *slot.lock().unwrap() = Some(Box::new(move |d: &IdleDetector| {
+        d.record_resize_at(id, Some(secs(base, 16.0)));
+    }));
+    chunk(&detector, id, secs(base, 15.0), secs(base, 15.0));
+    assert_eq!(eligible_at(&detector, id, base), Some(secs(base, 15.0)));
+    // Work stamped at the end of R2's grace counts again.
+    chunk(&detector, id, secs(base, 19.0), secs(base, 25.0));
+    assert_eq!(eligible_at(&detector, id, base), Some(secs(base, 19.0)));
+
+    // A re-registration between classification and promotion drops the stale chunk.
+    let id2 = team_session(&detector, IdleTuning::DEFAULT, base);
+    *slot.lock().unwrap() = Some(Box::new(move |d: &IdleDetector| {
+        d.register_session_at(id2, IdleTuning::DEFAULT, Some(secs(base, 30.0)));
+    }));
+    chunk(&detector, id2, secs(base, 31.0), secs(base, 31.0));
+    assert_eq!(eligible_at(&detector, id2, base), None);
+}
+
+#[test]
+fn issue_2158_explicit_input_promotes_during_both_windows() {
+    // Delivery (`touch_silence`) inside the restore window and inside a resize grace.
+    let detector = IdleDetector::new(|_| {}, |_| {});
+    let base = Instant::now();
+    let id = team_session(&detector, IdleTuning::DEFAULT, base);
+    let restoring = secs(base, 10.5);
+    chunk(&detector, id, restoring, restoring);
+    assert_eq!(
+        eligible_at(&detector, id, base),
+        None,
+        "output is still restore"
+    );
+    detector.touch_silence_at(id, Some(restoring));
+    assert_eq!(eligible_at(&detector, id, base), Some(restoring));
+    detector.record_resize_at(id, Some(secs(base, 30.0)));
+    let resizing = secs(base, 31.0);
+    chunk(&detector, id, resizing, resizing);
+    assert_eq!(
+        eligible_at(&detector, id, base),
+        Some(restoring),
+        "output is resize"
+    );
+    detector.touch_silence_at(id, Some(resizing));
+    assert_eq!(eligible_at(&detector, id, base), Some(resizing));
+
+    // Admitted PTY input through the real boundary, inside the restore window.
+    let id = Uuid::new_v4();
+    let now = Instant::now();
+    detector.register_session_at(id, IdleTuning::DEFAULT, Some(now - Duration::from_secs(60)));
+    let first = now - Duration::from_secs(2);
+    detector.record_output_classified_at(id, 8, true, first, Some(first));
+    assert_eq!(detector.team_silence_age_at(id, Instant::now()), None);
+    detector.activity.lock().unwrap().insert(
+        id,
+        Instant::now() - IdleTuning::DEFAULT.idle_threshold - Duration::from_secs(3),
+    );
+    detector.idle_set.lock().unwrap().insert(id);
+    detector
+        .prepare_pty_input_boundary(id, || Ok::<_, crate::errors::AppError>(()))
+        .unwrap();
+    let stamp = detector.silence.lock().unwrap()[&id];
+    assert_eq!(
+        detector.registered_at.lock().unwrap()[&id].eligible,
+        Some(stamp)
+    );
+}
