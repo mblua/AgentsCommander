@@ -68,7 +68,7 @@ describe("contextBadgeConfigured", () => {
     expect(contextBadgeConfigured([], "a")).toBe(false);
   });
 
-  // Pins #1031's hard rule at the only place #1033 could break it: two agents may
+  // Pins the hard rule at the only place the badge could break it: two agents may
   // share a command while only one configures a pattern, so the gate must key by id.
   it("keys by agent id and never by command (the_gate_keys_by_id_and_not_by_command)", () => {
     const agents = [

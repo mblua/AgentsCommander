@@ -376,7 +376,7 @@ describe("RoomGroupRail selection focus (#810/#941)", () => {
 
       // Auto-focus ProjectA -> ProjectB's project-level collapses, but its
       // "Workgroups" sub-section collapse choice must survive (sub-sections
-      // are NOT touched by #810 - they live in the local collapsedByKey signal).
+      // are NOT touched by auto-focus - they live in the local collapsedByKey signal).
       click(railButton("ProjectA", "all"));
       await waitFor(() =>
         expect(headerCollapsed(findProjectHeader(rendered.root, projectPathB))).toBe(true)

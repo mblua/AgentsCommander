@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #1614 section 9.1 frontend tests / section 15.4. F6
+// Section 9.1 frontend tests / section 15.4. F6
 // (`WorkgroupTask.tsx:74`, `hasWorkgroupContext`) gates the TASK.md Edit and
 // Clean buttons. Left unrewired it leaves both buttons permanently disabled in
 // every Room, and it fails silently: nothing errors, the buttons are simply

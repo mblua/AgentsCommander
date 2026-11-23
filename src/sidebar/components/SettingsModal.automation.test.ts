@@ -1348,7 +1348,7 @@ describe("SettingsModal automation hooks", () => {
     valueInput.focus();
     expect(document.activeElement).toBe(valueInput);
 
-    // Two keystrokes. Pre-#614 (reference-keyed <For>), updateCellEnvRow replaced
+    // Two keystrokes. Before the fix (reference-keyed <For>), updateCellEnvRow replaced
     // the row object on each input, disposing this <input> and mounting a new
     // node — so focus reverted to <body> and a re-query returned a DIFFERENT
     // element. With <Index> the node is stable, so identity + focus survive.
@@ -2671,7 +2671,7 @@ describe("SettingsModal automation hooks", () => {
     expect(checkbox.closest("label")?.textContent).toContain(
       "Reuse host login for container coding agents",
     );
-    // Loaded default is true (copy-in is the default auth path for #930).
+    // Loaded default is true (copy-in is the default auth path).
     expect(checkbox.checked).toBe(true);
 
     // Toggle OFF and save -> the persisted draft carries the new value, proving

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Reduces a Rust dependency graph to its unique module-to-module arc set and writes that
-// set to src-tauri/module-arcs.txt, for issue #1249.
+// set to src-tauri/module-arcs.txt.
 //
 // INPUT: graph from the in-repo 01-rust_module-dependency-cycles.mjs detector1.2.0.
 // This script projects the graph; it does not analyse Rust or decide cycle policy.
