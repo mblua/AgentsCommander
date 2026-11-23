@@ -39,6 +39,32 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NPM_DIR = path.join(REPO_ROOT, 'npm');
 
+function isLineTerminator(char) {
+  return char === '\n' || char === '\r' || char === '\u2028' || char === '\u2029';
+}
+
+function stripLineComments(source) {
+  const kept = [];
+  let retainedFrom = 0;
+  let index = 0;
+  while (index < source.length) {
+    const anchor = index;
+    // A multiline anchor can consume CR, LS and PS in its leading whitespace.
+    while (index < source.length && source[index] !== '\n' && /\s/.test(source[index])) {
+      index += 1;
+    }
+    const hasComment = source.startsWith('//', index);
+    while (index < source.length && !isLineTerminator(source[index])) index += 1;
+    if (hasComment) {
+      kept.push(source.slice(retainedFrom, anchor));
+      retainedFrom = index;
+    }
+    index += 1;
+  }
+  kept.push(source.slice(retainedFrom));
+  return kept.join('');
+}
+
 // ---------- arguments ----------
 
 const argv = process.argv.slice(2);
@@ -504,10 +530,31 @@ function runPackageChecks() {
   });
 
   test('P5', () => {
+    const cases = [
+      ['  // ordinary\nconst x = 1;\n', '\nconst x = 1;\n'],
+      ['//\n//\n', '\n\n'],
+      ['const x = 1; // inline\n', 'const x = 1; // inline\n'],
+      [' \t\r\u2028\u2029value\n \t', ' \t\r\u2028\u2029value\n \t'],
+      ['a\r\n \t// crlf\r\n// lf\nb', 'a\r\n\r\n\nb'],
+      ['a\r // bare cr\rb', 'a\r\rb'],
+      ['a\u2028 // ls\u2028b\u2029 // ps\u2029c', 'a\u2028\u2028b\u2029\u2029c'],
+      ['a\n \t\r\u2028\u2029 // spanning\nb', 'a\n\nb'],
+      ['a\n // final\n', 'a\n\n'],
+      ['a\n // final', 'a\n'],
+    ];
+    for (const [input, expected] of cases) {
+      const actual = stripLineComments(input);
+      assert(
+        actual === expected,
+        'P5: stripping ' + JSON.stringify(input) + ' expected ' +
+          JSON.stringify(expected) + ', got ' + JSON.stringify(actual),
+      );
+    }
+
     // Issue #2065: nothing in the published package may touch Gatekeeper.
     for (const name of ['install.js', 'macos-alias.js', 'run.js']) {
       const source = fs.readFileSync(path.join(NPM_DIR, name), 'utf8');
-      const code = source.replace(/^[^\S\n]*\/\/.*$/gm, '');
+      const code = stripLineComments(source);
       assert(!/\bxattr\b/.test(code), `P5: ${name} must not call xattr`);
       assert(!/\bspctl\b/.test(code), `P5: ${name} must not call spctl`);
       assert(!/com\.apple\.quarantine/.test(code),
