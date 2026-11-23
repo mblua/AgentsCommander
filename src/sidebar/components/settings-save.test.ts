@@ -335,7 +335,7 @@ describe("mergeSettingsForSavePreservingProjects api-server seed rebasing", () =
     expect(merged.apiServerBind).toBe("0.0.0.0");
   });
 
-  // #1033 - the context regex normalizer (plan SS9.3).
+  // The context regex normalizer (plan SS9.3).
   //
   // The single most important test in this plan. The other three normalizers in this
   // file all trim; this one must not. Leading whitespace is a regex's column anchor,

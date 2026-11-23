@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #1871 section 10.5 - the mechanics, black-box through SessionRowMenu so that
+// The mechanics, black-box through SessionRowMenu so that
 // ContextMenuSurface stays private (this file never imports it, which is why
 // the import-boundary allowlist has one element).
 //
