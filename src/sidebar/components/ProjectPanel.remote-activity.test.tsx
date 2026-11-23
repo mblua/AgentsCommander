@@ -132,7 +132,7 @@ function markDirty(): void {
   ]);
 }
 
-describe("ProjectPanel remote-activity chip (#2064 Phase C)", () => {
+describe("ProjectPanel remote-activity chip (Phase C)", () => {
   let stubs: (() => void) | null = null;
 
   beforeEach(() => {

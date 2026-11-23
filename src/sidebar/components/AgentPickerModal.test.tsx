@@ -682,7 +682,7 @@ describe("AgentPickerModal", () => {
     dispose();
   });
 
-  it("#548: each provider chip resolves its OWN per-agent label, not the highlighted agent's", async () => {
+  it("each provider chip resolves its OWN per-agent label, not the highlighted agent's", async () => {
     // codex (agents[0] = primigenio) and claude each get a distinct A label.
     const base = settings();
     currentSettings = settings({
@@ -712,7 +712,7 @@ describe("AgentPickerModal", () => {
     dispose();
   });
 
-  it("does not pre-select a coding agent on hover; selection stays click-only (#563)", async () => {
+  it("does not pre-select a coding agent on hover; selection stays click-only", async () => {
     const { dispose } = renderPicker({ agentPath: REPO_PATH });
     await settle();
 
@@ -945,7 +945,7 @@ describe("AgentPickerModal", () => {
     dispose();
   });
 
-  it("hides the restart toggle for replica scope and applies without a backend restart (#537)", async () => {
+  it("hides the restart toggle for replica scope and applies without a backend restart", async () => {
     // Replica scope is restarted via the post-assign "Restart now?" modal, so
     // the in-modal toggle is gone and apply never asks the backend to restart.
     const { dispose } = renderPicker({
@@ -1214,7 +1214,7 @@ describe("AgentPickerModal", () => {
 
   // Disable "Assign to this replica" when the pending selection still equals
   // the replica's current Coding Agent + Profile (assign flows opt in).
-  describe("redundant replica assignment (#551)", () => {
+  describe("redundant replica assignment", () => {
     const REDUNDANT_TOOLTIP = "This replica already uses this Coding Agent + Profile.";
 
     it("disables apply with a tooltip while the selection matches the current pair", async () => {
@@ -1293,7 +1293,7 @@ describe("AgentPickerModal", () => {
     // loaded profile no longer matches its configuration (profileOutdated), the
     // same-pair re-assign is meaningful (re-stamp the cell content + relaunch), so
     // "Assign to this replica" must stay ENABLED even on the otherwise-redundant pair.
-    it("re-enables apply for a redundant pair when the target session has drifted (#592)", async () => {
+    it("re-enables apply for a redundant pair when the target session has drifted", async () => {
       const { dispose } = renderPicker({
         currentAgentId: "codex",
         currentRequestedProfile: "B",
@@ -1375,7 +1375,7 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    it("uses the origin default profile tier as the baseline (#551 FIX 1)", async () => {
+    it("uses the origin default profile tier as the baseline (FIX 1)", async () => {
       // Replica with an origin-matrix default profile of "C" (set via "set default
       // profile") and NO instance override / explicit requested profile. The backend
       // fallback chain ranks origin_default above agent_default, so the redundancy
@@ -1447,7 +1447,7 @@ describe("AgentPickerModal", () => {
   // The approved selection-lock picker. The fingerprint echoed with each
   // policy is the whole safety mechanism, so every assertion here pins exactly
   // what the backend receives (and, for Cancel, that it receives nothing).
-  describe("selection lock picker (#1943)", () => {
+  describe("selection lock picker", () => {
     function renderLockPicker(overrides: Parameters<typeof renderPicker>[0] = {}) {
       return renderPicker({
         agentPath: WG_REPLICA_PATH,
@@ -1522,7 +1522,7 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    it("sends the replica preview fingerprint for This replica + lock (#2051)", async () => {
+    it("sends the replica preview fingerprint for This replica + lock", async () => {
       const { dispose, onSelect } = renderLockPicker();
       await settle();
 
@@ -1546,7 +1546,7 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    it("blocks This replica + lock until the replica preview is loaded (#2051)", async () => {
+    it("blocks This replica + lock until the replica preview is loaded", async () => {
       let resolveReplica: (value: PreviewCodingAgentProfileSelectionResult) => void = () => {};
       mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation(
         (req: { scope: string }) => {
@@ -1577,7 +1577,7 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    it("re-previews replica scope after a rejected replica + lock apply (#2051)", async () => {
+    it("re-previews replica scope after a rejected replica + lock apply", async () => {
       const staleFingerprintMessage =
         "stalePreview: Target selection changed. Rerun preview before applying profile selection.";
       mockSettingsApi.applyCodingAgentProfileSelection.mockRejectedValue(
@@ -1605,7 +1605,7 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    it("hashes the replica preview with the restart value the apply sends (#2051)", async () => {
+    it("hashes the replica preview with the restart value the apply sends", async () => {
       const calls: Array<{ scope: string; restartSessions?: boolean }> = [];
       const basePreview =
         mockSettingsApi.previewCodingAgentProfileSelection.getMockImplementation();
@@ -2326,7 +2326,7 @@ describe("AgentPickerModal", () => {
     });
   });
 
-  describe("#2014 launch lines and left-only filter", () => {
+  describe("launch lines and left-only filter", () => {
     async function setAgentFilter(value: string): Promise<void> {
       const input = target<HTMLInputElement>("agentPicker.agentFilter");
       input.value = value;
@@ -2593,7 +2593,7 @@ describe("AgentPickerModal", () => {
     });
   });
 
-  describe("#2306 P3 coding-agent moves", () => {
+  describe("P3 coding-agent moves", () => {
     const FIVE: AgentConfig[] = ["a", "b", "c", "d", "e"].map((id, index) =>
       agent({ id, label: `Agent ${id.toUpperCase()}`, command: `cmd-${id}`, order: index }),
     );
@@ -3235,7 +3235,7 @@ describe("AgentPickerModal", () => {
       dispose();
     });
   });
-  describe("#2475 picker open runs one preview round (#2484)", () => {
+  describe("picker open runs one preview round", () => {
     function backendTotal(): number {
       return (
         mockSettingsApi.previewCodingAgentProfileSelection.mock.calls.length +
@@ -3645,7 +3645,7 @@ describe("AgentPickerModal", () => {
       view.dispose();
     });
 
-    describe("#2555 picker timing instrumentation", () => {
+    describe("picker timing instrumentation", () => {
       const DOM_MARK = "agentPicker.countsDom";
       const FRAME_MARK = "agentPicker.countsFrame";
       let infoSpy: { mock: { calls: unknown[][] }; mockRestore: () => void };

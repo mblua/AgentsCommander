@@ -434,7 +434,7 @@ async function assertBroomState({ root, disabled, title }: { root: ParentNode; d
   expect(broom!.title).toBe(title);
 }
 
-describe("ProjectPanel replica context menu — gray/red (#545)", () => {
+describe("ProjectPanel replica context menu — gray/red", () => {
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
   const setupPanel = registerTaskPanelFixture({ onRendered: next => { rendered = next; } });
@@ -1538,7 +1538,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
   });
 });
 
-describe("ProjectPanel replica context menu — session actions (#1673)", () => {
+describe("ProjectPanel replica context menu — session actions", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
@@ -1694,7 +1694,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
     }
   });
 
-  it("moves the group emoji into the Create new group gutter (#1731)", async () => {
+  it("moves the group emoji into the Create new group gutter", async () => {
     await setupPanel();
     const menu = await openMenu(findRow(rendered!.root, coordQuickRowTestId));
     // The flyout renders through a Portal, so it is reached from the document,
@@ -2335,7 +2335,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
   });
 });
 
-describe("ProjectPanel replica context menu — Edit TASK title (#1536)", () => {
+describe("ProjectPanel replica context menu — Edit TASK title", () => {
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
   const setupPanel = registerTaskPanelFixture({ onRendered: next => { rendered = next; } });
@@ -2757,7 +2757,7 @@ describe("ProjectPanel replica context menu — Edit TASK title (#1536)", () => 
   });
 });
 
-describe("isTaskClean (#545)", () => {
+describe("isTaskClean", () => {
   it("treats empty/missing and the exact Clean sentinel as clean", () => {
     expect(isTaskClean("")).toBe(true);
     expect(isTaskClean(null)).toBe(true);

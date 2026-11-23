@@ -303,7 +303,7 @@ const subgroups = (root: HTMLElement): Element[] => [
 const anySubgroupWorking = (root: HTMLElement): boolean =>
   subgroups(root).some((el) => el.classList.contains("working"));
 
-describe("ProjectPanel working tint (#1755)", () => {
+describe("ProjectPanel working tint", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -629,7 +629,7 @@ describe("ProjectPanel working tint (#1755)", () => {
   });
 });
 
-describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
+describe("ProjectPanel orchestrator CI working tint", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -782,7 +782,7 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
     }
   });
 
-  it("16. #2202 CI alone makes the room active on the rail and the wash, and changes no order", async () => {
+  it("16. CI alone makes the room active on the rail and the wash, and changes no order", async () => {
     const rendered = await mountCiPanel({ withRail: true });
     try {
       await waitFor(() => {
@@ -863,7 +863,7 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
     }
   });
 
-  it("18. #2202 the strip tint and the rail agree on the CI room, and the order is untouched", async () => {
+  it("18. the strip tint and the rail agree on the CI room, and the order is untouched", async () => {
     const rendered = await mountCiPanel({ withRail: true });
     try {
       sessionsStore.setSessions([
