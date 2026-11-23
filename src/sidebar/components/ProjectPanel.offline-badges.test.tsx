@@ -103,7 +103,7 @@ async function mount(discoveryResult: ReturnType<typeof discovery>, settings = s
   return rendered;
 }
 
-describe("ProjectPanel offline Coding Agent + Profile badges (#733)", () => {
+describe("ProjectPanel offline Coding Agent + Profile badges", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

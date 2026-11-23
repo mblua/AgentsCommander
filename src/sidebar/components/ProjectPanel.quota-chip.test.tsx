@@ -110,7 +110,7 @@ function setupTransport(fake: FakeTransport, idleAgentId: string): void {
   fake.resolve("get_agent_quota_readings", {});
 }
 
-describe("ProjectPanel replica weekly-quota chip (#2482)", () => {
+describe("ProjectPanel replica weekly-quota chip", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

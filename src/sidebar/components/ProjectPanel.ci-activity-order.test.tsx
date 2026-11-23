@@ -115,7 +115,7 @@ async function mount(sortByActivity: boolean) {
   return rendered;
 }
 
-describe("#2202 CI stop floats the room under sort-by-activity", () => {
+describe("CI stop floats the room under sort-by-activity", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

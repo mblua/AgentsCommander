@@ -293,7 +293,7 @@ async function expectSecondDiscover(fake: FakeTransport): Promise<void> {
   );
 }
 
-describe("ProjectPanel modal survival across project refresh (#710)", () => {
+describe("ProjectPanel modal survival across project refresh", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
   const originalScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");

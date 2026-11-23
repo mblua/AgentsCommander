@@ -61,7 +61,7 @@ function closedPills(root: HTMLElement): Element[] {
   return Array.from(root.querySelectorAll(".coord-autoclosed"));
 }
 
-describe("ProjectPanel MANUALLY-CLOSED pill (#588)", () => {
+describe("ProjectPanel MANUALLY-CLOSED pill", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -137,7 +137,7 @@ describe("ProjectPanel MANUALLY-CLOSED pill (#588)", () => {
     }
   });
 
-  it("suppresses the pill the moment the coordinator has a live session again (#589-parity !isSessionLive gate)", async () => {
+  it("suppresses the pill the moment the coordinator has a live session again (!isSessionLive gate parity)", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve("get_settings", baseSettings({ coordinatorAutoCloseEnabled: true }));
