@@ -1,5 +1,5 @@
-//! #2482 - a per-session, best-effort reading of a coding agent's weekly (7-day) quota
-//! usage, sampled from the same screen rows #1032's context badge reads.
+//! A per-session, best-effort reading of a coding agent's weekly (7-day) quota
+//! usage, sampled from the same screen rows the context badge reads.
 //!
 //! A narrowed copy of `context_scrape::ContextScraper`: no persistence, no alert
 //! routing, a slower interval. The engine holds three narrow trait objects and no
@@ -7,7 +7,7 @@
 //! nothing else. It names only `crate::shutdown` and `crate::pty::context_scrape`, which
 //! keeps it out of the crate's cyclic SCC.
 //!
-//! #2566 - the reading belongs to an ACCOUNT, not to a session. The provider hands each
+//! The reading belongs to an ACCOUNT, not to a session. The provider hands each
 //! agent an OPAQUE `account_key` (its command's program token); a successful sample is
 //! stored under that key and published to EVERY agent on it, so agents sharing a command
 //! show one number whether or not they have a terminal open. `pty::agent_quota` gains NO
@@ -40,7 +40,7 @@ pub trait QuotaRowsSource: Send + Sync {
     fn get_session_liveness(&self, id: Uuid) -> ContextSessionLiveness;
 }
 
-/// #2566 - one agent's enabled source plus the ACCOUNT it belongs to. `account_key`
+/// One agent's enabled source plus the ACCOUNT it belongs to. `account_key`
 /// is OPAQUE here: the engine compares it and never parses it, which is what keeps
 /// this module free of `config::` (see the module doc).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +79,7 @@ pub struct AgentQuotaPayload {
     pub weekly_used_percent: Option<u8>,
 }
 
-/// One registered session: which agent's source applies to it. #2566 - a session is no
+/// One registered session: which agent's source applies to it. A session is no
 /// longer a publication unit, so it carries no emitted value.
 struct Registered {
     agent_id: String,
@@ -121,10 +121,10 @@ pub struct AgentQuotaEngine {
     /// `account_readings`, published. None is ever held across an `.await`.
     sequence: Mutex<()>,
     registered: Mutex<HashMap<Uuid, Registered>>,
-    /// #2566 - the latest SUCCESSFUL sample per account key. An absent key IS "nothing
+    /// The latest SUCCESSFUL sample per account key. An absent key IS "nothing
     /// read yet"; only a success ever writes here (D4), so there is no None to store.
     account_readings: Mutex<HashMap<String, u8>>,
-    /// #2566 - the last value EMITTED per agent id. `Option` exists only for the removal
+    /// The last value EMITTED per agent id. `Option` exists only for the removal
     /// branch of the reconcile step; absent and `Some(None)` compare equal there.
     published: Mutex<HashMap<String, Option<u8>>>,
     /// Keyed by AGENT id, bounded by agent count.

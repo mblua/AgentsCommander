@@ -12,7 +12,7 @@ import type {
 } from "../../shared/types";
 
 /**
- * #1171 - the pure half of the Watchers settings tab, kept out of the TSX so it can be
+ * The pure half of the Watchers settings tab, kept out of the TSX so it can be
  * tested without rendering, following `settings-save.ts`.
  */
 

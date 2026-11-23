@@ -1,7 +1,7 @@
 import type { Component } from "solid-js";
 
 /**
- * #1858 — the warning-triangle glyph for the blocked-menu indicator on a
+ * The warning-triangle glyph for the blocked-menu indicator on a
  * coordinator/replica row. A blocked menu and a raised hand are different
  * states with different urgencies, so they must not share a shape: this
  * triangle reads apart from RaiseHandIcon's hand even at the 11px chip size

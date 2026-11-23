@@ -7,7 +7,7 @@ import UnleashConfirmModal from "./UnleashConfirmModal";
 
 type Restart = (sessionId: string) => Promise<unknown>;
 
-// #4752 - store the flag, then fresh-restart so the new context applies. A failed
+// Store the flag, then fresh-restart so the new context applies. A failed
 // restart keeps the flag (user decision Q2); the restart function toasts it.
 export async function applyUnleash(
   sessionId: string,
@@ -29,7 +29,7 @@ export async function applyUnleash(
 }
 
 /**
- * #4752 - the session actions at the end of a live replica's menu: the
+ * The session actions at the end of a live replica's menu: the
  * Unleash/Leash item (never for the Root Agent) and Close Session.
  */
 export default function ReplicaSessionActions(props: {
@@ -85,7 +85,7 @@ export default function ReplicaSessionActions(props: {
   );
 }
 
-/** #4752 - the Unleash confirmation, mounted once at the stable ProjectPanel root. */
+/** The Unleash confirmation, mounted once at the stable ProjectPanel root. */
 export function UnleashPromptHost(props: { restart: Restart }) {
   return (
     <Show when={unleashedReplicasStore.prompt()}>

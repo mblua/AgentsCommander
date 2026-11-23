@@ -1,4 +1,4 @@
-// #4843 - the sidebar sound button when GStreamer cannot play sound (Linux).
+// The sidebar sound button when GStreamer cannot play sound (Linux).
 import { createSignal } from "solid-js";
 import type { AudioSinkStatus } from "../shared/audio-sink";
 import { AudioSinkAPI } from "../shared/ipc";
@@ -26,10 +26,10 @@ const LABELS: Record<SoundButtonState, string> = {
 
 const [status, setStatus] = createSignal<AudioSinkStatus>("unknown");
 
-/** #4843 - the sink status; "unknown" until the one check answers. */
+/** The sink status; "unknown" until the one check answers. */
 export const audioSinkStatus = status;
 
-/** #4843 - ask the backend; called once per sidebar start. Never rejects. */
+/** Ask the backend; called once per sidebar start. Never rejects. */
 export async function checkAudioSink(): Promise<void> {
   try {
     if (!isTauri) return;
@@ -54,7 +54,7 @@ export function soundButtonLabel(state: SoundButtonState): string {
   return LABELS[state];
 }
 
-/** #4843 - sticky, deduplicated by tag. */
+/** Sticky, deduplicated by tag. */
 export function showAudioSinkToast(): void {
   toastStore.error(AUDIO_SINK_MESSAGE, { durationMs: null, tag: AUDIO_SINK_TOAST_TAG });
 }

@@ -14,8 +14,8 @@ pub const PTY_SAFE_MAX: usize = 1024;
 pub const FILE_NOTIFICATION_PREFIX: &str = "Process this inter-agent message: ";
 pub const FILE_NOTIFICATION_SUFFIX: &str = "";
 
-/// Display-only sender suffix for a message the Co-managed supervisor produced
-/// (#2232 phase 7). The queue file's `from` stays the exact FQN, which is what
+/// Display-only sender suffix for a message the Co-managed supervisor produced.
+/// The queue file's `from` stays the exact FQN, which is what
 /// authorizes; this suffix only tells the recipient the message is automatic.
 /// The single source for the mailbox render site and the supervisor's
 /// line-budget check.
@@ -190,7 +190,7 @@ pub fn root_messaging_dir(root_agent_dir: &Path) -> Result<PathBuf, MessagingErr
 /// before anything is written into its `messaging/` directory.
 ///
 /// The CLI always did this; an in-process caller does not inherit a private
-/// helper, so the check lives here (#2232 phase 7). `phone::messaging` is
+/// helper, so the check lives here. `phone::messaging` is
 /// already inside the 88-member SCC, so the call adds an SCC-to-leaf arc to
 /// `config::ac_root` and no new member.
 pub(crate) fn ensure_workgroup_root_is_authoritative(wg_root: &Path) -> Result<(), String> {

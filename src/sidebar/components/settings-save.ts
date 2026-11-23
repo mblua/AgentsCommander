@@ -66,7 +66,7 @@ function apiServerFields(draft: AppSettings, fresh: AppSettings, modalSeed: AppS
     : {};
 }
 
-// #4783: keys only written outside the modal (verified: no modal edit); fresh disk wins.
+// Keys only written outside the modal (verified: no modal edit); fresh disk wins.
 const OUTSIDE_WRITER_KEYS = [
   "mainSidebarWidth",
   "mainSidebarSide",

@@ -76,26 +76,11 @@ struct SemanticRegistration {
 
 /// #2879 - everything guarded by the `activity` mutex: the #260 printable-output clock and
 /// the semantic registrations, so an observation and the watcher's commit are linearized by
-/// the one lock the arbiter already takes. Derefs to the clock map, which every pre-#2879
-/// reader of `activity` keeps using unchanged.
+/// the one lock the arbiter already takes.
 #[derive(Default)]
 struct ActivityState {
     timestamps: HashMap<Uuid, Instant>,
     semantic: HashMap<Uuid, SemanticRegistration>,
-}
-
-impl std::ops::Deref for ActivityState {
-    type Target = HashMap<Uuid, Instant>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.timestamps
-    }
-}
-
-impl std::ops::DerefMut for ActivityState {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.timestamps
-    }
 }
 
 impl ActivityState {
@@ -312,7 +297,7 @@ impl IdleDetector {
             },
         );
         if tuning.seed_initial_activity {
-            activity.insert(session_id, Instant::now());
+            activity.timestamps.insert(session_id, Instant::now());
             log::debug!(
                 "[idle] SEEDED activity for {} at spawn (idle_threshold={}ms)",
                 &session_id.to_string()[..8],
@@ -565,7 +550,7 @@ impl IdleDetector {
             // w.r.t. the watcher thread (same order: activity → idle_set).
             let mut activity = lock(&self.activity);
             let mut idle_set = lock(&self.idle_set);
-            activity.insert(session_id, Instant::now());
+            activity.timestamps.insert(session_id, Instant::now());
             idle_set.remove(&session_id)
         };
         if was_idle {
@@ -684,6 +669,7 @@ impl IdleDetector {
         self.activity
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .timestamps
             .insert(session_id, Instant::now() - age);
         self.idle_set
             .lock()
@@ -706,6 +692,7 @@ impl IdleDetector {
     /// resize-awareness must consult `last_resize_age` (via `purge_readiness`).
     pub fn has_printable_activity_since(&self, session_id: Uuid, t: Instant) -> bool {
         lock(&self.activity)
+            .timestamps
             .get(&session_id)
             .is_some_and(|&stamp| stamp > t)
     }
@@ -740,6 +727,7 @@ impl IdleDetector {
                 PurgeReadiness {
                     session_id: *id,
                     activity_age: activity
+                        .timestamps
                         .get(id)
                         .and_then(|&x| now.checked_duration_since(x)),
                     watcher_idle: idle_set.contains(id),
@@ -774,6 +762,7 @@ impl IdleDetector {
             .copied()
             .ok_or(PtyInputBoundaryFailure::UntrackedReadiness)?;
         let activity_at = activity
+            .timestamps
             .get(&session_id)
             .copied()
             .ok_or(PtyInputBoundaryFailure::UntrackedReadiness)?;
@@ -801,7 +790,7 @@ impl IdleDetector {
         }
 
         let route = lock_route().map_err(|_| PtyInputBoundaryFailure::RouteUnavailable)?;
-        activity.insert(session_id, now);
+        activity.timestamps.insert(session_id, now);
         let was_idle = idle_set.remove(&session_id);
         drop(idle_set);
         drop(activity);
@@ -836,7 +825,7 @@ impl IdleDetector {
             // of it is invalid from here on.
             let mut activity = lock(&self.activity);
             activity.semantic.remove(&session_id);
-            activity.remove(&session_id);
+            activity.timestamps.remove(&session_id);
         }
         lock(&self.silence).remove(&session_id);
         lock(&self.registered_at).remove(&session_id);
@@ -907,7 +896,7 @@ impl IdleDetector {
         let now = now.unwrap_or_else(Instant::now);
 
         let crossing: HashMap<Uuid, Duration> =
-            sessions_crossing_idle_threshold(now, &activity, &idle_set, &tuning)
+            sessions_crossing_idle_threshold(now, &activity.timestamps, &idle_set, &tuning)
                 .into_iter()
                 .collect();
         let mut ids: Vec<Uuid> = activity
@@ -953,6 +942,7 @@ impl IdleDetector {
         // not take the async manager lock; a session pending creation listed here is inert.
         heartbeat.then(|| {
             activity
+                .timestamps
                 .keys()
                 .copied()
                 .filter(|id| !idle_set.contains(id))

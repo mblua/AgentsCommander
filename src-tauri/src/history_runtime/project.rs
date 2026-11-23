@@ -1,4 +1,4 @@
-//! Project identity for context history (#3532 P13).
+//! Project identity for context history.
 //!
 //! Verifies a project directory once and recognises every record spelling of
 //! it: the canonical path and the verified typed path without `.` components.

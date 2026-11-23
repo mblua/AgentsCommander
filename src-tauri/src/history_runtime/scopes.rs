@@ -1,4 +1,4 @@
-//! Session scopes for context history (#3532 P14).
+//! Session scopes for context history.
 //!
 //! Owns the collaborator ports (launch facts, project environment, append)
 //! and [`HistoryScopeState`], the one live, bounded cache of each runtime
