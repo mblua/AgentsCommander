@@ -12,7 +12,7 @@ import {
 import { acDiscoveryTransport, agentRowSel, filterSel, replicaRowSel } from "./ac-discovery-fixture";
 import { ROW_KEY_PROXY_CLASS } from "./RowKeyProxy";
 
-// #2659 - the agent and replica rows open the Coding Agent picker by keyboard
+// The agent and replica rows open the Coding Agent picker by keyboard
 // through their row key proxy; mouse click and right-click are unchanged.
 
 const press = (key: string) => (row: HTMLElement) => {

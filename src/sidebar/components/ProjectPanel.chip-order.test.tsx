@@ -18,7 +18,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { automationIdPart } from "./replica-repo-badges";
 import type { AcWorkgroup, AppSettings, SavedPair, SelectionState, Session } from "../../shared/types";
 
-// #1730 - the replica row's chip strip. Nothing in the suite reads the child
+// The replica row's chip strip. Nothing in the suite reads the child
 // list of .ac-discovery-badges, so without this file an implementation that
 // adds agent-name-chip and leaves the other eleven chips in today's order
 // passes typecheck, the whole test run and every CI job. The order itself is
@@ -83,7 +83,7 @@ function maximalWorkgroup(
         repoPaths: [],
         isCoordinator: true,
         lastUserMessageAt: isoMinutesAgo(90),
-        // #1943 - the persisted protection payload. `unlocked` (the default here)
+        // The persisted protection payload. `unlocked` (the default here)
         // draws no chip; `locked` adds exactly one.
         savedPair: lock.savedPair ?? null,
         selectionState: lock.selectionState ?? "unlocked",
@@ -245,7 +245,7 @@ describe("ProjectPanel replica chip strip order (#1730)", () => {
     expect(row.querySelector(".session-item-bridge-icon")).toBeNull();
   });
 
-  // #1943 - the lock chip (icon-only since #2030): one more child than the
+  // The lock chip (icon-only): one more child than the
   // unlocked row above, inserted right after the profile badge, with every later
   // badge pushed back one slot and keeping its relative order. The chip strip IS
   // the row's only identity, so a silent insertion here would be invisible to
@@ -277,7 +277,7 @@ describe("ProjectPanel replica chip strip order (#1730)", () => {
 
     const chips = strip.querySelectorAll<HTMLElement>(".selection-lock-chip");
     expect(chips).toHaveLength(1);
-    // #2030 - icon only: no text node and a single child, so no label can wrap
+    // Icon only: no text node and a single child, so no label can wrap
     // or widen the chip. The padlock is still announced: the svg is hidden and
     // the chip carries the name.
     expect(chips[0].textContent?.replace(/\s+/g, "")).toBe("");

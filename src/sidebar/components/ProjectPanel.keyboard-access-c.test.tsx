@@ -18,7 +18,7 @@ import { ROW_KEY_PROXY_CLASS } from "./RowKeyProxy";
 
 vi.mock("../attention", () => ({ requestTaskbarAttention: vi.fn() }));
 
-// #2659 - the replica row runs its click action (switch to its live session)
+// The replica row runs its click action (switch to its live session)
 // by keyboard through its row key proxy; its nested buttons keep their own keys.
 const projectPath = "C:\\Project";
 const wgName = "room-kb";

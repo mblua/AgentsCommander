@@ -16,7 +16,7 @@ vi.mock("../../shared/ipc", () => ({
     get: vi.fn(() => Promise.resolve(settings())),
     update: vi.fn(() => Promise.resolve()),
   },
-  // #769/#1965 — OnboardingModal now drives its cards from codingAgentsStore,
+  // OnboardingModal now drives its cards from codingAgentsStore,
   // which fetches the catalog report. Resolve a report that includes Codex (the
   // preset this suite selects); the store no longer falls back to bundled data.
   CodingAgentsAPI: {
@@ -43,12 +43,12 @@ vi.mock("../../shared/ipc", () => ({
         unavailable: null,
       }),
     ),
-    // #769 Phase 2 — the store also fetches this; onboarding does not use it.
+    // The store also fetches this; onboarding does not use it.
     listReseedableCommands: vi.fn(() => Promise.resolve([])),
     reseedDefault: vi.fn(() => Promise.resolve({ dest: "", backupPath: "" })),
-    // #2736 - OnboardingModal passes showInstallStatus; empty = no status.
+    // OnboardingModal passes showInstallStatus; empty = no status.
     welcomeStatus: vi.fn(() => Promise.resolve([])),
-    // #2736 P5 - Install button; the listener must resolve to a function.
+    // Install button; the listener must resolve to a function.
     install: vi.fn(() => Promise.resolve()),
   },
   onCodingAgentInstallFinished: vi.fn(() => Promise.resolve(() => {})),
@@ -122,7 +122,7 @@ describe("OnboardingModal", () => {
     expect(document.querySelector(".onboarding-welcome")?.textContent).toBe(
       "Welcome to AgentsCommander! Let's set up your first Coding Agent.",
     );
-    // #975 — Welcome overrides the accessible name; it must not silently
+    // Welcome overrides the accessible name; it must not silently
     // degrade to the title.
     expect(
       document.querySelector('[data-ac-testid="onboarding.modal"]')?.getAttribute("aria-label"),
@@ -148,7 +148,7 @@ describe("OnboardingModal", () => {
     )?.click();
     await settle();
 
-    // #975 — dismissal still rides along in the single agent-persisting write.
+    // Dismissal still rides along in the single agent-persisting write.
     expect(SettingsAPI.update).toHaveBeenCalledTimes(1);
     expect(SettingsAPI.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -234,7 +234,7 @@ describe("OnboardingModal", () => {
     pressEscape();
     await settle();
 
-    // #975 F1 — Escape on the "configured!" screen closes immediately. The
+    // Escape on the "configured!" screen closes immediately. The
     // whole flow performs exactly one get + one update: no redundant settings
     // rewrite, session purge or global-hotkey re-registration, and no
     // read-modify-write clobber window after the agent was already saved.

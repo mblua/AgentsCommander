@@ -86,7 +86,7 @@ function blockedMenuSession(
   });
 }
 
-// #1858 — one blocked-menu row and one raise-hand row in the same mount. The
+// One blocked-menu row and one raise-hand row in the same mount. The
 // raise-hand slot only renders for a coordinator that has a task title (it
 // lives inside .coord-task-line), so the two rows differ in row context too.
 const blockedWg = "room-blocked";
@@ -207,7 +207,7 @@ describe("ProjectPanel blocked-menu communication slot (#1649)", () => {
     expect(slot?.getAttribute("aria-label")).toBe("Interactive menu requires user input");
   });
 
-  // #1858 — a blocked menu and a raised hand are two different states, and until
+  // A blocked menu and a raised hand are two different states, and until
   // this phase both rendered RaiseHandIcon inside the same amber chip. These
   // three assert on what a sighted user actually sees (the rendered `d`, the
   // modifier class) plus the automation contract that must NOT move with it.
@@ -275,7 +275,7 @@ describe("ProjectPanel blocked-menu communication slot (#1649)", () => {
 });
 
 
-// #1859 - the collapse-proof rollup. Three collapses and one regex filter can
+// The collapse-proof rollup. Three collapses and one regex filter can
 // each hide the row that carries the #1858 chip, so every level that can hide a
 // row now summarises what it hides. These drive the real UI (clicking the real
 // headers, typing in the real filter input) rather than poking the collapse
@@ -461,7 +461,7 @@ describe("ProjectPanel blocked-menu rollup badges (#1859)", () => {
   });
 });
 
-// #1858 — these two assert on the stylesheet source, not on the DOM, and they
+// These two assert on the stylesheet source, not on the DOM, and they
 // have to: the test renderer never attaches sidebar.css, variables.css or
 // toast.css, so getComputedStyle in jsdom cannot see any of these rules and a
 // DOM test would pass against a stylesheet that does not define them at all.

@@ -20,12 +20,12 @@ import type { AcDiscoveryResult, Session, TaskSnapshot } from "../../shared/type
 import { toastStore } from "../../shared/stores/toasts";
 import { automationIdPart } from "./replica-repo-badges";
 
-// Issue #545: gray (never launched) and red (exited) replicas could not open a
+// Gray (never launched) and red (exited) replicas could not open a
 // right-click menu, blocking the Coding Agent selector and the clear-task broom
 // before/between launches.
 //   - gray (no session): Coding Agent + Matrix folder + Replica folder + broom menu.
 //   - red (exited): the FULL active-replica menu (Restart Session, Coding Agent,
-//     Matrix/Replica folders, Detach session) PLUS the clear-task broom (#545 rework).
+//     Matrix/Replica folders, Detach session) PLUS the clear-task broom.
 //   - green (running): the full menu, including the broom.
 
 const projectPath = "C:\\Project";
@@ -45,7 +45,7 @@ const memberRowTestId = "replica.row.workgroups.C-Project-.ac-wg-2-dev-team-__ag
 const otherRowTestId = "replica.row.workgroups.C-Project-.ac-wg-3-other-team-__agent_dev-rust";
 const coordQuickRowTestId = "replica.row.quick.C-Project-.ac-wg-2-dev-team-__agent_dev-webpage-ui";
 
-// #545: taskTitle/task are parametrized so tests can drive the broom's
+// taskTitle/task are parametrized so tests can drive the broom's
 // snapshot-aware disable predicate across Clean/empty/real titles.
 function sidebarSnapshot(root: string, overrides: Partial<TaskSnapshot> = {}): TaskSnapshot {
   return { workgroupRoot: root, task: "description", taskTitle: "USER title", description: "description",
@@ -129,7 +129,7 @@ function memberSession(overrides: Partial<Session> = {}): Session {
   });
 }
 
-// #1536 - a second workgroup for A->B menu-replacement tests. Same agent names
+// A second workgroup for A->B menu-replacement tests. Same agent names
 // as wg-2 but distinct paths, so rows and sessions stay unambiguous.
 function otherSession(overrides: Partial<Session> = {}): Session {
   return session({
@@ -141,7 +141,7 @@ function otherSession(overrides: Partial<Session> = {}): Session {
   });
 }
 
-// #1536 - wg-2-dev-team (same shape as projectDiscovery) plus wg-3-other-team.
+// wg-2-dev-team (same shape as projectDiscovery) plus wg-3-other-team.
 function projectDiscoveryTwoWorkgroups(
   taskTitle: string | null = "Context menu states",
   task: string | null = null
@@ -244,7 +244,7 @@ function replicaMenu(): HTMLElement | null {
   return document.querySelector<HTMLElement>(".session-context-menu");
 }
 
-// #2528: the Coding Agent item carries exactly one of the two testids.
+// The Coding Agent item carries exactly one of the two testids.
 const LIVE_CODING_AGENT = "replica.member-session.menu.coding-agent";
 const INACTIVE_CODING_AGENT = `replica.inactive.${automationIdPart(memberPath)}.menu.coding-agent`;
 function expectCodingAgentTestId(menu: HTMLElement, present: string, absent: string): HTMLButtonElement {
@@ -272,7 +272,7 @@ function findBroom(menu: HTMLElement): HTMLButtonElement | null {
   );
 }
 
-// #1536 - the Edit TASK title item (mirrors findBroom; no data-ac-testid).
+// The Edit TASK title item (mirrors findBroom; no data-ac-testid).
 function findEditTitleButton(menu: HTMLElement): HTMLButtonElement | null {
   return (
     Array.from(menu.querySelectorAll("button")).find((b) =>
@@ -455,7 +455,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     const menu = replicaMenu()!;
     expect(menu.textContent).not.toContain("Restart Session");
     expect(menu.textContent).not.toContain("Detach session");
-    // #2528: gray menu Coding Agent carries the static inactive testid.
+    // Gray menu Coding Agent carries the static inactive testid.
     await expectClickOpensPicker(expectCodingAgentTestId(menu, INACTIVE_CODING_AGENT, LIVE_CODING_AGENT));
   });
 
@@ -635,7 +635,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(fake.lastCall("open_in_explorer")!.args.path).not.toBe(memberPath);
   });
 
-  // #2611 — normalizePath (module-private) is reached through the Matrix folder
+  // normalizePath (module-private) is reached through the Matrix folder
   // action: identityPath -> matrixFolderFromIdentityPath -> normalizePath.
   it.each([
     ["C:\\a\\..\\b\\identity.json", "C:\\b"],
@@ -1268,10 +1268,10 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(menu!.textContent).toContain("Coding Agent");
       expect(menu!.textContent).toContain("Open Replica's Folder");
       expect(menu!.textContent).toContain("Detach session");
-      // ...and gains the broom (#545 rework).
+      // ...and gains the broom.
       expect(menu!.textContent).toContain("Clear task title");
     });
-    // #2528: red uses the live menu, so the testid carries the sessionId.
+    // Red uses the live menu, so the testid carries the sessionId.
     expectCodingAgentTestId(replicaMenu()!, LIVE_CODING_AGENT, INACTIVE_CODING_AGENT);
   });
 
@@ -1348,9 +1348,9 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(menu.textContent).toContain("Coding Agent");
     expect(menu.textContent).toContain("Open Replica's Folder");
     expect(menu.textContent).toContain("Detach session");
-    // #545: the broom now renders in EVERY dot state, including green.
+    // The broom now renders in EVERY dot state, including green.
     expect(menu.textContent).toContain("Clear task title");
-    // #2528: live Coding Agent testid; clicking it swaps the menu for the picker.
+    // Live Coding Agent testid; clicking it swaps the menu for the picker.
     await expectClickOpensPicker(expectCodingAgentTestId(menu, LIVE_CODING_AGENT, INACTIVE_CODING_AGENT));
   });
 
@@ -1413,7 +1413,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     });
   });
 
-  // ===== #545: broom-on-all-states + cold cleanAt fallback =====
+  // ===== Broom-on-all-states + cold cleanAt fallback ===========
 
   // The broom now renders in every active (live) dot state, not just red/exited.
   // One representative each for running / idle / waiting; they share the
@@ -1655,15 +1655,15 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       expect(open).not.toBeNull();
       expect(add).not.toBeNull();
       expect(attach.querySelector("svg")).not.toBeNull();
-      // #1731 - Add to Group's gutter now holds the tinted user-plus SVG. The
+      // Add to Group's gutter now holds the tinted user-plus SVG. The
       // emoji it used to hold moved to Create new group; the gutter must be left
       // with NO text glyph at all, which is what the empty textContent pins.
       const addIcon = add.querySelector<HTMLElement>(".session-context-option-icon");
       expect(addIcon?.querySelector(".session-context-group-add-icon")).not.toBeNull();
       expect(addIcon?.textContent).toBe("");
-      // #1708 - the detach entry carries the sized, tinted SVG, not a text glyph.
+      // The detach entry carries the sized, tinted SVG, not a text glyph.
       expect(open.querySelector(".session-context-detach-icon")).not.toBeNull();
-      // #1708 - with no bridge the Telegram icon falls back to the Telegram blue.
+      // With no bridge the Telegram icon falls back to the Telegram blue.
       // jsdom's cssstyle may normalise the hex to rgb(), so accept either form.
       const attachIconColor =
         attach.querySelector<HTMLElement>(".session-context-option-icon")!.style.color;
@@ -1686,7 +1686,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       );
       expect(reattach).not.toBeNull();
       expect(detachedAttach).not.toBeNull();
-      // #1708 - the detached state shows the mirrored icon, also sized and tinted.
+      // The detached state shows the mirrored icon, also sized and tinted.
       expect(reattach.querySelector(".session-context-detach-icon")).not.toBeNull();
     } finally {
       if (replicaMenu()) dispatchDismiss("click");
@@ -1706,7 +1706,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
     );
     const create = document.querySelector<HTMLElement>(`[data-ac-testid="${createTestId}"]`)!;
     expect(create.querySelector(".session-context-option-icon")?.textContent).toBe("\u{1F465}");
-    // #1731 constraint 3 - an emoji ignores `color`, so this row carries no
+    // An emoji ignores `color`, so this row carries no
     // colour class; one here would be dead CSS.
     expect(create.querySelector(".session-context-group-add-icon")).toBeNull();
   });
@@ -2646,7 +2646,7 @@ describe("ProjectPanel replica context menu — Edit TASK title (#1536)", () => 
   });
 
   // 9.2.8 - A->B replacement regression (BLOCKER 1): right-clicking another
-  // replica replaces the menu directly (never through null, #943); no stale
+  // replica replaces the menu directly (never through null); no stale
   // editor or captured save target may survive into the new menu.
   it("never lets a stale editor survive a right-click replacement onto another workgroup", async () => {
     const fake = await setupPanel([coordSession(), otherSession()], projectDiscoveryTwoWorkgroups());
@@ -2668,7 +2668,7 @@ describe("ProjectPanel replica context menu — Edit TASK title (#1536)", () => 
       expect(replicaMenu()!.querySelector(".session-context-title-edit")).not.toBeNull();
     });
 
-    // Right-click the wg-3 member row: #943 direct replacement, never through null.
+    // Right-click the wg-3 member row: direct replacement, never through null.
     contextMenu(findRow(rendered!.root, otherRowTestId));
     await waitFor(() => {
       const menu = replicaMenu();
