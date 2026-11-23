@@ -202,7 +202,7 @@ impl PtyManager {
         })
     }
 
-    /// #1363 - a destroyed window releases every terminal-output attachment it held, in both
+    /// A destroyed window releases every terminal-output attachment it held, in both
     /// backends. The window that died is the only thing identified, so a session another window
     /// still watches keeps delivering.
     pub(crate) fn release_window_attachments(&self, label: &str) {
@@ -423,7 +423,7 @@ impl PtyManager {
         self.backend_for_kind(kind).terminate_job_for_session(id)
     }
 
-    /// #942 - publish the pre-stop witness for a session AC is about to kill outside the
+    /// Publish the pre-stop witness for a session AC is about to kill outside the
     /// PTY layer (resource-monitor tree kill). No-op when the session has no route.
     pub fn publish_stop_witness(&self, id: Uuid, source: &str) {
         let Ok(kind) = self.kind_for_session(id) else {
@@ -442,7 +442,7 @@ impl PtyManager {
         self.backend_for_kind(kind).get_screen_snapshot(id)
     }
 
-    /// #1388 - forwards to the routed backend. An unrouted id yields `true` ("no
+    /// Forwards to the routed backend. An unrouted id yields `true` ("no
     /// claim"), matching the trait default.
     ///
     /// **This deliberately inverts its two nearest siblings**, which answer
@@ -465,7 +465,7 @@ impl PtyManager {
         self.backend_for_kind(kind).get_pty_size(id)
     }
 
-    /// #1032 - forwards to the routed backend. A missing route is not "we could not read":
+    /// Forwards to the routed backend. A missing route is not "we could not read":
     /// every route removal is preceded by parser removal, so the session really is over.
     pub fn get_screen_rows(&self, id: Uuid) -> ScreenRowsRead {
         let Ok(kind) = self.kind_for_session(id) else {
@@ -474,7 +474,7 @@ impl PtyManager {
         self.backend_for_kind(kind).get_screen_rows(id)
     }
 
-    /// #2586 - best-effort rows for an observation, not a gate. `Unavailable` and
+    /// Best-effort rows for an observation, not a gate. `Unavailable` and
     /// `SessionOver` both answer `None`: an observer must not branch on why.
     pub fn screen_rows_snapshot(&self, id: Uuid) -> Option<Vec<String>> {
         match self.get_screen_rows(id) {
@@ -483,7 +483,7 @@ impl PtyManager {
         }
     }
 
-    /// #1171 - forwards to the routed backend. A missing route is `Gone` for the same reason
+    /// Forwards to the routed backend. A missing route is `Gone` for the same reason
     /// it is `SessionOver` above: every route removal is preceded by parser removal, so the
     /// session really is over.
     ///

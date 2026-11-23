@@ -16,7 +16,7 @@ fn normal_binary_refuses_ui_hover_with_json_stdout_and_silent_stderr() {
         ],
     );
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    // #944 - THIS is the assertion that catches a missing `Commands::UiHover(_)` arm in
+    // THIS is the assertion that catches a missing `Commands::UiHover(_)` arm in
     // main.rs's AC_MACHINE_OUTPUT allowlist, and it is that arm's only guard. Without the
     // arm the var stays unset and init_logger writes "[log] file logging to ..." plus
     // every log::* line to stderr. stdout is clean either way, because cli_println!
@@ -27,7 +27,7 @@ fn normal_binary_refuses_ui_hover_with_json_stdout_and_silent_stderr() {
     assert_eq!(parsed["error"], "refusing_non_testeable_binary");
 }
 
-/// #944 N5 - `--leave` is target-free (plan R5), and `conflicts_with = "selector"` is the
+/// N5 - `--leave` is target-free (plan R5), and `conflicts_with = "selector"` is the
 /// only thing enforcing it. Drop that attribute later and `--selector X --leave` would
 /// SILENTLY IGNORE the selector: the bridge intercepts the leave form before it resolves
 /// any node, so the caller would get a successful un-hover of whatever happened to be
@@ -63,7 +63,7 @@ fn ui_hover_rejects_selector_together_with_leave() {
     );
 }
 
-/// #944 N5 - the other half of the same contract. A hover with no target and no `--leave`
+/// N5 - the other half of the same contract. A hover with no target and no `--leave`
 /// is meaningless, so `required_unless_present = "leave"` must keep it un-runnable.
 #[test]
 fn ui_hover_requires_selector_unless_leave() {
@@ -477,7 +477,7 @@ fn stale_prior_session_with_running_daemon_reports_automation_not_enabled_on_std
     assert_eq!(parsed["error"], "automation_not_enabled");
 }
 
-/// #4255 startup anchor: a stale `session.json` with a live daemon; the good session is
+/// Startup anchor: a stale `session.json` with a live daemon; the good session is
 /// published only after the CLI deletes the stale one (poll 1 got the retryable error).
 fn startup_race_fixture(name: &str) -> Option<(Tmp, PathBuf, thread::JoinHandle<()>)> {
     let Some(pid) = fake_live_pid() else {
@@ -625,14 +625,14 @@ fn ui_wait_does_not_retry_stale_session_without_daemon() {
     );
 }
 
-/// #1773: the guard must kill and reap the child on the panic path. The child is the
+/// The guard must kill and reap the child on the panic path. The child is the
 /// real binary running `ui-query` with no responder: it writes its request file
 /// (`ui_automation.rs:1399`) and then polls for a response for the whole
 /// `--timeout-ms` (`:1412-1464`); the only exits from that loop are a response file,
 /// which nothing writes here, and the 30 s deadline. Readiness (request file present,
 /// child alive) is asserted outside `catch_unwind`; the closure only moves the guard
 /// and panics; the caught payload must be the sentinel. Cross-platform since
-/// #2382 gave `pid_is_alive` a real Unix implementation.
+/// a change gave `pid_is_alive` a real Unix implementation.
 #[test]
 fn reap_on_drop_kills_the_child_when_the_caller_panics() {
     use agentscommander_lib::testability::ui_automation::pid_is_alive;

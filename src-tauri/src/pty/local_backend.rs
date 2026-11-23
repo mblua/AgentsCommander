@@ -77,7 +77,7 @@ impl GitGuardTempSequence {
     }
 }
 
-// #4752 P02: the two Git brakes of a spawn (GIT_CEILING_DIRECTORIES and the Windows git.cmd
+// P02: the two Git brakes of a spawn (GIT_CEILING_DIRECTORIES and the Windows git.cmd
 // guard on PATH). An unleashed replica gets neither; both variables are removed because
 // CommandBuilder::new copies the whole parent env.
 fn apply_git_brakes(
@@ -144,7 +144,7 @@ fn spawn_local_child(
     let child = slave
         .spawn_command(command)
         .map_err(|e| AppError::PtyError(e.to_string()))?;
-    // #2413 - a child exists from here on; every later `Err` is fenced.
+    // A child exists from here on; every later `Err` is fenced.
     launch_witness.mark();
     let child_pid = child.process_id();
     log::info!("[pty] Spawned session {id} with child pid {child_pid:?}");
@@ -159,7 +159,7 @@ pub struct LocalProcessBackend {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
     fanout: SessionIoFanout,
     git_watcher: Arc<GitWatcher>,
-    /// #1271 - per-instance, invocation-scoped pre-PTY attempt observer, test
+    /// Per-instance, invocation-scoped pre-PTY attempt observer, test
     /// builds only. Incremented inside the real `spawn_sync` immediately before
     /// `native_pty_system()`, so a deterministic invalid-input rejection (which
     /// happens at the TOP of `spawn_sync`, before any spawn accounting) leaves
@@ -289,7 +289,7 @@ impl LocalProcessBackend {
             launch_witness,
         } = spec;
 
-        // #1271 - validate and construct the adapted launch at the TOP of
+        // Validate and construct the adapted launch at the TOP of
         // `spawn_sync`, BEFORE any spawn accounting or PTY resource acquisition
         // (Grinch Finding 10): a rejected configured-host token is counted
         // nowhere and never opens a PTY. The same adapter result feeds both
@@ -319,7 +319,7 @@ impl LocalProcessBackend {
             },
         )?;
 
-        // #942 - time zero for time-to-first-output.
+        // Time zero for time-to-first-output.
         let spawn_started = Instant::now();
         let (child, child_pid) =
             spawn_local_child(pair.slave.as_ref(), command, &launch_witness, id)?;
@@ -375,11 +375,11 @@ impl LocalProcessBackend {
 
         let output_token =
             self.register_spawn_output(id, instance, idle_tuning, rows, cols, output_target)?;
-        // #942 - emits `[pty] spawn-record` (argv, cwd, CLI, profile, CODEX_HOME,
+        // Emits `[pty] spawn-record` (argv, cwd, CLI, profile, CODEX_HOME,
         // concurrency).
         let record = spawn_diagnostics::register(record_init(), self.spawn.as_ref());
 
-        // #942 - the startup verdict at the deadline and exit attribution. The PTY
+        // The startup verdict at the deadline and exit attribution. The PTY
         // reader alone cannot carry either: ConPTY holds the pipe open past the death of
         // the child, so a child that dies on its own would stay invisible until the
         // session is torn down. The monitor polls the child handle instead and ends with
@@ -441,7 +441,7 @@ impl LocalProcessBackend {
         cols: u16,
         rows: u16,
     ) -> Result<SpawnPty, AppError> {
-        // #942 - how many sessions were spawned in the window just before this one,
+        // How many sessions were spawned in the window just before this one,
         // and how many of them were the same CLI. Concurrent startups against shared
         // agent state (the global ~/.codex) are a prime suspect for the intermittent
         // blank terminal, so every spawn record carries its own concurrency context.
@@ -453,7 +453,7 @@ impl LocalProcessBackend {
             diag_thresholds,
             self.spawn.as_ref(),
         );
-        // #1271 - accepted spawns only: the increment sits immediately before
+        // Accepted spawns only: the increment sits immediately before
         // `native_pty_system()`, so every invalid-input rejection above left the
         // per-instance observer at zero.
         #[cfg(test)]
@@ -498,19 +498,19 @@ impl LocalProcessBackend {
         } = environment;
         let mut command = launch.command_builder();
         command.cwd(spawn_cwd);
-        // #2683 - set PATH to the #2589 effective search path, which is also
+        // Set PATH to the effective search path, which is also
         // what portable_pty searches to resolve a bare program name. Placement
         // is the precedence rule: the env-removal loop and the configured-env
         // loop below run later, so a configured PATH still wins and a removed
         // PATH is still removed. The Windows git-guard PATH also runs later.
         crate::config::agent_path::apply_search_path_to_pty_command(&mut command);
 
-        // #942 - the argv exactly as executed, adapted host-shell wrapper
+        // The argv exactly as executed, adapted host-shell wrapper
         // included. Built from the SAME `PreparedLaunch` the `CommandBuilder`
         // came from (one adapter decision), never mirrored by hand.
         let exec_argv = launch.exec_argv();
 
-        // #942 - what the child will really see for CODEX_HOME: an explicit configured
+        // What the child will really see for CODEX_HOME: an explicit configured
         // value wins, then an explicit removal, then the AC environment the child
         // inherits. None here means this Codex shares the global ~/.codex with every
         // other one.
@@ -570,7 +570,7 @@ impl LocalProcessBackend {
         })
     }
 
-    /// #973 (B) - the child rendered. Hand the `ConPTY` the size the view has been waiting to
+    /// (B) - the child rendered. Hand the `ConPTY` the size the view has been waiting to
     /// give it, and bring the vt100 screen with it. Called from the PTY read loop, once per
     /// session in practice. The decision itself is `hand_over_held_size`.
     fn open_startup_gate(&self, id: Uuid) {
@@ -595,7 +595,7 @@ impl LocalProcessBackend {
         }
     }
 
-    /// #942 - liveness of the child of a session, without disturbing it. Never blocks
+    /// Liveness of the child of a session, without disturbing it. Never blocks
     /// (zero timeout) and never reports a child it could not query as running.
     fn probe_child(&self, id: Uuid) -> ChildLiveness {
         probe_child_in(&self.ptys, id)
@@ -639,7 +639,7 @@ impl PtyBackend for LocalProcessBackend {
         id: Uuid,
         data: &[u8],
     ) -> Result<(), AppError> {
-        // #942 - poison-tolerant: a panic anywhere under this guard (portable-pty unwraps
+        // Poison-tolerant: a panic anywhere under this guard (portable-pty unwraps
         // inside its own child polling) must not brick every terminal write that follows.
         write_to_local_pty(&self.ptys, id, data)
     }
@@ -657,7 +657,7 @@ impl PtyBackend for LocalProcessBackend {
 
     fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), AppError> {
         // The idle grace sees every resize the view ASKED for, held or refused. Idle semantics
-        // are #954's, not this fix's.
+        // are another fix's, not this one's.
         self.fanout.record_resize(id);
 
         let sent = {
@@ -671,12 +671,12 @@ impl PtyBackend for LocalProcessBackend {
             resize_instance(instance, id, cols, rows)?
         };
 
-        // #973 - the vt100 screen models the CHILD's screen, so it may only follow a size the
+        // The vt100 screen models the CHILD's screen, so it may only follow a size the
         // ConPTY actually took.
         //
-        // A refused `0x0` would otherwise set the parser to zero rows (`output.rs`), and #955's
+        // A refused `0x0` would otherwise set the parser to zero rows (`output.rs`), and the
         // `get_screen_snapshot` reads `contents_formatted()` off that grid: an empty snapshot,
-        // and a black tile on re-attach - the exact bug #955 shipped to kill.
+        // and a black tile on re-attach - the exact bug that fix shipped to kill.
         //
         // A HELD size is not the child's size either. The child is still emitting for the size
         // the PTY was opened at, and a screen moved ahead of it would parse that output against
@@ -697,7 +697,7 @@ impl PtyBackend for LocalProcessBackend {
     }
 
     fn kill_observed(&self, id: Uuid) -> Result<NativeExit, AppError> {
-        // #942 - probe the child BEFORE we tag the stop and BEFORE we touch job or
+        // Probe the child BEFORE we tag the stop and BEFORE we touch job or
         // child. That ordering is the whole trick: nothing AC does can have killed a
         // child this probe already finds dead, so "was it already gone when we asked?"
         // has a witness that no race can flip. The old "already exited" line fired both
@@ -786,7 +786,7 @@ impl PtyBackend for LocalProcessBackend {
         Ok(exit)
     }
 
-    /// #942 - record who asked for the stop and what the child looked like BEFORE any
+    /// Record who asked for the stop and what the child looked like BEFORE any
     /// process is touched. The resource monitor kills a process tree without going through
     /// the PTY layer, so a caller that is about to do that publishes the witness here
     /// first; without it, a child that had already died on its own would be logged as our
@@ -797,7 +797,7 @@ impl PtyBackend for LocalProcessBackend {
     }
 
     fn terminate_job_for_session(&self, id: Uuid) -> bool {
-        // #942 - AC asked for this stop. Probe first (same reason as `kill`), then tag,
+        // AC asked for this stop. Probe first (same reason as `kill`), then tag,
         // so a child that was already dead is never charged to us. This stop can also
         // FAIL (a Quarantined resource-monitor kill leaves the instance intact), which
         // is why the tag only owns exits that follow it inside the attribution window.
@@ -829,7 +829,7 @@ impl PtyBackend for LocalProcessBackend {
         let mut terminated = 0;
         let mut jobless = 0;
         for (id, instance) in ptys.iter_mut() {
-            // #942 - shutdown stops every live session; tag them all as ours, with the
+            // Shutdown stops every live session; tag them all as ours, with the
             // same pre-stop witness every other stop path publishes. Lock order here is
             // ptys -> diagnostics registry; nothing ever takes them the other way round
             // (the monitor holds no registry lock while it probes under ptys).
@@ -901,7 +901,7 @@ impl PtyBackend for LocalProcessBackend {
         screen_rows_if_child_alive(&self.ptys, &self.fanout, id)
     }
 
-    /// #1171 - straight to the fanout, with **no child liveness probe**.
+    /// Straight to the fanout, with **no child liveness probe**.
     ///
     /// `get_screen_rows` above probes the child under the `ptys` guard, "the one every
     /// terminal write, resize and kill locks on" (`:1116-1117`). At 200 ms that probe would be
@@ -955,7 +955,7 @@ fn spawn_redaction_values(
     extra_env: &[(String, String)],
     configured_env: &[(String, String)],
 ) -> Vec<String> {
-    // #942 - app.log is what users paste into issues, so a secret must never be
+    // App.log is what users paste into issues, so a secret must never be
     // echoed back out through the child output or the argv we log. Keyed on the env
     // NAME (token / key / secret / password / credential), across both AC's own
     // credential env and the configured rows where AC tells users to keep their API

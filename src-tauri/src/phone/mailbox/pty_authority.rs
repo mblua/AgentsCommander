@@ -288,7 +288,7 @@ impl MailboxPoller {
             matching,
             target,
         )?;
-        // #1271 - same-snapshot host shell: built from the SAME cloned
+        // Same-snapshot host shell: built from the SAME cloned
         // AppSettings that resolved the spawn above (mailbox.rs:5420), before
         // any await, so the pair can never mix across a configuration change.
         let host_shell = Some(crate::pty::backend::ResolvedAgentHostShell {
