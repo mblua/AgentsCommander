@@ -11,10 +11,10 @@ use uuid::Uuid;
 
 use super::super::replacement::{
     LifecycleEffectGuard, LifecycleEffectSlot, OwnedEffectState, OwnedLaunchReceipt,
-    OwnedReplacementContinuation, OwnedReplacementDescriptor, PendingCleanupEvidence,
-    PendingRollback, ReplacementCleanupAuthority, ReplacementStage, ReplacementState,
-    RollbackCause, RollbackCursor, RollbackIdentity, RollbackResume, RollbackRow,
-    SourceExecutorObservation,
+    OwnedReplacementContinuation, OwnedReplacementDescriptor, OwnedReplacementWork,
+    PendingCleanupEvidence, PendingRollback, ReplacementCleanupAuthority, ReplacementStage,
+    ReplacementState, RollbackCause, RollbackCursor, RollbackIdentity, RollbackResume, RollbackRow,
+    SourceExecutorObservation, WakePathValidation,
 };
 use super::super::SelectionCoordinator;
 use crate::config::sessions_persistence::PublishedCarrier;
@@ -216,6 +216,18 @@ impl OwnedReplacementContinuation {
         if let Some(fixture) = wake_rollback_fixture() {
             fixture.before_return.reach().await;
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn fixture_pending_source_validation(&self) -> bool {
+        if let Some(control) = &self.fixture {
+            if control.ticket_only.load(Ordering::Acquire) {
+                return self
+                    .fixture_reached(ReplacementFixtureCut::BeforeSourceValidation)
+                    .await;
+            }
+        }
+        true
     }
 
     #[cfg(test)]
@@ -432,6 +444,26 @@ impl OwnedReplacementContinuation {
             launch: progress.launch.clone(),
             tracker: progress.tracker.clone()?,
         })
+    }
+
+    pub(super) fn rollback_paths_are_current(
+        &self,
+        wake_check: Option<WakePathValidation<'_>>,
+    ) -> bool {
+        if let OwnedReplacementDescriptor::Replacement(source) = &self.owner.descriptor {
+            if matches!(source.work, OwnedReplacementWork::OrdinaryOwned { .. })
+                && (!source
+                    .cwd_identity
+                    .matches_directory(std::path::Path::new(&source.cwd))
+                    || !source
+                        .replica_identity
+                        .as_ref()
+                        .is_some_and(|replica| replica.matches_directory(replica.canonical_path())))
+            {
+                return false;
+            }
+        }
+        wake_check.is_none_or(|check| check())
     }
 
     pub(super) fn rollback_owner_is_current(&self) -> bool {

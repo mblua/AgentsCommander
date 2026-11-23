@@ -2,18 +2,22 @@ use super::super::handoff::wake_claim_path;
 use super::super::poller::{deliver_claimed_wake, OwnedPeerWakeStep, ValidatedWake};
 use super::super::pty_observation::{PtyAuthorityState, WakeDeliveryState};
 use super::claim_and::prime_route_tracker;
-use super::support_core::{make_mailbox_fixture_in, MailboxFixture};
+use super::support_core::{make_mailbox_fixture, MailboxFixture, MailboxMockPtyBackend};
 use super::*;
 use crate::config::sessions_persistence::{classify_create_carrier_scope, CreateCarrierScope};
 use crate::phone::mailbox::host::MailboxHost;
+use crate::phone::types::PtyInputSourcePlane;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::{
     CreateAdmission, CreateClassification, ResponseCloseState, ResponseDeliveryProof,
     ResponseRouteIdentity, ReturnDeliveryProof,
 };
+use crate::session::manager::acquire_carrier_mutation_permit;
+use crate::session::selection::ReplacementAdmissionStep;
 use crate::session::selection::{
-    OwnedReplacementContinuation, ReplacementFixtureAction as Action, ReplacementFixtureControl,
-    ReplacementFixtureCut as Cut, ReplacementFixtureReceipt, SourceExecutorGuard,
+    OwnedReplacementContinuation, OwnedSourceStop, ReplacementFixtureAction as Action,
+    ReplacementFixtureControl as Control, ReplacementFixtureCut as Cut, ReplacementFixtureOutcome,
+    ReplacementFixtureReceipt, SourceExecutorGuard,
 };
 use std::future::Future;
 use std::pin::Pin;
@@ -93,6 +97,16 @@ async fn run_child_case(test: &str, scenario: &str) {
     );
 }
 
+async fn run_child_cases(test: &str, scenarios: &[&str]) -> Option<String> {
+    if std::env::var_os(CHILD).is_some() {
+        return Some(std::env::var(SCENARIO).unwrap());
+    }
+    for scenario in scenarios {
+        run_child_case(test, scenario).await;
+    }
+    None
+}
+
 struct WakeWarnings(std::sync::atomic::AtomicUsize);
 
 impl log::Log for WakeWarnings {
@@ -114,22 +128,19 @@ impl log::Log for WakeWarnings {
     fn flush(&self) {}
 }
 
+async fn completes<F: Future>(future: F) -> F::Output {
+    tokio::time::timeout(WAIT, future)
+        .await
+        .expect("wake fixture deadline")
+}
+
 async fn reacquire_lexical_guards(app: &impl MailboxHost, target: &str) {
-    let gate = app
-        .message_store()
-        .unwrap()
-        .target_gate
-        .as_ref()
-        .unwrap()
-        .clone();
+    let gate = app.message_store().unwrap().target_gate.as_ref().unwrap();
     let stripe = gate
         .try_target_lock(target)
         .unwrap()
         .expect("stripe released");
-    let exact = tokio::time::timeout(WAIT, gate.acquire_exact(target))
-        .await
-        .expect("exact released");
-    drop((exact, stripe));
+    drop((completes(gate.acquire_exact(target)).await, stripe));
 }
 
 fn assert_dispatch_released(tracker: &ResponseCloseState, msg: &OutboxMessage) {
@@ -155,55 +166,32 @@ fn assert_dispatch_released(tracker: &ResponseCloseState, msg: &OutboxMessage) {
     let mut request = tracker.reserve_work(&member.target, key).unwrap();
     assert_eq!(request.accept_durable(digest), Ok(true));
     drop(request);
+    let (key, digest) = (key.into(), digest.into());
     let context = tracker
-        .reserve_policy_candidate(
-            member.clone(),
-            coordinator.clone(),
-            key.into(),
-            digest.into(),
-            now,
-        )
+        .reserve_policy_candidate(member.clone(), coordinator.clone(), key, digest, now)
         .unwrap();
     tracker.mark_request_submitted(&context, true);
-    tracker
-        .register_request(
-            ResponseDeliveryProof {
-                context,
-                member: member.clone(),
-                coordinator: coordinator.clone(),
-                published_carrier_version: member.carrier_version,
-            },
-            now,
-        )
-        .unwrap();
+    let request = ResponseDeliveryProof {
+        context,
+        member: member.clone(),
+        coordinator: coordinator.clone(),
+        published_carrier_version: member.carrier_version,
+    };
+    tracker.register_request(request, now).unwrap();
+    let key = "wake-owner-release-return".into();
+    let digest = "release-return-body".into();
     let context = tracker
-        .admit_return(
-            &member,
-            &coordinator,
-            "wake-owner-release-return".into(),
-            "release-return-body".into(),
-            now,
-        )
+        .admit_return(&member, &coordinator, key, digest, now)
         .unwrap();
-    tracker
-        .observe_return_success(ReturnDeliveryProof { context }, now)
-        .unwrap();
+    let proof = ReturnDeliveryProof { context };
+    tracker.observe_return_success(proof, now).unwrap();
 
-    let held = tracker.begin_delivery(&member.target).unwrap();
     let eligible_at = Instant::now() + Duration::from_secs(60);
-    assert!(
-        tracker
-            .select_ticket(member.session_id, eligible_at)
-            .is_err(),
-        "a held dispatch must block response close",
-    );
+    let ticket = || tracker.select_ticket(member.session_id, eligible_at);
+    let held = tracker.begin_delivery(&member.target).unwrap();
+    assert!(ticket().is_err(), "held dispatch blocks response close");
     drop(held);
-    assert!(
-        tracker
-            .select_ticket(member.session_id, eligible_at)
-            .is_ok(),
-        "the refused wake must leave no dispatch reservation",
-    );
+    assert!(ticket().is_ok(), "refused wake released dispatch");
     tracker.remove_route(member.session_id, member.generation);
     tracker.remove_route(coordinator.session_id, coordinator.generation);
 }
@@ -216,7 +204,7 @@ async fn assert_unpublished_and_reacquire(
     reserved: Uuid,
 ) {
     let manager = app.pty_sessions().read().await.clone();
-    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    let permit = acquire_carrier_mutation_permit().await;
     let directory = crate::config::config_dir().unwrap();
     let classification = manager
         .with_current_carrier_snapshot(&permit, |current| {
@@ -252,8 +240,9 @@ async fn assert_unpublished_and_reacquire(
         assert!(!pty.has_session(reserved));
         pty.response_close_state()
     };
+    let operation = Uuid::new_v4();
     let create = tracker
-        .reserve_create_owner(&msg.to, Uuid::new_v4(), classification)
+        .reserve_create_owner(&msg.to, operation, classification)
         .unwrap();
     assert!(matches!(create, CreateAdmission::Reserved(_)));
     drop((create, permit));
@@ -271,16 +260,11 @@ async fn wake_owner_bind_refusal_leaves_current_carrier_and_counts_retry() {
     static WARNINGS: WakeWarnings = WakeWarnings(std::sync::atomic::AtomicUsize::new(0));
     log::set_logger(&WARNINGS).unwrap();
     log::set_max_level(log::LevelFilter::Warn);
-    let fixture = make_mailbox_fixture_in(tempfile::tempdir().unwrap());
+    let fixture = make_mailbox_fixture();
     let (coordinator, _, _, previous) = prepare_retained_exited_respawn(&fixture).await;
     assert_eq!(coordinator.fixture_root_count(), Some(0));
     let app = fixture.app.handle();
-    let control = Arc::new(ReplacementFixtureControl::default());
-    control.mock_backend.store(true, Ordering::Release);
-    control.ticket_only.store(false, Ordering::Release);
-    let hooks = MailboxTestHooks::default();
-    *hooks.replacement_fixture.lock().unwrap() = Some(control);
-    let mut poller = MailboxPoller::new_with_test_hooks(hooks);
+    let (mut poller, _) = rollback_poller(false);
     let msg = wake_message_to_target();
     let outbox = fixture._temp.path().join("outbox");
     std::fs::create_dir_all(&outbox).unwrap();
@@ -292,15 +276,10 @@ async fn wake_owner_bind_refusal_leaves_current_carrier_and_counts_retry() {
         response: None,
     };
     let observed = Arc::new(OnceLock::new());
-    let outcome = tokio::time::timeout(
-        WAIT,
-        SelectionCoordinator::fixture_refuse_wake_binding(
-            observed.clone(),
-            deliver_claimed_wake(&poller, app, &claim, &origin, &wake),
-        ),
-    )
-    .await
-    .expect("bind refusal returns");
+    let wake_delivery = deliver_claimed_wake(&poller, app, &claim, &origin, &wake);
+    let refusal =
+        SelectionCoordinator::fixture_refuse_wake_binding(observed.clone(), wake_delivery);
+    let outcome = completes(refusal).await;
     assert_eq!(
         outcome.as_ref().unwrap_err(),
         "wake retained without input: stage=source_unbound rollback=none",
@@ -313,22 +292,16 @@ async fn wake_owner_bind_refusal_leaves_current_carrier_and_counts_retry() {
 
     assert!(origin.exists() && !claim.exists());
     assert!(poller.live_claims.insert(claim.clone()));
-    poller
-        .wake_outcomes_tx
-        .send((origin.clone(), outcome))
-        .unwrap();
+    let outcomes = &poller.wake_outcomes_tx;
+    outcomes.send((origin.clone(), outcome)).unwrap();
     poller.drain_wake_outcomes().await;
     assert_eq!(poller.retry_tracker[&origin].attempt_count, 1);
     assert_eq!(WARNINGS.0.load(Ordering::Relaxed), 1);
 
     std::fs::rename(&origin, &claim).unwrap();
-    tokio::time::timeout(
-        WAIT,
-        deliver_claimed_wake(&poller, app, &claim, &origin, &wake),
-    )
-    .await
-    .expect("next wake can run after bind refusal")
-    .expect("next wake delivered");
+    completes(deliver_claimed_wake(&poller, app, &claim, &origin, &wake))
+        .await
+        .expect("next wake delivered");
     assert!(!origin.exists() && !claim.exists());
     close_coordinator(&coordinator).await;
 }
@@ -339,7 +312,7 @@ async fn wake_owner_dropped_before_poll_stops_without_effects() {
         run_child_case("wake_owner_dropped_before_poll_stops_without_effects", "").await;
         return;
     }
-    let fixture = make_mailbox_fixture_in(tempfile::tempdir().unwrap());
+    let fixture = make_mailbox_fixture();
     let (coordinator, _, _, _) = prepare_retained_exited_respawn(&fixture).await;
     let app = fixture.app.handle();
     let msg = wake_message_to_target();
@@ -348,12 +321,8 @@ async fn wake_owner_dropped_before_poll_stops_without_effects() {
         capture_future: true,
         ..CapturedCore::default()
     });
-    let result = tokio::time::timeout(
-        WAIT,
-        WAKE_CORE_CAPTURE.scope(captured.clone(), poller.deliver_wake(app, &msg)),
-    )
-    .await
-    .expect("producer captured");
+    let wake = WAKE_CORE_CAPTURE.scope(captured.clone(), poller.deliver_wake(app, &msg));
+    let result = completes(wake).await;
     assert_eq!(
         result.unwrap_err(),
         "fixture captured wake core before poll"
@@ -370,13 +339,7 @@ async fn wake_owner_dropped_before_poll_stops_without_effects() {
     drop(other);
     assert_eq!(owner.fixture_wake_source_observation(), before);
 
-    let gate = app
-        .message_store()
-        .unwrap()
-        .target_gate
-        .as_ref()
-        .unwrap()
-        .clone();
+    let gate = app.message_store().unwrap().target_gate.as_ref().unwrap();
     assert!(gate.try_target_lock(&msg.to).unwrap().is_none());
     assert_wake_keeps_old_claim(app, &msg).await;
     assert_eq!(owner.fixture_wake_source_observation(), before);
@@ -395,8 +358,8 @@ async fn wake_owner_dropped_before_poll_stops_without_effects() {
     close_coordinator(&coordinator).await;
 }
 
-fn rollback_poller(ticket_only: bool) -> (MailboxPoller, Arc<ReplacementFixtureControl>) {
-    let control = Arc::new(ReplacementFixtureControl::default());
+fn rollback_poller(ticket_only: bool) -> (MailboxPoller, Arc<Control>) {
+    let control = Arc::new(Control::default());
     control.mock_backend.store(true, Ordering::Release);
     control.ticket_only.store(ticket_only, Ordering::Release);
     let hooks = MailboxTestHooks::default();
@@ -406,11 +369,19 @@ fn rollback_poller(ticket_only: bool) -> (MailboxPoller, Arc<ReplacementFixtureC
 
 async fn assert_wake_keeps_old_claim(app: &impl MailboxHost, wake: &OutboxMessage) {
     let poller = MailboxPoller::default();
-    let result = tokio::time::timeout(Duration::from_millis(250), poller.deliver_wake(app, wake));
-    assert!(
-        !matches!(result.await, Ok(Ok(_))),
-        "unsafe wake unexpectedly delivered"
-    );
+    let delivery = poller.deliver_wake(app, wake);
+    let result = tokio::time::timeout(Duration::from_millis(250), delivery).await;
+    assert!(!matches!(result, Ok(Ok(_))), "unsafe wake delivered");
+}
+
+fn add_action(control: &Control, action: Action) {
+    control.actions.lock().unwrap().push(action);
+}
+
+fn pause_at(control: &Control, cut: Cut) -> tokio::sync::oneshot::Sender<()> {
+    let (release, resume) = tokio::sync::oneshot::channel();
+    add_action(control, Action::Pause { cut, resume });
+    release
 }
 
 async fn at_cut<F: Future, C: Future>(actor: Pin<&mut F>, cut: C) -> C::Output {
@@ -423,7 +394,7 @@ async fn at_cut<F: Future, C: Future>(actor: Pin<&mut F>, cut: C) -> C::Output {
 
 async fn at_recorded_cut<F: Future>(
     actor: Pin<&mut F>,
-    control: &ReplacementFixtureControl,
+    control: &Control,
     cut: Cut,
 ) -> ReplacementFixtureReceipt {
     at_cut(actor, retained_source_wait_cut(control, cut)).await
@@ -435,12 +406,8 @@ async fn observe_wake(
     wake: &OutboxMessage,
 ) -> (Result<OutboxMessage, String>, OwnedReplacementContinuation) {
     let capture = Arc::new(CapturedCore::default());
-    let result = tokio::time::timeout(
-        WAIT,
-        WAKE_CORE_CAPTURE.scope(capture.clone(), poller.deliver_wake(app, wake)),
-    )
-    .await
-    .expect("wake returns");
+    let actor = WAKE_CORE_CAPTURE.scope(capture.clone(), poller.deliver_wake(app, wake));
+    let result = completes(actor).await;
     let owner = capture
         .owner
         .lock()
@@ -460,15 +427,25 @@ async fn assert_replacement_runs(
     owner
 }
 
-async fn preparing_owner(fixture: &MailboxFixture, target: &str) -> Option<Uuid> {
-    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-    let CreateCarrierScope::Protected {
-        preparing_owner, ..
-    } = classify_create_carrier_scope(&permit, target, &fixture.target_cwd)
-    else {
-        panic!("the old carrier must still be protected");
-    };
-    preparing_owner
+async fn assert_preparing(fixture: &MailboxFixture, target: &str, operation: Option<Uuid>) {
+    let permit = acquire_carrier_mutation_permit().await;
+    let scope = classify_create_carrier_scope(&permit, target, &fixture.target_cwd);
+    assert!(
+        matches!(scope, CreateCarrierScope::Protected { preparing_owner, .. }
+        if preparing_owner == operation),
+        "old carrier must retain the exact Preparing owner"
+    );
+}
+
+fn replace_cwd(cwd: &Path) -> PathBuf {
+    let old = cwd.with_extension("original");
+    std::fs::rename(cwd, &old).unwrap();
+    std::fs::create_dir(cwd).unwrap();
+    let config = old.join("config.json");
+    if config.is_file() {
+        std::fs::copy(config, cwd.join("config.json")).unwrap();
+    }
+    old
 }
 
 fn rollback_backend(app: &impl MailboxHost) -> Arc<dyn PtyBackend> {
@@ -478,44 +455,97 @@ fn rollback_backend(app: &impl MailboxHost) -> Arc<dyn PtyBackend> {
         .backend_for_kind(SessionBackendKind::LocalProcess)
 }
 
-fn mock_backend(backend: &Arc<dyn PtyBackend>) -> &super::support_core::MailboxMockPtyBackend {
+fn mock_backend(backend: &Arc<dyn PtyBackend>) -> &MailboxMockPtyBackend {
     backend.as_any().downcast_ref().unwrap()
 }
 
 #[tokio::test]
 async fn wake_owner_pending_source_refusal_requires_typed_receipt() {
     let test = "wake_owner_pending_source_refusal_requires_typed_receipt";
-    if std::env::var_os(CHILD).is_none() {
-        for scenario in ["typed", "generic", "guard-window"] {
-            run_child_case(test, scenario).await;
-        }
+    let changed_cases = ["producer-cwd", "setup-cwd", "setup-replica"];
+    let cases = [["typed", "generic", "guard-window"], changed_cases].concat();
+    let Some(scenario) = run_child_cases(test, &cases).await else {
         return;
-    }
-    let scenario = std::env::var(SCENARIO).unwrap();
+    };
     let generic = scenario == "generic";
-    let fixture = make_mailbox_fixture_in(tempfile::tempdir().unwrap());
-    let (coordinator, _, _, previous) = prepare_retained_exited_respawn(&fixture).await;
+    let setup_error = scenario.starts_with("setup-");
+    let changed = changed_cases.contains(&scenario.as_str());
+    let replace_replica = scenario == "setup-replica";
+    let mut fixture = make_mailbox_fixture();
+    let replica = fixture.target_cwd.clone();
     let app = fixture.app.handle();
+    if changed {
+        fixture.target_cwd = replica.join("nested");
+        std::fs::create_dir(&fixture.target_cwd).unwrap();
+    }
+    let (coordinator, _, _, previous) = prepare_retained_exited_respawn(&fixture).await;
+    if changed {
+        app.pty_settings().write().await.project_paths.clear();
+    }
     let manager = app.pty_sessions().read().await.clone();
     let pty = app.pty_routes();
     let backend = rollback_backend(app);
-    let kills = mock_backend(&backend).kill_attempts.load(Ordering::SeqCst);
+    let backend = mock_backend(&backend);
+    let kills = backend.kill_attempts.load(Ordering::SeqCst);
     let probe = OwnedReplacementContinuation::install_wake_rollback_fixture();
-    probe.refuse_pending_source.store(true, Ordering::Relaxed);
+    let transient = &probe.refuse_pending_source;
+    transient.store(!changed, Ordering::Relaxed);
     probe.generic_retained.store(generic, Ordering::Relaxed);
     // The original caller returns before any physical cleanup; the retry must do it.
     let (poller, control) = rollback_poller(true);
     let wake = wake_message_to_target();
     let first = observe_wake(app, &poller, &wake);
     tokio::pin!(first);
-    if scenario == "guard-window" {
+    let mut expected_token = None;
+    if changed {
+        let validation = Cut::BeforeSourceValidation;
+        let release = pause_at(&control, validation);
+        let cut = at_recorded_cut(first.as_mut(), &control, validation).await;
+        let binding = cut.binding.unwrap();
+        let pending = manager.get_pending_session(binding).await.unwrap();
+        assert_eq!(Path::new(&pending.working_directory), fixture.target_cwd);
+        expected_token = Some(pending.token);
+        if replace_replica {
+            let object = |path: &Path| {
+                crate::path_identity::verify_directory(path)
+                    .unwrap()
+                    .object_id
+            };
+            let cwd = &fixture.target_cwd;
+            let original = object(cwd);
+            let old = replace_cwd(&replica);
+            std::fs::rename(old.join("nested"), cwd).unwrap();
+            assert_eq!(object(cwd), original);
+            assert_ne!(object(&replica), object(&old));
+        } else {
+            replace_cwd(&fixture.target_cwd);
+        }
+        let handoff = probe.before_return.arm();
+        if setup_error {
+            drop(release);
+        } else {
+            release.send(()).unwrap();
+        }
+        at_cut(first.as_mut(), probe.before_return.entered.notified()).await;
+        let state = control.observe_owner(&coordinator).unwrap();
+        assert!(state.source_active && !state.rollback_completed && !state.cleanup_claimed);
+        let stop = (!setup_error).then_some(OwnedSourceStop::AuthorityChanged);
+        assert_eq!(state.source_stop, stop);
+        let kept = manager
+            .get_pending_session(binding)
+            .await
+            .map(|row| row.token);
+        assert_eq!(kept, expected_token, "exact B before source handoff");
+        assert_preparing(&fixture, &wake.to, Some(cut.operation)).await;
+        assert_eq!(coordinator.fixture_root_count(), Some(1));
+        handoff.send(()).unwrap();
+    } else if scenario == "guard-window" {
         let release = probe.before_return.arm();
         at_cut(first.as_mut(), probe.before_return.entered.notified()).await;
         let gate = app.message_store().unwrap().target_gate.as_ref().unwrap();
         assert!(gate.try_target_lock(&wake.to).unwrap().is_none());
         let mut exact = Box::pin(gate.acquire_exact(&wake.to));
-        let poll = std::future::poll_fn(|cx| std::task::Poll::Ready(exact.as_mut().poll(cx)));
-        assert!(poll.await.is_pending());
+        assert!(futures::poll!(exact.as_mut()).is_pending());
         drop(exact);
         let inserted = retained_source_wait_cut(&control, Cut::Inserted).await;
         MailboxPoller::default()
@@ -525,11 +555,9 @@ async fn wake_owner_pending_source_refusal_requires_typed_receipt() {
             *probe.probe_candidate.lock().unwrap(),
             Some(inserted.operation)
         );
-        let pending = manager.get_pending_session(inserted.binding.unwrap()).await;
-        assert!(
-            pending.is_some(),
-            "old pending row removed before both guards dropped"
-        );
+        let binding = inserted.binding.unwrap();
+        let pending = manager.get_pending_session(binding).await;
+        assert!(pending.is_some(), "pending B kept while both guards held");
         assert_eq!(probe.removed.load(Ordering::Relaxed), 0);
         assert_eq!(coordinator.fixture_root_count(), Some(1));
         probe.before_claim.store(1, Ordering::Relaxed);
@@ -538,30 +566,38 @@ async fn wake_owner_pending_source_refusal_requires_typed_receipt() {
         probe.before_claim.store(1, Ordering::Relaxed);
     }
     let (result, owner) = first.await;
-    assert!(result.unwrap_err().contains("create_retained"));
-    assert!(!probe.refuse_pending_source.load(Ordering::Relaxed));
+    let error = result.unwrap_err();
+    let reasons = ["create_retained", "fixture pending setup failure"];
+    assert!(error.contains(reasons[usize::from(setup_error)]));
+
+    assert!(!transient.load(Ordering::Relaxed));
     assert_eq!(probe.before_claim.load(Ordering::Relaxed), 0);
     let binding = owner.binding().unwrap();
-    assert!(manager.get_pending_session(binding).await.is_some());
+    let pending = manager.get_pending_session(binding).await;
+    let token = pending.expect("producer kept the exact pending row").token;
     assert!(manager.get_session(previous).await.is_some());
-    assert_eq!(
-        preparing_owner(&fixture, &wake.to).await,
-        Some(owner.operation())
-    );
+    assert_preparing(&fixture, &wake.to, Some(owner.operation())).await;
     let observation = owner.fixture_wake_rollback();
-    let token = manager.get_pending_session(binding).await.unwrap().token;
-    assert_eq!(observation.refused_token, (!generic).then_some(token));
+    let expected_refusal = (!generic && !setup_error).then_some(token);
+    assert_eq!(observation.refused_token, expected_refusal);
+    if changed {
+        assert_eq!(Some(token), expected_token);
+        assert_eq!(observation.cursor, None);
+        assert_eq!(backend.spawn_attempts(binding.session_id()), 0);
+        let receipts = control.receipts.lock().unwrap();
+        assert!(!receipts.iter().any(|r| r.cut == Cut::TicketSubmitted));
+        drop(receipts);
+        let source = control.observe_owner(&coordinator).unwrap();
+        assert_eq!(source.source_returned_failed, Some(setup_error));
+    }
     assert!(observation.recorded_error.is_none() && !observation.backend_submitted);
     assert!(!control.submitted.load(Ordering::Acquire));
     assert!(!pty.lock().unwrap().has_session(binding.session_id()));
 
-    if generic {
+    if generic || changed {
         assert_wake_keeps_old_claim(app, &wake).await;
         assert!(manager.get_pending_session(binding).await.is_some());
-        assert_eq!(
-            preparing_owner(&fixture, &wake.to).await,
-            Some(owner.operation())
-        );
+        assert_preparing(&fixture, &wake.to, Some(owner.operation())).await;
         assert_eq!(probe.removed.load(Ordering::Relaxed), 0);
         assert_eq!(coordinator.fixture_root_count(), Some(1));
     } else {
@@ -575,35 +611,32 @@ async fn wake_owner_pending_source_refusal_requires_typed_receipt() {
         assert!(!observation.backend_submitted && observation.finalized_binding.is_none());
         assert_eq!(coordinator.fixture_root_count(), Some(0));
     }
-    assert_eq!(
-        mock_backend(&backend).kill_attempts.load(Ordering::SeqCst),
-        kills
-    );
+    assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
     close_coordinator(&coordinator).await;
 }
 
 #[tokio::test]
 async fn wake_owner_same_claim_recovery() {
     let test = "wake_owner_same_claim_recovery";
-    if std::env::var_os(CHILD).is_none() {
-        for scenario in [
-            "before-close",
-            "after-removal",
-            "ambiguous-close",
-            "unrecorded-error",
-            "changed-generation",
-            "changed-row",
-            "changed-binding",
-            "changed-preparing",
-            "changed-cwd",
-            "tracker-failed",
-        ] {
-            run_child_case(test, scenario).await;
-        }
+    let cases = [
+        ("before-close", Some("claimed"), 0, 0),
+        ("after-removal", Some("row-absent"), 1, 1),
+        ("ambiguous-close", Some("close-submitted"), 0, 1),
+        ("unrecorded-error", None, 0, 0),
+        ("changed-generation", Some("claimed"), 0, 0),
+        ("changed-row", Some("claimed"), 0, 0),
+        ("changed-binding", Some("claimed"), 0, 0),
+        ("changed-preparing", Some("row-absent"), 1, 1),
+        ("changed-cwd", Some("claimed"), 0, 0),
+        ("tracker-failed", Some("runtime-absent"), 0, 1),
+    ];
+    let names = cases.map(|(name, ..)| name);
+    let Some(scenario) = run_child_cases(test, &names).await else {
         return;
-    }
-    let scenario = std::env::var(SCENARIO).unwrap();
-    let fixture = make_mailbox_fixture_in(tempfile::tempdir().unwrap());
+    };
+    let index = names.iter().position(|&name| name == scenario).unwrap();
+    let (_, cursor, removed, killed) = cases[index];
+    let fixture = make_mailbox_fixture();
     let (coordinator, _, _, previous) = prepare_retained_exited_respawn(&fixture).await;
     let app = fixture.app.handle();
     let manager = app.pty_sessions().read().await.clone();
@@ -612,15 +645,13 @@ async fn wake_owner_same_claim_recovery() {
     let backend = mock_backend(&backend);
     let kills = backend.kill_attempts.load(Ordering::SeqCst);
     let probe = OwnedReplacementContinuation::install_wake_rollback_fixture();
-    match scenario.as_str() {
-        "before-close" | "changed-generation" | "changed-row" | "changed-binding"
-        | "changed-cwd" => probe.before_close.store(8, Ordering::Relaxed),
-        "after-removal" | "changed-preparing" => probe.before_release.store(8, Ordering::Relaxed),
-        "ambiguous-close" => backend.fail_kill_once.store(true, Ordering::SeqCst),
-        "tracker-failed" => probe
-            .fail_tracker_before_removal
-            .store(true, Ordering::Relaxed),
-        "unrecorded-error" => {
+    let fail_tracker = &probe.fail_tracker_before_removal;
+    match cursor {
+        Some("claimed") => probe.before_close.store(8, Ordering::Relaxed),
+        Some("row-absent") => probe.before_release.store(8, Ordering::Relaxed),
+        Some("close-submitted") => backend.fail_kill_once.store(true, Ordering::SeqCst),
+        Some("runtime-absent") => fail_tracker.store(true, Ordering::Relaxed),
+        None => {
             probe.refuse_precreate_source.store(true, Ordering::Relaxed);
             probe.before_claim.store(2, Ordering::Relaxed);
         }
@@ -628,11 +659,7 @@ async fn wake_owner_same_claim_recovery() {
     }
     let (poller, control) = rollback_poller(false);
     if scenario != "unrecorded-error" {
-        control
-            .actions
-            .lock()
-            .unwrap()
-            .push(Action::SimulatedPrecommitFailure);
+        add_action(&control, Action::SimulatedPrecommitFailure);
     }
     let wake = wake_message_to_target();
     let (result, owner) = observe_wake(app, &poller, &wake).await;
@@ -645,15 +672,6 @@ async fn wake_owner_same_claim_recovery() {
     }
     let before = owner.fixture_wake_rollback();
     let binding = owner.binding().unwrap();
-    let (cursor, removed, killed) = match scenario.as_str() {
-        "before-close" | "changed-generation" | "changed-row" | "changed-binding"
-        | "changed-cwd" => (Some("claimed"), 0, 0),
-        "after-removal" | "changed-preparing" => (Some("row-absent"), 1, 1),
-        "tracker-failed" => (Some("runtime-absent"), 0, 1),
-        "ambiguous-close" => (Some("close-submitted"), 0, 1),
-        "unrecorded-error" => (None, 0, 0),
-        _ => unreachable!(),
-    };
     assert_eq!(before.cursor, cursor);
     assert_eq!(before.recorded_error.is_some(), cursor.is_some());
     assert_eq!(
@@ -662,13 +680,14 @@ async fn wake_owner_same_claim_recovery() {
     );
     assert_eq!(probe.removed.load(Ordering::Relaxed), removed);
     assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills + killed);
-    assert_eq!(
-        preparing_owner(&fixture, &wake.to).await,
-        Some(owner.operation())
-    );
-    probe.before_close.store(0, Ordering::Relaxed);
-    probe.before_release.store(0, Ordering::Relaxed);
-    probe.before_claim.store(0, Ordering::Relaxed);
+    assert_preparing(&fixture, &wake.to, Some(owner.operation())).await;
+    for counter in [
+        &probe.before_close,
+        &probe.before_release,
+        &probe.before_claim,
+    ] {
+        counter.store(0, Ordering::Relaxed);
+    }
 
     match scenario.as_str() {
         "changed-row" => manager.fixture_change_rollback_row(binding, false).await,
@@ -684,27 +703,20 @@ async fn wake_owner_same_claim_recovery() {
             assert_ne!(pty.route_identities(id).unwrap().2, generation);
         }
         "changed-cwd" => {
-            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            let permit = acquire_carrier_mutation_permit().await;
             let challenger = MailboxPoller::default();
             let hold_probe = probe.after_probe.arm();
             let second = challenger.fixture_probe_owned_wake(app, &wake, previous);
             tokio::pin!(second);
             at_cut(second.as_mut(), probe.before_probe_permit.notified()).await;
-            let old = fixture.target_cwd.with_extension("original");
-            std::fs::rename(&fixture.target_cwd, &old).unwrap();
-            std::fs::create_dir(&fixture.target_cwd).unwrap();
-            std::fs::copy(
-                old.join("config.json"),
-                fixture.target_cwd.join("config.json"),
-            )
-            .unwrap();
+            replace_cwd(&fixture.target_cwd);
             drop(permit);
             at_cut(second.as_mut(), probe.after_probe.entered.notified()).await;
             assert!(manager.get_pending_session(binding).await.is_some());
             assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
             drop(hold_probe);
         }
-        "tracker-failed" => assert!(!probe.fail_tracker_before_removal.load(Ordering::Relaxed)),
+        "tracker-failed" => assert!(!fail_tracker.load(Ordering::Relaxed)),
         _ => (),
     }
     if matches!(scenario.as_str(), "before-close" | "after-removal") {
@@ -735,17 +747,13 @@ async fn wake_owner_sealed_rollback_allows_new_preparing() {
         run_child_case(test, "").await;
         return;
     }
-    let fixture = make_mailbox_fixture_in(tempfile::tempdir().unwrap());
+    let fixture = make_mailbox_fixture();
     let (coordinator, _, _, _) = prepare_retained_exited_respawn(&fixture).await;
     let app = fixture.app.handle();
     let wake = wake_message_to_target();
     let probe = OwnedReplacementContinuation::install_wake_rollback_fixture();
     let (old_poller, old_control) = rollback_poller(false);
-    old_control
-        .actions
-        .lock()
-        .unwrap()
-        .push(Action::SimulatedPrecommitFailure);
+    add_action(&old_control, Action::SimulatedPrecommitFailure);
     let release_guard = probe.before_return.arm();
     let release_old = probe.before_terminal.arm();
     let old_wake = observe_wake(app, &old_poller, &wake);
@@ -757,11 +765,7 @@ async fn wake_owner_sealed_rollback_allows_new_preparing() {
 
     let (new_poller, new_control) = rollback_poller(false);
     let release_probe = probe.after_probe.arm();
-    let (release_new, new_gate) = tokio::sync::oneshot::channel();
-    new_control.actions.lock().unwrap().push(Action::Pause {
-        cut: Cut::SourceCoreEntered,
-        resume: new_gate,
-    });
+    let release_new = pause_at(&new_control, Cut::SourceCoreEntered);
     let capture = Arc::new(CapturedCore::default());
     let mut competitor = wake.clone();
     competitor.id = format!("sealed-competitor-{}", Uuid::new_v4());
@@ -771,7 +775,7 @@ async fn wake_owner_sealed_rollback_allows_new_preparing() {
     at_cut(new_wake.as_mut(), probe.after_probe.entered.notified()).await;
     release_guard.send(()).unwrap();
     at_cut(old_wake.as_mut(), probe.before_terminal.entered.notified()).await;
-    assert_eq!(preparing_owner(&fixture, &wake.to).await, None);
+    assert_preparing(&fixture, &wake.to, None).await;
     assert_eq!(coordinator.fixture_root_count(), Some(1));
     assert!(!old_control.observe_owner(&coordinator).unwrap().terminal);
 
@@ -782,25 +786,19 @@ async fn wake_owner_sealed_rollback_allows_new_preparing() {
     assert_eq!(coordinator.fixture_root_count(), Some(2));
     let old_state = old_control.observe_owner(&coordinator).unwrap();
     assert!(old_state.rollback_completed && !old_state.terminal && !old_state.transferred);
-    assert_eq!(
-        preparing_owner(&fixture, &wake.to).await,
-        Some(new.operation)
-    );
+    assert_preparing(&fixture, &wake.to, Some(new.operation)).await;
     release_old.send(()).unwrap();
     let (old_result, old_owner) = old_wake.await;
     assert!(old_result.is_err());
     assert!(old_owner.fixture_wake_rollback().terminal);
     assert_eq!(coordinator.fixture_root_count(), Some(1));
     assert!(old_control.observe_owner(&coordinator).is_none());
-    assert_eq!(
-        preparing_owner(&fixture, &wake.to).await,
-        Some(new.operation)
-    );
+    assert_preparing(&fixture, &wake.to, Some(new.operation)).await;
     let new_owner = capture.owner.lock().unwrap().take().unwrap();
     assert_eq!(new_owner.binding(), new.binding);
     assert!(new_owner.fixture_wake_rollback().holds_create_and_work);
     release_new.send(()).unwrap();
-    tokio::time::timeout(WAIT, new_wake).await.unwrap().unwrap();
+    completes(new_wake).await.unwrap();
     assert_eq!(coordinator.fixture_root_count(), Some(0));
     close_coordinator(&coordinator).await;
 }
@@ -808,17 +806,14 @@ async fn wake_owner_sealed_rollback_allows_new_preparing() {
 #[tokio::test]
 async fn wake_owner_queued_and_committed_controls() {
     let test = "wake_owner_queued_and_committed_controls";
-    if std::env::var_os(CHILD).is_none() {
-        for scenario in [
-            "queued-drain",
-            "panic-commit-before-disarm",
-            "recv-after-release",
-        ] {
-            run_child_case(test, scenario).await;
-        }
+    let cases = [
+        "queued-drain",
+        "panic-commit-before-disarm",
+        "recv-after-release",
+    ];
+    let Some(scenario) = run_child_cases(test, &cases).await else {
         return;
-    }
-    let scenario = std::env::var(SCENARIO).unwrap();
+    };
     run_retained_source_child_scenario(false, true, &scenario).await;
 }
 
@@ -829,11 +824,8 @@ async fn wake_owner_does_not_settle_pty_handoff() {
         run_child_case(test, "").await;
         return;
     }
-    let fixture = make_mailbox_fixture_in(tempfile::tempdir().unwrap());
+    let fixture = make_mailbox_fixture();
     let (coordinator, route, sender, previous) = prepare_retained_exited_respawn(&fixture).await;
-    use crate::phone::types::PtyInputSourcePlane;
-    use crate::session::manager::acquire_carrier_mutation_permit;
-    use crate::session::selection::ReplacementAdmissionStep;
     let app = fixture.app.handle();
     let store = app.message_store().unwrap().store.as_ref().unwrap();
     let injection = enqueue_shared_pty_engine_operation(store, &route, sender, b"rollback handoff");
@@ -841,15 +833,10 @@ async fn wake_owner_does_not_settle_pty_handoff() {
         .query_pty_input_by_injection(&injection)
         .unwrap()
         .unwrap();
-    let claimed = store
-        .claim_pty_input(
-            PtyInputSourcePlane::HostCli,
-            Some(&injection),
-            &Uuid::new_v4().to_string(),
-            chrono::Utc::now(),
-        )
-        .unwrap()
-        .unwrap();
+    let plane = PtyInputSourcePlane::HostCli;
+    let nonce = Uuid::new_v4().to_string();
+    let claimed = store.claim_pty_input(plane, Some(&injection), &nonce, chrono::Utc::now());
+    let claimed = claimed.unwrap().unwrap();
     let wake = wake_message_to_target();
     let challenger = MailboxPoller::default();
     let request = challenger.fixture_wake_request(app, &wake).await;
@@ -882,10 +869,8 @@ async fn wake_owner_does_not_settle_pty_handoff() {
     // Stop the PTY source after real rollback and before its durable transfer.
     let mut source = SourceExecutorGuard::unbound();
     assert!(source.bind(&owner));
-    let rolled_back = owner
-        .rollback_failed_create(&manager, pty, "setup failed")
-        .await;
-    assert!(rolled_back);
+    let rollback = owner.rollback_failed_create(&manager, pty, "setup failed");
+    assert!(rollback.await);
     drop(source);
     assert!(owner.fixture_wake_source_observation().stopped);
     assert!(owner.precommit_rollback_completed());
@@ -901,14 +886,11 @@ async fn wake_owner_does_not_settle_pty_handoff() {
 #[tokio::test]
 async fn wake_owner_competing_admission_preserves_nonrollbackable_owner() {
     let test = "wake_owner_competing_admission_preserves_nonrollbackable_owner";
-    if std::env::var_os(CHILD).is_none() {
-        for scenario in ["queued", "partial-commit", "reply-lost"] {
-            run_child_case(test, scenario).await;
-        }
+    let cases = ["queued", "partial-commit", "reply-lost"];
+    let Some(scenario) = run_child_cases(test, &cases).await else {
         return;
-    }
-    let scenario = std::env::var(SCENARIO).unwrap();
-    let fixture = make_mailbox_fixture_in(tempfile::tempdir().unwrap());
+    };
+    let fixture = make_mailbox_fixture();
     let member =
         (scenario == "queued").then(|| provision_retained_fixture_member(&fixture, "blocker"));
     let (coordinator, _, sender, previous) = prepare_retained_exited_respawn(&fixture).await;
@@ -929,23 +911,19 @@ async fn wake_owner_competing_admission_preserves_nonrollbackable_owner() {
     }
 
     let (poller, control) = rollback_poller(scenario == "queued");
-    let (release_reply, resume) = tokio::sync::oneshot::channel();
-    let (drop_reply, reply_signal) = tokio::sync::oneshot::channel();
+    let mut reply = None;
     let cut = match scenario.as_str() {
         "queued" => Cut::TicketSubmitted,
         "partial-commit" => {
-            let action = Action::CommitBeforeDisarmPanicOnce;
-            control.actions.lock().unwrap().push(action);
+            add_action(&control, Action::CommitBeforeDisarmPanicOnce);
             Cut::WorkerUnwound
         }
         "reply-lost" => {
-            *control.live_receiver_drop.lock().unwrap() = Some(reply_signal);
-            let action = Action::Pause {
-                cut: Cut::AfterReleaseBeforeSend,
-                resume,
-            };
-            control.actions.lock().unwrap().push(action);
-            Cut::AfterReleaseBeforeSend
+            let cut = Cut::AfterReleaseBeforeSend;
+            let (drop_reply, signal) = tokio::sync::oneshot::channel();
+            *control.live_receiver_drop.lock().unwrap() = Some(signal);
+            reply = Some((drop_reply, pause_at(&control, cut)));
+            cut
         }
         _ => unreachable!(),
     };
@@ -954,12 +932,33 @@ async fn wake_owner_competing_admission_preserves_nonrollbackable_owner() {
     tokio::pin!(first);
     let receipt = at_recorded_cut(first.as_mut(), &control, cut).await;
     let binding = receipt.binding.unwrap();
-    if cut == Cut::AfterReleaseBeforeSend {
+    if let Some((drop_reply, release_reply)) = reply {
         drop_reply.send(()).unwrap();
         at_recorded_cut(first.as_mut(), &control, Cut::ReceiverLost).await;
+        release_reply.send(()).unwrap();
+        assert!(first.await.unwrap_err().contains("fixture_retained"));
+        completes(coordinator.snapshot()).await.unwrap();
+        let receipts = control.receipts.lock().unwrap();
+        let exact = receipts
+            .iter()
+            .filter(|r| r.operation == receipt.operation && r.binding == receipt.binding);
+        let losses = exact.clone().filter(|r| r.cut == Cut::ReceiverLost);
+        assert_eq!(losses.count(), 2, "receiver loss and worker send failure");
+        assert!(exact.clone().any(|r| r.cut == Cut::AdmissionReleased
+            && r.outcome == Some(ReplacementFixtureOutcome::Finalized)));
+        assert!(!exact.clone().any(|r| r.cut == Cut::SourceReceived));
+        drop(receipts);
+        assert_eq!(
+            control.observe_retained(&coordinator),
+            Some((true, true, false, false, 0))
+        );
+        let owner = control.observe_owner(&coordinator).unwrap();
+        assert_eq!(owner.source_returned_failed, Some(false));
     }
     let backend = rollback_backend(app);
     let backend = mock_backend(&backend);
+    let id = binding.session_id();
+    assert_eq!(backend.spawn_attempts(id), 1, "one B launch before probe");
     let kills = backend.kill_attempts.load(Ordering::SeqCst);
     let live = backend.live.lock().unwrap().clone();
     assert!(live.contains(&binding.session_id()));
@@ -968,6 +967,11 @@ async fn wake_owner_competing_admission_preserves_nonrollbackable_owner() {
         manager.get_pending_session(binding).await.is_some(),
         scenario == "queued"
     );
+    if cut == Cut::AfterReleaseBeforeSend {
+        assert!(manager.get_session(id).await.is_some());
+        let pty = app.pty_routes().lock().unwrap();
+        assert!(pty.route_identities(id).is_some());
+    }
     let roots = coordinator.fixture_root_count();
     let probe = OwnedReplacementContinuation::install_wake_rollback_fixture();
     let mut competing_wake = wake.clone();
@@ -977,24 +981,19 @@ async fn wake_owner_competing_admission_preserves_nonrollbackable_owner() {
         .await;
     let retained = control.observe_owner(&coordinator).unwrap();
     assert!(!retained.rollback_completed && !retained.terminal);
-    assert_eq!(
-        *probe.probe_candidate.lock().unwrap(),
-        Some(receipt.operation),
-        "the competing admission reached the rollback probe for the same A"
-    );
+    let candidate = *probe.probe_candidate.lock().unwrap();
+    assert_eq!(candidate, Some(receipt.operation), "probe reached same A");
     assert_eq!(coordinator.fixture_root_count(), roots);
     assert_eq!(probe.removed.load(Ordering::Relaxed), 0);
     assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
     assert_eq!(*backend.live.lock().unwrap(), live);
+    assert_eq!(backend.spawn_attempts(id), 1, "one B launch after probe");
     coordinator.shutdown_token().cancel();
     let _ = release_blocker.send(());
-    let _ = release_reply.send(());
     close_coordinator(&coordinator).await;
 }
 
 async fn close_coordinator(coordinator: &SelectionCoordinator) {
     coordinator.shutdown_token().cancel();
-    tokio::time::timeout(WAIT, coordinator.close_and_join())
-        .await
-        .unwrap();
+    completes(coordinator.close_and_join()).await;
 }

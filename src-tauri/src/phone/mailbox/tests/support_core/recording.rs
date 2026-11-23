@@ -15,6 +15,7 @@ use uuid::Uuid;
 #[derive(Default)]
 pub(crate) struct MailboxMockPtyBackend {
     pub(crate) live: std::sync::Mutex<HashSet<Uuid>>,
+    spawn_attempts: Mutex<HashMap<Uuid, usize>>,
     pub(crate) writes: std::sync::Mutex<Vec<(Uuid, Vec<u8>)>>,
     pub(crate) fail_spawn: std::sync::atomic::AtomicBool,
     pub(crate) fail_kill_once: std::sync::atomic::AtomicBool,
@@ -28,6 +29,26 @@ pub(crate) struct MailboxMockPtyBackend {
 }
 
 impl MailboxMockPtyBackend {
+    pub(crate) fn spawn_attempts(&self, id: Uuid) -> usize {
+        self.spawn_attempts
+            .lock()
+            .unwrap()
+            .get(&id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn attempt_spawn(&self, id: Uuid, failed: bool) -> Result<(), crate::errors::AppError> {
+        *self.spawn_attempts.lock().unwrap().entry(id).or_default() += 1;
+        if failed {
+            return Err(crate::errors::AppError::PtyError(
+                "synthetic spawn failure".into(),
+            ));
+        }
+        self.set_live(id);
+        Ok(())
+    }
+
     pub(crate) fn set_live(&self, id: Uuid) {
         self.live.lock().unwrap().insert(id);
     }
@@ -54,17 +75,8 @@ impl PtyBackend for MailboxMockPtyBackend {
     ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
         // #1163 M2 - test-only failure switch so a session-request poll can
         // exercise the rejected-result path end to end.
-        if self.fail_spawn.load(Ordering::SeqCst) {
-            return Box::pin(async move {
-                Err(crate::errors::AppError::PtyError(
-                    "synthetic spawn failure".to_string(),
-                ))
-            });
-        }
-        Box::pin(async move {
-            self.live.lock().unwrap().insert(spec.id);
-            Ok(())
-        })
+        let failed = self.fail_spawn.load(Ordering::SeqCst);
+        Box::pin(async move { self.attempt_spawn(spec.id, failed) })
     }
 
     fn write(

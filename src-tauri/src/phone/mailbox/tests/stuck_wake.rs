@@ -1,11 +1,15 @@
 //! #3263 - an owned-replacement wake that cannot write input ends with a
 //! counted error instead of holding its worker forever.
-use super::support_core::make_mailbox_fixture_in;
+use super::support_core::{make_mailbox_fixture_in, MailboxMockPtyBackend};
 use super::*;
+use crate::config::sessions_persistence::{classify_create_carrier_scope, CreateCarrierScope};
 use crate::phone::mailbox::handoff::is_permanent_delivery_error;
+use crate::phone::mailbox::pty_observation::PtyAuthorityState;
+use crate::pty::backend::SessionBackendKind;
+use crate::session::manager::acquire_carrier_mutation_permit;
 use crate::session::selection::{
-    ReplacementFixtureAction, ReplacementFixtureControl, ReplacementFixtureCut as Cut,
-    SelectionCoordinator,
+    OwnedReplacementContinuation, ReplacementFixtureAction, ReplacementFixtureControl,
+    ReplacementFixtureCut as Cut, SelectionCoordinator,
 };
 
 const CHILD: &str = "AC_3263_STUCK_WAKE_CHILD";
@@ -163,10 +167,10 @@ async fn issue_3263_owned_retained_wake_ends_with_counted_error() {
 }
 
 #[tokio::test]
-async fn issue_3263_pre_publish_retained_then_second_wake_admitted() {
+async fn issue_3263_pre_publish_refuses_replaced_cwd() {
     const NAME: &str = concat!(
         "phone::mailbox::tests::stuck_wake::",
-        "issue_3263_pre_publish_retained_then_second_wake_admitted"
+        "issue_3263_pre_publish_refuses_replaced_cwd"
     );
     if std::env::var_os(CHILD).is_none() {
         run_child(NAME).await;
@@ -176,32 +180,92 @@ async fn issue_3263_pre_publish_retained_then_second_wake_admitted() {
     let child = child_fixture(Some(gate)).await;
     let app = child.fixture.app.handle();
     let msg = wake_message_to_target();
-    let cwd = child.fixture.target_cwd.clone();
-    let mut away = cwd.clone().into_os_string();
-    away.push(".away");
-    let away = PathBuf::from(away);
-    let (first, renamed) = tokio::join!(
+    let backend = app
+        .pty_routes()
+        .lock()
+        .unwrap()
+        .backend_for_kind(SessionBackendKind::LocalProcess);
+    let backend = backend
+        .as_any()
+        .downcast_ref::<MailboxMockPtyBackend>()
+        .unwrap();
+    let kills = backend.kill_attempts.load(Ordering::SeqCst);
+    let cwd = &child.fixture.target_cwd;
+    let away = cwd.with_extension("original");
+    let (first, entered) = tokio::join!(
         tokio::time::timeout(WAIT, child.poller.deliver_wake(app, &msg)),
         async {
-            tokio::time::timeout(
+            let entered = tokio::time::timeout(
                 WAIT,
                 retained_source_wait_cut(&child.control, Cut::SourceCoreEntered),
             )
             .await
             .expect("wake 1 reaches SourceCoreEntered");
-            let renamed = std::fs::rename(&cwd, &away);
-            let renamed = renamed.and_then(|()| std::fs::create_dir(&cwd));
+            std::fs::rename(cwd, &away).unwrap();
+            std::fs::create_dir(cwd).unwrap();
             resume.send(()).unwrap();
-            renamed
+            entered
         }
     );
-    renamed.expect("rename the target cwd away");
+    let scope = {
+        let permit = acquire_carrier_mutation_permit().await;
+        classify_create_carrier_scope(&permit, &msg.to, cwd)
+    };
+    std::fs::remove_dir(cwd).unwrap();
+    std::fs::rename(&away, cwd).unwrap();
+
     let error = first.expect("wake 1 ends within 15 s").unwrap_err();
+    assert_counted_source_error(&error);
+    assert!(error.contains("rollback=refused"), "{error}");
+    assert!(matches!(
+        scope, CreateCarrierScope::Protected { preparing_owner: Some(owner), .. }
+        if owner == entered.operation
+    ));
+    assert_eq!(child.coordinator.fixture_root_count(), Some(1));
+    let owner = child.control.observe_owner(&child.coordinator).unwrap();
+    assert!(!owner.cleanup_claimed && !owner.rollback_completed && !owner.terminal);
+    let binding = entered.binding.expect("reserved B binding");
+    let manager = app.pty_sessions().read().await.clone();
+    assert!(manager.get_pending_session(binding).await.is_none());
+    assert_eq!(backend.spawn_attempts(binding.session_id()), 0);
+    assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
+    assert!(!child.control.submitted.load(Ordering::Acquire));
+    close_child(&child.coordinator).await;
+}
+
+fn assert_counted_source_error(error: &str) {
     assert!(error.starts_with("wake retained without input"), "{error}");
     assert!(error.contains("stage=source_invalid"), "{error}");
+    assert!(!is_permanent_delivery_error(error), "{error}");
+}
+
+#[tokio::test]
+async fn issue_3263_pre_publish_retained_then_second_wake_admitted() {
+    const NAME: &str = concat!(
+        "phone::mailbox::tests::stuck_wake::",
+        "issue_3263_pre_publish_retained_then_second_wake_admitted"
+    );
+    if std::env::var_os(CHILD).is_none() {
+        run_child(NAME).await;
+        return;
+    }
+    let child = child_fixture(None).await;
+    let app = child.fixture.app.handle();
+    let msg = wake_message_to_target();
+    let probe = OwnedReplacementContinuation::install_wake_rollback_fixture();
+    probe.refuse_precreate_source.store(true, Ordering::Relaxed);
+    let first = tokio::time::timeout(WAIT, child.poller.deliver_wake(app, &msg)).await;
+    let error = first.expect("wake 1 ends within 15 s").unwrap_err();
+    assert_counted_source_error(&error);
     assert!(error.contains("rollback=done"), "{error}");
-    std::fs::remove_dir(&cwd).unwrap();
-    std::fs::rename(&away, &cwd).unwrap();
+    assert!(!probe.refuse_precreate_source.load(Ordering::Relaxed));
+    assert_eq!(child.coordinator.fixture_root_count(), Some(0));
+    let first = tokio::time::timeout(
+        WAIT,
+        retained_source_wait_cut(&child.control, Cut::SourceCoreEntered),
+    )
+    .await
+    .expect("wake 1 reached SourceCoreEntered");
 
     let (hold, gate) = tokio::sync::oneshot::channel::<()>();
     let fresh = fixture_control(Some(gate));
@@ -211,17 +275,15 @@ async fn issue_3263_pre_publish_retained_then_second_wake_admitted() {
     let reached = tokio::time::timeout(WAIT, async {
         tokio::select! {
             biased;
-            _ = retained_source_wait_cut(&fresh, Cut::SourceCoreEntered) => (),
+            receipt = retained_source_wait_cut(&fresh, Cut::SourceCoreEntered) => receipt,
             result = child.poller.deliver_wake(app, &second) => {
                 panic!("wake 2 ended before admission: {:?}", result.err())
             }
         }
     })
     .await;
-    assert!(
-        reached.is_ok(),
-        "wake 2 must pass admission (released owner)"
-    );
+    let admitted = reached.expect("wake 2 must pass admission (released owner)");
+    assert_ne!(admitted.operation, first.operation);
     drop(hold);
     close_child(&child.coordinator).await;
 }

@@ -698,7 +698,7 @@ impl OwnedReplacementContinuation {
                 let row = identity.pending_row(manager).await;
                 if !manager
                     .with_current_carrier_snapshot(&permit, |current| {
-                        paths_current.is_none_or(|check| check())
+                        self.rollback_paths_are_current(paths_current)
                             && identity.preparing_matches(
                                 &permit,
                                 current,
@@ -746,7 +746,7 @@ impl OwnedReplacementContinuation {
         }
         manager
             .with_current_carrier_snapshot(&permit, |current| {
-                paths_current.is_none_or(|check| check())
+                self.rollback_paths_are_current(paths_current)
                     && self.release_rollback_preparing(pty, &identity, &resume, &permit, current)
             })
             .await
@@ -767,7 +767,7 @@ impl OwnedReplacementContinuation {
             || identity.pending_row(manager).await != row
             || !manager
                 .with_current_carrier_snapshot(&permit, |current| {
-                    paths_current.is_none_or(|check| check())
+                    self.rollback_paths_are_current(paths_current)
                         && identity.preparing_matches(&permit, current, self.owner.operation, row)
                 })
                 .await
@@ -808,7 +808,7 @@ impl OwnedReplacementContinuation {
         let (permit, paths_current) = authority;
         let preparing = manager
             .with_current_carrier_snapshot(permit, |current| {
-                paths_current.is_none_or(|check| check())
+                self.rollback_paths_are_current(paths_current)
                     && identity.preparing_matches(permit, current, self.owner.operation, row)
                     && (row != RollbackRow::InitialNoRow
                         || self.record_initial_no_rollback_row(pty, identity, resume))
@@ -819,7 +819,7 @@ impl OwnedReplacementContinuation {
         }
         manager
             .rollback_exact_pending_with_receipt(permit, identity.binding, |pending, remove| {
-                paths_current.is_none_or(|check| check())
+                self.rollback_paths_are_current(paths_current)
                     && row == Self::exact_rollback_row(pending)
                     && self.record_removed_rollback_row(pty, identity, resume, remove)
             })
