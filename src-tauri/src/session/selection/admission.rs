@@ -64,7 +64,7 @@ pub(super) struct CriticalAdmissionReservation {
 
 pub use crate::pty::container_lifecycle::CriticalAdmissionOutcome;
 
-/// #1151 - `watchdog_resource_kill` must distinguish two conditions that the shared
+/// `watchdog_resource_kill` must distinguish two conditions that the shared
 /// `CriticalAdmissionOutcome::AlreadyPending` conflates: a genuinely in-flight critical
 /// admission for the same UUID, and a session that is no longer public or pending. Only
 /// the second may fall back to a registry-only quarantine retry.

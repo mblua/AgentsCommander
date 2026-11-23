@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #1871 section 10.2 - the catalogue, black-box, driven by synthetic
+// The catalogue, black-box, driven by synthetic
 // SessionRowMenuCaps records. EXPECTED below is written out as literals and is
 // never imported from the component: a test that mapped over the component's
 // own catalogue constant would pass for any order, any label and any icon.

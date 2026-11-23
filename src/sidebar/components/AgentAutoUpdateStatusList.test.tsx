@@ -19,7 +19,7 @@ const [, setAgentUpdateStore] = agentUpdateStore;
 const checking: InstallState = { status: "checking", seq: 0 };
 
 /**
- * #1691 - the canonical result shape. This table's live column reads the agent-update store,
+ * The canonical result shape. This table's live column reads the agent-update store,
  * so its fixtures must carry the required `outcome`/probe/`change` keys like any other result.
  */
 function okResult(command: string, label: string): AgentUpdateResult {

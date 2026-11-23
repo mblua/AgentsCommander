@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RemoteActivityUpdate } from "../../shared/types";
 import { remoteActivityByPath, remoteActivityStore } from "./remote-activity";
 
-// #2064 — the repo-keyed remote-activity map, fed by `ac_remote_activity_updated`.
+// The repo-keyed remote-activity map, fed by `ac_remote_activity_updated`.
 // Phase A emits the COMPLETE live set every round and garbage-collects departed
 // paths, which is what makes the whole-map replacement below correct rather than
 // lossy. These tests drive the store directly; the wiring is pinned in

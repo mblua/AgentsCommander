@@ -16,7 +16,7 @@ import { ROW_KEY_PROXY_CLASS } from "./RowKeyProxy";
 import { automationIdPart } from "./replica-repo-badges";
 import { loopSummaryFixture as loop } from "./loop-summary-fixture";
 
-// #2658 - Agents/Teams/team headers, the loop row and the offline Agent Matrix row
+// Agents/Teams/team headers, the loop row and the offline Agent Matrix row
 // run their click action by keyboard through their row key proxy.
 const root = "C:\\Project";
 const agent = "AgentsCommander_ac/__agent_dev-webpage-ui";

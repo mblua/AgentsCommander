@@ -16,7 +16,7 @@ import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import type { AcAgentReplica, AgentConfig } from "../../shared/types";
 
-// #733 — a shut-down replica (gray, no live session) must still advertise its
+// A shut-down replica (gray, no live session) must still advertise its
 // last Coding Agent + Profile. The row's three badge helpers now fall back to the
 // persisted replica config (currentCodingAgentId/currentProfile, filled at
 // discovery from disk) when session() is undefined, mirroring repoBadges(). Per

@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use super::args::{require_json, require_str};
 use super::WsState;
 
-/// #1551 - agent-update surface parity. These arms read gate/catalog state or answer the
+/// Agent-update surface parity. These arms read gate/catalog state or answer the
 /// startup prompt; none touches sessions or the selection coordinator, and the prompt
 /// phase runs WHILE restore is parked on the gate (`lib.rs`), so they must stay
 /// reachable while `RestoreInProgress` is set: otherwise a browser client can never answer
@@ -62,7 +62,7 @@ pub(super) async fn dispatch_agent_update_command(
             },
         ),
         "get_coding_agent_catalog" => {
-            // #1967 P4 - the shared inner returns the persisted catalog or the
+            // The shared inner returns the persisted catalog or the
             // typed unavailability. Propagate that error as a transport error
             // (never serialize a Rust `Result` as the JSON payload).
             Some(
@@ -74,7 +74,7 @@ pub(super) async fn dispatch_agent_update_command(
             )
         }
         "get_coding_agent_welcome_status" => Some(
-            // #2736 - argument-free read: `args` is ignored, like the catalog arm.
+            // Argument-free read: `args` is ignored, like the catalog arm.
             match crate::commands::config::coding_agent_welcome_status_inner(&state.settings).await
             {
                 Ok(rows) => serde_json::to_value(rows)
@@ -83,7 +83,7 @@ pub(super) async fn dispatch_agent_update_command(
             },
         ),
         "install_coding_agent" => Some(match require_str(args, "key") {
-            // #2736 - returns once the install task is spawned; the outcome is
+            // Returns once the install task is spawned; the outcome is
             // the `coding_agent_install_finished` event.
             Ok(key) => operations
                 .install_coding_agent(&state.settings, key)

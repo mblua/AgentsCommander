@@ -15,7 +15,7 @@ import type {
   PreflightTestSnapshot, PreflightTestTarget,
 } from "../../../shared/types";
 
-// #3516/#3832 - the shared test panel: draft payload, target picker, chained
+// Draft payload, target picker, chained
 // polling, cancel-on-close, stale and cancelled results, and Escape ownership.
 // Fake timers: each poll is scheduled 500 ms after an awaited response, so every
 // poll is one advanceTimersByTimeAsync.
