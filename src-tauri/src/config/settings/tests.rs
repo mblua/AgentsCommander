@@ -15,6 +15,7 @@ mod app_defaults_4766;
 mod e2432_n1_and_round7;
 mod e2432_round7_o2_fallback;
 mod i4845_config_file_store;
+mod i4845_last_used;
 mod id_hash_activation;
 mod issue_3047_pair;
 mod legacy_profiles_and_agent_commands;

@@ -323,3 +323,31 @@ fn matched_selection_takes_the_descriptor_from_the_state_file() {
         "{selection:?}"
     );
 }
+
+#[test]
+fn launch_write_adds_source_and_keeps_other_keys() {
+    let settings = descriptor_settings();
+    let temp = tempfile::tempdir().unwrap();
+    let paths = seed_both_configs(temp.path(), &serde_json::json!({"keep": {"x": 1}}));
+    let source = crate::config::coding_agent_files::ConfigFileLocator::RegisteredInstance {};
+    let write = super::super::agent_command::prepare_last_coding_agent_write_from(
+        "claude", None, &settings, &source,
+    );
+    save_last_coding_agent(&temp.path().to_string_lossy(), "sid", &write).unwrap();
+
+    for path in &paths {
+        assert_eq!(
+            read_json(path)["keep"],
+            serde_json::json!({"x": 1}),
+            "{path:?}"
+        );
+        let dir = path.parent().unwrap();
+        let config = crate::config::agent_config::read_agent_local_config_json(dir)
+            .unwrap()
+            .unwrap();
+        let launch = crate::config::agent_config::recorded_launch(&config);
+        assert_eq!(launch.last_agent.as_deref(), Some("claude"), "{path:?}");
+        let expected = serde_json::json!({"kind": "registeredInstance"});
+        assert_eq!(launch.last_source, Some(expected), "{path:?}");
+    }
+}

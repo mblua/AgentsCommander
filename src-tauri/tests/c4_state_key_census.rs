@@ -218,7 +218,7 @@ fn assert_frozen(id: &str, hits: &[Hit], pin: &Pin) {
 #[test]
 fn the_inventory_is_the_certified_file_set() {
     let sources = rust_sources();
-    assert_eq!(sources.len(), 1708, "inventory count");
+    assert_eq!(sources.len(), 1710, "inventory count");
     for (path, text) in &sources {
         assert!(path.starts_with("src-tauri/src/"), "path form: {path}");
         assert!(!path.contains('\\'), "path separator: {path}");
@@ -421,11 +421,11 @@ fn p7_is_frozen() {
 #[test]
 fn p8_is_frozen() {
     let pin = Pin {
-        total: 215,
-        distinct: 172,
-        sha256: "EF0A437F76F210286F4E67A8A6B7855582827304CE5B20A2CF5DCD4206DB76A0",
+        total: 217,
+        distinct: 174,
+        sha256: "F74E07D1959AB0B4DE3C848ADB3164D7ED5F913EB2C01A74C48AB15E657FD613",
         per_file: &[
-            ("config/agent_config.rs", 9),
+            ("config/agent_config.rs", 11),
             ("config/agent_config/load_probe_harness.rs", 2),
             ("config/agent_config/tests/activity_stamp.rs", 9),
             ("config/agent_config/tests/coding_agent_entries.rs", 15),

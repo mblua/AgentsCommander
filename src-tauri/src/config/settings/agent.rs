@@ -11,7 +11,12 @@ mod help;
 mod instance;
 mod profile;
 
-use super::{default_true, AppSettings, ConfigSeedConfig};
+use super::{default_true, AppSettings, CodingAgentProfilesConfig, ConfigSeedConfig};
+use crate::config::coding_agent_files::last_used::{
+    matches_source, recorded_sources, FileAgentKey, RecordedSource,
+};
+use crate::config::coding_agent_files::locator::{context_for_cwd, context_key};
+use crate::config::coding_agent_files::{active_locator, ConfigContext, ConfigFileLocator};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
 use crate::pty::backend::SessionBackendKind;
 pub(crate) use blocking_menu::{
@@ -112,7 +117,7 @@ pub(crate) use profile::{bootstrap_identity_revision, is_profile_gap, validate_p
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -678,4 +683,152 @@ pub fn validate_preflight_timeouts(settings: &AppSettings) -> Result<(), String>
         }
     }
     Ok(())
+}
+
+/// #4845 - the process-wide locations `last_used_at` needs (test seam).
+pub(crate) struct LaunchPaths {
+    pub settings_path: PathBuf,
+    pub root_agent_dir: Option<PathBuf>,
+}
+
+impl LaunchPaths {
+    #[allow(dead_code, reason = "I4845 staged; removed in P03")]
+    pub(crate) fn current() -> Option<LaunchPaths> {
+        Some(LaunchPaths {
+            settings_path: crate::config::settings::settings_path()?,
+            root_agent_dir: crate::config::root_agent::root_agent_dir()
+                .ok()
+                .map(PathBuf::from),
+        })
+    }
+}
+
+#[allow(dead_code, reason = "I4845 staged; removed in P10")]
+pub(crate) enum LastUsedGone {
+    Removed,
+    FileGone,
+}
+
+/// #4845 - the last-used setup of an agent dir.
+#[allow(dead_code, reason = "I4845 staged; removed in P10")]
+pub(crate) enum LastUsed {
+    None,
+    Unavailable {
+        reason: LastUsedGone,
+        file_name: Option<String>,
+    },
+    Available {
+        locator: ConfigFileLocator,
+        file_name: String,
+        agent_id: String,
+        label: String,
+        letter: Option<String>,
+        in_active_file: bool,
+    },
+}
+
+/// Per agent, the letters of its enabled profile cells.
+pub(crate) fn file_agent_keys(
+    agents: &[AgentConfig],
+    profiles: &CodingAgentProfilesConfig,
+) -> Vec<FileAgentKey> {
+    agents
+        .iter()
+        .map(|agent| FileAgentKey {
+            id: agent.id.clone(),
+            letters: profiles
+                .profiles_by_agent
+                .get(&agent.id)
+                .into_iter()
+                .flat_map(|cells| cells.iter())
+                .filter(|(_, cell)| cell.enabled)
+                .map(|(letter, _)| letter.clone())
+                .collect(),
+        })
+        .collect()
+}
+
+/// The one context rule for an agent dir: the root agent dir is Instance (R22).
+pub(crate) fn launch_context(
+    settings: &AppSettings,
+    root_agent_dir: Option<&Path>,
+    agent_dir: &Path,
+) -> ConfigContext {
+    let dir = agent_dir.to_string_lossy();
+    if root_agent_dir.is_some_and(|root| context_key(&root.to_string_lossy()) == context_key(&dir))
+    {
+        return ConfigContext::Instance;
+    }
+    context_for_cwd(&settings.project_paths, &dir)
+}
+
+fn file_name_of(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(ToString::to_string)
+}
+
+fn source_state(
+    settings: &AppSettings,
+    paths: &LaunchPaths,
+    ctx: &ConfigContext,
+    rec: &RecordedSource,
+) -> LastUsed {
+    let gone = |reason, file_name| LastUsed::Unavailable { reason, file_name };
+    let Ok(locator) = &rec.locator else {
+        return gone(LastUsedGone::FileGone, None);
+    };
+    let snapshot = match file::read_config_file(settings, &paths.settings_path, ctx, locator) {
+        Ok(snapshot) => snapshot,
+        Err(_) => return gone(LastUsedGone::FileGone, None),
+    };
+    let file_name = file_name_of(&snapshot.path);
+    if snapshot.availability != super::SourceAvailability::Available {
+        return gone(LastUsedGone::FileGone, file_name);
+    }
+    let keys = file_agent_keys(&snapshot.agents, &snapshot.coding_agent_profiles);
+    let agent = snapshot.agents.iter().find(|a| a.id == rec.agent_id);
+    match agent {
+        Some(agent) if matches_source(rec, &keys) => LastUsed::Available {
+            in_active_file: *locator
+                == active_locator(settings.coding_agent_config_files.as_ref(), ctx),
+            locator: locator.clone(),
+            file_name: file_name.unwrap_or_default(),
+            agent_id: agent.id.clone(),
+            label: agent.label.clone(),
+            letter: rec.letter.clone(),
+        },
+        _ => gone(LastUsedGone::Removed, file_name),
+    }
+}
+
+/// #4845 - the dialog choice, else the last launch, when still in its source file (R19).
+#[allow(dead_code, reason = "I4845 staged; removed in P10")]
+pub(crate) fn last_used_at(
+    settings: &AppSettings,
+    paths: &LaunchPaths,
+    agent_dir: &Path,
+) -> (ConfigContext, LastUsed) {
+    let ctx = launch_context(settings, paths.root_agent_dir.as_deref(), agent_dir);
+    let Ok(Some(config)) = crate::config::agent_config::read_agent_local_config_json(agent_dir)
+    else {
+        return (ctx, LastUsed::None);
+    };
+    let rec = crate::config::agent_config::recorded_launch(&config);
+    let sources = recorded_sources(
+        rec.choice_agent.as_deref().zip(rec.choice_file.as_ref()),
+        rec.last_agent
+            .as_deref()
+            .map(|id| (id, rec.last_source.as_ref())),
+        rec.profile.as_deref(),
+    );
+    let mut first = None;
+    for candidate in [sources.choice, sources.last].into_iter().flatten() {
+        let state = source_state(settings, paths, &ctx, &candidate);
+        if matches!(state, LastUsed::Available { .. }) {
+            return (ctx, state);
+        }
+        first.get_or_insert(state);
+    }
+    (ctx, first.unwrap_or(LastUsed::None))
 }

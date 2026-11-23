@@ -68,7 +68,7 @@ pub struct CodingAgentEntry {
 /// Keys of a `codingAgents` entry this build owns. `upsert_config` removes
 /// them before merging so an optional one this write omits does not linger;
 /// any other key (written by a newer build) survives.
-const CODING_AGENT_ENTRY_KEYS: [&str; 3] = ["app", "acSessionId", "lastUsed"];
+const CODING_AGENT_ENTRY_KEYS: [&str; 4] = ["app", "acSessionId", "lastUsed", "sourceFile"];
 
 /// #2433 - the descriptor keys. Written (and replaced) only when the caller
 /// supplies a descriptor; otherwise an existing descriptor is left untouched.
@@ -165,12 +165,31 @@ pub struct AgentLocalConfig {
 ///  - `<repo_path>/<agent_local_dir>/config.json` (per-instance)
 ///
 /// Reads existing config, upserts the coding agent entry, writes back.
+#[cfg(test)]
 pub fn set_last_coding_agent(
     repo_path: &str,
     agent_id: &str,
     app_label: &str,
     ac_session_id: Option<&str>,
     descriptor: Option<(&str, &BTreeMap<String, String>)>,
+) -> Result<(), String> {
+    set_last_coding_agent_with_source(
+        repo_path,
+        agent_id,
+        app_label,
+        ac_session_id,
+        descriptor,
+        None,
+    )
+}
+
+pub fn set_last_coding_agent_with_source(
+    repo_path: &str,
+    agent_id: &str,
+    app_label: &str,
+    ac_session_id: Option<&str>,
+    descriptor: Option<(&str, &BTreeMap<String, String>)>,
+    source: Option<&serde_json::Value>,
 ) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     let entry = CodingAgentEntry {
@@ -191,19 +210,21 @@ pub fn set_last_coding_agent(
     let instance_dir = Path::new(repo_path).join(local_dir_name.as_str());
     config_locations::ensure_shared_directories(&instance_dir)
         .map_err(|e| format!("Failed to create {local_dir_name} dir: {e}"))?;
-    upsert_config(
+    upsert_config_sourced(
         &crate::config::config_file_path(&instance_dir),
         agent_id,
         &entry,
         write_descriptor,
+        source,
     )?;
 
     // Also write to root config.json so discovery can find it regardless of instance
-    upsert_config(
+    upsert_config_sourced(
         &crate::config::config_file_path(Path::new(repo_path)),
         agent_id,
         &entry,
         write_descriptor,
+        source,
     )?;
 
     log::info!(
@@ -879,11 +900,22 @@ fn ensure_object<'a>(
 /// Read-modify-write a single config.json: upsert tooling fields while preserving all others.
 /// Uses `serde_json::Value` to avoid dropping unknown top-level fields (e.g. `identity`, `repos`)
 /// that aren't part of the `AgentLocalConfig` struct.
+#[cfg(test)]
 fn upsert_config(
     config_path: &Path,
     agent_id: &str,
     entry: &CodingAgentEntry,
     write_descriptor: bool,
+) -> Result<(), String> {
+    upsert_config_sourced(config_path, agent_id, entry, write_descriptor, None)
+}
+
+fn upsert_config_sourced(
+    config_path: &Path,
+    agent_id: &str,
+    entry: &CodingAgentEntry,
+    write_descriptor: bool,
+    source: Option<&serde_json::Value>,
 ) -> Result<(), String> {
     update_agent_config(config_path, |_decisions, state| {
         // #1939 - the discriminator is the JSON shape, not the path: for both
@@ -930,9 +962,37 @@ fn upsert_config(
             }
         }
         existing.extend(new_fields);
+        if let Some(source) = source {
+            existing.insert("sourceFile".to_string(), source.clone());
+        }
         Ok(())
     })?;
     Ok(())
+}
+
+/// #4845 - dialog choice + last launch; `recorded_launch` is their only reader.
+pub struct RecordedLaunch {
+    pub choice_agent: Option<String>,
+    pub choice_file: Option<serde_json::Value>,
+    pub profile: Option<String>,
+    pub last_agent: Option<String>,
+    pub last_source: Option<serde_json::Value>,
+}
+
+pub fn recorded_launch(config: &serde_json::Value) -> RecordedLaunch {
+    let tooling = config.get("tooling");
+    let text = |key: &str| tooling?.get(key)?.as_str().map(ToString::to_string);
+    let agents = tooling.and_then(|t| t.get("codingAgents"));
+    let last = text("lastCodingAgent").and_then(|id| Some((agents?.get(&id)?, id)));
+    RecordedLaunch {
+        choice_agent: text("currentSourceAgent").filter(|id| !id.trim().is_empty()),
+        choice_file: tooling.and_then(|t| t.get("currentSourceFile")).cloned(),
+        profile: text("profile"),
+        last_source: last
+            .as_ref()
+            .and_then(|(entry, _)| entry.get("sourceFile").cloned()),
+        last_agent: last.map(|(_, id)| id),
+    }
 }
 
 #[cfg(test)]
