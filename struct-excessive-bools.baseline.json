@@ -171,13 +171,6 @@
       ]
     },
     {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/test_support.rs::TerminalSnapshotBlockingControlState",
-      "platforms": [
-        "linux",
-        "windows"
-      ]
-    },
-    {
       "id": "rust:src-tauri/src/resource_monitor/watchdog.rs::ResourceWatchdogDecision",
       "platforms": [
         "linux",
