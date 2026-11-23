@@ -2,7 +2,7 @@
 //! `complete` registers samplers, saves `lastCodingAgent` and the profile hash, initializes the
 //! pending prompt, then finalizes through the create ticket or inline transaction (or defers).
 //! After a finalized non-restart create it raises the Room reader demand.
-//! Also `await_startup` (startup gates) and `mirror_fresh_intent` (#756 fresh mirror).
+//! Also `await_startup` (startup gates) and `mirror_fresh_intent` (fresh mirror).
 //! Owns no state; spawn and rollback live in `backend` and `create::publication`.
 
 use crate::commands::session::agent_command::mirror_forces_fresh;
@@ -235,7 +235,7 @@ async fn finalize<R: tauri::Runtime>(
             .take();
     }
     let completion = finalized.map(CreateCompletion::Finalized);
-    // #2232 phase 4 section 5.1: the Room demand may be raised only once
+    // Phase 4 section 5.1: the Room demand may be raised only once
     // the row is **finalized and visible** to `get_session` — a
     // pending-create row is hidden, so a raise spawned earlier answers
     // "session not found" and is never retried. Detached, as before: the
@@ -385,10 +385,10 @@ async fn publish_tooling<R: tauri::Runtime>(
         // Resolve label: use provided agent_label, or look up from settings by agent_id.
         // Without this fallback, callers that pass agent_id but no label (session-requests,
         // web remote) would write app: "Unknown" into the per-instance config.json.
-        // #2433 - computed under the settings read lock, written after it drops.
+        // Computed under the settings read lock, written after it drops.
         let write = {
             let settings = app.state::<SettingsState>();
-            let write = match settings.current_read().await {
+            match settings.current_read().await {
                 Ok(cfg) => Some(prepare_last_coding_agent_write(
                     aid,
                     agent_label.as_deref(),
@@ -398,15 +398,14 @@ async fn publish_tooling<R: tauri::Runtime>(
                     log::debug!("[session] skipping lastCodingAgent publication: {error}");
                     None
                 }
-            };
-            write
+            }
         };
         if let Some(write) = write {
             if let Err(e) = save_last_coding_agent(cwd, &id.to_string(), &write) {
                 log::warn!("Failed to save lastCodingAgent: {e}");
             }
         }
-        // #592 - persist the loaded profile content-hash so drift survives an
+        // Persist the loaded profile content-hash so drift survives an
         // AC restart. Best-effort; never aborts the spawn. No-op off-replica.
         if let Some(hash) = session.profile_content_hash.as_deref() {
             log::debug!(
@@ -433,7 +432,7 @@ pub(crate) async fn await_startup<R: tauri::Runtime>(
         let manager = session_mgr.read().await;
         crate::config::sessions_persistence::initialize_prompt_retention(&manager).await;
     }
-    // #1327 - startup coding-agent updates gate: no session may open (GUI,
+    // Startup coding-agent updates gate: no session may open (GUI,
     // restore, restart, root agent, web, phone) before the startup update run
     // finishes or times out. Absent in tests (mock app, nothing managed) and in
     // non-GUI contexts -> no-op.
@@ -466,8 +465,8 @@ pub(crate) fn mirror_fresh_intent<R: tauri::Runtime>(
     is_coordinator: bool,
     mut skip_auto_resume: bool,
 ) -> (bool, bool) {
-    // (#756) Durable fresh-intent mirror, consumed at the create path: the
-    // caller requested resume (#599 reopen passes skipAutoResume=false), but
+    // Durable fresh-intent mirror, consumed at the create path: the
+    // caller requested resume (reopen passes skipAutoResume=false), but
     // this cwd's coordinator carries a pending fresh boundary (restart or
     // successful logical clear (/clear or Pi /new) whose record died with
     // an auto/manual close). Force a fresh spawn BEFORE any provider resume

@@ -12,7 +12,7 @@ use super::normalize_legacy_agent_command;
 use crate::config::settings::{command_token_basename, AgentConfig, ProfileCellConfig};
 use sha2::{Digest, Sha256};
 
-/// #597 - the effective launch command: the agent base command (the binary,
+/// The effective launch command: the agent base command (the binary,
 /// possibly with its own fixed args) followed by the profile cell command (extra
 /// params), joined as `<base> <cell>`. Each side is trimmed; a single ASCII space
 /// joins them when both are non-empty; an empty side contributes nothing (no
@@ -31,9 +31,9 @@ pub fn compose_effective_command(agent_command: &str, cell_command: &str) -> Str
     }
 }
 
-/// #597 - RAW (pre-expansion) merged env used for the content hash: the agent's
+/// RAW (pre-expansion) merged env used for the content hash: the agent's
 /// ENABLED env rows overlaid by the cell env (profile-wins), keys folded to
-/// uppercase on every OS (#2431) so a case-only difference does not double-count.
+/// uppercase on every OS so a case-only difference does not double-count.
 /// Values verbatim.
 /// Mirrors `merge_env_layers`' agent-then-profile precedence but stays raw and
 /// excludes the generated layer (`CODEX_HOME` isolation etc.), which is derived
@@ -43,7 +43,7 @@ pub fn raw_merged_profile_env(
     cell_env: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut merged: BTreeMap<String, String> = BTreeMap::new();
-    // #2431 - keys fold to uppercase on EVERY OS before the overlay, so the
+    // Keys fold to uppercase on EVERY OS before the overlay, so the
     // profile-wins precedence below is platform-independent. Hash input only; the
     // real spawn env is built by `merge_env_layers` with the platform rule.
     for row in agent.envs.iter().filter(|row| row.enabled) {
@@ -55,9 +55,9 @@ pub fn raw_merged_profile_env(
     merged
 }
 
-/// #2431 - the identity of one profile cell: the single definition of what a
+/// The identity of one profile cell: the single definition of what a
 /// cell's digest is over. The spawn path and later producers/matchers call this.
-/// #3516 - a configured preflight chain appends its frame; an empty chain keeps
+/// A configured preflight chain appends its frame; an empty chain keeps
 /// the legacy `profile_content_hash` bytes.
 pub fn cell_identity(agent: &AgentConfig, cell: &ProfileCellConfig) -> String {
     let command = compose_effective_command(&agent.command, &cell.command);
@@ -72,7 +72,7 @@ pub fn cell_identity(agent: &AgentConfig, cell: &ProfileCellConfig) -> String {
     }
 }
 
-/// #2431 - the canonical command TEXT: executable reduced by
+/// The canonical command TEXT: executable reduced by
 /// `command_token_basename`, arguments lowercased (never path-normalized), each
 /// token rendered so `normalize_legacy_agent_command` reads back the same vector.
 /// An untokenizable command falls back to its trimmed, whitespace-collapsed text.
@@ -103,7 +103,7 @@ fn canonical_command_tokens(command: &str) -> Result<Vec<String>, String> {
     }
 }
 
-/// Inverse of `normalize_legacy_agent_command` for one token (#2431 rule 4b).
+/// Inverse of `normalize_legacy_agent_command` for one token.
 pub(super) fn render_command_token(token: &str) -> String {
     let bare = !token.is_empty()
         && !token
@@ -135,7 +135,7 @@ pub(super) fn render_command_token(token: &str) -> String {
     out
 }
 
-/// #2431 - the exact bytes `profile_content_hash` digests. Canonicalizes the RAW
+/// The exact bytes `profile_content_hash` digests. Canonicalizes the RAW
 /// inputs itself (callers never pre-canonicalize): env keys fold to uppercase,
 /// the command becomes an argv vector (`exe`, `argc`, `a` per argument) so argv
 /// boundaries survive, or `rawcmd` when it cannot be tokenized.
@@ -173,19 +173,19 @@ pub(crate) fn profile_hash_preimage(command: &str, env: &BTreeMap<String, String
     buf
 }
 
-/// #592 - stable 16-hex content fingerprint for profile drift detection
+/// Stable 16-hex content fingerprint for profile drift detection
 /// ("loaded != configured"). Hashes the RAW `command` + `env` it is given
 /// (placeholders un-expanded); the primitive is agnostic to how those are built.
-/// #597 - callers now pass the COMPOSED effective command (agent base + cell
+/// Callers now pass the COMPOSED effective command (agent base + cell
 /// params) via `compose_effective_command` and the merged env (agent enabled rows
 /// overlaid by the cell, profile-wins) via `raw_merged_profile_env`, so an edit to
 /// the base command, cell command, base env, or cell env all flip the hash
-/// (SUPERSEDES the original #592 cell-only input). Env keys fold to uppercase on
-/// every OS (#2431), then are ordered via `BTreeMap`, so a case-only key edit does
+/// (SUPERSEDES the original cell-only input). Env keys fold to uppercase on
+/// every OS, then are ordered via `BTreeMap`, so a case-only key edit does
 /// not false-flag and iteration order is irrelevant. SHA-256 (stable across Rust versions, unlike
 /// `DefaultHasher`), truncated to the first 16 hex chars (matches the existing
 /// `profile_assignment_fingerprint` 16-hex shape).
-/// #2431 - canonicalized inside `profile_hash_preimage` (portable across OSes and
+/// Canonicalized inside `profile_hash_preimage` (portable across OSes and
 /// path shapes); tag `v2`.
 pub fn profile_content_hash(command: &str, env: &BTreeMap<String, String>) -> String {
     hex16(&profile_hash_preimage(command, env))

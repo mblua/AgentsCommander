@@ -220,7 +220,7 @@ fn wait_for_purge_response(
     let response_path = ac_dir.join("responses").join(format!("{request_id}.json"));
     let rejected_reason_path = crate::phone::types::outbox_rejected_reason(outbox_dir, msg_id);
 
-    // (#885 F-6) Single deadline: collapse close-session's two poll loops
+    // Single deadline: collapse close-session's two poll loops
     // into one. The 30s hardcoded confirm_timeout fires first on graceful
     // purges. move_to_delivered runs at the END of the handler (step 14),
     // so a separate delivery-confirmation window buys nothing and can only

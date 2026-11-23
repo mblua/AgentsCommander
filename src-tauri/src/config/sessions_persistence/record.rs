@@ -18,7 +18,7 @@ use uuid::Uuid;
 /// restore.
 ///
 /// `status` is also populated during live snapshots for CLI consumption AND is
-/// now **consumed on restore** by the issue #248 startup wake policy: the
+/// now **consumed on restore** by the startup wake policy: the
 /// restore-task closure in `lib.rs` reads `status` to decide whether a
 /// coordinator should be auto-woken (was awake at shutdown) or left dormant
 /// (was asleep at shutdown). See `should_wake_on_restore` in `lib.rs`.
@@ -82,7 +82,7 @@ pub struct PersistedSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detached_geometry: Option<WindowGeometry>,
 
-    /// (#630/#631) Durable resume intent. `true` => start fresh on restore
+    /// Durable resume intent. `true` => start fresh on restore
     /// ("Restart Session"); `false` => resume. `#[serde(default)]` so pre-existing
     /// records deserialize to `false` = resume (polarity is deliberate: the safe
     /// serde/Default value must mean "resume"). No `skip_serializing_if`: always
@@ -99,13 +99,13 @@ pub struct PersistedSession {
     pub git_branch_prefix: Option<String>,
 
     // ── Runtime fields (populated during live snapshots; `status` consumed on
-    //    restore per issue #248 and `communication` consumed on restore per
-    //    issue #747, the others ignored on restore) ──
+    //    restore and `communication` consumed on restore
+    //    too, the others ignored on restore) ──
     /// Session UUID (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Current session status. Populated during live snapshots; **consumed on
-    /// restore** by the issue #248 startup wake policy (see
+    /// restore** by the startup wake policy (see
     /// `should_wake_on_restore` in `lib.rs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<SessionStatus>,
@@ -113,7 +113,7 @@ pub struct PersistedSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_for_input: Option<bool>,
     /// Current visible session communication state. Populated during live
-    /// snapshots; **consumed on restore** since issue #747 (a persisted raised
+    /// snapshots; **consumed on restore** (a persisted raised
     /// hand re-applies to the restored record), and preserved on
     /// failed-recoverable rows by `sanitize_failed_recoverable` so the
     /// next-startup retry can restore it.

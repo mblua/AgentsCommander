@@ -38,7 +38,7 @@ pub(crate) struct DiscoveryBranchPayload {
     /// Single-repo shorthand, semantics unchanged: `None` for a multi-repo replica,
     /// so the `AcDiscoveryPanel` chip keeps hiding the branch there.
     pub(crate) branch: Option<String>,
-    /// #943 B2 - per-repo branches, positionally parallel to `repo_paths` below and
+    /// Per-repo branches, positionally parallel to `repo_paths` below and
     /// therefore to `AcAgentReplica.repo_paths` (`update_replicas_for_project` maps
     /// 1:1 over that vec and never sorts or dedupes it). `None` = branch unknown
     /// (detached HEAD, not a work tree, git missing, detection timed out).
@@ -47,7 +47,7 @@ pub(crate) struct DiscoveryBranchPayload {
     /// and then threw away: the single-repo `branch` above was all it kept. Module B2
     /// stops discarding it. Zero new git spawns.
     pub(crate) repo_branches: Vec<Option<String>>,
-    /// #943 B2 - the repo paths those branches belong to, byte-identical to the
+    /// The repo paths those branches belong to, byte-identical to the
     /// `AcAgentReplica.repo_paths` strings discovery already sent the frontend.
     ///
     /// Emitted so the consumer can key the merge by path instead of by position. The
@@ -57,7 +57,7 @@ pub(crate) struct DiscoveryBranchPayload {
     /// to the previous repo list. A positional merge would then paint repo A's branch
     /// onto repo B, silently. Matching on the path cannot.
     pub(crate) repo_paths: Vec<String>,
-    /// #1028/#1078 - per-repo local-work state, positionally parallel to `repo_paths`
+    /// Per-repo local-work state, positionally parallel to `repo_paths`
     /// exactly as `repo_branches` is, and keyed by path by the consumer for the same
     /// reason. `Some(true)` means Git emitted a non-ignored worktree/index entry or the
     /// checked-out `HEAD` was not confirmed reachable from the configured cached
@@ -100,7 +100,7 @@ pub(crate) struct TaskUpdatedPayload {
     // Always serialize taskTitle, even when None, so the consumer receives an
     // explicit signal (null) rather than `undefined`. Matches the manual-emit
     // payload built by `commands::task::emit_task_updated`. Architect sign-off
-    // on PR #304: normalize both emitters to explicit-null.
+    // in review: normalize both emitters to explicit-null.
     pub(crate) task_title: Option<String>,
     pub(crate) session_ids: Vec<String>,
     pub(crate) status: Option<String>,

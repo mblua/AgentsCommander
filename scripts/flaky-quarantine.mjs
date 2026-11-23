@@ -239,7 +239,7 @@ function planCandidate(report, id, context) {
 function planRelease(item, context) {
   const h = sha256hex(item.test_id);
   const issue = context.byHash.get(h);
-  if (!issue || issue.state !== 'open') return;
+  if (issue?.state !== 'open') return;
   const markers = context.read(issue);
   if (!markers) {
     context.defer(item.test_id, 'release', 'not_read');

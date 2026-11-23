@@ -281,7 +281,7 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
 
     /// Read-only fixed-cell viewport copy. Backends unrelated to the two live
     /// production fanouts remain source-compatible and report unavailable.
-    #[allow(private_interfaces)]
+    #[allow(private_interfaces, reason = "crate-private return type on pub trait")]
     fn copy_terminal_screen(&self, _id: Uuid) -> TerminalScreenCopyRead {
         TerminalScreenCopyRead::Unavailable
     }

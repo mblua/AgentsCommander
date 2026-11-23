@@ -1,4 +1,4 @@
-//! Temp-room identity (#4779): `temp-room-trNN` folders directly in the app config dir.
+//! Temp-room identity: `temp-room-trNN` folders directly in the app config dir.
 //! Identity is pure; the group-set file is owned here; `context` writes the context cache.
 
 pub(crate) mod context;
@@ -12,7 +12,7 @@ pub(crate) const TEMP_ROOM_PREFIX: &str = "temp-room-tr";
 /// Messaging address scheme of a temp room (`agentscommander://temp-room/tr01`).
 pub(crate) const TEMP_ROOM_ADDRESS_PREFIX: &str = "agentscommander://temp-room/";
 
-/// #4805 - store key of the Temporary Rooms group set in the frontend groups store and
+/// Store key of the Temporary Rooms group set in the frontend groups store and
 /// in `project_groups_updated` payloads. Mirrored by `TEMP_ROOMS_GROUPS_KEY` in
 /// `src/shared/temp-rooms.ts`. Never a real path, so it cannot match a project.
 pub(crate) const TEMP_ROOMS_GROUPS_KEY: &str = "agentscommander://temp-rooms";

@@ -1,3 +1,7 @@
+//! Field validators for the snapshot protocol: timestamps, UUIDs, hex,
+//! identities, targets and screens. Owns no state. Does not parse whole
+//! messages.
+
 use chrono::{DateTime, SecondsFormat, Utc};
 use uuid::Uuid;
 

@@ -5,7 +5,7 @@
 
 use super::operation::TaskOp;
 
-/// Reserved marker that flags a task title as human-set (#738).
+/// Reserved marker that flags a task title as human-set.
 pub(crate) const USER_TITLE_PREFIX: &str = "USER:";
 
 #[derive(Debug, Clone, Copy)]
@@ -292,7 +292,7 @@ pub(crate) fn apply_clean(parsed: &ParsedTask) -> ParsedTask {
 }
 
 /// Extract the decoded value of the first `title:` line in the frontmatter, for
-/// the semantic idempotence short-circuit (MED-3) and the #738 user-lock guard.
+/// the semantic idempotence short-circuit (MED-3) and the user-lock guard.
 /// Matches the key case-insensitively and decodes single/double-quoted and bare
 /// scalars via [`decode_title_scalar`], mirroring the app's other title readers.
 /// Returns `None` when the frontmatter has no title-shaped line.

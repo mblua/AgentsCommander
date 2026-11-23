@@ -1,4 +1,4 @@
-//! #4248 edge adapter for `window.snapshot`: renders the `main` WebView to a PNG in-process
+//! Edge adapter for `window.snapshot`: renders the `main` WebView to a PNG in-process
 //! through WebKitGTK on Linux. It never changes window state (no focus, show, move or resize).
 use crate::testability::ui_automation::window_snapshot::{
     WindowSnapshotError, WindowSnapshotHost, WindowSnapshotPng,

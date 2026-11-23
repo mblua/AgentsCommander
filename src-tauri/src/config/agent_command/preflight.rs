@@ -1,4 +1,4 @@
-//! #3516 - preflight stages: the ordered 0-2 commands a launch runs before the
+//! Preflight stages: the ordered 0-2 commands a launch runs before the
 //! coding agent (Coding Agent level first, then the effective profile cell), and
 //! the identity frame that adds the configured chain to `cell_identity`.
 //! Pure resolution only; nothing here runs a stage.

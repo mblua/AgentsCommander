@@ -6,7 +6,7 @@
 //! model: local disk creation is immediate, while launch requests are handed to
 //! the running GUI through the session-request mailbox.
 //!
-//! #1163: the launch outcome is TRUTHFUL. The running app answers each session
+//! The launch outcome is TRUTHFUL. The running app answers each session
 //! request with a `<id>.result.json` sidecar (created/rejected); this verb waits
 //! up to `SESSION_REQUEST_RESULT_TIMEOUT` for it and reports
 //! `launchStatus` (`skipped` | `launched` | `rejected` | `pending`) plus
@@ -78,7 +78,7 @@ struct CreateAgentMatrixResult {
     launch_agent: Option<String>,
 }
 
-/// #1163 - the truthful launch verdict reported by this verb. `launched ==
+/// The truthful launch verdict reported by this verb. `launched ==
 /// (launch_status == Launched)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -156,7 +156,7 @@ pub(crate) fn execute_matrix_project_create(
                 ) {
                     Ok(request) => match session_request::write_session_request(&request) {
                         Ok(()) => {
-                            // #1163: the request is on disk; the TRUTHFUL
+                            // The request is on disk; the TRUTHFUL
                             // outcome comes from the running app's result
                             // sidecar, with a bounded wait. Rejection is
                             // distinguishable in this command's own output.

@@ -27,7 +27,7 @@ pub fn compute_config_dir_warning(
     let key = match CodingAgentKind::detect(shell, shell_args) {
         Some(CodingAgentKind::Claude) => "CLAUDE_CONFIG_DIR",
         Some(CodingAgentKind::Codex) => "CODEX_HOME",
-        // Antigravity, Pi and Muse (#1873) have no AC-managed config-dir env to
+        // Antigravity, Pi and Muse have no AC-managed config-dir env to
         // compare against.
         Some(CodingAgentKind::Antigravity | CodingAgentKind::Pi | CodingAgentKind::Muse) => {
             return None

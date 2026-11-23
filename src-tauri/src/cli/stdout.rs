@@ -2,7 +2,7 @@
 //!
 //! `cli_println!` delegates here. A `BrokenPipe` write error exits the process
 //! with code 0; any other write error panics with
-//! `failed printing to stdout: <error>`. See #230 and #4016.
+//! `failed printing to stdout: <error>`.
 
 #[cfg(test)]
 mod tests;

@@ -1,3 +1,6 @@
+//! Finds the source config a replica selection comes from and lists the
+//! available sources. It reads only; it does not publish a selection.
+
 use super::paths::{
     canonical_existing_dir, same_canonical_path, validate_profile_selection_agent_path,
 };

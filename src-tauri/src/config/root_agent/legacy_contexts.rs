@@ -1,3 +1,6 @@
+//! Frozen copies of older generated Root agent contexts and paragraphs, used
+//! to recognize and migrate them. Never edited; it writes no files.
+
 pub(crate) const OLD_DEFERRED_MESSAGING_PARAGRAPH: &str =
     "Direct file-based workgroup messaging is not \
     available from the root-agent directory yet: `send --send` currently requires a workgroup \
@@ -39,7 +42,7 @@ Coordinators may reply by sending to `agentscommander://root-agent`; their repli
 /// 956 bytes sha256 17D7303A...E517 (plan 3.12 Table A), value 897 bytes
 /// sha256 FC2164A2...F207 (Table B); pinned by
 /// `frozen_snapshots_are_byte_exact_at_d7008b34`.
-#[cfg_attr(not(test), allow(dead_code))] // Frozen paragraph retained for byte-pin tests (#4077).
+#[cfg(test)]
 pub(crate) const ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME: &str = concat!(
     r#"You may "#,
     r#"message "#,

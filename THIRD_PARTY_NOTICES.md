@@ -89,7 +89,7 @@ The DejaVu and Bitstream Vera-derived license permits redistribution and embeddi
 - concurrent-queue 2.5.0 — Apache-2.0 OR MIT — texts: T4, T3
 - const-oid 0.10.3 — Apache-2.0 OR MIT — texts: T38, T54
 - convert_case 0.8.0 — MIT — texts: T55
-- cookie 0.18.2 — MIT OR Apache-2.0 — texts: T56, T57
+- cookie 0.18.3 — MIT OR Apache-2.0 — texts: T56, T57
 - cookie-factory 0.3.3 — MIT — texts: T58
 - core-foundation 0.10.1 — MIT OR Apache-2.0 — texts: T4, T59
 - core-foundation 0.9.4 — MIT OR Apache-2.0 — texts: T4, T59
@@ -529,7 +529,6 @@ The DejaVu and Bitstream Vera-derived license permits redistribution and embeddi
 - windows-registry 0.6.1 — MIT OR Apache-2.0 — texts: T384, T385
 - windows-result 0.4.1 — MIT OR Apache-2.0 — texts: T384, T385
 - windows-strings 0.5.1 — MIT OR Apache-2.0 — texts: T384, T385
-- windows-sys 0.52.0 — MIT OR Apache-2.0 — texts: T384, T385
 - windows-sys 0.59.0 — MIT OR Apache-2.0 — texts: T384, T385
 - windows-sys 0.61.2 — MIT OR Apache-2.0 — texts: T384, T385
 - windows-targets 0.52.6 — MIT OR Apache-2.0 — texts: T384, T385

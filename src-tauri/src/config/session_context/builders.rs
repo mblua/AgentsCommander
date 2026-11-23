@@ -1,3 +1,7 @@
+//! Builds the combined context file for a replica session from its
+//! config.json `context[]` entries and identity Role.md.
+//! It does not choose which coding agent file name to write.
+
 use super::default_context::SELF_CLEAR_MANUAL_SECTION;
 #[cfg(test)]
 use super::ROOT_CONTEXT_TEST_CONFIG;

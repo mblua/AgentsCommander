@@ -1,4 +1,4 @@
-//! Fresh-conversation boundary metadata for sessions (#756).
+//! Fresh-conversation boundary metadata for sessions.
 //! Stamps or drops the start-fresh intent in two halves: the coordinator-clocks mirror first,
 //! then the persisted session record, and combines both into a `BoundaryMetadataOutcome`.
 //! It does not inject `/clear` or content; callers do that and then call these helpers.
@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
-/// (#756) Record an AC-driven fresh-conversation boundary for `session_id`:
+/// Record an AC-driven fresh-conversation boundary for `session_id`:
 /// write the coordinator-clocks mirror (`start_fresh_at`, persisted
 /// immediately) and THEN stamp the durable record intent
 /// (`start_fresh_on_restore = true`, persisted under the sessions save lock).
@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// injection (/clear or Pi /new; C1 remote action, C2 self-clear phase 1). The restart
 /// path (C3) stamps the record itself and calls only the mirror half.
 /// Root-agent sessions skip the record half (the root restore path ignores the
-/// marker, #630 scope; mirrors the restart site's exclusion in
+/// marker; mirrors the restart site's exclusion in
 /// commands/session.rs); the mirror half self-gates on coordinators.
 pub(crate) use crate::pty::inject::BoundaryMetadataOutcome;
 
@@ -37,12 +37,12 @@ pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
 ) -> BoundaryMetadataOutcome {
-    // (#756, section 19.3) MIRROR-FIRST: if the app dies between the halves,
+    // MIRROR-FIRST: if the app dies between the halves,
     // the residue (mirror=Some, record=false) forces fresh on every reopen
     // path and self-heals (E3 re-propagates; typed input or injected content
     // clears both). Record-first residue (record=true, mirror=None) would let
     // a later record destroy resurrect the pre-boundary conversation: the
-    // exact #756 bug.
+    // exact bug this fixes.
     let mirror = write_start_fresh_mirror_outcome(app, session_id, true).await;
     if let Some(state) = app.try_state::<crate::pty::input_activity::SubstantiveInputState>() {
         state
@@ -88,7 +88,7 @@ pub(crate) async fn stamp_fresh_boundary_to_session<R: tauri::Runtime>(
     combine_boundary_metadata(mirror, record)
 }
 
-/// (#756) Drop the durable fresh intent after AC successfully injected message
+/// Drop the durable fresh intent after AC successfully injected message
 /// CONTENT into `session_id` (standard mailbox body, follow-up after a remote
 /// command, phase-2 handoff prompts, loop prompts). The injected body creates a
 /// post-boundary transcript, so provider resume becomes safe and desirable
@@ -102,7 +102,7 @@ pub(crate) async fn note_post_boundary_content_to_session<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
 ) -> BoundaryMetadataOutcome {
-    // (#756, section 19.3) MIRROR-FIRST: the drop residue (mirror=None,
+    // MIRROR-FIRST: the drop residue (mirror=None,
     // record=true) only mis-freshes the record-alive restore until the next
     // heal; record-first residue (record=false, mirror=Some) would wrongly
     // force-fresh BOTH reopen paths.
@@ -136,7 +136,7 @@ pub(crate) async fn note_post_boundary_content_to_session<R: tauri::Runtime>(
     combine_boundary_metadata(mirror, record)
 }
 
-/// (#756) Mirror half: write the coordinator-clocks `start_fresh_at` for the
+/// Mirror half: write the coordinator-clocks `start_fresh_at` for the
 /// session's cwd. Returns false without touching anything for non-coordinators
 /// (`coordinator_cwd` -> None; root agents land here too) or when the value is
 /// already in the target state. Persists the clocks file immediately on a real
@@ -157,8 +157,7 @@ async fn write_start_fresh_mirror_outcome<R: tauri::Runtime>(
 ) -> BoundaryMetadataOutcome {
     let cwd = {
         let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-        let cwd = mgr.read().await.coordinator_cwd(session_id).await;
-        cwd
+        mgr.read().await.coordinator_cwd(session_id).await
     };
     let Some(cwd) = cwd else {
         return BoundaryMetadataOutcome::Unchanged;

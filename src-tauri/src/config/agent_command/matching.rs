@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use super::{canonical_command_text, cell_identity};
 use crate::config::settings::{AgentConfig, AppSettings};
 
-/// #2434 - which tier of `resolve_portable_reference` matched. A tier-0 local
+/// Which tier of `resolve_portable_reference` matched. A tier-0 local
 /// id hit guesses nothing and is `None` wherever this is carried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,7 +20,7 @@ pub enum MatchTier {
 }
 
 impl MatchTier {
-    /// The wire string the #2451 `matchTier` carrier holds; equals the serde form.
+    /// The wire string the `matchTier` carrier holds; equals the serde form.
     pub fn as_wire_str(self) -> &'static str {
         match self {
             MatchTier::Hash => "hash",
@@ -30,9 +30,9 @@ impl MatchTier {
     }
 }
 
-/// #2434 - a stored coding-agent reference, built by the caller from
+/// A stored coding-agent reference, built by the caller from
 /// `tooling.currentCodingAgent` / `lastCodingAgent` plus, when present, the
-/// `tooling.codingAgents[<id>]` descriptor #2433 wrote.
+/// `tooling.codingAgents[<id>]` descriptor the migration wrote.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StoredReference {
     /// The stored id; it IS the reference.
@@ -85,7 +85,7 @@ impl StoredReference {
     }
 }
 
-/// #2434 - a resolved reference.
+/// A resolved reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentMatch {
     pub agent_id: String,
@@ -105,7 +105,7 @@ pub enum MatchOutcome {
     NoMatch { reference: String },
 }
 
-/// #2434 - true when `letter` launches for `agent_id`: an enabled cell, or the
+/// True when `letter` launches for `agent_id`: an enabled cell, or the
 /// implicit `A` that `resolve_profile` always resolves (to an empty cell when
 /// missing or disabled). Mirrors `coding_agent_profiles::cell_for_letter`.
 fn profile_letter_exists(settings: &AppSettings, agent_id: &str, letter: &str) -> bool {
@@ -118,7 +118,7 @@ fn profile_letter_exists(settings: &AppSettings, agent_id: &str, letter: &str) -
             .is_some_and(|cell| cell.enabled)
 }
 
-/// #2434 - resolve a stored reference to a local agent and letter. Pure: it
+/// Resolve a stored reference to a local agent and letter. Pure: it
 /// writes nothing, and callers must not write the result back. Tiers apply in
 /// strict precedence: local id, cell digest, label + letter, command + letter.
 /// Every tie takes the earliest entry in `settings.agents` order and logs both.

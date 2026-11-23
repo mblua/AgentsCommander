@@ -1,3 +1,7 @@
+//! Resolves the final session context for an agent and writes it to the
+//! file name the launched coding agent needs, removing stale copies.
+//! It does not build the context text itself.
+
 use super::default_context::SELF_CLEAR_MANUAL_SECTION;
 use super::{
     build_direct_matrix_context, build_replica_context_with_activation,

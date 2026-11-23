@@ -1,3 +1,6 @@
+//! Creates the default Root agent skill files on disk and repairs pristine
+//! copies of known-bad versions. It does not touch user-edited skills.
+
 #[cfg(test)]
 use super::run_pre_publish_hook;
 use super::{
@@ -134,7 +137,7 @@ pub(crate) enum SkipReason {
     NotUtf8,
     /// Windows only: `FILE_ATTRIBUTE_READONLY` blocks the delete inside `ReplaceFileW`. On Unix,
     /// `rename(2)` checks the directory rather than the file mode, so this is never produced.
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(not(windows), allow(dead_code, reason = "only produced on Windows"))]
     ReadOnly,
 }
 

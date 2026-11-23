@@ -25,7 +25,7 @@ pub(crate) fn normalize_for_compare(s: &str) -> String {
         .to_string()
 }
 
-// ── #1077 resolution matrix, merge, quarantine, dedup (§3.4-§3.7) ───────────
+// ── Resolution matrix, merge, quarantine, dedup (§3.4-§3.7) ───────────
 
 /// Which persisted field group a logical registration belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,7 +181,7 @@ pub(crate) struct ProjectPathPersistenceState {
     /// Set for a state synthesized from a direct-constructed `AppSettings`'s
     /// runtime lists (no decoder-produced hidden state). Such a state is legacy
     /// runtime-authoritative: a Reconcile write emits its groups verbatim rather
-    /// than copying disk, matching pre-#1077 verbatim-writer behavior until the
+    /// than copying disk, matching the earlier verbatim-writer behavior until the
     /// explicit mutators maintain a real hidden state.
     pub runtime_authoritative: bool,
 }

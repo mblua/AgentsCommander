@@ -1,3 +1,7 @@
+//! Replica selection state: the coding agent id and profile pair, and the
+//! checks that read and validate it. It does not write the selection.
+
+#[cfg(test)]
 use super::replica_profile::ReplicaProfileRead;
 use crate::filesystem::coding_agent_profiles::read_selection_default_bytes;
 
@@ -67,10 +71,7 @@ pub(super) fn configuration_ref_from_tooling(
 
 /// Read a coherent source-null pin without treating derived aliases as manual.
 /// Historical and absent markers keep the existing alias authority and warning.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "read only by tests until source activation")
-)]
+#[cfg(test)]
 pub(crate) fn read_source_null_profile_result(
     launch_path: &Path,
 ) -> Result<ReplicaProfileRead, String> {

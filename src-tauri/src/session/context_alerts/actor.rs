@@ -8,24 +8,24 @@
 
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
-use super::ActorState;
-use super::AlertBatch;
-use super::AlertClock;
-use super::AttemptPreparation;
-use super::AttemptSnapshot;
-use super::ContextAlertRuntime;
-use super::DeliveryCompletion;
-use super::ErrorMarker;
-use super::InFlightSlot;
-use super::LatchState;
-use super::MemberIdentityFingerprint;
-use super::MemberPolicyResolution;
-use super::ResolutionRecovery;
-use super::SessionAlertState;
-use super::CONTEXT_ALERT_MAINTENANCE_INTERVAL;
-use super::FIRST_RETRY_DELAY;
-use super::HOLD_RECHECK_DELAY;
-use super::MAX_RETRY_DELAY;
+use super::model::ActorState;
+use super::model::AlertBatch;
+use super::model::AlertClock;
+use super::model::AttemptPreparation;
+use super::model::AttemptSnapshot;
+use super::model::ContextAlertRuntime;
+use super::model::DeliveryCompletion;
+use super::model::ErrorMarker;
+use super::model::InFlightSlot;
+use super::model::LatchState;
+use super::model::MemberIdentityFingerprint;
+use super::model::MemberPolicyResolution;
+use super::model::ResolutionRecovery;
+use super::model::SessionAlertState;
+use super::model::CONTEXT_ALERT_MAINTENANCE_INTERVAL;
+use super::model::FIRST_RETRY_DELAY;
+use super::model::HOLD_RECHECK_DELAY;
+use super::model::MAX_RETRY_DELAY;
 use crate::pty::context_scrape::ContextSample;
 use futures::future::BoxFuture;
 use std::collections::HashSet;
@@ -834,7 +834,7 @@ fn reconcile_canceled_batch(
     state: &mut ActorState,
     session_id: Uuid,
     fingerprint: &MemberIdentityFingerprint,
-    current_policy: Option<super::ResolvedPolicy>,
+    current_policy: Option<super::model::ResolvedPolicy>,
     generation: u64,
     now: Instant,
 ) -> ResolutionRecovery {
@@ -891,7 +891,7 @@ fn pause_batch_for_identity(
 
 fn ready_attempt_matches(
     state: &mut ActorState,
-    attempt: &super::ReadyAttempt,
+    attempt: &super::model::ReadyAttempt,
     generation: u64,
     now: Instant,
 ) -> bool {

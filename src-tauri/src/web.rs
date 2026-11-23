@@ -118,7 +118,7 @@ where
             })?;
 
     log::info!("[web-server] Listening on http://{addr}");
-    println!("[web-server] Listening on http://{addr}");
+    log::info!("[web-server] Listening on http://{addr}");
 
     Ok(spawn_server_on_listener(
         listener,

@@ -1,4 +1,4 @@
-//! #1551 - installed-version probe engine and session cache for coding-agent CLIs.
+//! Installed-version probe engine and session cache for coding-agent CLIs.
 //!
 //! Install cache and scheduling policy remain here. `process::agent` owns native
 //! version probes and reaches `process::host::job` for containment and settlement.

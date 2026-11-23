@@ -1,3 +1,7 @@
+//! Parsing and validation of PTY injection results returned by the host API.
+//! Owns the `PtyResult` wire shape and its canonical-format checks. Does not
+//! send requests or inject PTY input.
+
 use crate::config::HelperResult;
 pub(crate) const PTY_RESPONSE_MAX_BYTES: usize = 16 * 1024;
 use serde::{Deserialize, Serialize};

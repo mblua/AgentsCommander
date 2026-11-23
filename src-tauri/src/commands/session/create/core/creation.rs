@@ -70,7 +70,7 @@ pub(crate) struct MetadataInput {
     pub(crate) skip_auto_resume: bool,
 }
 
-// #260: single detector (session/profile.rs). Replaces the old
+// Single detector (session/profile.rs). Replaces the old
 // starts_with triple; this is the SAME call `strip_auto_injected_args`
 // makes, so the persisted recipe and the runtime identity cannot disagree.
 pub(crate) fn context_target(
@@ -87,7 +87,7 @@ pub(crate) fn context_target(
             Some(crate::config::session_context::ManagedContextTarget::Antigravity)
         }
         Some(CodingAgentKind::Pi) => Some(crate::config::session_context::ManagedContextTarget::Pi),
-        // #1873 - Muse has no managed context target; a configured agent still
+        // Muse has no managed context target; a configured agent still
         // resolves its instructions filename (AGENTS.md) via `agent_command`.
         Some(CodingAgentKind::Muse) => None,
         None => None,
@@ -277,7 +277,7 @@ pub(crate) async fn record_pending_designation(
     fresh_forced_by_mirror: bool,
     is_root_agent: bool,
 ) -> Result<(), String> {
-    // (#756) Propagate the mirror-forced intent onto the NEW record: the
+    // Propagate the mirror-forced intent onto the NEW record: the
     // startup-restore path reads ONLY the record, so without this an app close
     // after the forced-fresh reopen would resume the pre-boundary conversation.
     // No persist call here: the command, restart and both restore callers

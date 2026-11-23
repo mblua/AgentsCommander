@@ -21,7 +21,13 @@ pub struct SendRequest {
     /// Client-asserted contract version (redundant with the URL). Required so a
     /// malformed client that omits it is rejected.
     // Required wire field; parsed but intentionally not version-validated.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "required wire field, parsed but never read outside tests"
+        )
+    )]
     pub api_version: String,
     /// Client-generated idempotency key. A replay returns the prior result.
     pub op_id: String,

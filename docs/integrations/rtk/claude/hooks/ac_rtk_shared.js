@@ -100,7 +100,7 @@ function runHook(hookDir, tool, decide) {
 
     // Spread rather than rebuild, so every other field the tool carries
     // (`description`, `timeout`, `run_in_background`, ...) survives untouched.
-    const ti = { ...(data.tool_input || {}) };
+    const ti = { ...data.tool_input };
     const orig = typeof ti.command === "string" ? ti.command : "";
     const body = orig.replace(/^\s+/, "");
     if (!body) process.exit(0);

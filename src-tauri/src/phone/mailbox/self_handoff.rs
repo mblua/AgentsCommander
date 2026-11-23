@@ -209,8 +209,7 @@ impl MailboxPoller {
         //    real spawn; a re-implementation could.
         let settings_snapshot = {
             let settings = host.pty_settings();
-            let snapshot = settings.read().await.clone();
-            snapshot
+            settings.read().await.clone()
         };
         if let Err(reason) = validate_self_restart_spawn(&settings_snapshot, &session, &recipe) {
             return self.reject_message(path, msg, &reason).await;

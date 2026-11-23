@@ -15,10 +15,10 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
-/// #1032 + #1171 - start sampling a freshly spawned session, with both engines.
+/// Start sampling a freshly spawned session, with both engines.
 ///
 /// **Sessions with no agent are never registered** with the scraper or the quota engine, and
-/// that rule lives HERE, once: a plain shell costs neither anything, ever. #2879 - the watcher
+/// that rule lives HERE, once: a plain shell costs neither anything, ever. The watcher
 /// engine is asked BEFORE that rule, with the optional agent, because its internal activity
 /// consumer may observe a Codex session that has no configured agent; it registers nothing
 /// when there is neither an agent nor a consumer. `try_state` and not `state`, because
@@ -48,7 +48,7 @@ pub(crate) fn register_session_samplers<R: tauri::Runtime>(
     }
 }
 
-/// #1171 - purge every per-session side structure a DESTROYED session leaves behind.
+/// Purge every per-session side structure a DESTROYED session leaves behind.
 ///
 /// One helper with two call sites, because the per-session side-state purge is already
 /// duplicated in this file: the destroy loop and `publish_restart_destroyed` are parallel
@@ -77,12 +77,12 @@ pub(crate) fn purge_session_side_state<R: tauri::Runtime>(app: &AppHandle<R>, se
     reset_substantive_input(app, session_id);
 }
 
-/// #871 - clear a session's substantive-input marker. (#2336) Also clears the
+/// Clear a session's substantive-input marker. Also clears the
 /// session's typing-hold entry, so the destroy and restart teardown paths drop
 /// the manual padlock, the natural clock and every counted held ID with the
 /// tracker they already reset.
 ///
-/// Extracted by #1171 so it has ONE definition rather than the two inline copies the destroy
+/// Extracted so it has ONE definition rather than the two inline copies the destroy
 /// and restart cleanups each carried. It is a map removal, so calling it twice for the same
 /// session is a no-op and not a second effect - which is what lets the destroy path keep
 /// resetting every id it publishes, retained-exited ones included, while the destroyed-only

@@ -1,3 +1,6 @@
+//! Diagnostic probe for agent config loading, active only when its env var is
+//! set. It records observations in memory; it does not change load results.
+
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 

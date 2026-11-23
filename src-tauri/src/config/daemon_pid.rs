@@ -1,6 +1,6 @@
 //! Daemon PID file: written by the daemon at startup, removed on graceful exit.
 //! Used by CLI verbs (`list-sessions`) to detect whether `sessions.json` is
-//! authoritative or stale. See #231.
+//! authoritative or stale.
 //!
 //! Format: a single line containing the daemon's PID as a u32, no whitespace.
 
@@ -120,9 +120,9 @@ fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
-/// #2394: Unix liveness shares the #2382 probe (`kill(pid, 0)`, EPERM = alive,
+/// Unix liveness shares the probe (`kill(pid, 0)`, EPERM = alive,
 /// Linux zombie = dead, pid 0 and non-`pid_t` values = dead). `testability`
-/// is compiled in every build, so this is not a test-only dependency. #4066: call
+/// is compiled in every build, so this is not a test-only dependency. Call
 /// the `liveness` leaf directly, not the `ui_automation` facade, so the facade's
 /// CLI code can depend on this module without forming a cycle.
 #[cfg(not(target_os = "windows"))]

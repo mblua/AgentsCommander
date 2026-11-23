@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 pub(super) use crate::config::local_config_io::ConfigPublisher;
 #[cfg(test)]
 pub(super) use crate::config::local_config_io::{publish_temp_config, temp_config_path};
@@ -668,7 +670,13 @@ where
 /// Pure source-reference PAIR preparation using the same cleanup and split
 /// policy as the ordinary writer. No ignores, journal, locks or files are
 /// changed here; the coordinator owns authorization and durable plan storage.
-#[cfg_attr(not(test), allow(dead_code))] // P10 until P11; local_config_io imports (#3580)
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P10 until P11: only tests call it until local_config_io imports it (#3580)"
+    )
+)] // P10 until P11; local_config_io imports (#3580)
 pub(crate) fn prepare_identity_reference_pair<F>(
     before: [crate::config::local_config_io::PhysicalState; 2],
     mutate: F,
@@ -691,7 +699,13 @@ where
 
 /// Internal only until P11. Executes original images, never re-runs policy or
 /// a mutation callback during recovery. The caller supplies authorized targets.
-#[cfg_attr(not(test), allow(dead_code))] // P10 until P11; local_config_io imports (#3580)
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P10 until P11: only tests call it until local_config_io imports it (#3580)"
+    )
+)] // P10 until P11; local_config_io imports (#3580)
 pub(crate) fn execute_identity_reference_pair(
     decisions: &Path,
     plan: &crate::config::local_config_io::PreparedConfigPairPlan,
@@ -802,6 +816,10 @@ fn absorb_state_keys(
         let Some(tracked_value) = tracked.remove(key) else {
             continue;
         };
+        #[allow(
+            clippy::expect_used,
+            reason = "the `tooling` entry was checked to be an object above"
+        )]
         let state_tooling = state
             .entry("tooling")
             .or_insert_with(|| serde_json::json!({}))
@@ -863,6 +881,10 @@ fn note_moved_state_keys(decisions: &Path, journal_dir: Option<&Path>, moved: &[
 }
 
 /// Ensure a key in a JSON map is an object, inserting `{}` if missing or resetting if corrupted.
+#[allow(
+    clippy::expect_used,
+    reason = "the entry is reset to an object just before the cast"
+)]
 fn ensure_object<'a>(
     map: &'a mut serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -918,6 +940,10 @@ fn upsert_config(
         if !slot.is_object() {
             *slot = serde_json::json!({});
         }
+        #[allow(
+            clippy::expect_used,
+            reason = "the slot is reset to an object just before the cast"
+        )]
         let existing = slot.as_object_mut().expect("just set to object");
         for key in CODING_AGENT_ENTRY_KEYS {
             existing.remove(key);

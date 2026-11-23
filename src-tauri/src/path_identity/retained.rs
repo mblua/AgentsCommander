@@ -1,3 +1,6 @@
+//! A retained, verified directory handle that creates new files inside the
+//! same directory it checked. It does not resolve or verify paths by name.
+
 use super::identity::handle_identity;
 use super::identity::is_link_or_reparse;
 use super::identity::same_object;

@@ -45,12 +45,12 @@ pub fn read_replica_current_coding_agent(launch_path: &Path) -> Option<String> {
     read_tooling_string(launch_path, "currentCodingAgent")
 }
 
-/// #592 - read the loaded profile content-hash persisted at last spawn.
+/// Read the loaded profile content-hash persisted at last spawn.
 pub fn read_replica_profile_content_hash(launch_path: &Path) -> Option<String> {
     read_tooling_string(launch_path, "profileContentHash")
 }
 
-/// #592 - persist the loaded profile content-hash. No-op for non-replica /
+/// Persist the loaded profile content-hash. No-op for non-replica /
 /// non-matrix / non-root-agent launch roots (a normal repo has no per-agent
 /// config.json and must not be littered with one). Best-effort: callers log +
 /// ignore errors.
@@ -59,7 +59,7 @@ pub fn set_replica_profile_content_hash(launch_path: &Path, hash: &str) -> Resul
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
         .is_some_and(|name| name.starts_with("__agent_") || name.starts_with("_agent_"));
-    // #592 - the Root Agent (`ac-root-agent`) is a legitimate replica that runs a
+    // The Root Agent (`ac-root-agent`) is a legitimate replica that runs a
     // coding agent and must support drift like any other; its dir name does not
     // match the `__agent_`/`_agent_` prefix, so accept it explicitly. Name-only
     // (vs path-validated `is_root_agent_path`) is sufficient here: the sole caller
@@ -119,7 +119,7 @@ pub fn set_instance_profile_override(
     Ok(())
 }
 
-// ── #1939 replica selection lock state ──────────────────
+// ── Replica selection lock state ──────────────────
 //
 // Stored contract: replica top-level `tooling.selectionLocked` (optional;
 // absent means false) protects the saved pair — `tooling.currentCodingAgent`
@@ -137,7 +137,7 @@ pub(super) fn write_profile_to_launch_path(
 ) -> Result<(), String> {
     let config_path = crate::config::config_file_path(launch_path);
     crate::config::agent_config::update_agent_config(&config_path, |obj, _state| {
-        // #1939 - shape-based, like agent_config: absent tooling becomes an
+        // Shape-based, like agent_config: absent tooling becomes an
         // object, a present non-object is an error, never silently reset.
         let tooling_value = obj
             .entry("tooling".to_string())
@@ -184,7 +184,7 @@ pub(super) fn write_profile_to_launch_path(
     Ok(())
 }
 
-/// #1939 - a complete saved pair (`currentCodingAgent` plus a valid profile
+/// A complete saved pair (`currentCodingAgent` plus a valid profile
 /// letter) is the protected unit; a null clear must not erase half of it.
 pub(super) fn protected_selection_pair_present(tooling: &serde_json::Map<String, Value>) -> bool {
     let coding_agent = tooling

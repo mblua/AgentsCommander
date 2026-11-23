@@ -176,6 +176,6 @@ process.stdin.on("end", () => {
     if (data.hook_event_name === "PreToolUse") onPre(data, now);
     else if (data.hook_event_name === "PostToolUse") onPost(data, now);
   } catch (e) {
-    process.stderr.write(`ac_rtk_claude_Tools: ${e && e.message ? e.message : e}\n`);
+    process.stderr.write(`ac_rtk_claude_Tools: ${e?.message ? e.message : e}\n`);
   }
 });

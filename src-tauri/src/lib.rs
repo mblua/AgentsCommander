@@ -44,6 +44,7 @@ pub mod voice;
 pub mod web;
 
 mod app_run;
+type AppBuilder = tauri::Builder<tauri::Wry>;
 mod app_state;
 mod co_managed;
 mod history_runtime;

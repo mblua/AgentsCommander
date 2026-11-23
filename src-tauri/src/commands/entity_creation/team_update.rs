@@ -1,3 +1,8 @@
+//! Tauri commands to read and update a team config and sync its room replica
+//! repos. Owns no long-lived state. Does not create teams.
+
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::matrix_layout::{
     agent_matches, repo_dir_name_from_url, selected_ac_root, validate_existing_name,
 };
@@ -149,6 +154,10 @@ pub(super) fn build_session_repo(replica_dir: &Path, rel: &str) -> Option<Sessio
 /// #2816 (C3) - site 7 lifted out of `sync_workgroup_repos_inner`, body
 /// verbatim, so its refusal of an absent `config.json` and its no-file
 /// guarantee are provable by a unit test.
+#[allow(
+    clippy::expect_used,
+    reason = "a successful write always sets the repaired identity"
+)]
 pub(super) fn apply_wg_replica_repos(
     replica_dir: &Path,
     assigned_repos: &[String],

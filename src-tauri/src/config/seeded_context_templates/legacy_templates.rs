@@ -40,7 +40,7 @@ pub(crate) const OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND: &str =
      C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
      - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n";
 
-/// #1005 S6: `get_default_agent_template()` exactly as it shipped from #658
+/// S6: `get_default_agent_template()` exactly as it shipped from #658
 /// (mandatory placeholders) through base commit ec660c17, frozen so a
 /// pristine v1 `Context.AgentsCommander.md` on disk keeps being recognized
 /// (project auto-update AND standalone root retirement) after the v2
@@ -78,7 +78,7 @@ You are running inside an AgentsCommander session - a terminal session manager t
 "#
 );
 
-/// #1369 (C4): `get_default_agent_template()` exactly as it shipped from #1005
+/// `get_default_agent_template()` exactly as it shipped from #1005
 /// S6 (token minimization, v2) through base commit 8f272a76, frozen so a
 /// pristine v2 `Context.AgentsCommander.md` on disk keeps being recognized
 /// (project auto-update AND standalone root retirement) after the v3
@@ -119,7 +119,7 @@ You are running inside an AgentsCommander session - a terminal session manager c
 "#
 );
 
-/// #1541: `get_default_agent_template()` exactly as it shipped from #1369
+/// `get_default_agent_template()` exactly as it shipped from #1369
 /// (the `{{AGENT_REPOS}}` rename, v3) through base commit 6aae531e, frozen so
 /// pristine v3 project templates and standalone templates remain exact
 /// generated operands after the v4 summarization. Never edit. The shipped
@@ -155,7 +155,7 @@ You are running inside an AgentsCommander session - a terminal session manager c
 "#
 );
 
-/// #1605: `get_default_agent_template()` exactly as it shipped through base
+/// `get_default_agent_template()` exactly as it shipped through base
 /// commit 047248bc (the v4 summarization), frozen so a pristine v4
 /// `Context.AgentsCommander.md` on disk keeps being recognized (project
 /// auto-update AND standalone root retirement) after the v5
@@ -243,7 +243,7 @@ pub(crate) const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_TOKEN_MINIMIZATION: &str =
      This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the \
      user interacts with your session.\n";
 
-/// #1030: `get_default_coordinator_template()` exactly as it shipped through
+/// `get_default_coordinator_template()` exactly as it shipped through
 /// base commit 4acadfe5, frozen as the third legacy snapshot so a pristine v3
 /// `Context.coordinator.md` on disk keeps being recognized and auto-upgraded
 /// after the v4 rewrite that adds the cross-workgroup rule.
@@ -290,7 +290,7 @@ pub(crate) const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE: &str 
      This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the \
      user interacts with your session.\n";
 
-/// #1571: `get_default_coordinator_template()` exactly as it shipped through
+/// `get_default_coordinator_template()` exactly as it shipped through
 /// base commit ecc6527b, frozen as the fourth legacy snapshot so a pristine v4
 /// `Context.coordinator.md` on disk keeps being recognized and auto-upgraded
 /// after the v5 Coordinator-to-Orchestrator rename.
@@ -340,7 +340,7 @@ pub(crate) const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_ORCHESTRATOR_RENAME: &str =
      This shows the Sidebar raised-hand indicator for your coordinator row; it clears when the \
      user interacts with your session.\n";
 
-/// #979: the standalone global context template that older builds seeded into the
+/// The standalone global context template that older builds seeded into the
 /// APP CONFIG directory (307 bytes; it predates `## Core Concepts`). Retirement may
 /// delete only bytes `AgentsCommander` provably generated itself, so this snapshot is
 /// frozen and pinned by a length + SHA-256 test.
@@ -371,7 +371,7 @@ You are running inside an AgentsCommander session - a terminal session manager t
 "#
 );
 
-/// #1614 D8a: the `global` seeded context template exactly as it shipped
+/// D8a: the `global` seeded context template exactly as it shipped
 /// through base commit df494bfa, frozen so an installation whose file is
 /// still pristine keeps auto-updating after the Room rename. A recognizer
 /// only accepts a file byte-for-byte, so a shipped byte that moves without
@@ -380,7 +380,7 @@ You are running inside an AgentsCommander session - a terminal session manager t
 ///
 /// RE-BASED in plan section 15.3 item 1. It previously held the v4 body,
 /// which is the generation main already froze under its own name as
-/// `GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES` (#1605). Holding it
+/// `GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES`. Holding it
 /// here too would have shipped two constants with identical bytes under two
 /// names and left the v5 generation unrecognized forever, so every
 /// installation that reached v5 before upgrading would have had its global
@@ -420,11 +420,11 @@ You are in AgentsCommander, a terminal session manager coordinating multiple AI 
 "#
 );
 
-/// #2031: the global context template as shipped through `329ab94e`, the
+/// The global context template as shipped through `329ab94e`, the
 /// generation every existing project file and every existing standalone app-config
 /// file holds. The Answering seed turns it into a generated predecessor: it is the
 /// fixture for the scan replacement test, and it MUST stay recognized by the
-/// standalone #979 classifier so retirement still deletes our own bytes instead of
+/// standalone classifier so retirement still deletes our own bytes instead of
 /// reclassifying them as custom. Never edit.
 /// Provenance: the 329ab94e blob, `session_context.rs` lines 2679-2705; value
 /// 559 bytes sha256 EE456D60802157ECC8A5F5C5C97522442276524E1F4979481326A80CC6EC5F09;
@@ -459,7 +459,7 @@ You are in AgentsCommander, a terminal session manager coordinating multiple AI 
 "#
 );
 
-/// #1614 D8a: the `coordinator` seeded context template exactly as it
+/// D8a: the `coordinator` seeded context template exactly as it
 /// shipped through base commit d7008b34, frozen for the same reason as the
 /// global one above. Never edit.
 /// Provenance: the d7008b34 blob, `session_context.rs` lines 2509-2529;

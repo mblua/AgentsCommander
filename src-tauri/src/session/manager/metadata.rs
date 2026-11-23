@@ -1,3 +1,6 @@
+//! Session manager metadata setters: coding agent kind and pending spawn
+//! details. It does not spawn or restart sessions.
+
 use super::super::profile::CodingAgentKind;
 use super::super::session::SessionRepo;
 use super::carrier::{acquire_carrier_mutation_permit, CarrierMutationPermit};
@@ -158,13 +161,7 @@ impl SessionManager {
         clippy::too_many_arguments,
         reason = "pending binding plus each separately stored profile field"
     )]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn set_pending_profile_metadata(
         &self,
         binding: PendingCreateBinding,

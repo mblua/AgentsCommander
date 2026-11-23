@@ -36,7 +36,7 @@ pub struct NewProjectArgs {
 }
 
 pub fn execute(args: NewProjectArgs) -> i32 {
-    // #786/#1077: strict CLI loader so we never trigger a spurious root_token
+    // Strict CLI loader so we never trigger a spurious root_token
     // write, and we refuse to touch a present-but-unparseable settings.json.
     let mut settings = match load_settings_for_cli_strict() {
         Ok(s) => s,
@@ -45,7 +45,7 @@ pub fn execute(args: NewProjectArgs) -> i32 {
             return 1;
         }
     };
-    // #1077: reject structural project-metadata corruption BEFORE any filesystem
+    // Reject structural project-metadata corruption BEFORE any filesystem
     // effect (directory / .ac creation), so a corrupt settings file never causes
     // a half-registered project.
     if project_state_has_structural(&settings) {
@@ -56,7 +56,7 @@ pub fn execute(args: NewProjectArgs) -> i32 {
         );
         return 1;
     }
-    // #1077: reconcile the runtime list from the RAW disk fields (before any
+    // Reconcile the runtime list from the RAW disk fields (before any
     // filesystem effect) so a stored-but-missing project the strict decode
     // filters out is preserved in place by the resync rather than dropped.
     if let Err(e) = refresh_project_paths_from_disk(&mut settings) {
@@ -73,7 +73,7 @@ pub fn execute(args: NewProjectArgs) -> i32 {
     // Save when we either created `.ac` or appended a new path entry.
     // (A pure no-op call still prints the status lines.)
     if result.created || result.registered {
-        // #1318 - a CLI registration seeds the catalog + masters immediately
+        // A CLI registration seeds the catalog + masters immediately
         // (no restart needed). Fail-soft: any error is logged and the boot loop
         // covers the project at the next boot.
         crate::config::coding_agents_catalog::ensure_seeded_for_project(Path::new(&result.path));

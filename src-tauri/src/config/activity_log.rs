@@ -1,4 +1,4 @@
-//! #1149 - append-only per-agent activity log: `<config_dir>/activity.jsonl`.
+//! Append-only per-agent activity log: `<config_dir>/activity.jsonl`.
 //!
 //! One JSON object per line, schema-versioned (`v`), self-contained, written at
 //! the instant of the event it describes. Nothing is ever buffered in memory

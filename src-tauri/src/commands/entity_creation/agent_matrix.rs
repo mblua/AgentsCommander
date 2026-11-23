@@ -1,3 +1,6 @@
+//! Tauri commands to create and delete agent matrices, with staged delete and
+//! rollback. Owns no long-lived state. Does not create teams or rooms.
+
 use super::agent_delete_plan::{
     collect_agent_delete_plan_guarded, format_restore_suffix, preflight_agent_delete,
     prepare_agent_delete_metadata, restore_removed_settings, write_team_config_json_atomic,

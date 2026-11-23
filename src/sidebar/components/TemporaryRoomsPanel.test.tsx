@@ -475,12 +475,39 @@ describe("#4779 TemporaryRoomsPanel", () => {
 
   it("8c. #4838 the task title label carries the full title as tooltip", async () => {
     const full = "A very long temporary room task title that the sidebar ellipsizes";
-    track(setup({ rooms: [{ ...ROOM_1, taskTitle: full }] }));
+    const { fake } = track(setup({
+      rooms: [{ ...ROOM_1, taskTitle: `  ${full}  ` }],
+      sessions: [liveSession()],
+    }));
     await waitFor(() => expect(byId("tempRoom.temp-room-tr01.taskTitle")).not.toBeNull());
     const label = byId("tempRoom.temp-room-tr01.taskTitle")!;
     expect(label.textContent).toBe(full);
     expect(label.getAttribute("title")).toBe(full);
+    expect(label.getAttribute("data-ac-role")).toBe("text");
+    expect(label.getAttribute("data-ac-state")).toBe("task");
     expect(label.closest(".ac-wg-header")!.getAttribute("title")).toBe(ROOM_1.path);
+    click(label);
+    label.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    label.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    expect(fake.callsFor("switch_session")).toHaveLength(0);
+    expect(fake.callsFor("create_session")).toHaveLength(0);
+    expect(fake.callsFor("restart_session")).toHaveLength(0);
+
+    contextMenu(label);
+    await waitFor(() => expect(byId("tempRoom.headerMenu.delete")).not.toBeNull());
+  });
+
+  it("keeps task title text and hooks outside the Tab order", async () => {
+    const full = "A long temporary room task title that remains available as a tooltip";
+    track(setup({ rooms: [{ ...ROOM_1, taskTitle: `  ${full}  ` }] }));
+    const taskTitleId = "tempRoom.temp-room-tr01.taskTitle";
+    await waitFor(() => expect(byId(taskTitleId)).not.toBeNull());
+    const label = byId(taskTitleId)!;
+    expect(label.hasAttribute("tabindex")).toBe(false);
+    expect(label.textContent).toBe(full);
+    expect(label.getAttribute("title")).toBe(full);
+    expect(label.getAttribute("data-ac-role")).toBe("text");
+    expect(label.getAttribute("data-ac-state")).toBe("task");
   });
 
   it("8b. #4825 the header collapse button carries tempRooms.header.toggle", async () => {
@@ -514,6 +541,41 @@ describe("#4779 TemporaryRoomsPanel", () => {
     proxy.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await waitFor(() => expect(fake.callsFor("create_session")).toHaveLength(1));
     expect(fake.lastCall("create_session")!.args).toMatchObject({ cwd: ROOM_1.path });
+  });
+
+  it("switches a live room once per proxy activation and row click", async () => {
+    const { fake } = track(setup({ sessions: [liveSession()] }));
+    await waitFor(() => expect(roomRow()).not.toBeNull());
+    const row = roomRow()!;
+    const stops = Array.from(row.querySelectorAll<HTMLButtonElement>("button, [tabindex]"));
+    expect(stops).toHaveLength(1);
+    const [proxy] = stops;
+    expect(proxy).toBeInstanceOf(HTMLButtonElement);
+    expect(proxy.getAttribute("aria-label")).toBe(ROOM_1.name);
+    expect(proxy.tabIndex).toBe(0);
+    proxy.focus();
+    expect(document.activeElement).toBe(proxy);
+
+    const press = (key: string, repeat = false) => {
+      proxy.dispatchEvent(new KeyboardEvent("keydown", { key, repeat, bubbles: true }));
+    };
+    press("Enter");
+    await waitFor(() => expect(fake.callsFor("switch_session")).toHaveLength(1));
+    press(" ");
+    await waitFor(() => expect(fake.callsFor("switch_session")).toHaveLength(2));
+    press("Enter", true);
+    press(" ", true);
+    press("ArrowDown");
+    press("Escape");
+    expect(fake.callsFor("switch_session")).toHaveLength(2);
+
+    click(row.querySelector(".replica-item-name")!);
+    await waitFor(() => expect(fake.callsFor("switch_session")).toHaveLength(3));
+    expect(fake.callsFor("switch_session").map(({ args }) => args)).toEqual([
+      { id: "tr1" }, { id: "tr1" }, { id: "tr1" },
+    ]);
+    await openAgentMenu();
+    expect(fake.callsFor("switch_session")).toHaveLength(3);
   });
 
   it("9b. an exited session: row click restarts it", async () => {
