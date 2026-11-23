@@ -1,4 +1,4 @@
-// Shared setup for the #2573 restart-failure toast tests (wake, discovery
+// Shared setup for the restart-failure toast tests (wake, discovery
 // menu, session row). Each test renders its component next to ToastHost, makes
 // `restart_session` reject with the backend's unresolved-reference string (or
 // resolve), triggers the restart, and asserts the toast or its absence.
