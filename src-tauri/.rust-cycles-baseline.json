@@ -327,14 +327,6 @@
       ]
     },
     {
-      "id": "ea4e3df1c48da3bb",
-      "members": [
-        "agentscommander_lib::pty::output",
-        "agentscommander_lib::pty::output::attachments",
-        "agentscommander_lib::pty::output::capture"
-      ]
-    },
-    {
       "id": "897cef14e42a1694",
       "members": [
         "agentscommander_lib::session::context_alerts",
