@@ -1,4 +1,4 @@
-// #4244: WebKitGTK uses fontconfig's substitute (e.g. Liberation Sans) for a
+// WebKitGTK uses fontconfig's substitute (e.g. Liberation Sans) for a
 // missing first family and never tries the rest, so keep only families that
 // really measure as monospace here.
 export const PREFERRED_TERMINAL_FONTS = ["Cascadia Code", "JetBrains Mono", "Fira Code"] as const;

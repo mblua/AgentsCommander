@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4805 P03 - temp-room groups, Alert me! and TASK title from the agent-row menu.
+// Temp-room groups, Alert me! and TASK title from the agent-row menu.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TemporaryRoomsPanel from "./TemporaryRoomsPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";

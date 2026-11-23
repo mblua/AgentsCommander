@@ -12,7 +12,7 @@ import { sessionsStore } from "../stores/sessions";
 import RoomGroupRail from "./RoomGroupRail";
 import { createRailProject as project, createIndicatorGroupsConfig as groupsConfig, defaultIndicatorRooms } from "./room-group-rail-fixtures";
 
-// #1859 — the rail is the outermost level that can hide a blocked menu: a
+// The rail is the outermost level that can hide a blocked menu: a
 // collapsed project rail tab shows no rows at all. This file mirrors
 // RoomGroupRail.raise-hand.test.tsx in structure and fixtures on purpose,
 // because the two indicators share the render site and the same aggregation.

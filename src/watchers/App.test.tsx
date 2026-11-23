@@ -29,7 +29,7 @@ import type {
 
 // A call that lands after `rendered.cleanup()` restores the test transport falls through to
 // the default one, which outside Tauri is a real `WsTransport`. Under jsdom that opens a `ws`
-// client and leaves an unhandled rejection (#4103). An inert stand-in keeps those late calls
+// client and leaves an unhandled rejection. An inert stand-in keeps those late calls
 // pending instead of reaching the network.
 vi.mock("../shared/transport-ws", () => ({
   WsTransport: class {
@@ -145,7 +145,7 @@ describe("the watcher activity window (#1171)", () => {
     document.body.replaceChildren();
   });
 
-  // #1171 test 81, the four states told apart from snapshot values alone.
+  // Test 81, the four states told apart from snapshot values alone.
   it("shows the warming state before the engine has ticked, never the day-one message", async () => {
     const fake = transportWith(snapshot({ warmedUp: false }));
     const rendered = renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
@@ -197,7 +197,7 @@ describe("the watcher activity window (#1171)", () => {
     }
   });
 
-  // #1171 tests 82 and 83.
+  // Tests 82 and 83.
   it("keeps the truncated banner and the unsampled note as separate elements", async () => {
     const fake = transportWith(
       snapshot({ matches: [match()], truncated: true, possiblyMissedFrames: 3 })
@@ -241,7 +241,7 @@ describe("the watcher activity window (#1171)", () => {
     }
   });
 
-  // #1171 test 84.
+  // Test 84.
   it("renders a row containing HTML-looking text as text", async () => {
     const hostile = "<img src=x onerror=alert(1)> Read (<script>)";
     const fake = transportWith(
@@ -260,7 +260,7 @@ describe("the watcher activity window (#1171)", () => {
     }
   });
 
-  // #1171 test 85.
+  // Test 85.
   it("distinguishes a state row from an occurrence row", async () => {
     const fake = transportWith(
       snapshot({
@@ -285,7 +285,7 @@ describe("the watcher activity window (#1171)", () => {
     }
   });
 
-  // #1171 test 80.
+  // Test 80.
   it("hides the Agent and Workgroup chips in single-session scope and shows them in All sessions", async () => {
     const fake = transportWith(snapshot({ matches: [match()] }));
     const rendered = renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
@@ -364,7 +364,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1171 test 79, the frontend half. The backend focuses the existing window and emits
+   * Test 79, the frontend half. The backend focuses the existing window and emits
    * `watchers_scope_request` instead of building a second one; what is left to prove here
    * is that the window actually changes scope when that event arrives.
    */
@@ -437,7 +437,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1171 test 77, the race the earlier version of this test did not run.
+   * Test 77, the race the earlier version of this test did not run.
    *
    * Waiting for the snapshot row to be in the DOM and only then emitting proves nothing: it
    * passes even if the window fetched before it subscribed, or dropped whatever arrived
@@ -475,7 +475,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1171 test 79d, both orderings of the same race. They fail differently, which is why
+   * Test 79d, both orderings of the same race. They fail differently, which is why
    * neither one alone is enough.
    */
   describe("settling the scope on mount (#1171 test 79d)", () => {
@@ -536,7 +536,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1171 test 79e, the content guard. Three assertions that fail independently, because a
+   * Test 79e, the content guard. Three assertions that fail independently, because a
    * correct selector over the previous session's rows is the failure this exists to prevent.
    */
   describe("guarding what is painted (#1171 test 79e)", () => {
@@ -637,7 +637,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1171 test 79f. In "All sessions" the scope is a SET derived from the session list, and
+   * Test 79f. In "All sessions" the scope is a SET derived from the session list, and
    * the session listeners rewrite it without touching the selection. A generation keyed on
    * the selected session passes every other test here and fails this one.
    */
@@ -923,7 +923,7 @@ describe("the watcher activity window (#1171)", () => {
 });
 
 /**
- * #1171 - the setup sequence behind the geometry listeners.
+ * The setup sequence behind the geometry listeners.
  *
  * Registering them one at a time and keeping each unlisten in its own local means a later
  * registration that REJECTS strands the earlier one: it never reaches the component's
@@ -993,7 +993,7 @@ describe("registering a set of listeners as one unit (#1171)", () => {
 });
 
 /**
- * #1171 - the pure conversion behind the geometry the activity window persists.
+ * The pure conversion behind the geometry the activity window persists.
  *
  * `outerPosition()` and `innerSize()` answer in PHYSICAL pixels while the window builder's
  * `position` and `inner_size` take LOGICAL ones, so writing back what was read multiplies the
@@ -1033,7 +1033,7 @@ describe("persisting the activity window's geometry (#1171)", () => {
 });
 
 /**
- * #1188 - the bound that turns "never settles" into "settles as a failure".
+ * The bound that turns "never settles" into "settles as a failure".
  *
  * The failure `withDeadline` exists for needs a promise that never settles, which no real IPC
  * call produces on demand, so it is tested here in isolation rather than through the window.
@@ -1079,7 +1079,7 @@ describe("bounding one activity round (#1188)", () => {
 });
 
 /**
- * #1188 - the poll chain that could die, and the window that never said so.
+ * The poll chain that could die, and the window that never said so.
  *
  * The only re-arm of `pollTimer` lived inside the `.then()` of the fetch the poll had just
  * issued, so a `get_watcher_activity` that never settled ended the chain for the life of the
@@ -1295,7 +1295,7 @@ describe("the activity poll chain (#1188)", () => {
 });
 
 /**
- * #1196 - the mount that could hang before it ever armed its poll.
+ * The mount that could hang before it ever armed its poll.
  *
  * `schedulePoll()` was the SOLE entry into the poll chain and it sat behind eight sequential
  * IPC awaits, none of them bounded. A single reply that never arrived left the chain unarmed,

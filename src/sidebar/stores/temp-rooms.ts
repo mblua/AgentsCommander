@@ -1,4 +1,4 @@
-// #4805 - the temp-room list, shared by the panel, the group rail and the Non-stop
+// The temp-room list, shared by the panel, the group rail and the Non-stop
 // watchdog. `railProjects()` is the Temporary Rooms group set seen as one project.
 import { createSignal } from "solid-js";
 import { TempRoomAPI } from "../../shared/ipc";

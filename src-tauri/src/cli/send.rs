@@ -26,7 +26,7 @@ use pty_input::{
     ExpectedPtyArtifact,
 };
 
-/// Who is sending, derived once from `--root` (#4780). `TempRoom` carries the
+/// Who is sending, derived once from `--root`. `TempRoom` carries the
 /// room's own folder name (`temp-room-trNN`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SenderKind<'a> {
@@ -139,7 +139,7 @@ fn validate_root_agent_delivery_kind<'a>(
     }
 }
 
-/// #4780 route pre-check for temp-room senders and targets, evaluated before the
+/// Route pre-check for temp-room senders and targets, evaluated before the
 /// Root, coordinator and team rules (master token included). `None` = not a
 /// temp-room route; the existing rules decide.
 fn temp_room_route(
@@ -176,7 +176,7 @@ fn temp_room_route(
     }
 }
 
-/// #4780: no archive between the Root Agent and a temp room (neither side has
+/// No archive between the Root Agent and a temp room (neither side has
 /// a project room).
 fn archive_skipped(kind: SenderKind<'_>, to: &str) -> bool {
     match kind {
@@ -187,14 +187,14 @@ fn archive_skipped(kind: SenderKind<'_>, to: &str) -> bool {
 }
 
 /// Delivery-confirmation ceiling for this invocation: `--confirm-timeout`
-/// seconds, default 90 (#782). Single mapping point from the parsed flag to
+/// seconds, default 90. Single mapping point from the parsed flag to
 /// the `Duration` that `execute` hands to `wait_for_delivery_confirmation`,
 /// so tests can lock that an override actually reaches the helper.
 fn confirm_timeout_from_args(args: &SendArgs) -> std::time::Duration {
     std::time::Duration::from_secs(args.confirm_timeout)
 }
 
-/// #1635-2 D4: `Delivered:` receipt line. The message id remains the first
+/// `Delivered:` receipt line. The message id remains the first
 /// token in every shape (scripts that parse `Delivered: <id>` keep working).
 /// The daemon writes the annotated message to `delivered/<id>.json`;
 /// `delivered: None` (unreadable / foreign / older daemon file) keeps the
@@ -238,7 +238,7 @@ fn wait_for_delivery_confirmation(
 
     loop {
         if crate::filesystem::directories::cli_outbox_artifact_exists(&delivered_path) {
-            // #1635-2 D4: read the annotated delivered JSON when the daemon
+            // Read the annotated delivered JSON when the daemon
             // wrote one; a foreign/older daemon (or an unparseable file) falls
             // back to the legacy line without failing the confirmation.
             let delivered = crate::filesystem::documents::read_cli_outbox_text(&delivered_path)
@@ -322,7 +322,7 @@ fn archive_send_file<'a>(
     crate::phone::messaging::archive_message_snapshot(ac_root, source, basename, &snapshot)
 }
 
-/// #2232 phase 7: nothing but the in-process supervisor may write the
+/// Nothing but the in-process supervisor may write the
 /// Co-managed provenance queue. `--outbox` takes an arbitrary path, so without
 /// this guard any caller holding a token could forge a Co-managed-origin
 /// message. Rejects both the `<room>/.co-managed/queue` shape and any aliased
@@ -390,7 +390,7 @@ fn notification_pty_overhead(sender_len: usize, get_output: bool) -> usize {
     overhead
 }
 
-/// #1638: `Queued:` receipt line. The message id remains the first token in
+/// `Queued:` receipt line. The message id remains the first token in
 /// both shapes (scripts that parse `Queued: <id>` keep working). Requested
 /// (not effective) values are printed here — effective values are only
 /// knowable at delivery time and are printed by the `Delivered:` line in
@@ -533,7 +533,7 @@ fn resolve_send_target(
     // derived from --root (if any). Mirrors list-peers's WG-replica walk-up
     // discovery so qualified WG-peer targets that list-peers reports as
     // reachable do not fail send with `not found in any known project`.
-    // settings.json is NOT modified. See #228 / plan _plans/228-cli-daemon-laterals.md.
+    // settings.json is NOT modified.
     let mut effective_project_paths = settings.project_paths.clone();
     let root_project = match derive_root_project_dir(root) {
         Ok(root_project) => root_project,
@@ -628,7 +628,7 @@ fn resolve_send_target(
 }
 
 /// The messaging dir `--send` reads from: `<root>/messaging/` for the Root
-/// Agent and a temp room (#4780), else the authoritative room's `messaging/`.
+/// Agent and a temp room, else the authoritative room's `messaging/`.
 fn sender_messaging_dir(root: &Path, kind: SenderKind<'_>) -> Result<PathBuf, String> {
     if kind != SenderKind::Agent {
         return crate::phone::messaging::root_messaging_dir(root)
@@ -749,7 +749,7 @@ fn enqueue_delivery(
     };
 
     let to_for_ack = resolved_to.clone();
-    // #1638: clone the agent id for the enqueue receipt before the message
+    // Clone the agent id for the enqueue receipt before the message
     // literal moves `args.agent`.
     let agent_for_ack = args.agent.clone();
     // Resolve before `args` fields move into OutboxMessage below; the whole-struct
@@ -766,7 +766,7 @@ fn enqueue_delivery(
             }
         },
     };
-    // #1638: clone for the receipt line — the message literal below moves
+    // Clone for the receipt line — the message literal below moves
     // `requested_profile` into the outbox message.
     let requested_profile_for_ack = requested_profile.clone();
 
@@ -805,7 +805,7 @@ fn enqueue_delivery(
         Ok(outbox_dir) => outbox_dir,
         Err(code) => return code,
     };
-    // #1596: enqueue receipt on stdout — the only observable signal when the
+    // Enqueue receipt on stdout — the only observable signal when the
     // caller cannot see the GUI-subsystem binary's exit code (PowerShell
     // direct capture). A missing `Queued:` line means NOT enqueued.
     crate::cli_println!(

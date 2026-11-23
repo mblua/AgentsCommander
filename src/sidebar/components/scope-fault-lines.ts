@@ -1,6 +1,6 @@
 import type { ScopeFault } from "../../shared/types";
 
-/** #2572 - one line per replica the removal count skipped: which one and why.
+/** One line per replica the removal count skipped: which one and why.
  *  The default names a code this build does not know, so no replica goes mute. */
 export function scopeFaultLine(fault: ScopeFault): string {
   const name = fault.replicaName;

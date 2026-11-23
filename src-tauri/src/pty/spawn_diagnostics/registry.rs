@@ -100,7 +100,7 @@ impl From<&ExitStatus> for ChildLiveness {
 
 /// Who ended the child. An AC-initiated stop (session destroy, job terminate,
 /// resource-monitor `kill_group`, shutdown) can never be confused with a child that
-/// died on its own: that confusion is the bug #942 was filed against.
+/// died on its own: that confusion is the bug this prevents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitCause {
     AcRequested,
@@ -190,7 +190,7 @@ pub struct SpawnRecord {
     stall_reported: AtomicBool,
     exit_reported: AtomicBool,
     exit_cause: Mutex<Option<ExitCause>>,
-    /// #1271 - last liveness observed by the child monitor before it stopped.
+    /// Last liveness observed by the child monitor before it stopped.
     final_liveness: Mutex<Option<ChildLiveness>>,
 }
 
@@ -235,22 +235,22 @@ impl SpawnRecord {
         self.session_id
     }
 
-    /// #1271 - the tracked child's OS pid, when the spawn captured one.
+    /// The tracked child's OS pid, when the spawn captured one.
     pub fn pid(&self) -> Option<u32> {
         self.pid
     }
 
-    /// #1271 - the exact argv the child was launched with (the adapter result),
+    /// The exact argv the child was launched with (the adapter result),
     /// unredacted. Integration regressions assert the configured host shell was
     /// selected here.
     pub fn argv(&self) -> &[String] {
         &self.argv
     }
 
-    /// #1271 - the last liveness the child monitor observed before it stopped
+    /// The last liveness the child monitor observed before it stopped
     /// polling. `Some(Exited { code, .. })` is the awaited child's exit code;
     /// `Some(Gone)` means the PTY instance was removed first (AC teardown).
-    /// #1873 test-only: whether `log_child_exit` has already reported this child's
+    /// Test-only: whether `log_child_exit` has already reported this child's
     /// exit (the duplicate-suppression latch). Production reads nothing here.
     #[cfg(test)]
     pub fn exit_reported(&self) -> bool {

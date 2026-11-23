@@ -2,7 +2,7 @@ import { batch } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { CiState, RemoteActivityUpdate, StalenessState } from "../../shared/types";
 
-/** #2064 — one repo's published remote-activity answer. */
+/** One repo's published remote-activity answer. */
 export interface RemoteActivityEntry {
   ci: CiState;
   staleness: StalenessState;

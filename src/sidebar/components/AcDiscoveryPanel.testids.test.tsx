@@ -10,7 +10,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import { acDiscoveryTransport, agentRowSel, filterSel, replicaRowSel } from "./ac-discovery-fixture";
 
-// #2528: automation testids on the AcDiscoveryPanel rows that open the Coding Agent picker.
+// Automation testids on the AcDiscoveryPanel rows that open the Coding Agent picker.
 
 describe("AcDiscoveryPanel automation testids (#2528)", () => {
   let cleanupDom: (() => void) | null = null;

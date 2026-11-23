@@ -1,4 +1,4 @@
-//! Pure context-history report (#3532 P04), shared by CLI, IPC and sidebar.
+//! Pure context-history report, shared by CLI, IPC and sidebar.
 //!
 //! Input is the retained `HistoryRecord` snapshot plus values the caller has
 //! already resolved (project, scopes, retention, `now`). Date mode selects

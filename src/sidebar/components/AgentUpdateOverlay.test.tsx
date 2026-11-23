@@ -59,7 +59,7 @@ function node(command: string, label: string, installBefore?: InstallState, upda
   return installBefore ? { ...base, installBefore } : base;
 }
 
-/** #1691 - the canonical succeeded result: both probe keys present, no version claim. */
+/** The canonical succeeded result: both probe keys present, no version claim. */
 function ok(command: string, label: string): AgentUpdateResult {
   return {
     command,
@@ -76,7 +76,7 @@ function failed(command: string, label: string, error: string): AgentUpdateResul
   return { ...ok(command, label), ok: false, outcome: "failed", error };
 }
 
-/** #1691 - `ok=false` and never a failure. */
+/** `ok=false` and never a failure. */
 function cancelled(command: string, label: string): AgentUpdateResult {
   return { ...ok(command, label), ok: false, outcome: "cancelled" };
 }
@@ -293,7 +293,7 @@ describe("AgentUpdateOverlay (#1327, #1551)", () => {
     ]);
     expect(items.map((li) => li.getAttribute("data-ac-state"))).toEqual(["ok", "updating", "pending"]);
     expect(items.map((li) => li.getAttribute("data-ac-command"))).toEqual(["a", "b", "c"]);
-    // #1691 - a terminal row carries NO state word: only the nonterminal rows have one
+    // A terminal row carries NO state word: only the nonterminal rows have one
     expect(query("agent-update.node.a.state")).toBeNull();
     expect(["b", "c"].map((command) => byTestId(`agent-update.node.${command}.state`).textContent)).toEqual([
       "Updating...",

@@ -492,7 +492,7 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
     expect(profileBadgeKind(config, "codex", "B")).toBe("fallback");
   });
 
-  // #1033 - the suggested context pattern (plan SS9.1).
+  // The suggested context pattern (plan SS9.1).
   //
   // The glyphs below are literals, not code-point escapes. What proves they are the
   // right code points is not this file: both constants are byte-identical to the
@@ -583,7 +583,7 @@ describe("shouldMaskEnvValue (#1052 env value masking rule)", () => {
   });
 });
 
-// #1614 section 9.1 frontend tests / section 15.4. F2 (`profile-utils.ts:124`,
+// F2 (`profile-utils.ts:124`,
 // inside `deriveMatrixRoot`) and F3 (`:472`, `isWgReplicaPath`). Left
 // unrewired, both silently refuse to recognise a Room replica for profile
 // scope. The function names keep the retired word (Rule P0, out of scope, so
@@ -618,7 +618,7 @@ describe("profile-utils, Room replicas (#1614 F2/F3)", () => {
   });
 });
 
-// #2057 - slot-delete guard helpers: D1 (what "holds" a slot) and D2 (live
+// Slot-delete guard helpers: D1 (what "holds" a slot) and D2 (live
 // agents only; result order is liveAgentIds order, i.e. settings.data.agents).
 describe("profileSlotHolders and profileCellHoldsData (#2057 slot-delete guard)", () => {
   function slotFixtures(): CodingAgentProfilesConfig {
@@ -721,7 +721,7 @@ describe("suggestedQuotaSource (#2482 weekly quota, #2687 codex kind)", () => {
     expect(defaultQuotaSourceForNewAgent("codex")).toEqual(codex);
     expect(defaultQuotaSourceForNewAgent("C:\\tools\\codex.exe --model x")).toEqual(codex);
     expect(defaultQuotaSourceForNewAgent("cmd /c codex")).toEqual(codex);
-    // Claude gains no new default (#2680).
+    // Claude gains no new default.
     expect(defaultQuotaSourceForNewAgent("claude")).toBeNull();
     expect(defaultQuotaSourceForNewAgent("cmd /c claude")).toBeNull();
     expect(defaultQuotaSourceForNewAgent("")).toBeNull();

@@ -14,7 +14,7 @@ import { projectStore } from "../stores/project";
 import { replicaVolatileStore } from "../stores/replica-volatile";
 import { automationIdPart as AP } from "./replica-repo-badges";
 
-// #1028/#1078 - the repo badge's letters go red when that repo has local work not
+// The repo badge's letters go red when that repo has local work not
 // confirmed by cached origin tracking: a dirty worktree, but also a clean local-ahead
 // commit, a missing/gone origin target, or a detached HEAD.
 //

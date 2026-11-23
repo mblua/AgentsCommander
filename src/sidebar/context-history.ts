@@ -1,4 +1,4 @@
-// #3532 P10 - the single sidebar owner of context-history means. Rows acquire a
+// The single sidebar owner of context-history means. Rows acquire a
 // {projectPath, runtimeSessionId} scope and read an accessor; this module keeps
 // the in-memory subscribers and results, batches requests per project and
 // never computes a mean itself. Nothing here is written to disk.
@@ -36,7 +36,7 @@ export type SidebarHistoryState =
   | {
       status: "ready";
       scope: SidebarScope;
-      /** #4091 Backend buckets in configured order; never regrouped here. */
+      /** Backend buckets in configured order; never regrouped here. */
       sessionWindows: SessionWindowBucket[];
       generatedAtUtcMs: number;
     };
@@ -133,7 +133,7 @@ export function refreshContextHistoryOnHover(scope: SidebarHistoryScope): void {
 }
 
 /**
- * #4091 The bucket the saved colour count selects among the returned buckets:
+ * The bucket the saved colour count selects among the returned buckets:
  * the exact member, otherwise the last one; null for an empty list.
  */
 export function bucketForSessions(

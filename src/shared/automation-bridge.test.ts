@@ -99,7 +99,7 @@ function addTerminalTarget(sessionId = "session-a"): HTMLDivElement {
   return target;
 }
 
-/** #944 - a visible automation target nested under `parent` (the chain tests need
+/** A visible automation target nested under `parent` (the chain tests need
  *  ancestors, and `addTarget` always appends to <body>). */
 function nestTarget<K extends keyof HTMLElementTagNameMap>(
   parent: HTMLElement,
@@ -112,7 +112,7 @@ function nestTarget<K extends keyof HTMLElementTagNameMap>(
   return element;
 }
 
-/** #944 - the full ten-event superset: `pointermove` / `mousemove` are in here ON
+/** The full ten-event superset: `pointermove` / `mousemove` are in here ON
  *  PURPOSE even though `hover` must never dispatch them, so that re-adding the move
  *  pair (plan R1) turns A1 / A3 / A12 red instead of passing silently. */
 const HOVER_EVENTS = [
@@ -155,7 +155,7 @@ function hoverOf(response: UiAutomationResponse) {
 describe("automation bridge", () => {
   beforeEach(() => {
     topmostElement = null;
-    // #944 - LOAD-BEARING, not hygiene. The sticky pointer is module scope and
+    // LOAD-BEARING, not hygiene. The sticky pointer is module scope and
     // `document.body.innerHTML = ""` below detaches the hovered node without
     // clearing it, so without this the next test's first hover sees a detached
     // `from` and takes the staleFrom branch: A13 would fail on test ORDER alone.
@@ -1027,7 +1027,7 @@ describe("automation bridge", () => {
     });
   });
 
-  // #944 - hover. Eight events, sticky, focus-free, click-free, move-free.
+  // Hover. Eight events, sticky, focus-free, click-free, move-free.
   describe("hover", () => {
     // A1
     it("dispatches the full boundary sequence, every leave before every enter", async () => {

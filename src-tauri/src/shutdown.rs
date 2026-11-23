@@ -57,7 +57,7 @@ impl ShutdownSignal {
     }
 }
 
-/// #632 - run `f` on a scratch thread and wait up to `budget`. Returns `Ok(result)`
+/// Run `f` on a scratch thread and wait up to `budget`. Returns `Ok(result)`
 /// if it finished in time, `Err(Timeout)` if the budget elapsed (the thread is
 /// abandoned and the OS reclaims it at process exit), or `Err(Disconnected)` if the
 /// closure PANICKED (the worker dropped the sender without sending).

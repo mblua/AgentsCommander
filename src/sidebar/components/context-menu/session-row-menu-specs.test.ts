@@ -1,4 +1,4 @@
-// #1871 section 10.6 - pure unit tests over the *Spec helpers. No DOM, no
+// Pure unit tests over the *Spec helpers. No DOM, no
 // jsdom, no store, no harness. The catalogue tests drive finished synthetic
 // records and bypass every helper, and phase 1's only live host passes
 // `undefined` to five of the ten, so without this file addToGroupSpec and

@@ -1,4 +1,4 @@
-//! #2713 (phase B1a of #2703) - the file-naming migration engine: the journal,
+//! The file-naming migration engine: the journal,
 //! the locking, the disk-driven decision table and the create-only rename
 //! primitive that every later phase-B migration calls.
 //!

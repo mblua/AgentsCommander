@@ -64,7 +64,7 @@ describe("replica repo badges", () => {
   });
 });
 
-// #943 B2 - a cold multi-repo replica used to report `branch: null` for every
+// A cold multi-repo replica used to report `branch: null` for every
 // repo (discovery only detects a branch when repo_paths.len() == 1), so it could
 // never show Browse Branch. The watcher already computed the per-repo branches
 // and threw them away; B2 keeps them. These tests drive the real seam the sidebar
@@ -117,7 +117,7 @@ describe("#943 B2 per-repo branches are merged BY PATH", () => {
     );
 
     expect(badgesFor([REPO_B, REPO_A])).toEqual([
-      // #1028: `dirty` is null here because badgesFor() passes no dirty map - this
+      // `dirty` is null here because badgesFor() passes no dirty map - this
       // test is about branch/path transposition and says nothing about dirty.
       { label: "webpage", sourcePath: REPO_B, branch: "branch-b", dirty: null },
       { label: "AgentsCommander", sourcePath: REPO_A, branch: "branch-a", dirty: null },
@@ -180,7 +180,7 @@ describe("#943 B2 per-repo branches are merged BY PATH", () => {
   });
 });
 
-// #1028 - worktree-dirty rides the B2 feed and is merged by path for the same
+// Worktree-dirty rides the B2 feed and is merged by path for the same
 // reason. The stake is different though: a transposed BRANCH opens the wrong
 // Browse Branch page, a transposed DIRTY accuses a clean repo of holding
 // uncommitted work (or, worse, clears the accusation from one that does).
@@ -288,7 +288,7 @@ describe("#1028 per-repo dirty is merged BY PATH", () => {
   });
 });
 
-// #1028 - the tooltip is the only surface that distinguishes all three states, so
+// The tooltip is the only surface that distinguishes all three states, so
 // the colour can stay a binary alarm at 8px.
 describe("#1028 badge title carries the third state", () => {
   const REPO = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
@@ -313,7 +313,7 @@ describe("#1028 badge title carries the third state", () => {
   });
 });
 
-// #2064 - the CI and branch-staleness suffixes on the same tooltip. The second
+// The CI and branch-staleness suffixes on the same tooltip. The second
 // parameter is OPTIONAL with a default, which is what keeps every call site above
 // compiling unedited and every omitted call byte-identical.
 describe("#2064 badge title remote-activity suffixes", () => {

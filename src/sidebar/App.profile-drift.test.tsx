@@ -13,7 +13,7 @@ import {
 } from "../shared/testing/ui-harness";
 import { liveSelection, SESSION_A } from "../shared/testing/session-selection";
 
-// #592: the profile-drift badge must surface from the NORMAL list_sessions load
+// The profile-drift badge must surface from the NORMAL list_sessions load
 // path, not only from a coding_agent_profiles_updated event. The canonical failure
 // the user hit: a profile cell edited OUTSIDE the app (a hand edit to agents.30.instance.no-git.json)
 // emits no event, so the surgical event refresh never runs and the badge stays dark.

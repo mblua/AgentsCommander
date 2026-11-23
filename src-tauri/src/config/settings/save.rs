@@ -1,12 +1,16 @@
 //! Entry point of settings persistence and the shared atomic JSON writer.
 //! `save_settings` preserves the on-disk project fields and writes the rest;
 //! `write_value_atomic` does the unique-temp, fsync, rename and read-back check.
+//! `persist_loaded_settings_migrations` does the backup, write and adoption of the startup
+//! migration save that the loader asks for.
 //! Owns the save op-id counter. Errors live in `save/error.rs`, the file lock in
 //! `save/lock.rs`, narrow disk operations in `save/disk.rs`, the value builder in `save/value.rs`.
 
+use super::{
+    normalize_agent_order, write_pre_384_v1_backup, AppSettings, ProjectWriteMode, StartupAgentRows,
+};
 #[cfg(test)]
 use super::{project_migration_error, reconcile_project_state_to_path};
-use super::{AppSettings, ProjectWriteMode};
 use crate::config::instance_artifacts::SETTINGS_FILE_NAME;
 use crate::filesystem::settings_file;
 use serde_json::Value;
@@ -480,6 +484,52 @@ pub(crate) fn save_settings_to_path_preserving_project_paths_typed(
 /// the companion fields are `#[serde(skip)]`, yielding a legacy-shaped file).
 /// Used only for test seeding; production writes go through the preserve/
 /// reconcile modes so companions are materialized.
+pub(crate) fn persist_loaded_settings_migrations(
+    settings: &mut AppSettings,
+    path: &Path,
+    legacy_profiles_detected: bool,
+    legacy_profiles_contents: &Option<String>,
+    startup: Option<&StartupAgentRows>,
+) {
+    let backup_ok = if legacy_profiles_detected {
+        match legacy_profiles_contents.as_deref() {
+            Some(contents) => match write_pre_384_v1_backup(path, contents) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::error!(
+                        target: concat!(env!("CARGO_CRATE_NAME"), "::config::settings::load"),
+                        "Failed to persist settings v2 migration backup; leaving settings.json \
+                            untouched: {e}"
+                    );
+                    false
+                }
+            },
+            None => true,
+        }
+    } else {
+        true
+    };
+    if backup_ok {
+        // #2306 P1 - the migration write is authorized, so persist explicit
+        // contiguous ordinals. Finalize already ran at load; this renumber is
+        // the write-side guarantee and cannot re-sort or revive stale values.
+        normalize_agent_order(&mut settings.agents);
+        // #1077: route the startup root-token/migration write through PRESERVE
+        // mode so it cannot erase project companions/conflicts before the
+        // first snapshot, and so a present-but-invalid file is never
+        // overwritten (the preserve writer's disk gate returns Err). On
+        // success adopt the fresh-decoded settings so runtime/hidden agree.
+        match save_settings_value_with_startup(settings, path, ProjectWriteMode::Preserve, startup)
+        {
+            Ok(written) => *settings = written,
+            Err(error) => {
+                let _ =
+                    report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn save_settings_to_path(
     settings: &AppSettings,

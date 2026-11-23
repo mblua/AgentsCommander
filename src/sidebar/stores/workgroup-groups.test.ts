@@ -342,7 +342,7 @@ describe("#777 Non-stop group", () => {
     expect(nonStopMatchesWorkgroup(cfg, wg("w".repeat(200)))).toBe(false);
   });
 
-  // #2036 T3: `isUngroupedWorkgroup` is the ONE rule the rail counter and the
+  // T3: `isUngroupedWorkgroup` is the ONE rule the rail counter and the
   // panel list share. This matrix cannot be red on the pre-fix base: the helper
   // does not exist there, so the pre-fix state is a compile error, not a failure.
   it("compileWorkgroupGroups nulls invalid and oversized regexes", () => {
@@ -363,7 +363,7 @@ describe("#777 Non-stop group", () => {
     ]);
     const nonStop = { ...defaultNonStop(), regex: exactGroupRegexForWorkgroup("wg-2-rust-team") };
 
-    // Alert me!-only (#2036): grouped whether the button is shown or hidden.
+    // Alert me!-only: grouped whether the button is shown or hidden.
     expect(isUngroupedWorkgroup(compiled, nonStop, wg("wg-2-rust-team"))).toBe(false);
     expect(isUngroupedWorkgroup(compiled, { ...nonStop, show: false }, wg("wg-2-rust-team"))).toBe(false);
     // Regular-group match, and a room matched by both, stay grouped.

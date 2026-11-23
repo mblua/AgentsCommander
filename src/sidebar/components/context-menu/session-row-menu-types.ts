@@ -1,4 +1,4 @@
-// #1871 phase 1 - the session-row context-menu catalogue's public types.
+// The session-row context-menu catalogue's public types.
 // Types only, zero runtime code. The catalogue (SessionRowMenu) owns item order,
 // labels, icons, markup and separators; a host owns nothing but the data it
 // hands in through SessionRowMenuCaps, one `false | <spec>` per item id.
@@ -127,7 +127,7 @@ export type SessionRowMenuCaps = {
   openFolder?: false | OpenFolderSpec;
   repos?: false | ReposSpec;
   matrixFolder?: false | ActionSpec;
-  /** #4779 - shown only by hosts that pass it. */
+  /** Shown only by hosts that pass it. */
   unleash?: false | (ActionSpec & { label?: string });
   close?: false | ActionSpec;
   deleteAgent?: false | DeleteAgentSpec;
