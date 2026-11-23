@@ -827,7 +827,7 @@ function workspaceEntryAllowed(state, key, value) {
   }
   return true;
 }
-// #4639: root release profile, only keys and values that cannot change cfg or targets.
+// Root release profile, only keys and values that cannot change cfg or targets.
 const RELEASE_PROFILE = { lto: /^(?:false|true|"thin"|"fat"|"off")$/,
   'codegen-units': /^[1-9]\d{0,2}$/, strip: /^(?:false|true|"none"|"debuginfo"|"symbols")$/,
   panic: /^"(?:unwind|abort)"$/ };

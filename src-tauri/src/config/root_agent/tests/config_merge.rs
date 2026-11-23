@@ -15,7 +15,7 @@ fn is_root_agent_target_rejects_partial_or_wrong_uris() {
     assert!(!is_root_agent_target("agentscommander://ROOT-AGENT"));
 }
 
-/// #2816 (C3) - raw JSON of the state file beside the tracked `config`.
+/// (C3) - raw JSON of the state file beside the tracked `config`.
 fn state_beside(config: &Path) -> Value {
     let path = config.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
     serde_json::from_str(&std::fs::read_to_string(path).expect("read state file"))
@@ -89,7 +89,7 @@ fn merge_root_agent_config_migrates_old_default_context() {
 
 #[test]
 fn merge_root_agent_config_strips_the_token_and_preserves_custom_context() {
-    // #979: the sentinel is removed from a custom array; every other entry keeps
+    // The sentinel is removed from a custom array; every other entry keeps
     // its value and its position.
     let temp = tempfile::tempdir().expect("tempdir");
     let config_path = temp.path().join("config.json");
@@ -112,7 +112,7 @@ fn merge_root_agent_config_strips_the_token_and_preserves_custom_context() {
 
 #[test]
 fn merge_root_agent_config_migration_table() {
-    // #979 4.2.C. Every row: no exact token survives, other values and their order
+    // 4.2.C. Every row: no exact token survives, other values and their order
     // survive, `tooling` and unknown fields survive, and a SECOND merge yields an
     // identical parsed value AND identical bytes (semantic + byte-stable
     // idempotence; `update_agent_config` publishes only a changed side, and mtime
@@ -339,7 +339,7 @@ fn root_dir_name_detection_is_case_insensitive() {
     assert!(!is_root_agent_dir_name("C:/tmp/not-root"));
 }
 
-/// #1005 S5 / G3: expected values captured from the BASE-COMMIT blob
+/// S5 / G3: expected values captured from the BASE-COMMIT blob
 /// (`git show 409b7f90:...role-skill-boundary-audit/SKILL.md`), never from
 /// this const. LF-folded first (G8) so the pin is checkout-invariant.
 #[test]

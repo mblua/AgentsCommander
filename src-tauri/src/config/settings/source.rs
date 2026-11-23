@@ -99,7 +99,7 @@ pub(crate) use read::OriginInputs;
 pub(crate) use read::RawSourceSnapshot;
 pub(crate) use read::SourceReadContext;
 
-// #2892 P01: additive source-aware contracts. These are data and pure helpers;
+// P01: additive source-aware contracts. These are data and pure helpers;
 // none of them changes the legacy selection, settings or persistence paths.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -270,7 +270,7 @@ pub struct SourceSnapshot<Agent> {
     pub context_revision: String,
 }
 
-// #2897 P03: compiled gate; no caller-controlled activation bypass.
+// P03: compiled gate; no caller-controlled activation bypass.
 pub(crate) const fn source_protocol_active() -> bool {
     false
 }
@@ -368,7 +368,7 @@ pub(crate) enum SourceCoordinationError {
     #[error("sourceCoordinationIo: {0}")]
     Io(String),
 }
-// #2893 P02: internal readers and pure preparations. No caller publishes these
+// P02: internal readers and pure preparations. No caller publishes these
 // plans yet; the existing whole-settings save remains the production boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum SourcePreparationError {

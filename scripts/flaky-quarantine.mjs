@@ -1,4 +1,4 @@
-// #4527 P07: advisory quarantine issues from the daily flaky report. Opens or reopens one
+// P07: advisory quarantine issues from the daily flaky report. Opens or reopens one
 // issue per flaky test (label `flaky-test`), comments new evidence and release proposals,
 // and never closes an issue or touches merge gating. Notices carry markers, so a notice
 // lost to a cap or an error is planned again the next day and delivered exactly once.

@@ -1,4 +1,4 @@
-// #4715: PR net-line budget. Measures a PR's net line growth by file class and requires a
+// PR net-line budget. Measures a PR's net line growth by file class and requires a
 // written justification in the PR body when counted growth is above the budget.
 // Exit 0 = within budget or justified, 1 = over budget without justification,
 // 2 = usage or Git error (fail closed).

@@ -1,4 +1,4 @@
-// #4810 - moves the one sidebar filter row into the stuck group header.
+// Moves the one sidebar filter row into the stuck group header.
 import { onCleanup, onMount } from "solid-js";
 
 export interface PanelBox {
