@@ -47,7 +47,7 @@ pub(crate) async fn record_agent_turn_completed<R: tauri::Runtime>(
     // for the keystroke itself before `substantive` is known at `:75`, so both
     // mechanisms would otherwise advance a stamp that is meant to track this
     // agent's own output rather than the person's typing. `pending_nonspace`
-    // Is the repository's existing per-session answer to "is there
+    // is the repository's existing per-session answer to "is there
     // unsubmitted content"; the age bound is a later addition, and it is required
     // rather than defensive, because outside `pty::input_activity` the only
     // clear is `reset`, reached from a session destroy or restart and from a
