@@ -1,10 +1,10 @@
-/** #1796 - the selected-row rail is a `border-left` on every session and replica
+/** The selected-row rail is a `border-left` on every session and replica
  *  row. Two settings drive it, and the same two predicates decide both the red
  *  hint in Settings > General and whether a value is published to the DOM.
  *  Keeping one source for both is the point of this module. The rule has two
  *  halves: a value WARNS exactly when its validator is false, and a value is
  *  PUBLISHED exactly when it is valid and, for the colour, is not the factory
- *  default (#2744: the default means "follow the theme", see
+ *  default (the default means "follow the theme", see
  *  `isRailColorDefault`). */
 
 export const RAIL_WIDTH_DEFAULT = "9px";

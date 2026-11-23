@@ -92,6 +92,35 @@ async function selfTest() {
     logs.some((line) => line.startsWith("Copied production binary:")) &&
     logs.some((line) => line.startsWith("Created testable binary:"));
 
+  async function checkInvalidSources(platform) {
+    const missingDir = path.join(root, `${platform}-missing`);
+    await mkdir(missingDir);
+    const missing = await runCopyTestableBinary({ platform, releaseDir: missingDir });
+    check(`${platform} missing exit code`, missing.code === 1, "1", String(missing.code));
+    check(
+      `${platform} missing error`,
+      missing.errors.some((line) => line.includes("Production binary is missing")),
+      "an error containing 'Production binary is missing'",
+      JSON.stringify(missing.errors),
+    );
+
+    const dirSourceDir = path.join(root, `${platform}-directory`);
+    await mkdir(path.join(dirSourceDir, SOURCE_NAMES[platform]), { recursive: true });
+    const dirSource = await runCopyTestableBinary({ platform, releaseDir: dirSourceDir });
+    check(
+      `${platform} directory exit code`,
+      dirSource.code === 1,
+      "1",
+      String(dirSource.code),
+    );
+    check(
+      `${platform} directory error`,
+      dirSource.errors.some((line) => line.includes("Expected production binary to be a file")),
+      "an error containing 'Expected production binary to be a file'",
+      JSON.stringify(dirSource.errors),
+    );
+  }
+
   try {
     const skipDir = path.join(root, "skip-darwin");
     await mkdir(skipDir);
@@ -127,36 +156,8 @@ async function selfTest() {
       JSON.stringify(copied),
     );
 
-    for (const platform of ["win32", "linux"]) {
-      const missingDir = path.join(root, `${platform}-missing`);
-      await mkdir(missingDir);
-      const missing = await runCopyTestableBinary({ platform, releaseDir: missingDir });
-      check(`${platform} missing exit code`, missing.code === 1, "1", String(missing.code));
-      check(
-        `${platform} missing error`,
-        missing.errors.some((line) => line.includes("Production binary is missing")),
-        "an error containing 'Production binary is missing'",
-        JSON.stringify(missing.errors),
-      );
-
-      const dirSourceDir = path.join(root, `${platform}-directory`);
-      await mkdir(path.join(dirSourceDir, SOURCE_NAMES[platform]), { recursive: true });
-      const dirSource = await runCopyTestableBinary({ platform, releaseDir: dirSourceDir });
-      check(
-        `${platform} directory exit code`,
-        dirSource.code === 1,
-        "1",
-        String(dirSource.code),
-      );
-      check(
-        `${platform} directory error`,
-        dirSource.errors.some((line) =>
-          line.includes("Expected production binary to be a file"),
-        ),
-        "an error containing 'Expected production binary to be a file'",
-        JSON.stringify(dirSource.errors),
-      );
-    }
+    await checkInvalidSources("win32");
+    await checkInvalidSources("linux");
 
     if (process.platform === "win32") {
       skipped.push("linux success", "linux non-executable");

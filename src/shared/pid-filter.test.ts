@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FILTER_DEBOUNCE_MS, MAX_PIDS, parsePidFilter } from "./pid-filter";
 
-// #2245 - the PID grammar, with no DOM in sight. Every case below is a decision
+// The PID grammar, with no DOM in sight. Every case below is a decision
 // rule of the plan rather than an illustration: the separators, the u32 bound,
 // the leading-zero normalization, the dedup order, the truncation flag and the
 // empty parse are each what one mutant in `parsePidFilter` would change.

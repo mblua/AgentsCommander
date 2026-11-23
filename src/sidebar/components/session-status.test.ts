@@ -26,7 +26,7 @@ describe("sessionDotClass", () => {
     expect(sessionDotClass(dotSession("active"))).toBe("active");
   });
 
-  // #2271 - the new variant's leg of the 1:1 projection: its own class, the two
+  // The new variant's leg of the 1:1 projection: its own class, the two
   // states that still win above it, and the unchanged order without the flag.
   it("maps comanaged to its own class below exited and offline (#2271)", () => {
     expect(sessionDotClass(dotSession("running"), { comanaged: true })).toBe("comanaged");

@@ -8,7 +8,7 @@ import {
 } from "./PreflightTargetPicker";
 import type { PreflightTestTarget } from "../../../shared/preflightTypes";
 
-// #3832 - the controlled "Test on" combobox: search, keyboard, running rows, IME.
+// The controlled "Test on" combobox: search, keyboard, running rows, IME.
 
 const ROOM = "C:\\Project\\.ac\\room-1-dev";
 const DEV = `${ROOM}\\__agent_dev`;

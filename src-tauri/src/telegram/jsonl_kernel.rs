@@ -64,10 +64,10 @@ pub(crate) fn visit_codex_rollout_candidates(
 }
 
 /// How long the Claude reader waits for the transcript AC minted to appear
-/// before it falls back to the newest file by mtime (#2454).
+/// before it falls back to the newest file by mtime.
 pub(crate) const PINNED_ATTACH_WAIT_SECS: u64 = 30;
 
-/// Find `<transcript_id>.jsonl` in a directory (non-recursive, #2454).
+/// Find `<transcript_id>.jsonl` in a directory (non-recursive).
 ///
 /// The stem is compared case-insensitively and whole paths are never compared:
 /// a path may be in Windows verbatim form. `find_latest_jsonl` is left as it
@@ -107,7 +107,7 @@ pub(crate) fn read_new_lines_with_starts(
 ///
 /// Called only from test code: both watchers read through
 /// `read_new_lines_with_starts` so they can attach `record_start` to each
-/// capture record (#2232 phase 1), and the kernel and extractor tests pin this
+/// capture record, and the kernel and extractor tests pin this
 /// signature.
 #[cfg(test)]
 pub(crate) fn read_new_lines(

@@ -8,7 +8,7 @@ import {
   type ScannedRule,
 } from "./css-test-helpers";
 
-// #2271 / #2408 - the Co-managed ring. jsdom never applies sidebar.css (see
+// The Co-managed ring. jsdom never applies sidebar.css (see
 // working-tint-css.test.ts), so the bytes on disk are the only place the
 // declarations, the token values and the contrast of the ring can be pinned.
 //

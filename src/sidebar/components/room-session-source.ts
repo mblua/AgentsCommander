@@ -65,7 +65,7 @@ export function configuredReplicaRepoBadgesLive(
   );
 }
 
-/** #2202 - the SAME rule the room row's `repoBadges()` memo uses (session
+/** The SAME rule the room row's `repoBadges()` memo uses (session
  *  `gitRepos` first, configured badges as fallback), reading the SAME
  *  `findReplicaSession` the row reads, so the rail counter and the row tint
  *  cannot disagree for one room in one frame. */
@@ -76,7 +76,7 @@ export function replicaRepoBadgesLive(room: AcWorkgroup, replica: AcAgentReplica
     : configuredReplicaRepoBadgesLive(replica, room);
 }
 
-/** #2202 - the coordinator gate matches the row's `isCoord()` term: a
+/** The coordinator gate matches the row's `isCoord()` term: a
  *  non-coordinator replica's CI counts on no surface. */
 export function replicaCiRunning(room: AcWorkgroup, replica: AcAgentReplica): boolean {
   if (!replica.isCoordinator) return false;

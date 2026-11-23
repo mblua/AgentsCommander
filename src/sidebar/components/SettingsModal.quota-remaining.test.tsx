@@ -12,7 +12,7 @@ import {
 import { sessionsStore } from "../stores/sessions";
 import type { AgentConfig } from "../../shared/types";
 
-// #2681 - Settings > Coding Agents rows show the weekly quota remaining next
+// Settings > Coding Agents rows show the weekly quota remaining next
 // to the agent name, only with a valid reading, updated live.
 
 function agent(id: string, label: string, command: string): AgentConfig {

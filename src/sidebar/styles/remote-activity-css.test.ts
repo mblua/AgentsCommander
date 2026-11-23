@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// #2064 — the CI ring and the stale bar are two `box-shadow` layers, and the bytes
+// The CI ring and the stale bar are two `box-shadow` layers, and the bytes
 // on disk are the only place that can be pinned: the renderer never attaches
 // `sidebar.css` (`ProjectPanel.menu-guard.test.tsx:455-458`), javascript-DOM does
 // not substitute `var()`, so a computed `box-shadow` stays raw, and both computed

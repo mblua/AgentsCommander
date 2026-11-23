@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4825 - every new sidebar menu data-ac-testid in ProjectPanel resolves to
+// Every new sidebar menu data-ac-testid in ProjectPanel resolves to
 // exactly one element, and the replica TASK title editor ids drive the editor.
 // Two Telegram bots are configured so Attach opens the bot choice list.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

@@ -21,7 +21,7 @@ import {
 } from "../stores/workgroup-groups";
 import type { WorkgroupGroupsConfig } from "../../shared/types";
 
-// #977 - the replica context menu closes when the pointer leaves it, after a
+// The replica context menu closes when the pointer leaves it, after a
 // grace period that any re-entry cancels.
 //
 // The load-bearing case is the submenu: `Add to Group` (and the repo Browse

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// #1708/#1731 - the context-menu icon colours are theme-following TOKENS, not
+// The context-menu icon colours are theme-following TOKENS, not
 // the raw dark-theme literals the issues proposed. jsdom never applies these
 // stylesheets, so the bytes on disk are the only place the rule can be pinned.
 // #00d4ff, #eab308 and #22c55e are only the dark values of --sidebar-accent,
@@ -37,7 +37,7 @@ describe("#1708/#1731 context-menu icon colours", () => {
   it.each([
     ["the detach icon", "--sidebar-accent", ".session-context-detach-icon"],
     ["the TASK-title pencil", "--status-pending", ".session-context-task-icon"],
-    // #1731 - the Add to Group user-plus SVG. #22c55e is only the dark value of
+    // The Add to Group user-plus SVG. #22c55e is only the dark value of
     // --status-waiting: hard-coded it renders at contrast 1.92 on the light
     // #ebebf0, worse than the light value #16a34a at 2.77, which is itself short
     // of the 3:1 non-text minimum. Hard-coding a darker green at the call site

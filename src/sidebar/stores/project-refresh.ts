@@ -1,6 +1,6 @@
 import { trimTrailingSlashes } from "../../shared/path-extractors";
 
-// #1077 §3.4/§5.2: casing is OS-shape aware. Windows-shaped input (drive-rooted,
+// Casing is OS-shape aware. Windows-shaped input (drive-rooted,
 // UNC, or verbatim/device `\\?\`/`\\.\` prefixed) is case-folded because its
 // filesystem is case-insensitive and its aliases must collapse. Everything else
 // is treated as POSIX: case- and backslash-preserving, so two projects that

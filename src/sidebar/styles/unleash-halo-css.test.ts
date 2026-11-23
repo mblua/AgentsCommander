@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { declValue, scanSheet } from "./css-test-helpers";
 
-// #4752 P06 (D9) - the breathing red halo on an unleashed replica tile. jsdom
+// The breathing red halo on an unleashed replica tile. jsdom
 // never applies this sheet, so its bytes are the only place to pin the rules.
 const URL_HALO = new URL("./unleash-halo.css", import.meta.url);
 const CSS = readFileSync(URL_HALO, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
