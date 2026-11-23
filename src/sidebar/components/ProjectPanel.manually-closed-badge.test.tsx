@@ -17,7 +17,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { clockStore } from "../stores/clock";
 import type { AcAgentReplica } from "../../shared/types";
 
-// #588 — the MANUALLY-CLOSED pill mirrors AUTO-CLOSED (same `coord-autoclosed`
+// The MANUALLY-CLOSED pill mirrors AUTO-CLOSED (same `coord-autoclosed`
 // class, only the label differs), shows ONLY on a manually-closed *dormant*
 // coordinator, wins the XOR over both the idle badge and AUTO-CLOSED, and — like
 // #589's AUTO-CLOSED gate — hides the instant the coordinator has a live session

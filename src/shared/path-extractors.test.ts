@@ -91,7 +91,7 @@ describe('computeTrailingText', () => {
   });
 });
 
-// #1614 section 9.1 frontend tests / section 15.4. F1 (`path-extractors.ts:25`)
+// F1 (`path-extractors.ts:25`)
 // feeds the `titlebar-wg-badge` in BOTH sidebar and terminal titlebars, so an
 // unrewired F1 renders no badge at all for a Room, silently. The legacy cases
 // above are deliberately kept (Rule P2): the badge is an IDENTITY, so a Room

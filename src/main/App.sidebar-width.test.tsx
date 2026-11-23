@@ -993,7 +993,7 @@ describe("MainApp sidebar layout pulse (#1532)", () => {
     }
   });
 
-  // #2635 — branches of runPulse that the tests above do not reach.
+  // Branches of runPulse that the tests above do not reach.
   type Trap = MainTerminalLayoutPulseSample | null | "throw";
 
   async function withMain(body: (root: HTMLElement) => Promise<void>): Promise<void> {

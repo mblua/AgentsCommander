@@ -64,7 +64,7 @@ describe("handleProjectRefreshRequested", () => {
   });
 });
 
-// #1966 — App owns the observer that binds the served catalog to the FIRST
+// App owns the observer that binds the served catalog to the FIRST
 // persisted project (the backend's primary). The store already owns generation
 // safety, identity comparison and the visible source-changed state, so these
 // tests mount the real SidebarApp with the real stores and FakeTransport and

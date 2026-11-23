@@ -128,7 +128,7 @@ describe("LoopTargetMissingModal (#2171)", () => {
     expect(onDismiss).toHaveBeenCalledTimes(2);
   });
 
-  // #2733 T-C3/T-C4 share the #2171 open-button cases: same row wiring.
+  // T-C3/T-C4 share the #2171 open-button cases: same row wiring.
   it.each([
     ["open", "onOpenConfig"],
     ["disable", "onDisable"],

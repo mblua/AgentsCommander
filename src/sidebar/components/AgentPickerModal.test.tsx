@@ -44,7 +44,7 @@ const mockSettingsApi = vi.hoisted(() => ({
 }));
 
 vi.mock("../../shared/ipc", async () => {
-  // #2306 - the pure move-order contract helpers are the real shared code, not a mock.
+  // The pure move-order contract helpers are the real shared code, not a mock.
   const { assertCodingAgentMoveOrder, expectedCodingAgentMoveOrder } = await vi.importActual<
     typeof import("../../shared/ipc")
   >("../../shared/ipc");
@@ -79,7 +79,7 @@ const WG_SCOPE_CONTEXT: AgentPickerScopeContext = {
   targetReplicaName: "dev-webpage-ui",
   currentCodingAgentId: "codex",
   currentProfile: "A",
-  // #1943 - the gray/default focus is an UNLOCKED replica whose SCOPE may still
+  // The gray/default focus is an UNLOCKED replica whose SCOPE may still
   // hold protected peers, which is exactly the case the removal bar must keep
   // separate from the picker selection.
   savedPair: null,
@@ -233,7 +233,7 @@ function scopeAwarePreview(): void {
   mockSettingsApi.previewCodingAgentProfileSelection.mockImplementation(
     (req: { scope: string; assignmentMode?: string }) => {
       if (req.scope === "kind") {
-        // #1943 - the SAME scope changes meaning with `+ lock`, so the two
+        // The SAME scope changes meaning with `+ lock`, so the two
         // modes get different previews exactly as the backend would emit them.
         if (req.assignmentMode === "assignAndLock") {
           return Promise.resolve(kindLockPreview());
@@ -274,7 +274,7 @@ function scopeAwarePreview(): void {
   );
 }
 
-// ── #1943 selection-lock fixtures ──────────────────────────────────────────
+// ── Selection-lock fixtures ──────────────────────────────────────────
 
 /** Bulk `kind` with `+ lock` over three candidates, two of them protected - one
  *  of those already on the requested pair, which must STILL be listed. */
@@ -581,7 +581,7 @@ describe("AgentPickerModal", () => {
     }
   });
 
-  // #3021 - the picker shows only the composed launch preview, still labelled Command.
+  // The picker shows only the composed launch preview, still labelled Command.
   it("keeps the composed Command preview from base and profile text", async () => {
     const { dispose } = renderPicker();
     try {
@@ -771,7 +771,7 @@ describe("AgentPickerModal", () => {
     expect(target("agentPicker.scope.replica")).toBeTruthy();
     expect(target("agentPicker.scope.kind")).toBeTruthy();
     expect(target("agentPicker.scope.workgroup")).toBeTruthy();
-    // #800: all three broad-scope previews are fetched up front, so each
+    // All three broad-scope previews are fetched up front, so each
     // radio button shows its true targetCount (not 0 for the unselected ones).
     expect(text("agentPicker.scope.replica")).toContain("1 replica");
     expect(text("agentPicker.scope.kind")).toContain("3 replicas");
@@ -946,7 +946,7 @@ describe("AgentPickerModal", () => {
   });
 
   it("hides the restart toggle for replica scope and applies without a backend restart (#537)", async () => {
-    // #537: replica scope is restarted via the post-assign "Restart now?" modal, so
+    // Replica scope is restarted via the post-assign "Restart now?" modal, so
     // the in-modal toggle is gone and apply never asks the backend to restart.
     const { dispose } = renderPicker({
       agentPath: WG_REPLICA_PATH,
@@ -1046,7 +1046,7 @@ describe("AgentPickerModal", () => {
     target<HTMLButtonElement>("agentPicker.apply").click();
     await settle();
 
-    // #537: the failure banner leads with the human-readable backend message
+    // The failure banner leads with the human-readable backend message
     // (not the internal code) and is surfaced loudly via a toast as well.
     expect(target("agentPicker.errors")).toBeTruthy();
     expect(text("agentPicker.errors")).toContain("Assignment failed");
@@ -1212,7 +1212,7 @@ describe("AgentPickerModal", () => {
     dispose();
   });
 
-  // #551: disable "Assign to this replica" when the pending selection still equals
+  // Disable "Assign to this replica" when the pending selection still equals
   // the replica's current Coding Agent + Profile (assign flows opt in).
   describe("redundant replica assignment (#551)", () => {
     const REDUNDANT_TOOLTIP = "This replica already uses this Coding Agent + Profile.";
@@ -1289,7 +1289,7 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    // #592: drift overrides the #551 redundancy disable. When the target session's
+    // Drift overrides the #551 redundancy disable. When the target session's
     // loaded profile no longer matches its configuration (profileOutdated), the
     // same-pair re-assign is meaningful (re-stamp the cell content + relaunch), so
     // "Assign to this replica" must stay ENABLED even on the otherwise-redundant pair.
@@ -1444,7 +1444,7 @@ describe("AgentPickerModal", () => {
     });
   });
 
-  // #1943 - the approved selection-lock picker. The fingerprint echoed with each
+  // The approved selection-lock picker. The fingerprint echoed with each
   // policy is the whole safety mechanism, so every assertion here pins exactly
   // what the backend receives (and, for Cancel, that it receives nothing).
   describe("selection lock picker (#1943)", () => {
@@ -1531,7 +1531,7 @@ describe("AgentPickerModal", () => {
       target<HTMLButtonElement>("agentPicker.apply").click();
       await settle();
 
-      // #2051 - the replica preview IS the confirmation: echoing its own
+      // The replica preview IS the confirmation: echoing its own
       // fingerprint is what makes the one-step lock apply possible.
       expect(mockSettingsApi.applyCodingAgentProfileSelection).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1564,7 +1564,7 @@ describe("AgentPickerModal", () => {
       clickRadio("agentPicker.scope.lock.replica");
       await settle();
 
-      // #2051 - the fingerprint is the confirmation, so the button cannot be
+      // The fingerprint is the confirmation, so the button cannot be
       // clicked before the preview that mints it has landed.
       expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
       expect(text("agentPicker.previewBusy")).toContain("Loading targets");
@@ -1593,7 +1593,7 @@ describe("AgentPickerModal", () => {
       target<HTMLButtonElement>("agentPicker.apply").click();
       await settle();
 
-      // #2051 - a rejected fingerprint is never replayed: the replica preview is
+      // A rejected fingerprint is never replayed: the replica preview is
       // refreshed (D5) so the next click carries the current value.
       expect(onSelect).not.toHaveBeenCalled();
       expect(text("agentPicker.toast")).toContain(staleFingerprintMessage);
@@ -2114,7 +2114,7 @@ describe("AgentPickerModal", () => {
       target<HTMLButtonElement>("agentPicker.removeLock").click();
       await settle();
 
-      // #1942 keeps the promise open until the operation really settles.
+      // The promise stays open until the operation really settles.
       expect(target<HTMLButtonElement>("agentPicker.removeLock").disabled).toBe(true);
 
       resolveRemoval(removalApplyResult({ scope: "kind", removedCount: 2, candidateCount: 3 }));
@@ -2264,7 +2264,7 @@ describe("AgentPickerModal", () => {
       const bar = target("agentPicker.lockBar");
       const body = modal.querySelector(".agent-profile-assignment-body");
       expect(body).toBeTruthy();
-      // Layout A (#2014): the bar is a flex child of the modal BELOW the
+      // Layout A: the bar is a flex child of the modal BELOW the
       // three-panel body, so DOM order IS the layout contract.
       expect(bar.parentElement).toBe(modal);
       expect(
@@ -3917,7 +3917,7 @@ describe("AgentPickerModal", () => {
   });
 });
 
-// #2681 - weekly quota remaining next to the agent name in the provider list.
+// Weekly quota remaining next to the agent name in the provider list.
 describe("AgentPickerModal weekly quota remaining", () => {
   beforeEach(() => {
     currentSettings = settings();
