@@ -106,7 +106,7 @@ impl ResourceMonitorState {
         }
     }
 
-    /// #1151 - registry-only cleanup retry for an ORPHANED quarantined group: one whose
+    /// Registry-only cleanup retry for an ORPHANED quarantined group: one whose
     /// public session row is gone, so `SelectionCoordinator::watchdog_resource_kill`
     /// returns `NoPublicSession` and no production caller can ever reach `kill_group`
     /// for it again. Without this the group's admission permit leaks permanently.
@@ -161,7 +161,7 @@ impl ResourceMonitorState {
         Ok(QuarantineRetryOutcome::Completed(result))
     }
 
-    /// #1151 - true if this single group still counts toward the admission cap. Mirrors
+    /// True if this single group still counts toward the admission cap. Mirrors
     /// the `active_count` predicate for one group so callers never re-derive it. An
     /// absent group returns false: it cannot be occupying a slot. Returns false on an
     /// unsupported backend, matching `active_agent_groups()`.
@@ -176,7 +176,7 @@ impl ResourceMonitorState {
         })
     }
 
-    /// #632 B2a - shared kill implementation. `fresh_targets_only` controls only the
+    /// Shared kill implementation. `fresh_targets_only` controls only the
     /// target SEED, never the verification: when true (app-shutdown bulk cleanup) the
     /// accumulated `observed_processes` set is skipped and only the fresh `observe_tree`
     /// is targeted, so the reaper does not walk hundreds of stale-dead PIDs (each of
@@ -185,7 +185,7 @@ impl ResourceMonitorState {
     /// before this path; jobs are created per child in `spawn_sync`, `pty/job.rs`), so
     /// the fresh set is normally empty; its survivors are job-less sessions' trees.
     ///
-    /// #1151 - `expected_quarantined_root` is the same kind of knob for AUTHORITY rather
+    /// `expected_quarantined_root` is the same kind of knob for AUTHORITY rather
     /// than targets: a caller-supplied binding that narrows which registration this kill
     /// may act on. It is checked inside the SAME critical section that flips the group to
     /// `Terminating`, so a stale watchdog sample cannot act on a replacement row. Like
@@ -214,7 +214,7 @@ impl ResourceMonitorState {
                     finalized: false,
                 });
             };
-            // #1151 - when a caller binds this kill to a specific quarantined
+            // When a caller binds this kill to a specific quarantined
             // registration, verify state and root identity inside the SAME critical
             // section that flips to Terminating. A stale watchdog sample must never act
             // on a replacement row (the only way one can exist under the same UUID is
@@ -324,7 +324,7 @@ impl ResourceMonitorState {
             }
             None => None,
         };
-        // #942 - we are committed to killing and have touched no process yet: tag the
+        // We are committed to killing and have touched no process yet: tag the
         // stop as AC-initiated so the PTY child-exit event can never read it as a child
         // that died on its own. Deliberately AFTER the early returns above (a group that
         // is not registered, already terminating or already terminated kills nothing, so
@@ -419,7 +419,7 @@ impl ResourceMonitorState {
             quarantined,
             message,
             blocked_by_security,
-            // #647: kill_group only accounts/verifies; the command finalizes the
+            // Kill_group only accounts/verifies; the command finalizes the
             // session (PTY teardown + Exited tile), so this is always false here.
             finalized: false,
         })
@@ -435,10 +435,10 @@ impl ResourceMonitorState {
         pass: &CleanupPass,
     ) -> Result<(ResourceGroupState, String, bool), String> {
         let quarantined = !errors.is_empty();
-        // #647 D: flag an AV/EDR ACCESS_DENIED (exact `win32 error 5`) so the UI can
+        // Flag an AV/EDR ACCESS_DENIED (exact `win32 error 5`) so the UI can
         // add the exclusion guidance; the per-PID detail stays in `message`.
         let blocked_by_security = quarantined && has_access_denied_signature(errors);
-        // #1438 - a quarantined session-destroy is the evidence trail for the separate
+        // A quarantined session-destroy is the evidence trail for the separate
         // locked-directory defect: dump the full deduped target list once, so a follow-up
         // ticket can name the holder instead of guessing. Gated to SessionDestroy because
         // retry_orphaned_quarantine forwards ResourceKillReason::Watchdog, so a stuck
@@ -679,7 +679,7 @@ impl ResourceMonitorState {
                     );
                 }
                 Ok(Some(_)) | Err(_) => {
-                    // #647 D: per-PID diagnostic so future AV-block repros are
+                    // Per-PID diagnostic so future AV-block repros are
                     // conclusive from the log (the error already begins with `pid <n>:`).
                     log::warn!(
                         "[resource-monitor] kill-failed session={} reason={} error={}",
@@ -837,9 +837,9 @@ impl ResourceMonitorState {
         })
     }
 
-    /// #632 - app-shutdown bulk cleanup. Uses fresh-tree-only targets
+    /// App-shutdown bulk cleanup. Uses fresh-tree-only targets
     /// (`kill_group_inner` with `fresh_targets_only = true`). Its only caller is the
-    /// app-exit handler. Fresh-only avoids re-introducing the #632 hang: after the
+    /// app-exit handler. Fresh-only avoids re-introducing the shutdown hang: after the
     /// Job Object kill the live tree is empty, and walking the accumulated stale set
     /// here would pay one full toolhelp snapshot per dead PID. Per-session kills keep
     /// the union behavior, which stays bounded via the B2b sampling prune.
@@ -881,13 +881,13 @@ fn cleanup_retained_targets(
     fresh_targets_only: bool,
 ) -> Vec<ObservedProcess> {
     if fresh_targets_only {
-        // #632 B2a - at shutdown, ignore the accumulated set entirely; target only the
+        // At shutdown, ignore the accumulated set entirely; target only the
         // fresh live tree captured below. It is normally empty because the Job Object
         // kill has already terminated each jobbed session's tree (lib.rs fires
         // kill_all_jobs() before this path runs; jobs are created per child at spawn,
         // pty/job.rs), so this fresh walk exists to catch job-less survivors and is
         // the only source of targets on this path. Targets commonly resolve
-        // AlreadyGone here; killed=0 is the expected, correct record (#1438).
+        // AlreadyGone here; killed=0 is the expected, correct record.
         Vec::new()
     } else {
         group

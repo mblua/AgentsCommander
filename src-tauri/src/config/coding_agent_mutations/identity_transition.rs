@@ -12,7 +12,7 @@ pub(crate) enum IdentityTransitionReadState {
     Complete,
 }
 
-// Fields are read only by tests until the source protocol is activated (#2897).
+// Fields are read only by tests until the source protocol is activated.
 #[allow(
     dead_code,
     reason = "fields read only by tests until the source protocol is activated (#2897)"
