@@ -300,7 +300,7 @@ describe("#1028 badge title carries the third state", () => {
   });
 
   it("leaves the title exactly as it was when the repo is known clean", () => {
-    // The pre-#1028 title, unchanged: a clean repo must not gain tooltip noise.
+    // The earlier title, unchanged: a clean repo must not gain tooltip noise.
     expect(formatReplicaRepoBadgeTitle({ sourcePath: REPO, dirty: false })).toBe(REPO);
   });
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// One-command project version bumper for issue #201.
+// One-command project version bumper.
 //
 // Updates every project version location to the same X.Y.Z so future bumps
 // can never leave package.json / package-lock.json / Cargo / Tauri metadata

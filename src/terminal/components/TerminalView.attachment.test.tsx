@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 //
-// The frontend attachment surface. Three properties the restored #961
+// The frontend attachment surface. Three properties the restored fix
 // seed/reconcile suite does not cover, because F introduces them:
 //
 //   1. ORDERING. Attach and detach are async invokes whose completion order is
 //      not their call order. A `detach(A)` from an earlier transition landing
 //      after a later `attach(A)` would leave the window displaying a session
 //      it is no longer attached to: a silent freeze indistinguishable from
-//      #1363 itself. The per-window promise chain plus the desired-state check
+//      the original bug. The per-window promise chain plus the desired-state check
 //      after every await is what prevents it, and it is load-bearing, not
 //      belt-and-braces (plan 5.1).
 //   2. A REJECTED INVOKE MUST NOT POISON the chain, or one transport failure
@@ -1358,7 +1358,7 @@ describe("TerminalView attachment (#1363)", () => {
   // viewport to the current screen exactly once. The attach fetch is held so
   // the selectSession priming sync fires with the PRE-snapshot grid (80x24),
   // exactly as in production where the attach IPC round-trip spans animation
-  // frames; the snapshot carries rows 27 / cols 81, so after the #1439 dedup
+  // frames; the snapshot carries rows 27 / cols 81, so after the dedup
   // key invalidation the settle's own resize is NOT deduplicated. pty_resize
   // is gated so the history simulation provably lands after the reset (the
   // reset zeroes the buffer metrics) and before the bottoming. PRE-FIX RED:
@@ -1461,7 +1461,7 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
-  // #1532 replaces the falsified direct xterm round-trip with one real,
+  // Replaces the falsified direct xterm round-trip with one real,
   // App-owned split-layout pulse. The observer/settlement cases below use a
   // controllable ResizeObserver and the shared deterministic frame queue.
 
@@ -2967,7 +2967,7 @@ describe("TerminalView attachment (#1363)", () => {
       expect(terminal.scrollToBottomCalls).toBe(1);
       expect(terminal.buffer.active.viewportY).toBe(0);
 
-      // Settle-window sub-step (wheel guard, #1489 4.5): switch away and back
+      // Settle-window sub-step (wheel guard, 4.5): switch away and back
       // (second generation, gated writes); complete the second replay; before
       // the settle's rAF (a setTimeout(0) in this harness) fires, dispatch a
       // real wheel event on `terminal.element` - the marker suppresses only

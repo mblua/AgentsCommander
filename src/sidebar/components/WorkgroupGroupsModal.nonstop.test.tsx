@@ -14,7 +14,7 @@ import WorkgroupGroupsModal from "./WorkgroupGroupsModal";
 
 // The Non-stop Sound Alert is platform-independent now, so the modal
 // must not gate its sound controls on isWindows. The whole file runs with
-// `isWindows: false`, i.e. as a non-Windows host; the #777 cases above never read
+// `isWindows: false`, i.e. as a non-Windows host; the cases above never read
 // isWindows, so pinning it false here cannot mask a regression in them.
 vi.mock("../../shared/platform", async (orig) => ({
   ...(await orig<typeof import("../../shared/platform")>()),

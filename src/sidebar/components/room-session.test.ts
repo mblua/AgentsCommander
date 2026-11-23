@@ -99,7 +99,7 @@ describe("room-session working predicates", () => {
 
   it("pins running plus pendingReview as not working", () => {
     const group = room("wg-1-dev-team");
-    // At-rest writers pair pendingReview with waitingForInput, but #882
+    // At-rest writers pair pendingReview with waitingForInput, but one fix
     // deliberately preserves the existing constructed-state behavior too.
     sessionsStore.setSessions([replicaSession(group.name, "running", { pendingReview: true })]);
 

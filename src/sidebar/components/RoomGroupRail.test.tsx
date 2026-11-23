@@ -741,7 +741,7 @@ describe("RoomGroupRail", () => {
       });
 
       // Typing must not drop focus: <Index> keeps the row's DOM stable while
-      // updateGroup replaces the row object per keystroke (the #614 trap).
+      // updateGroup replaces the row object per keystroke (the keyed-row trap).
       input(added, "B");
       input(added, "Ba");
       await waitFor(() => {
@@ -1073,7 +1073,7 @@ describe("RoomGroupRail", () => {
   });
 });
 
-// #1614 section 9.1 frontend tests / section 15.4. F4 (`RoomGroupRail.tsx:67`,
+// Section 9.1 frontend tests / section 15.4. F4 (`RoomGroupRail.tsx:67`,
 // `roomNumber`, the rail SORT KEY) and F5 (`:72`, `roomTooltipLabel`, the visible
 // tooltip row). Left unrewired, F4 collapses every Room to
 // `Number.MAX_SAFE_INTEGER` and sorts it last, and F5 shows the raw directory

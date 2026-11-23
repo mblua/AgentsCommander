@@ -7,7 +7,7 @@ import { declProps, declValue, scanRules } from "./css-test-helpers";
 // .sidebar-scrollable. jsdom never renders scrollbars, so the stylesheet bytes
 // are the contract. scanRules() is brace-based and so CRLF-safe; every helper
 // throws on a miss, so no assertion below can pass on an empty match.
-// #2579 moved the scrollbar values to src/shared/styles/scrollbars.css; they are
+// Moved the scrollbar values to src/shared/styles/scrollbars.css; they are
 // now owned by src/shared/styles/scrollbars-css.test.ts (G1/G3), and T4 here
 // asserts the rails inherit that global rule.
 const CSS = readFileSync(new URL("./sidebar.css", import.meta.url), "utf8");

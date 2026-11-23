@@ -1,14 +1,14 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// #1351 - the coordinator section now carries a REAL header inside
+// The coordinator section now carries a REAL header inside
 // .coord-quick-access-group. jsdom never applies this stylesheet, so the bytes on
 // disk are the only place the visibility gate can be pinned. If the gate slides
 // back onto the inner .coord-quick-access strip, the header stays visible in every
 // style that hides the strip and each of them grows an orphan header.
 const CSS = readFileSync(new URL("./sidebar.css", import.meta.url), "utf8");
 
-// #1351 amend — the header's computed style is identical outside .ac-wg-group, but its
+// Amend — the header's computed style is identical outside .ac-wg-group, but its
 // POSITION comes from the container's box. Revision 1 only checked the former, so the
 // section shipped 6px to the left of its siblings in the user's own sidebar style. The
 // left inset is pinned here, computed from the bytes on disk, for every enabling style.
