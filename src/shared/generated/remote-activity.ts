@@ -1,4 +1,4 @@
-// Generated from Rust by ts-rs. Do not edit by hand.
+// Generated from Rust by ts-rs (#4389). Do not edit by hand.
 
 export type CiState = "unknown" | "idle" | "running";
 
