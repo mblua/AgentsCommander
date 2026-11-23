@@ -1,4 +1,4 @@
-//! Disk access for temp-room folders (#4779). Knows no naming rule.
+//! Disk access for temp-room folders. Knows no naming rule.
 
 use std::path::Path;
 

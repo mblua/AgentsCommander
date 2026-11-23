@@ -2,9 +2,9 @@
 //!
 //! Both `lib::run()` (GUI) and `main()` (CLI branch, before `cli::handle_cli`)
 //! call [`init_logger`] so every `log::*` invocation reaches a single sink:
-//! stderr **and** `<config_dir>/app.log`. Pre-#137-followup the CLI path
+//! stderr **and** `<config_dir>/app.log`. Previously the CLI path
 //! skipped this and silently dropped every `log::*` call (including the
-//! `[task]` audit lines), undermining plan #137 §3a's HIGH-1 mitigation.
+//! `[task]` audit lines), undermining the HIGH-1 mitigation.
 //!
 //! Idempotent via a process-wide [`OnceLock`]: calling more than once is a
 //! silent no-op. Defensive only — current call sites are mutually exclusive
@@ -116,18 +116,18 @@ pub(crate) fn collapse_payload_task<T>(
     }
 }
 
-/// #612 runtime-adjustable verbosity for our own targets (`agentscommander*`),
+/// Runtime-adjustable verbosity for our own targets (`agentscommander*`),
 /// stored as `log::Level as u8` (Error=1 .. Trace=5). Installed ONLY on the
 /// no-RUST_LOG path (see `init_logger_inner`); the `RUST_LOG` dev-override path
 /// keeps `env_logger` frozen and leaves this unset.
 static RUNTIME_LEVEL: OnceLock<Arc<AtomicU8>> = OnceLock::new();
 
-/// #612 fixed inner filter for the gated path: third-party crates pinned at
+/// Fixed inner filter for the gated path: third-party crates pinned at
 /// `warn`; our own targets opened to `trace` so the runtime atomic (not
 /// `env_logger`) is the sole gate for `agentscommander*`.
 const GATE_INNER_FILTER: &str = "warn,agentscommander=trace";
 
-/// #612 lenient string -> Level for the runtime gate. None / legacy full-filter
+/// Lenient string -> Level for the runtime gate. None / legacy full-filter
 /// string / typo all fall back to Info (the historical default).
 fn level_from_str(s: &str) -> log::Level {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -140,7 +140,7 @@ fn level_from_str(s: &str) -> log::Level {
     }
 }
 
-/// #612 strict normalize for the command boundary: returns the canonical
+/// Strict normalize for the command boundary: returns the canonical
 /// lowercase string for a valid level, else None (so `set_log_level` rejects
 /// junk instead of silently persisting it).
 pub fn normalize_log_level(s: &str) -> Option<&'static str> {
@@ -154,7 +154,7 @@ pub fn normalize_log_level(s: &str) -> Option<&'static str> {
     }
 }
 
-/// #612 global `max_level` for the gated path. Clamped to at least Warn so
+/// Global `max_level` for the gated path. Clamped to at least Warn so
 /// third-party `warn!` stays visible even when the user picks Error for our own
 /// targets; raising it to the selected level lets the `log!` macro short-circuit
 /// suppressed debug!/trace! on hot paths BEFORE they reach the gate (the PTY
@@ -163,11 +163,11 @@ fn max_filter_for(level: log::Level) -> log::LevelFilter {
     std::cmp::max(level.to_level_filter(), log::LevelFilter::Warn)
 }
 
-/// #612 thin `log::Log` wrapper: consults the runtime atomic for
+/// Thin `log::Log` wrapper: consults the runtime atomic for
 /// `agentscommander*` targets and delegates everything else to a fixed inner
 /// `env_logger::Logger` (third-party crates pinned by `GATE_INNER_FILTER`).
 /// Lets the level change with no restart while reusing the inner logger's
-/// format closure (timestamp + secret scrub + #264 sink + rotation) unchanged.
+/// format closure (timestamp + secret scrub + error sink + rotation) unchanged.
 struct LevelGateLogger {
     inner: env_logger::Logger,
     level: Arc<AtomicU8>,
@@ -186,7 +186,7 @@ impl log::Log for LevelGateLogger {
     fn log(&self, record: &log::Record) {
         // Re-check per the log::Log contract: the global max_level may admit
         // records this gate rejects. Delegating to inner reuses the existing
-        // format closure unchanged (scrub + #264 sink + rotation).
+        // format closure unchanged (scrub + error sink + rotation).
         if self.enabled(record.metadata()) {
             self.inner.log(record);
         }

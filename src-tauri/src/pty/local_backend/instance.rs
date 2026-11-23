@@ -18,18 +18,18 @@ pub(super) struct PtyInstance {
     pub(super) writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pub(super) child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     pub(super) job: Option<crate::pty::job::JobObject>,
-    /// #973 (C) - the size the `ConPTY` is actually at, so a resize that changes nothing is
+    /// The size the `ConPTY` is actually at, so a resize that changes nothing is
     /// not sent to the child. Seeded from the size the PTY was opened at.
     pub(super) size: Mutex<(u16, u16)>,
-    /// #973 (B) - held closed until the child has rendered something. See `StartupGate`.
+    /// Held closed until the child has rendered something. See `StartupGate`.
     pub(super) startup_gate: Mutex<StartupGate>,
-    /// #973 (B) - the same fact as the gate, as one relaxed atomic, so the PTY read loop
+    /// The same fact as the gate, as one relaxed atomic, so the PTY read loop
     /// can skip the lock on every chunk once the child is up. The gate is the truth; this
     /// is only a fast path, and a stale `false` costs one no-op call.
     pub(super) rendered: Arc<AtomicBool>,
 }
 
-/// #973 (B) - a PTY resize that lands while a coding agent's TUI is starting up makes it
+/// A PTY resize that lands while a coding agent's TUI is starting up makes it
 /// redraw its still-empty viewport and lose the wakeup for the content that becomes ready
 /// right after. The terminal stays blank, the process stays alive, and any keypress paints
 /// it. Measured on a bare `ConPTY`: a resize in that window blanks Codex 8 times in 10.
@@ -64,7 +64,7 @@ pub(super) struct PtyInstance {
 /// carries state across reads and knows what an escape is, so both are closed by construction
 /// rather than by another special case.
 ///
-/// **Why not #942's paint floor.** That floor is 256 bytes and the blank child sits at 345:
+/// **Why not the spawn-diagnostics paint floor.** That floor is 256 bytes and the blank child sits at 345:
 /// it would fire for a child that is hung.
 ///
 /// **Why there is no timeout escape.** A child that never renders is showing nothing, so a
@@ -79,7 +79,7 @@ pub(super) enum StartupGate {
     Open,
 }
 
-/// #973 - decide what to do with a resize the view asked for, and do it. This is the whole
+/// Decide what to do with a resize the view asked for, and do it. This is the whole
 /// of B and C, and it is a free function over the instance so it can be tested against a
 /// real `ConPTY`: the backend itself cannot be built in a unit test, because its `GitWatcher`
 /// needs a Tauri `AppHandle`, and none of that has anything to do with resizing a PTY.
@@ -91,7 +91,7 @@ pub(super) fn resize_instance(
     cols: u16,
     rows: u16,
 ) -> Result<bool, AppError> {
-    // #973 - refuse a degenerate size FIRST, ahead of the gate.
+    // Refuse a degenerate size FIRST, ahead of the gate.
     //
     // The gate is last-wins (`StartupGate::on_resize`), so a `0x0` reaching it OVERWRITES the
     // real size the view is waiting to give the child. The hand-over then pops the `0x0`,
@@ -130,7 +130,7 @@ pub(super) fn resize_instance(
     send_size_to_conpty(instance, id, cols, rows)
 }
 
-/// #973 (C) - do not tell the child about a resize that is not a resize.
+/// Do not tell the child about a resize that is not a resize.
 ///
 /// `ConPTY` delivers even a same-size `ResizePseudoConsole` to the client as a real event, and
 /// the view fires 5-20 identical resizes per attach (`TerminalView.tsx:85-95`, a double
@@ -146,7 +146,7 @@ pub(super) fn send_size_to_conpty(
     cols: u16,
     rows: u16,
 ) -> Result<bool, AppError> {
-    // #973 - refuse a degenerate size. Defence in depth: the request path is guarded ahead of
+    // Refuse a degenerate size. Defence in depth: the request path is guarded ahead of
     // the gate in `resize_instance`, and this is the last line before `master.resize()`, which
     // is also what `hand_over_held_size` calls with a size that has been sitting in the gate.
     //
@@ -182,7 +182,7 @@ pub(super) fn send_size_to_conpty(
     Ok(true)
 }
 
-/// #973 (B) - the child has rendered something, so the startup window is behind us. Open the
+/// The child has rendered something, so the startup window is behind us. Open the
 /// gate for good and hand the `ConPTY` the size the view has been waiting to give it.
 ///
 /// Returns the size the `ConPTY` ACTUALLY took, so the caller can bring the vt100 screen along
@@ -249,7 +249,7 @@ impl StartupGate {
 }
 
 impl PtyInstance {
-    /// #973 (C) - has the size actually moved?
+    /// Has the size actually moved?
     ///
     /// The frontend calls resize unconditionally (`TerminalView.tsx:85-95`, from a double
     /// `requestAnimationFrame` plus a `ResizeObserver`), so one attach fires 5-20 identical
@@ -328,14 +328,14 @@ pub(super) fn prepare_spawn_instance(
         }
     };
 
-    // #973 (B) - the child has rendered nothing yet, so the gate starts closed.
+    // The child has rendered nothing yet, so the gate starts closed.
     let rendered = Arc::new(AtomicBool::new(false));
     let instance = PtyInstance {
         master: Arc::new(Mutex::new(pair.master)),
         writer: Arc::new(Mutex::new(writer)),
         child: Some(child),
         job,
-        // #973 - the size we actually opened the ConPTY at (see PtyViewport).
+        // The size we actually opened the ConPTY at (see PtyViewport).
         size: Mutex::new((cols, rows)),
         startup_gate: Mutex::new(StartupGate::Holding(None)),
         rendered: Arc::clone(&rendered),

@@ -1,4 +1,4 @@
-//! #632 - per-agent Windows Job Object for reliable process-tree teardown.
+//! Per-agent Windows Job Object for reliable process-tree teardown.
 //!
 //! Each spawned agent's `ConPTY` child is assigned to its own Job Object created
 //! with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Terminating the job (explicitly via
@@ -48,7 +48,7 @@ mod windows_impl;
 #[cfg(not(windows))]
 mod stub_impl;
 
-// #632 LOW-2 - the ONE automated proof that the job kills the whole tree (child AND
+// LOW-2 - the ONE automated proof that the job kills the whole tree (child AND
 // grandchild). Deliberately NOT #[ignore] and gated #[cfg(windows)] so it runs by
 // default in the `rust-regression-windows` CI lane (runs-on: windows-latest, executes
 // `cargo test --lib --bins --tests`). Real processes; written defensively (generous

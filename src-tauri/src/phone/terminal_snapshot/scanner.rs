@@ -106,7 +106,7 @@ fn verified_scan_directories(requester_root: &Path) -> Option<ScanDirectories> {
 }
 
 impl SnapshotMailboxScanner {
-    /// (#1399) For a delivery-only poller. Reuses whatever owner is currently
+    /// For a delivery-only poller. Reuses whatever owner is currently
     /// registered, so no second owner is created, and falls back to a
     /// non-registering owner rather than to `Default`, whose hand-written impl
     /// writes itself into the process-global `ACTIVE_SCANNER_SHUTDOWN_OWNER`
@@ -114,8 +114,8 @@ impl SnapshotMailboxScanner {
     /// the shutdown drain.
     ///
     /// (R8) Deliberately "whatever is currently registered" and not "the live
-    /// owner": `active()` returns whatever registered LAST, and while #1403 is
-    /// open that is an `api::dispatcher` throwaway roughly twice a second, not
+    /// owner": `active()` returns whatever registered LAST, and currently
+    /// that is an `api::dispatcher` throwaway roughly twice a second, not
     /// the long-lived poller's owner. Harmless, because a delivery poller never
     /// spawns a scanner task and so never uses the owner it holds.
     ///

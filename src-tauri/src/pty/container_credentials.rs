@@ -1,4 +1,4 @@
-//! #930 - resolve, copy in, and tear down a coding agent's host credential file
+//! Resolve, copy in, and tear down a coding agent's host credential file
 //! for container runtime. The per-agent *descriptor* lives on
 //! `CodingAgentProfile` (session/profile.rs); this module turns a descriptor +
 //! the session's host mount root into a concrete copy job and executes it.
@@ -15,7 +15,7 @@ use crate::session::profile::{ContainerCredentialSource, ContainerFirstRunState}
 pub struct ContainerCredentialPlan {
     pub source: PathBuf,
     pub dest: PathBuf,
-    /// #930 - first-run state to stamp in the dest dir after the copy (None =
+    /// First-run state to stamp in the dest dir after the copy (None =
     /// none for this agent). Carried on the plan because the container backend
     /// sees only the plan, never the agent profile.
     pub first_run: Option<ContainerFirstRunState>,
@@ -164,7 +164,7 @@ fn set_true(map: &mut serde_json::Map<String, serde_json::Value>, key: &str) -> 
     true
 }
 
-/// #930 - stamp the container's first-run state next to the credential we just
+/// Stamp the container's first-run state next to the credential we just
 /// copied, so the agent's interactive TUI actually uses it. Claude Code gates
 /// its onboarding wizard on `hasCompletedOnboarding` in
 /// `$CLAUDE_CONFIG_DIR/.claude.json` and the folder-trust dialog on

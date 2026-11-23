@@ -1,5 +1,5 @@
-//! (#871) Substantive-submission classifier for raw PTY keystroke input, and
-//! (#2336) the per-session typing-hold state that defers peer wakes while the
+//! Substantive-submission classifier for raw PTY keystroke input, and
+//! the per-session typing-hold state that defers peer wakes while the
 //! user is typing.
 //!
 //! Restart Session stamps a durable "start fresh on restore" intent. That intent
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-/// #1682 - how recent a user-driven PTY write must be for a busy->idle edge to
+/// How recent a user-driven PTY write must be for a busy->idle edge to
 /// still be attributable to it rather than to agent work. Read by BOTH stamp
 /// gates: the aged typing gate over `pending_within` below, and the
 /// control-write gate over `IdleDetector::control_write_age`.
@@ -40,13 +40,13 @@ pub const USER_WRITE_STAMP_WINDOW: Duration = Duration::from_millis(6000);
 #[derive(Default)]
 pub struct SubstantiveInputTracker {
     pending_nonspace: HashMap<Uuid, bool>,
-    /// #1682 - when the most recent chunk that CONTRIBUTED non-whitespace
+    /// When the most recent chunk that CONTRIBUTED non-whitespace
     /// printable content for this id arrived. Not "the last chunk that left the
     /// flag set": a chunk that leaves the flag alone (an ESC-introduced
     /// sequence, a device reply, a bare control byte) must not refresh it, or
     /// nothing ever ages out in a terminal that is receiving anything.
     /// Maintained by `feed` and `reset`, back-dated in tests by
-    /// `backdate_pending_for_test`, read only by `pending_within`; #871 never reads it.
+    /// `backdate_pending_for_test`, read only by `pending_within`; the substantive-input gate never reads it.
     pending_since: HashMap<Uuid, Instant>,
 }
 
@@ -65,7 +65,7 @@ impl SubstantiveInputTracker {
     pub fn feed(&mut self, id: Uuid, data: &[u8]) -> bool {
         let pending = self.pending_nonspace.entry(id).or_insert(false);
         let effect = classify_chunk(pending, data);
-        // #1682 - the age half of the typing gate. `classify_chunk`'s effect on
+        // The age half of the typing gate. `classify_chunk`'s effect on
         // `*pending` and the returned `submitted` are untouched; this records
         // only WHEN content was last contributed, so a stale half-typed line
         // cannot suppress the stamp for the rest of the session.
@@ -90,10 +90,10 @@ impl SubstantiveInputTracker {
         self.pending_since.remove(&id);
     }
 
-    /// #1682 - does `id` have non-whitespace printable input pending since the
+    /// Does `id` have non-whitespace printable input pending since the
     /// last submit or fresh boundary, AND did the chunk that last contributed
     /// that content arrive within `max_age`? Read-only: it consumes nothing, so
-    /// the stamp path never mutates #871's state.
+    /// the stamp path never mutates the substantive-input state.
     ///
     /// The age half is required, not defensive: `classify_chunk` clears `pending_nonspace` only
     /// on CR/LF-with-content and on Ctrl-C / Ctrl-U, and outside this module only `reset` clears
