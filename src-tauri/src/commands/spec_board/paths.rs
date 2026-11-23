@@ -1,3 +1,6 @@
+//! Re-exports spec-board path helpers for the spec-board commands. Owns no
+//! state and adds no logic.
+
 #[cfg(test)]
 pub(super) use crate::spec_board::paths::path_compare_key;
 pub(super) use crate::spec_board::paths::{

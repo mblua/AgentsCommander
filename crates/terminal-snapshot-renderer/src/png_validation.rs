@@ -1,3 +1,6 @@
+//! PNG checks for terminal snapshots: signature, chunks, CRC and size limits
+//! against metadata. Owns no state. Does not render images.
+
 use std::io::Cursor;
 
 use crc32fast::Hasher;

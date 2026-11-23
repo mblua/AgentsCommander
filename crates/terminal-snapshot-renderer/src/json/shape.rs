@@ -1,3 +1,6 @@
+//! Pre-parse scanner that enforces size, depth and cell limits on snapshot
+//! JSON bytes. Owns only scan counters. Does not build the snapshot model.
+
 use std::collections::HashSet;
 
 use crate::protocol::{ProtocolError, MAX_BASE64_TEXT_BYTES, MAX_JSON_DEPTH};

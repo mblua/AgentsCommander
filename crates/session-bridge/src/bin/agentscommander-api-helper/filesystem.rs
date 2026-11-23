@@ -1,3 +1,7 @@
+//! Safe creation of terminal snapshot output files. Owns the open output file
+//! and the identity proofs of its parent directory chain. Does not fetch or
+//! render snapshots.
+
 use std::io::Write;
 
 pub(crate) struct SnapshotOutputFile {

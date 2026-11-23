@@ -1,3 +1,7 @@
+//! `terminal-snapshot` subcommand of the API helper: parses options, calls the
+//! host snapshot endpoint and writes the result. Owns only per-call options.
+//! Does not render snapshots or choose output file safety rules.
+
 use crate::config::{api_url, authorization_value, next_utf8};
 use crate::filesystem::{create_snapshot_output, validate_snapshot_output_path};
 use reqwest::header::{

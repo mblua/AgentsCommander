@@ -1,3 +1,7 @@
+//! `terminal-snapshot` CLI command: builds the host request, polls for the
+//! response and writes text or PNG output. Owns the command arguments and the
+//! stage history. Does not render snapshots itself.
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

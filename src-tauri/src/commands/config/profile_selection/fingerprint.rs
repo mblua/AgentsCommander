@@ -1,3 +1,7 @@
+//! Fingerprints for profile selection approvals (assign, remove, defaults),
+//! so a stale approval is rejected. Owns no state; it hashes inputs. Does not
+//! write selections.
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
