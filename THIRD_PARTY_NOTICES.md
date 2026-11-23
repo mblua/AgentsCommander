@@ -529,7 +529,6 @@ The DejaVu and Bitstream Vera-derived license permits redistribution and embeddi
 - windows-registry 0.6.1 — MIT OR Apache-2.0 — texts: T384, T385
 - windows-result 0.4.1 — MIT OR Apache-2.0 — texts: T384, T385
 - windows-strings 0.5.1 — MIT OR Apache-2.0 — texts: T384, T385
-- windows-sys 0.52.0 — MIT OR Apache-2.0 — texts: T384, T385
 - windows-sys 0.59.0 — MIT OR Apache-2.0 — texts: T384, T385
 - windows-sys 0.61.2 — MIT OR Apache-2.0 — texts: T384, T385
 - windows-targets 0.52.6 — MIT OR Apache-2.0 — texts: T384, T385
