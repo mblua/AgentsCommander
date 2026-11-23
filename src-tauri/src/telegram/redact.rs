@@ -11,7 +11,6 @@
 //!   `https://api.telegram.org/bot<TOKEN>/<method>` and
 //!   `https://api.telegram.org/file/bot<TOKEN>/<path>` URL shapes. The
 //!   token segment is identical in both; the single scanner handles both.
-//!   See issue #280 §1.
 //!
 //! * **Gemini API keys** — `?key=<value>` or `&key=<value>` in
 //!   `https://generativelanguage.googleapis.com/v1beta/...?key=<API_KEY>`.
@@ -27,7 +26,7 @@
 //!     `redact()`'s inline note and the
 //!     `redacts_short_query_key_values_intentionally` test.
 //!
-//! * **AgentsCommander credentials** (#4319):
+//! * **AgentsCommander credentials**:
 //!   - container API tokens `ac-container-<uuid>-<uuid>` are always masked
 //!     (`pty/container_tokens.rs` mints them with that prefix);
 //!   - a bare UUID is masked only right after a secret context:
@@ -84,7 +83,7 @@ pub fn redact(input: &str) -> String {
 /// [`redact`] plus every occurrence of the exact `needles`, in ONE pass over
 /// the original text: collect both sets of spans, merge the ones that overlap
 /// or touch, then render once. Two sequential passes let one pass break the
-/// other's match and leave a secret tail in clear (#4319). A merged span that
+/// other's match and leave a secret tail in clear. A merged span that
 /// holds a needle prints `<redacted>`; one made only of redactor spans `***`.
 pub(crate) fn redact_with_needles(text: &str, needles: &[String]) -> String {
     let mut spans: Vec<(usize, usize, bool)> = secret_spans(text)
@@ -153,7 +152,7 @@ fn secret_spans(input: &str) -> Vec<(usize, usize)> {
         // The leading byte (`?` or `&`) is consumed verbatim, then we replace
         // the value after `key=`.
         //
-        // #280 LOW-2 — the plan §0 specified a 20-char floor (matching the
+        // A stricter design specified a 20-char floor (matching the
         // 32-char real Gemini key length minus slack). We deliberately
         // accept ANY non-empty value here as defense-in-depth: real keys
         // are still scrubbed, and a future debug log printing
@@ -169,7 +168,7 @@ fn secret_spans(input: &str) -> Vec<(usize, usize)> {
             }
         }
 
-        // AgentsCommander credentials (#4319). Keep the context prefix,
+        // AgentsCommander credentials. Keep the context prefix,
         // mask only the secret.
         if has_ac {
             if let Some((keep, end)) = match_ac_credential(bytes, i) {

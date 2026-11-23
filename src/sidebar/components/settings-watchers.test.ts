@@ -105,7 +105,7 @@ describe("isWatcherConfig (#1171)", () => {
   });
 
   /**
-   * #1171 test 58g, the whole numeric contract and not only the obvious member of it.
+   * Test 58g, the whole numeric contract and not only the obvious member of it.
    *
    * `typeof n === "number" && n >= 0` is the naive correction and it must FAIL this: it still
    * admits `1.5` and `1e30`, both of which serde rejects for a `u64`, so both would be sent
@@ -138,7 +138,7 @@ describe("isWatcherConfig (#1171)", () => {
 });
 
 /**
- * #1171 - the birth state of a new row is a decision, not a preference.
+ * The birth state of a new row is a decision, not a preference.
  *
  * An empty pattern is a valid regex that matches every row, so a row born enabled turns Add
  * plus an accidental Save into a watcher that matches everything on every agent.
@@ -157,7 +157,7 @@ describe("a brand-new watcher row (#1171 test 58k)", () => {
 });
 
 /**
- * #1171 test 58g and 58h, the request half.
+ * Test 58g and 58h, the request half.
  *
  * Both halves of the draft travel and nothing comes from disk, because running is a property
  * of the whole set and the modal edits agents and watchers in one store that one Save writes
@@ -250,7 +250,7 @@ describe("the reach request (#1171)", () => {
   });
 });
 
-/** #1171 test 58i, the three wordings, which answer three different questions. */
+/** Test 58i, the three wordings, which answer three different questions. */
 describe("how a row states its reach (#1171 test 58i)", () => {
   const entry = (agentId: string, allocated: boolean): WatcherReachEntry => ({
     agentId,

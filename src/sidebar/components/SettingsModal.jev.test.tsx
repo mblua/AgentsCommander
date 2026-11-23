@@ -14,7 +14,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { AppSettings } from "../../shared/types";
 
-// #2232 phase 9 tests 1 to 4 and 14 — the Co-managed (Jev) settings group.
+// Tests 1 to 4 and 14 — the Co-managed (Jev) settings group.
 //
 // The group is a SIBLING of the Voice to Text section, outside its
 // <Show when={voiceToTextEnabled}> (plan section 4.1). Every test below therefore

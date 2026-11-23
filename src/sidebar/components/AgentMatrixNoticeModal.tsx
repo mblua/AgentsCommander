@@ -26,7 +26,7 @@ const AgentMatrixNoticeModal: Component<{
   return (
     <div
       class="modal-overlay"
-      role="presentation"
+      role="none"
       onClick={(e) => {
           if (e.target === e.currentTarget) props.onClose();
           else e.stopPropagation();

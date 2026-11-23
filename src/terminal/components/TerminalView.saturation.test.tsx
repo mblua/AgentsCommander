@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // #1283's two VERIFIED frontend defects, and only those. The delivery contract
-// that PR #1312 built on top of them is gone (#1363); what remains here is the
+// that PR #1312 built on top of them is gone; what remains here is the
 // pair of fixes that attacked real bugs and that F keeps untouched:
 //
 //   1. unbounded Xterm/WebGL retention  -> the four-entry LRU registry,
