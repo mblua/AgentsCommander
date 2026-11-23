@@ -34,11 +34,11 @@ export interface CodingAgentQuickConfigurationProps {
   onCancel?: () => void;
   onBeforeSave?: (settings: AppSettings) => AppSettings;
   ariaLabel?: string;
-  /** #2736 - Welcome screen only: status and tested chips plus Welcome order. */
+  /** Welcome screen only: status and tested chips plus Welcome order. */
   showInstallStatus?: boolean;
 }
 
-/** #1965 — private detail renderer shared by the catalog error and warning
+/** Private detail renderer shared by the catalog error and warning
  *  blocks: the path renders only when present, the reason always. It keeps the
  *  exact elements, order and test ids of the inline markup it replaces and adds
  *  no wrapper element. Props are read reactively, never destructured. */
@@ -55,11 +55,11 @@ const DiagnosticDetails: Component<{
   </>
 );
 
-/** The modal trap's focusable set (#2736 focus rescue reuses it). */
+/** The modal trap's focusable set. */
 const FOCUSABLE_SELECTOR =
   'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-/** #2736 - the ONLY composer of the install output box text. One trailing line
+/** The ONLY composer of the install output box text. One trailing line
  *  break per stream is dropped, so real output leaves no blank line before the
  *  exit-code line; everything else, the P3 truncation marker included, is kept. */
 export function formatInstallOutput(e: CodingAgentInstallFinished): string {
@@ -84,7 +84,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
       ? [...sortWelcomeAgents(codingAgentsStore.catalog(), welcomeStatus()), CUSTOM_PRESET]
       : [...codingAgentsStore.catalog(), CUSTOM_PRESET];
 
-  // #2736 - the status rows belong to the catalog generation they were asked
+  // The status rows belong to the catalog generation they were asked
   // in; a response for a superseded generation is discarded. A failure is not
   // fatal: no chips beyond "Not installed" and catalog order. Two reads can be
   // in flight at once, so only the latest request may publish.
@@ -136,7 +136,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     if (key === CUSTOM_PRESET.key) return null;
     return statusRowOf(key)?.testedLevel ?? null;
   };
-  /** #2784 R10 - the chip scopes the level to AgentsCommander BEFORE the level
+  /** The chip scopes the level to AgentsCommander BEFORE the level
    *  word, so no level word can read as a judgement of the coding agent itself. */
   const SUPPORT_CHIP_PREFIX = "AC Support";
   const SUPPORT_LABEL: Record<CodingAgentTestedLevel, string> = {
@@ -146,13 +146,13 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   };
   const supportChipText = (level: CodingAgentTestedLevel): string =>
     SUPPORT_CHIP_PREFIX + ": " + SUPPORT_LABEL[level];
-  /** #2784 - per-level Tested tooltip, verbatim from issue #2784. */
+  /** Per-level Tested tooltip, verbatim from issue #2784. */
   const TESTED_TOOLTIP: Record<CodingAgentTestedLevel, string> = {
     low: "Support for this Coding Agent in AgentsCommander is still experimental. If something does not work well here (blocking menus, etc.), please report it to the AgentsCommander project. Thank you!",
     medium: "Support for this Coding Agent in AgentsCommander is in beta. Most things should work; please report any issue you find to the AgentsCommander project. Thank you!",
     high: "This Coding Agent is well supported in AgentsCommander. If you still run into an issue, please report it to the AgentsCommander project. Thank you!",
   };
-  /** #2784 - Welcome identity line: "by <Vendor>", else the raw description.
+  /** Welcome identity line: "by <Vendor>", else the raw description.
    *  R3: the key-aware lookup, so Grok reads "by SpaceXAI" on an already-seeded install. */
   const vendorLine = (preset: CodingAgentDefinition): string => {
     const vendor = welcomeVendorForKey(preset.key, preset.description);
@@ -165,7 +165,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     return `Select ${preset.label}, ${statusLabel(preset.key)}${tested}`;
   };
 
-  // #2736 - silent install. Each update publishes a NEW Set so Solid reacts.
+  // Silent install. Each update publishes a NEW Set so Solid reacts.
   // Install is gated on the install-finished listener being registered, so a
   // fast completion event can never be lost and strand a row in Installing.
   const [installing, setInstalling] = createSignal<Set<string>>(new Set());
@@ -206,7 +206,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     const command = installCommandOf(key);
     if (command === null) return;
     try {
-      // The accessor itself throws in a non-secure context (#2135).
+      // The accessor itself throws in a non-secure context.
       await navigator.clipboard.writeText(command);
       toastStore.success("Command copied", { tag: "coding-agent-install-copy" });
     } catch (e) {
@@ -259,7 +259,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   const [customLabel, setCustomLabel] = createSignal("");
   const [customCommand, setCustomCommand] = createSignal("");
 
-  // #1965 — a preset selection belongs to the catalog generation it was made
+  // A preset selection belongs to the catalog generation it was made
   // in. A project switch or reload invalidates it: drop the catalog selection
   // and keep the manually typed custom fields.
   let observedGeneration = codingAgentsStore.generation();
@@ -331,7 +331,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     const preset = allPresets().find((p) => p.key === key);
     if (!preset) return;
 
-    // #1965 — validate the definition and its generation immediately before
+    // Validate the definition and its generation immediately before
     // starting, then again after the asynchronous settings read below: a preset
     // selected from an old generation must not register after switch/reload.
     const presetGeneration = selectionGeneration();
@@ -421,7 +421,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     if (props.showInstallStatus) void loadWelcomeStatus();
   });
 
-  // #2736 - the listen promise may resolve after unmount; the disposed flag
+  // The listen promise may resolve after unmount; the disposed flag
   // makes sure that late unlisten still runs.
   let disposed = false;
   let unlisten: UnlistenFn | null = null;
@@ -487,7 +487,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
           }>
             <p class="onboarding-welcome">{props.message}</p>
 
-            {/* #1965 — catalog status: never a silent fallback to embedded
+            {/* Catalog status: never a silent fallback to embedded
                 presets. Paths and reasons render as text. */}
             <Show when={codingAgentsStore.loading()}>
               <div

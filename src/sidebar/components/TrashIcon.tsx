@@ -1,7 +1,7 @@
 import type { Component } from "solid-js";
 
 /**
- * #895 — the delete glyph for destructive row actions. A monochrome SVG (not an
+ * The delete glyph for destructive row actions. A monochrome SVG (not an
  * emoji or a "✕" glyph) so it reads unambiguously as "delete" and stays crisp in
  * the Tauri webview. Callers size/tint it via the passed-in `class`
  * (fill: currentColor). Heroicons `trash` (solid).

@@ -1,7 +1,7 @@
 import type { Component } from "solid-js";
 
 /**
- * #1708 - the mirror of [[DetachIcon]]: the arrow points back INTO the
+ * The mirror of [[DetachIcon]]: the arrow points back INTO the
  * rectangle. Replaces the typographic glyph the detached state used in the
  * session context menu and the session row's detach button. Callers size/tint
  * it via the passed-in `class` (fill: currentColor). Heroicons

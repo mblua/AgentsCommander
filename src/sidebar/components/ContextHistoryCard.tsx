@@ -1,4 +1,4 @@
-// #3532 P11 / #4091 - presentational card with the session-window means of a row.
+// Presentational card with the session-window means of a row.
 // It only renders the state it is given: no owner, no IPC, no settings writes.
 import {
   Component, For, Match, Show, Switch, createEffect, createSignal, onCleanup, onMount,
