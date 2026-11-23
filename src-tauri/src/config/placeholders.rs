@@ -220,7 +220,7 @@ fn user_home() -> Option<&'static Path> {
 }
 
 /// Expand the 3 known AC tokens plus `%USER_HOME%` inside file CONTENT
-/// Config-folder seed, user home).
+/// (config-folder seed, user home).
 /// Unlike [`expand_placeholders`] this does NOT fail-closed on unknown `%...%`:
 /// a seeded template may legitimately contain other `%VAR%` text the tool reads
 /// at runtime, so unknown markers are left literal. Substituted paths are

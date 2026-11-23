@@ -193,8 +193,8 @@ You are in AgentsCommander, a terminal session manager coordinating multiple AI 
 "#
 );
 
-/// S4: `get_default_coordinator_template()` exactly as it shipped from
-/// (raise-hand) through base commit 1dd0b58, frozen as the second legacy
+/// #1005 S4: `get_default_coordinator_template()` exactly as it shipped from
+/// #684 (raise-hand) through base commit 1dd0b58, frozen as the second legacy
 /// snapshot so a pristine v2 `Context.coordinator.md` on disk keeps being
 /// recognized and auto-upgraded after the v3 token-minimization rewrite.
 /// Never edit. Provenance (G3): one-off run of the shipped accessor at
