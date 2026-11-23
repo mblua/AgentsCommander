@@ -1800,7 +1800,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const displayedProfileCellCommand = (agentId: string, letter: string): string => {
     const key = profileCellKey(agentId, letter);
-    if (Object.prototype.hasOwnProperty.call(profileCellText, key)) {
+    if (Object.hasOwn(profileCellText, key)) {
       return profileCellText[key] ?? "";
     }
     return profileCell(agentId, letter)?.command ?? "";
@@ -1808,7 +1808,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const cellEnvRows = (agentId: string, letter: string): ProfileCellEnvRow[] => {
     const key = profileCellKey(agentId, letter);
-    if (Object.prototype.hasOwnProperty.call(profileCellEnvRows, key)) {
+    if (Object.hasOwn(profileCellEnvRows, key)) {
       return profileCellEnvRows[key] ?? [];
     }
     const env = profileCell(agentId, letter)?.env ?? {};
@@ -5318,7 +5318,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   updateField("contextHistorySessionWindows", counts);
                   const colour = settings.data!.contextHistoryColorSessions;
                   if (colour === undefined || !counts.includes(colour)) {
-                    updateField("contextHistoryColorSessions", counts[counts.length - 1]);
+                    updateField("contextHistoryColorSessions", counts.at(-1));
                   }
                 }}
                 onColorSessions={(sessions) => updateField("contextHistoryColorSessions", sessions)}

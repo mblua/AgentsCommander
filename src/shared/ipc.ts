@@ -412,8 +412,8 @@ function selectConfigurationText(
   input: { command?: unknown; baseCommand?: unknown; additionalArguments?: unknown },
   key: "baseCommand" | "additionalArguments",
 ): string | undefined {
-  const hasNew = Object.prototype.hasOwnProperty.call(input, key);
-  const hasOld = Object.prototype.hasOwnProperty.call(input, "command");
+  const hasNew = Object.hasOwn(input, key);
+  const hasOld = Object.hasOwn(input, "command");
   const current = input[key];
   const legacy = input.command;
   if ((hasNew && typeof current !== "string") || (hasOld && typeof legacy !== "string")) {
@@ -430,7 +430,7 @@ function decodeBaseCommand<T extends AgentConfigWireInput | CodingAgentDefinitio
   input: T,
 ): Omit<T, "baseCommand" | "command"> & { command?: string } {
   const command = selectConfigurationText(input, "baseCommand");
-  if (!Object.prototype.hasOwnProperty.call(input, "baseCommand")) {
+  if (!Object.hasOwn(input, "baseCommand")) {
     return input as Omit<T, "baseCommand" | "command"> & { command?: string };
   }
   const { baseCommand: _baseCommand, command: _command, ...rest } = input;
@@ -439,7 +439,7 @@ function decodeBaseCommand<T extends AgentConfigWireInput | CodingAgentDefinitio
 
 function decodeProfileCell(input: ProfileCellConfigWireInput): ProfileCellConfigProjection {
   const command = selectConfigurationText(input, "additionalArguments");
-  if (!Object.prototype.hasOwnProperty.call(input, "additionalArguments")) {
+  if (!Object.hasOwn(input, "additionalArguments")) {
     return input as ProfileCellConfigProjection;
   }
   const { additionalArguments: _additionalArguments, command: _command, ...rest } = input;

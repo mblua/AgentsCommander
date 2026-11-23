@@ -111,7 +111,7 @@ export function activeLine(snapshot: PreflightTestSnapshot, cancelSent: boolean)
   if (running) return runningLine(running.source);
   if (snapshot.phase === "running") {
     const started = snapshot.stages.filter((stage) => stage.status !== "pending");
-    const last = started[started.length - 1];
+    const last = started.at(-1);
     return last ? runningLine(last.source) : PREPARING_TEXT;
   }
   return null;

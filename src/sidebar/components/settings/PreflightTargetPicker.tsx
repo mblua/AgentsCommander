@@ -11,7 +11,7 @@ const NO_MATCH = "No agents match your search.";
 /** #3832 - the last path segment, for either slash style. */
 export function targetBasename(path: string): string {
   const parts = path.split(/[\\/]+/).filter(Boolean);
-  return parts[parts.length - 1] ?? path;
+  return parts.at(-1) ?? path;
 }
 
 /** #3832 - the Profile line of one picker row; fallback replaces the plain line. */
