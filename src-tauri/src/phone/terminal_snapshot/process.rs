@@ -1,3 +1,6 @@
+//! Processes terminal snapshot requests from the mailbox, using the host
+//! state it is given. It does not render images itself.
+
 use super::failure::publish_correlated_ingress_failure;
 use super::failure::publish_host_outcome;
 use super::failure::publish_trusted_failure;

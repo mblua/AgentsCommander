@@ -1,3 +1,6 @@
+//! Session manager metadata setters: coding agent kind and pending spawn
+//! details. It does not spawn or restart sessions.
+
 use super::super::profile::CodingAgentKind;
 use super::super::session::SessionRepo;
 use super::carrier::{acquire_carrier_mutation_permit, CarrierMutationPermit};

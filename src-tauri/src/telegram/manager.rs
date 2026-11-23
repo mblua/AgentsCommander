@@ -1,3 +1,6 @@
+//! Telegram reader manager: tracks running session readers and who needs
+//! them. It does not talk to the Telegram API.
+
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
