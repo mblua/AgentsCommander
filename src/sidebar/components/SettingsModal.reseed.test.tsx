@@ -61,7 +61,7 @@ function renderAgents(agents: AgentConfig[], opts: Opts = {}) {
   const fake = new FakeTransport();
   fake.resolve("get_settings", baseSettings({ agents }));
   fake.resolve("get_web_server_status", false);
-  // #1965 — the report shape: all five fields, with the catalog under test.
+  // The report shape: all five fields, with the catalog under test.
   fake.resolve(REPORT_CMD, {
     primaryProjectRoot: null,
     sourcePath: null,
