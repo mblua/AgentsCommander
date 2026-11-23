@@ -262,7 +262,7 @@ const LEGACY_COLOUR_LITERAL_SELECTORS = [
   ".rm-titlebar-btn-close:hover",
 ];
 
-describe("#2245 resource-monitor.css byte contract", () => {
+describe("resource-monitor.css byte contract", () => {
   // 26
   it("declares no hiding or zero-sizing anywhere, in either rule family", () => {
     // Non-vacuity first: a parser that silently returned an empty or partial
@@ -608,7 +608,7 @@ describe("#2245 resource-monitor.css byte contract", () => {
 
 // A flex item that may shrink below its content lets the Agents rows
 // spill under the next section. Both sections keep their content height.
-describe("#2581 sections never shrink under their content", () => {
+describe("sections never shrink under their content", () => {
   it("declares flex-shrink: 0 and no min-height: 0 on .rm-groups, .rm-warnings", () => {
     for (const selector of [".rm-groups", ".rm-warnings"]) {
       const rule = baseRule(selector);
@@ -618,14 +618,14 @@ describe("#2581 sections never shrink under their content", () => {
   });
 });
 
-describe("#2583 the retired socket column leaves no stylesheet bytes", () => {
+describe("the retired socket column leaves no stylesheet bytes", () => {
   it("never spells network anywhere in the file, comments included", () => {
     expect(CSS).not.toContain("network");
   });
 });
 
 // The caption strip rides on the row's own tracks, gap and padding.
-describe("#2582 the column-header strip cannot drift from the row", () => {
+describe("the column-header strip cannot drift from the row", () => {
   it("repeats the row's tracks, gap and padding as equalities", () => {
     const header = containerRule(".rm-column-header-main");
     const main = containerRule(".rm-group-main");

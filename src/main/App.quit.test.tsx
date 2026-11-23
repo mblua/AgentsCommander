@@ -185,7 +185,7 @@ function pressKey(key: string, shiftKey = false): KeyboardEvent {
   return event;
 }
 
-describe("MainApp quit handshake (#2297)", () => {
+describe("MainApp quit handshake", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     fake = new FakeTransport();
