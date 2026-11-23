@@ -341,7 +341,7 @@ pub(crate) fn resolve_agent_context_with_activation(
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
     restrictions: WorkspaceRestrictions,
 ) -> Result<String, String> {
-    // #979 load-bearing guard 2 of 2. This MUST remain the FIRST executable
+    // Load-bearing guard 2 of 2. This MUST remain the FIRST executable
     // statement of this function. It sits ahead of `read_or_create_context_template`
     // below, which SYNCS (`sync_project_context_template_for_read`) and CREATES
     // (`write_template_if_missing`) the resolved global, and ahead of the
@@ -370,7 +370,7 @@ pub(crate) fn resolve_agent_context_with_activation(
     )?
     .unwrap_or_else(|| get_default_agent_template().to_string());
 
-    // #1737 (D1, D3): the classification runs on the BASE template and keeps every
+    // (D1, D3): the classification runs on the BASE template and keeps every
     // one of its side effects, including the `StaleGenerated` self-heal of the base
     // file. Its value is bound rather than returned, and an override then decides the
     // content handed to the session, always as a NON-legacy template: an

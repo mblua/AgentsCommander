@@ -130,7 +130,7 @@ pub(crate) enum ArtifactKind {
     /// the instance directory. Exceptional by design; a registry test pins the
     /// number of such rows.
     GlobAnyDepth,
-    /// #1968 - renders as `/{name}` where `name` is a full path RELATIVE to the
+    /// Renders as `/{name}` where `name` is a full path RELATIVE to the
     /// instance root (`coding-agents/agents.local.json`). The only kind whose
     /// name carries a forward slash: the pattern is still anchored by the one
     /// leading slash the renderer adds, and a registry test pins the exact
@@ -863,7 +863,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
     },
 ];
 
-/// #1968 - the exact `coding-agents/` child allowlist `RootRelativeGlob` rows
+/// The exact `coding-agents/` child allowlist `RootRelativeGlob` rows
 /// may carry. A registry test pins the table to this set, so widening the kind
 /// to another directory is a policy change rather than a table tweak.
 #[cfg(test)]

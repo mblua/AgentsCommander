@@ -975,7 +975,7 @@ impl MigrationPathFaults {
     }
 }
 
-/// A copy of the #2682 harness in `config/loops.rs`, which is inside the SCC
+/// A copy of the harness in `config/loops.rs`, which is inside the SCC
 /// this leaf must not name. In-process legs arm a `(stage, dir)` pair; a
 /// cross-process child is armed by environment through a rendezvous directory.
 #[cfg(test)]

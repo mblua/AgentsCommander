@@ -291,7 +291,7 @@ fn frozen_v8_root_supplement_has_no_workspace_prose() {
 }
 
 /// C7 / AC-5: the frozen v5 root snapshot must stay byte-identical to
-/// what the #1005 S5..cfde2968 builds shipped. Expected values captured by a
+/// what the S5..cfde2968 builds shipped. Expected values captured by a
 /// one-off run of `default_root_context_template()` AT base commit cfde2968,
 /// never from this const.
 #[test]
