@@ -2,7 +2,7 @@
 
 .onboarding-modal {
   width: min(420px, 94%);
-  /* #768 — fit all 7 preset cards (Claude Code, Codex, Hermes, Cursor CLI,
+  /* Fit all 7 preset cards (Claude Code, Codex, Hermes, Cursor CLI,
      Pi, OpenCode, Custom Agent) without an inner scrollbar. The resting list
      is ~560px tall (header + welcome + 7×~50px cards + footer); 680px clears
      it with headroom, and the 90vh cap keeps the modal on-screen — only a
@@ -91,13 +91,13 @@ html.light-theme .onboarding-card.selected {
   color: var(--sidebar-fg-dim);
 }
 
-/* #2784 - Welcome identity line: "by <Vendor>". */
+/* Welcome identity line: "by <Vendor>". */
 .onboarding-card-vendor {
   font-size: 10px;
   color: var(--sidebar-fg-dim);
 }
 
-/* #2736 - Welcome status chips. #2784 - a right-aligned column, status above
+/* Welcome status chips: a right-aligned column, status above
    Tested; state colour is selected by data-ac-state, not by a class per state. */
 .onboarding-card-chips {
   display: flex;
@@ -125,7 +125,7 @@ html.light-theme .onboarding-card.selected {
   border-color: color-mix(in srgb, var(--sidebar-accent) 50%, transparent);
 }
 
-/* #2784 - Tested keeps the neutral chip border; only the text takes the level colour. */
+/* Tested keeps the neutral chip border; only the text takes the level colour. */
 .onboarding-chip-tested {
   cursor: help;
 }
@@ -154,8 +154,8 @@ html.light-theme .onboarding-chip-tested[data-ac-state="high"] {
   color: #4a7660;
 }
 
-/* #2736 - install row, a SIBLING of the card button inside an inert wrapper.
-   #2784 - the wrapper draws the card rectangle, so the install row sits inside it. */
+/* Install row, a SIBLING of the card button inside an inert wrapper.
+   The wrapper draws the card rectangle, so the install row sits inside it. */
 .onboarding-card-row {
   display: flex;
   flex-direction: column;
@@ -242,7 +242,7 @@ html.light-theme .onboarding-card-row:hover {
   cursor: default;
 }
 
-/* #2736 P6 - failure line, output toggle and the output box stack in one column. */
+/* Failure line, output toggle and the output box stack in one column. */
 .onboarding-install-failure {
   display: flex;
   flex-direction: column;

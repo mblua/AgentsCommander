@@ -902,7 +902,7 @@ const groupWarningSnapshot = (): ResourceSnapshot => {
   return snapshot;
 };
 
-describe("#2581 group warnings", () => {
+describe("Resource Monitor group warnings", () => {
   const group = activeSnapshot().groups[0];
   const warning = {
     sessionId: "session-1",
