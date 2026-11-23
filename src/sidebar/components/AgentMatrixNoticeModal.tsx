@@ -26,7 +26,11 @@ const AgentMatrixNoticeModal: Component<{
   return (
     <div
       class="modal-overlay"
-      onClick={props.onClose}
+      role="presentation"
+      onClick={(e) => {
+          if (e.target === e.currentTarget) props.onClose();
+          else e.stopPropagation();
+      }}
       {...automationAttrs("agentMatrixNotice.overlay", "overlay")}
     >
       <div
@@ -36,7 +40,6 @@ const AgentMatrixNoticeModal: Component<{
         aria-labelledby="agentMatrixNoticeTitle"
         aria-describedby="agentMatrixNoticeDescription"
         style={{ "max-width": "380px" }}
-        onClick={(e) => e.stopPropagation()}
         {...automationAttrs("agentMatrixNotice.modal", "dialog")}
       >
         <div class="agent-modal-header">
