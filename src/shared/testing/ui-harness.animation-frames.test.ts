@@ -1,4 +1,4 @@
-// #1206, plan 5.4: "`restore()` must be safe on a partially initialized
+// Plan 5.4: "`restore()` must be safe on a partially initialized
 // controller and must not mask an error thrown during install."
 //
 // The partial-install path is narrow and unreachable by ordinary use, so it is

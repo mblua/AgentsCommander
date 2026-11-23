@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-// Test-only helpers shared by the stylesheet byte tests (#2271 dup gate).
+// Test-only helpers shared by the stylesheet byte tests (dup gate).
 // Every extraction throws on a miss: the absence and count assertions in those
 // suites would otherwise pass vacuously on an empty or partial match.
 

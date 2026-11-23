@@ -20,7 +20,7 @@ import type { AcAgentReplica } from "../../shared/types";
 // The MANUALLY-CLOSED pill mirrors AUTO-CLOSED (same `coord-autoclosed`
 // class, only the label differs), shows ONLY on a manually-closed *dormant*
 // coordinator, wins the XOR over both the idle badge and AUTO-CLOSED, and — like
-// #589's AUTO-CLOSED gate — hides the instant the coordinator has a live session
+// the AUTO-CLOSED gate — hides the instant the coordinator has a live session
 // again (the `!isSessionLive(session())` gate, the stale-on-raise guard).
 
 const projectPath = "C:\\Project";
@@ -145,7 +145,7 @@ describe("ProjectPanel MANUALLY-CLOSED pill (#588)", () => {
 
     // A live (running) session matching the replica name -> isSessionLive() true,
     // so the manual pill must NOT render even though the marker is present. This
-    // is the exact stale-on-raise trap #589 fixes for AUTO-CLOSED.
+    // is the exact stale-on-raise trap the gate fixes for AUTO-CLOSED.
     sessionsStore.setSessions([
       session({
         id: "live-coord",

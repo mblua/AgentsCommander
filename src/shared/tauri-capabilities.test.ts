@@ -7,7 +7,7 @@ declare module "node:fs" {
 }
 
 /** Least-privilege Tauri capabilities: one file per window type. The expected map
- *  mirrors the call-site evidence in the #4330 plan. Change both together. */
+ *  mirrors the call-site evidence in the plan. Change both together. */
 type Capability = { identifier: string; windows: string[]; permissions: string[] };
 
 const DIR = new URL("../../src-tauri/capabilities/", import.meta.url);

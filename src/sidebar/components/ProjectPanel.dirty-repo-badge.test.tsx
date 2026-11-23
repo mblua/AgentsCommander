@@ -175,7 +175,7 @@ describe("ProjectPanel dirty repo badge (#1028)", () => {
         expect(badge.textContent).toBe("AgentsCommander/main");
         expect(badge.classList.contains("dirty")).toBe(false);
         expect(badge.className).toBe("ac-discovery-badge branch");
-        // A detected-clean repo keeps the bare path, exactly as before #1028.
+        // A detected-clean repo keeps the bare path, exactly as before the badge.
         expect(badge.title).toBe(REPO_A);
       });
     } finally {

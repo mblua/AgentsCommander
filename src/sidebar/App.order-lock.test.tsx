@@ -160,7 +160,7 @@ describe("SidebarApp sidebar order lock (#1624)", () => {
         layout.dispatchEvent(new Event("pointerenter"));
         layout.dispatchEvent(new Event("pointerleave"));
         await Promise.resolve();
-        // The exact #1624 repro state: pointer left the sidebar, menu still open.
+        // The exact repro state: pointer left the sidebar, menu still open.
         expect(sessionsStore.sidebarPointerInside).toBe(false);
         expect(sessionsStore.sidebarMenuOpen).toBe(true);
 
