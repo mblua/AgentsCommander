@@ -23,9 +23,10 @@ sample_visible() {
 }
 readout() { printf '%s\n' "$*" >> "$E/ac4248-008-readout.txt"; }
 incomplete() {
-  printf '%s\n' "$2" > "$E/$1.incomplete"
-  test ! -e "$E/ac4248-008-readout.txt" || readout "incomplete $1 $2"
-  echo "INCOMPLETE $2" >&2; exit 2
+  local tag=$1 reason=$2
+  printf '%s\n' "$reason" > "$E/$tag.incomplete"
+  test ! -e "$E/ac4248-008-readout.txt" || readout "incomplete $tag $reason"
+  echo "INCOMPLETE $reason" >&2; exit 2
 }
 write_baseline_readout() {
   local h
@@ -37,8 +38,9 @@ write_baseline_readout() {
 }
 # Without D1 focus is not gated; the reader gets the count of changed samples.
 focus_readout() {
-  test "$GATE_FOCUS" = true || readout "$1 focus_samples_changed=$(jq -rn \
-    --slurpfile s "$E/$1.samples" --slurpfile a0 "$E/$1-pre-active.json" \
+  local tag=$1
+  test "$GATE_FOCUS" = true || readout "$tag focus_samples_changed=$(jq -rn \
+    --slurpfile s "$E/$tag.samples" --slurpfile a0 "$E/$tag-pre-active.json" \
     '[$s[] | select(.address != ($a0[0].address // ""))] | length')"
 }
 visible_run() {
@@ -182,6 +184,7 @@ for probe in blank stale cancel; do
     blank) expected=20; token=fixture_pixels_missing; taken=true; reached=true ;;
     stale) expected=21; token=fixture_frame_stale; taken=true; reached=true ;;
     cancel) expected=22; token=snapshot_cancelled; taken=false; reached=false ;;
+    *) ;;
   esac
   visible_run "probe-$probe" --probe "$probe"
   code=$(cat "$E/probe-$probe.exit")

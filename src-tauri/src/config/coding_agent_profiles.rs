@@ -25,10 +25,10 @@ pub use replica_profile::{
 };
 pub use resolve::{resolve_profile, resolve_profile_selection};
 #[cfg(test)]
+pub(crate) use selection_state::PreparedSourceSelection;
+#[cfg(test)]
 use selection_state::SelectionWriteOutcome;
-pub(crate) use selection_state::{
-    apply_replica_selection_default, selection_state_from_value, PreparedSourceSelection,
-};
+pub(crate) use selection_state::{apply_replica_selection_default, selection_state_from_value};
 pub use selection_state::{
     read_replica_selection_default, read_replica_selection_state, write_replica_selection_default,
     ReplicaSelectionDefault, ReplicaSelectionExpectation, ReplicaSelectionPair,

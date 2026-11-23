@@ -482,7 +482,7 @@ async fn serve_api<J: ApiJoinTask>(
     dispatcher_handle: J,
 ) {
     log::info!("[api-server] listening on http://{addr}");
-    println!("[api-server] listening on http://{addr}");
+    log::info!("[api-server] listening on http://{addr}");
 
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let server_shutdown = shutdown.clone();
@@ -507,7 +507,6 @@ fn warn_on_non_loopback(addr: SocketAddr) {
 restricts this port to the Docker/WSL subnet."
         );
         log::warn!("{warning}");
-        println!("{warning}");
     }
 }
 

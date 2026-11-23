@@ -888,7 +888,7 @@ impl PtyBackend for LocalProcessBackend {
         self.fanout.shutdown_terminal_output();
     }
 
-    #[allow(private_interfaces)]
+    #[allow(private_interfaces, reason = "crate-private return type on pub trait")]
     fn copy_terminal_screen(&self, id: Uuid) -> crate::pty::backend::TerminalScreenCopyRead {
         self.fanout.copy_terminal_screen(id)
     }

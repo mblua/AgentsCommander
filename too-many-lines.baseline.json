@@ -6,25 +6,6 @@
   "sourceCommit": "af830ff15ccd2990e468e683b14f2a471b655380",
   "entries": [
     {
-      "id": "rust:src-tauri/src/app_run.rs::run",
-      "name": "run",
-      "anchor": "71cddd7fd250",
-      "sites": {
-        "linux": {
-          "lines": 280,
-          "production": true
-        },
-        "macos": {
-          "lines": 280,
-          "production": true
-        },
-        "windows": {
-          "lines": 279,
-          "production": true
-        }
-      }
-    },
-    {
       "id": "rust:src-tauri/src/config/session_context.rs::legacy_rendered_default_context_for_generation",
       "name": "legacy_rendered_default_context_for_generation",
       "anchor": "4a221d65b426",
