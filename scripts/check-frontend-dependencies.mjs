@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * #1283 - pinned resolved-TypeScript-dependency gate (plan Section 14.6).
+ * Pinned resolved-TypeScript-dependency gate (plan Section 14.6).
  *
  * Proves the pinned dependency-cruiser@18.0.0 resolver and its negative
  * fixture matrix are live, then requires the complete `src` root to pass.

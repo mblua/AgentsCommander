@@ -1,4 +1,4 @@
-// Gate 06 receiver proof (#4017). Pure and finite: no imports, no IO, no scan mutation.
+// Gate 06 receiver proof. Pure and finite: no imports, no IO, no scan mutation.
 // A `.emit`/`.emit_to` call is PROVEN_PORT only when a closed grammar proves the receiver is
 // a crate-local port trait object or a generic bounded only by such ports. Everything that
 // the grammar does not fully consume is UNKNOWN and stays counted, exactly like REAL.

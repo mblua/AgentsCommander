@@ -1,5 +1,5 @@
 /**
- * #1283 resolved TypeScript graph gate (Section 10.2 / 14.6).
+ * Resolved TypeScript graph gate (Section 10.2 / 14.6).
  *
  * Runs against the complete `src` root and against the negative fixture suite
  * in `scripts/fixtures/frontend-dependency-cycle` with the SAME rules and

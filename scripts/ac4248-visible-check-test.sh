@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# #4248 recipe v2 offline proof of scripts/ac4248-visible-check.jq (plan v3). No GUI.
+# Recipe v2 offline proof of scripts/ac4248-visible-check.jq (plan v3). No GUI.
 # Run: bash scripts/ac4248-visible-check-test.sh   (exit 0 only when every case passes)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)

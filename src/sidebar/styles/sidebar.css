@@ -454,7 +454,7 @@ html, body, #root {
   line-height: 1.35;
 }
 
-/* Web server bind failure surface (#1453) */
+/* Web server bind failure surface */
 .webserver-alert {
   margin: 4px 12px 8px;
   padding: 8px;
@@ -938,7 +938,7 @@ html, body, #root {
 .session-item .session-item-status.waiting,
 .replica-item .session-item-status.waiting,
 .root-agent-banner .session-item-status.waiting { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
-/* #2408 - Co-managed capture is an additive ring around the real activity
+/* Co-managed capture is an additive ring around the real activity
    colour. Outline takes no layout box, so the dot stays 8x8px, and the 2px
    offset gap shows the row background between dot and ring. */
 .session-item .session-item-status.comanaged,
@@ -960,13 +960,13 @@ html, body, #root {
   gap: 4px;
   margin-top: 2px;
 }
-/* #1167 - after the sidebar coding-agent badge moved to .ac-discovery-badge.agent,
+/* After the sidebar coding-agent badge moved to .ac-discovery-badge.agent,
    the ONLY consumer of .agent-badge left in the app is the Open-Agent modal's
    repo-tooling chip (OpenAgentModal.tsx:156-167), which never sets `running`.
    The `.running` variant that used to brighten a live session row is therefore
    unreachable and was deleted with the migration. Per-tool colours for the modal
    live further down, on .agent-modal-item-badges. Do not repurpose this rule for
-   a sidebar badge: that is the divergence #1167 removed. */
+   a sidebar badge: that is the divergence the badge move removed. */
 .agent-badge {
   font-size: 9px;
   font-weight: 600;
@@ -993,14 +993,14 @@ html, body, #root {
   line-height: 1;
   white-space: nowrap;
 }
-/* #2435 - weak-tier profile match: same amber family as .profile-outdated-badge.
+/* Weak-tier profile match: same amber family as .profile-outdated-badge.
    A signal, not a control: colour only. */
 .profile-badge--tier {
   background: rgba(234, 179, 8, 0.15);
   color: #eab308;
 }
 
-/* #1033 - context-window reading. A signal, never a control: no cursor, no hover
+/* Context-window reading. A signal, never a control: no cursor, no hover
    affordance, no colour that encodes a value, no threshold, no animation. */
 .ctx-badge {
   display: inline-flex;
@@ -1022,7 +1022,7 @@ html, body, #root {
   opacity: 0.4;
 }
 
-/* #592 - drift indicator: amber, clickable (Reload). */
+/* Drift indicator: amber, clickable (Reload). */
 .profile-outdated-badge {
   display: inline-flex;
   align-items: center;
@@ -1040,7 +1040,7 @@ html, body, #root {
   background: rgba(234, 179, 8, 0.28);
 }
 
-/* #2568 - orphan-adoption notice: the amber pair again, a flow-level stripe as
+/* Orphan-adoption notice: the amber pair again, a flow-level stripe as
    the last child of the row's text column. Only the dismiss button is a
    control; the stripe body gets no cursor and no hover. */
 .orphan-notice {
@@ -1080,7 +1080,7 @@ html, body, #root {
   vertical-align: middle;
 }
 
-/* #624 / #1167 - spacing for the coding-agent badge inside the inline root
+/* Spacing for the coding-agent badge inside the inline root
    subtitle. Colour and size now come from .ac-discovery-badge.agent, the same
    pair the Coordinator rows use, so this rule carries only inline placement.
    text-transform:none is kept deliberately, as a local guarantee against the
@@ -1231,7 +1231,7 @@ html, body, #root {
   color: var(--sidebar-fg);
 }
 
-/* #4843 - sound button when GStreamer cannot play sound: speaker plus a warning badge. */
+/* Sound button when GStreamer cannot play sound: speaker plus a warning badge. */
 .toolbar-gear-btn[data-ac-state="alert"] {
   position: relative;
 }
@@ -1396,7 +1396,7 @@ html, body, #root {
   flex-shrink: 0;
 }
 
-/* #2236 phase 6: compact toolbar fit. Only the inline padding shrinks; the
+/* Phase 6: compact toolbar fit. Only the inline padding shrinks; the
    block padding stays, so the toolbar keeps its height. */
 .sidebar-compact .action-bar {
   padding-inline: 2px;
@@ -1490,7 +1490,7 @@ html.light-theme .root-agent-banner:hover {
   background: rgba(0, 102, 204, 0.08);
 }
 
-/* The toggle is white on the dark card (#2519); white would vanish on the light card. */
+/* The toggle is white on the dark card; white would vanish on the light card. */
 html.light-theme .root-agent-banner-toggle {
   color: var(--sidebar-fg);
 }
@@ -1512,7 +1512,7 @@ html.light-theme .root-agent-avatar {
   backdrop-filter: blur(2px);
 }
 
-/* #1327 startup coding-agent update overlay (splash + SI/NO prompt). Above
+/* Startup coding-agent update overlay (splash + SI/NO prompt). Above
    .modal-overlay so the update question is never buried under other modals. */
 .agent-update-overlay {
   position: fixed;
@@ -1567,7 +1567,7 @@ html.light-theme .root-agent-avatar {
   justify-content: center;
 }
 
-/* #1551 round 5/6 - the Option 2 staged-progress timeline of the startup overlay (plan 5.14: the exact
+/* Round 5/6 - the Option 2 staged-progress timeline of the startup overlay (plan 5.14: the exact
    transcription of index-V1.html #opcion-2 with the production tokens; the round-4 row rules never landed). */
 .agent-update-card--timeline { width: 460px; align-items: stretch; }
 .agent-update-header { display: flex; align-items: center; gap: var(--spacing-md); }
@@ -1594,12 +1594,12 @@ html.light-theme .root-agent-avatar {
 .agent-update-node-label { font-size: var(--font-size-md); font-weight: 600; }
 .agent-update-node[data-ac-state="pending"] .agent-update-node-label { color: var(--sidebar-fg-dim); font-weight: 400; }
 .agent-update-node-line { font-size: var(--font-size-sm); color: var(--sidebar-fg-dim); overflow-wrap: anywhere; }
-/* #1551 round 6 - coordinator decision on FE N4: the small state word keeps AA contrast; the pending label and marker stay dimmed like the prototype. */
+/* Round 6 - coordinator decision on FE N4: the small state word keeps AA contrast; the pending label and marker stay dimmed like the prototype. */
 .agent-update-node[data-ac-state="pending"] .agent-update-node-state { color: var(--sidebar-fg); }
 .agent-update-node[data-ac-state="updating"] .agent-update-node-line { color: var(--sidebar-fg); }
 .agent-update-node[data-ac-state="ok"] .agent-update-node-line { color: var(--status-waiting); }
 .agent-update-node[data-ac-state="failed"] .agent-update-node-line { color: var(--status-exited); }
-/* #1691 - the two new nonterminal states keep the running row's emphasis (the pass is still
+/* The two new nonterminal states keep the running row's emphasis (the pass is still
    working on them); a cancelled row is terminal but neutral: it is not a failure. */
 .agent-update-node[data-ac-state="verifying"] { background: var(--sidebar-active); border-left-color: var(--accent-color, #0a84ff); }
 .agent-update-node[data-ac-state="verifying"] .agent-update-node-line { color: var(--sidebar-fg); }
@@ -1613,20 +1613,20 @@ html.light-theme .root-agent-avatar {
 .agent-update-node-bar { height: 3px; margin-top: 5px; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--accent-color, #0a84ff), transparent); background-size: 200% 100%; animation: agent-update-shimmer 1.2s linear infinite; }
 @keyframes agent-update-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 .agent-update-summary-actions { display: flex; justify-content: flex-end; }
-/* #1691 - the prompt callout now sits BETWEEN the header/progress and the timeline, so the
+/* The prompt callout now sits BETWEEN the header/progress and the timeline, so the
    question and the cancellation controls are on screen together. */
 .agent-update-prompt { display: flex; flex-direction: column; gap: var(--spacing-md); padding: var(--spacing-md); border-radius: 6px; border: 1px solid var(--sidebar-border); background: var(--sidebar-active); }
 .agent-update-prompt .agent-update-prompt-text { text-align: left; }
-/* #1691 - compact row action: one per nonterminal row, visible-disabled once requested. */
+/* Compact row action: one per nonterminal row, visible-disabled once requested. */
 .agent-update-node-cancel { align-self: center; flex: none; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--sidebar-border); background: transparent; color: var(--sidebar-fg); font-family: var(--font-ui); font-size: var(--font-size-sm); line-height: 1.6; cursor: pointer; }
 .agent-update-node-cancel:hover:not(:disabled) { background: var(--sidebar-hover); }
 .agent-update-node-cancel:disabled { opacity: 0.5; cursor: default; }
-/* #1691 - the bottom batch action, visible while any node is unfinished. */
+/* The bottom batch action, visible while any node is unfinished. */
 .agent-update-batch-actions { display: flex; justify-content: flex-end; }
 .agent-update-cancel-all { padding: 4px 12px; border-radius: 4px; border: 1px solid var(--sidebar-border); background: transparent; color: var(--sidebar-fg); font-family: var(--font-ui); font-size: var(--font-size-sm); cursor: pointer; }
 .agent-update-cancel-all:hover:not(:disabled) { background: var(--sidebar-hover); }
 .agent-update-cancel-all:disabled { opacity: 0.5; cursor: default; }
-/* #1691 - keyboard reachability is the point of these controls: the focus ring is never removed. */
+/* Keyboard reachability is the point of these controls: the focus ring is never removed. */
 .agent-update-node-cancel:focus-visible, .agent-update-cancel-all:focus-visible { outline: 2px solid var(--accent-color, #0a84ff); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   .agent-update-spinner, .agent-update-node[data-ac-state="updating"] .agent-update-node-marker { animation: none; }
@@ -1741,7 +1741,7 @@ html.light-theme .root-agent-avatar {
   cursor: not-allowed;
 }
 
-/* #695 — Context template update modal */
+/* Context template update modal */
 .context-template-modal {
   max-width: 480px;
 }
@@ -2017,7 +2017,7 @@ html.light-theme .root-agent-avatar {
   color: var(--sidebar-accent);
 }
 
-/* #1730 - the bridge indicator on the replica row, which has no attach/detach
+/* The bridge indicator on the replica row, which has no attach/detach
    button of its own. TelegramIcon takes no props, so the wrapper carries the class
    and the bot colour; the svg is fill: currentColor. 14px matches
    .session-item-telegram svg below. It replaces a 6px dot, so the row does not
@@ -2073,7 +2073,7 @@ html.light-theme .root-agent-avatar {
   display: block;
 }
 
-/* #1708 - the row detach button now holds DetachIcon/ReattachIcon, not a text
+/* The row detach button now holds DetachIcon/ReattachIcon, not a text
    glyph. Mirrors .session-item-telegram svg above. The colour is NOT set here:
    the button's own color (dim, accent on hover) still tints the icon. */
 .session-item-detach svg {
@@ -2162,7 +2162,7 @@ html.light-theme .root-agent-avatar {
   white-space: normal;
 }
 
-/* #987 - with the icon slot this is a 3-item row (slot, label, arrow), and
+/* With the icon slot this is a 3-item row (slot, label, arrow), and
    space-between would strand the label in the middle. The arrow's own
    margin-left: auto keeps it pinned right. */
 .session-context-submenu-trigger {
@@ -2195,16 +2195,16 @@ html.light-theme .root-agent-avatar {
   color: var(--sidebar-accent);
 }
 
-/* #987 - fixed-width gutter slot for context-menu glyphs. The menu mixes 14px
+/* Fixed-width gutter slot for context-menu glyphs. The menu mixes 14px
    SVGs with entities and emoji, whose advance widths all differ, so an unwrapped
    glyph starts every label at a different x. Centering each glyph in this slot
-   lands every label on the same x. #1708 filled the last empty slot (Add to
+   lands every label on the same x. The detach-icon change filled the last empty slot (Add to
    Group); the slot keeps its fixed width, so an iconless row would still align.
 
    The 16px box is a CENTRING ANCHOR, NOT A FIT. Measured at the 13px this slot
    sets: the emoji (U+1F916, U+1F4C2, U+1F9F9) advance 17.86px, so they overflow
-   the box by ~0.93px per side; U+1F465 (#1708) is emoji-presentation like them
-   and was not re-measured; the SVGs are 14px and U+21BA is 10px (#1708 put a
+   the box by ~0.93px per side; U+1F465 is emoji-presentation like them
+   and was not re-measured; the SVGs are 14px and U+21BA is 10px (the detach-icon change put a
    14px SVG where the former detach glyph was).
    The overflow is deliberate and harmless: the box does not clip, the bleed is
    symmetric (every glyph's centre lands on the same axis) and it spills into the
@@ -2224,7 +2224,7 @@ html.light-theme .root-agent-avatar {
   line-height: 1;
 }
 
-/* #1536 - inline TASK-title editor inside the replica context menu. Mirrors
+/* Inline TASK-title editor inside the replica context menu. Mirrors
    the terminal's workgroup-task-title-* proportions (terminal.css) but stays
    in the sidebar's session-context-* namespace; do not reuse terminal classes. */
 .session-context-title-edit {
@@ -2351,7 +2351,7 @@ html.light-theme .session-context-title-btn:hover:not(:disabled) {
   color: var(--danger, #ef4444);
 }
 
-/* #1708 - detach/re-attach icon in the session context menu. Geometry mirrors
+/* Detach/re-attach icon in the session context menu. Geometry mirrors
    .session-context-matrix-icon above. The colour is the TOKEN, not the raw
    #00d4ff: that literal is only the dark value (variables.css:6) and renders at
    contrast 1.49 on the light --sidebar-surface (#ebebf0). */
@@ -2362,14 +2362,14 @@ html.light-theme .session-context-title-btn:hover:not(:disabled) {
   color: var(--sidebar-accent);
 }
 
-/* #1731 - the Add to Group user-plus SVG. Geometry mirrors
+/* The Add to Group user-plus SVG. Geometry mirrors
    .session-context-detach-icon above: 14px inside the 16px
    .session-context-option-icon box, which has no spare room. The colour is the
    TOKEN, not the raw #22c55e: that literal is only the dark value
    (variables.css:17) and renders at contrast 1.92 on the light --sidebar-surface
    (#ebebf0), short of the 3:1 non-text minimum, and worse there than the light
    value #16a34a, which reaches 2.77 and is still short. That is the
-   shortfall disclosed and accepted in #1731; the fix is to retune the light
+   shortfall disclosed and accepted with the user-plus icon; the fix is to retune the light
    --status-waiting, never to hard-code a darker green here. */
 .session-context-group-add-icon {
   width: 14px;
@@ -2378,7 +2378,7 @@ html.light-theme .session-context-title-btn:hover:not(:disabled) {
   color: var(--status-waiting);
 }
 
-/* #1708 - the Edit TASK title pencil, pairing it with the Clear task title broom
+/* The Edit TASK title pencil, pairing it with the Clear task title broom
    below it. Token, not the raw #eab308: that literal is only the dark value
    (variables.css:18) and renders at contrast 1.61 on #ebebf0. */
 .session-context-task-icon {
@@ -2519,7 +2519,7 @@ html.light-theme .session-context-title-btn:hover:not(:disabled) {
   margin: 0 0 var(--spacing-sm) 0;
 }
 
-/* Warning variant of the settings hint — amber caution text (#565). Reuses the
+/* Warning variant of the settings hint — amber caution text. Reuses the
    base .settings-hint layout and only shifts the color. Dark theme uses the
    bright amber already used by .settings-codex-home-preview.warning; the light
    theme overrides to a darker amber so 11px text keeps adequate contrast on the
@@ -2532,7 +2532,7 @@ html.light-theme .settings-hint-warning {
   color: #b45309;
 }
 
-/* Red variant of the settings hint (#1313): clearly stronger than the amber
+/* Red variant of the settings hint: clearly stronger than the amber
    .settings-hint-warning. Reuses the base .settings-hint layout; colors match
    the existing .settings-api-client-error precedent (#f87171 dark, #b91c1c
    light), with the same per-theme override convention as the warning variant. */
@@ -2668,7 +2668,7 @@ html.light-theme .settings-hint-error {
   white-space: nowrap;
 }
 
-/* #965 - the project header and the Favorites header are now click-to-collapse.
+/* The project header and the Favorites header are now click-to-collapse.
    They are <button>s, so reset the UA chrome and re-inherit the label's type;
    the label class alone no longer supplies font/box on a button element. */
 .workgroup-group-rail-header {
@@ -2700,8 +2700,8 @@ html.light-theme .settings-hint-error {
   outline-offset: -2px;
 }
 
-/* #965 - Favorites is pinned OUTSIDE `.workgroup-group-rail-scroll`, at the TOP,
-   exactly mirroring how #881 pinned Archive at the bottom (`flex: 0 0 auto`).
+/* Favorites is pinned OUTSIDE `.workgroup-group-rail-scroll`, at the TOP,
+   exactly mirroring how Archive is pinned at the bottom (`flex: 0 0 auto`).
    That is what makes it permanently visible. `max-height` + its own scroll keeps a
    long favorites list from eating the rail; the % resolves against the rail's
    definite height (it is a flex column with `overflow: hidden`). */
@@ -2754,10 +2754,10 @@ html.light-theme .settings-hint-error {
   transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
-/* #775 (Option B) — first line = optional raise-hand symbol + the group title,
+/* (Option B) — first line = optional raise-hand symbol + the group title,
    laid out inline so the symbol sits to the LEFT of the title and NEVER
    overlaps it. The title truncates with an ellipsis (nowrap) rather than
-   wrapping or splitting mid-word — that is how the #742 no-mid-word-split
+   wrapping or splitting mid-word — that is how the no-mid-word-split
    guarantee is now kept once a symbol shares the line on the group rail. */
 .workgroup-group-rail-title-line {
   display: flex;
@@ -2775,7 +2775,7 @@ html.light-theme .settings-hint-error {
   white-space: nowrap;
 }
 
-/* #775 — built-in/system group labels (All, Ungrouped, …) render bold so they
+/* Built-in/system group labels (All, Ungrouped, …) render bold so they
    stand out from user-created groups. Applied via a class gated on the
    selection kind (never the display string), so a user group literally named
    "All" stays normal weight. */
@@ -2841,18 +2841,18 @@ html.light-theme .settings-hint-error {
   }
 }
 
-/* #746 — working indicator on the counter line. Reuses the session-card
+/* Working indicator on the counter line. Reuses the session-card
    .session-item-status.running circle; inline-block so the 8px width/height
    apply in the button's pre-line text flow (never before the name, which
-   would re-tighten the line and regress #742's no-mid-word-split). */
+   would re-tighten the line and regress the no-mid-word-split). */
 .workgroup-group-rail-button .workgroup-group-rail-dot {
   display: inline-block;
   margin-right: 3px;
   vertical-align: -1px;
 }
 
-/* #763/#775 — raise-hand indicator on a group-rail tab: an amber raised-hand
-   glyph rendered INLINE just to the left of the group title (#775 Option B, so
+/* Raise-hand indicator on a group-rail tab: an amber raised-hand
+   glyph rendered INLINE just to the left of the group title (Option B, so
    it reads as "(hand) <title>" and never overlaps — the title ellipsizes to
    make room). Uses an SVG glyph (not an emoji) so it stays crisp and
    theme-amber in the Tauri webview regardless of emoji-font availability, and
@@ -2875,10 +2875,10 @@ html.light-theme .settings-hint-error {
   fill: currentColor;
 }
 
-/* #1859 - the blocked-menu rollup on a group-rail tab. Same inline layout and
+/* The blocked-menu rollup on a group-rail tab. Same inline layout and
    pointer-events as its raise-hand neighbour above (the tab stays uniformly
    clickable) and the same 8px glyph, so the two indicators line up when a group
-   has both. Only the colour differs: var(--status-blocked), the token #1858
+   has both. Only the colour differs: var(--status-blocked), the token the blocked-menu work
    added, with no amber fallback on purpose - if the token is ever dropped the
    glyph loses its colour rather than impersonating a raised hand. */
 .workgroup-group-rail-button .workgroup-group-rail-blocked-menu {
@@ -2987,7 +2987,7 @@ html.light-theme .settings-hint-error {
   accent-color: var(--sidebar-accent);
 }
 
-/* #777 Non-stop watchdog config section */
+/* Non-stop watchdog config section */
 .workgroup-groups-nonstop {
   display: flex;
   flex-direction: column;
@@ -3601,7 +3601,7 @@ html.light-theme .settings-hint-error {
   font-size: 10px;
 }
 
-/* #4810 - the error row follows the filter row under the hosting header. */
+/* The error row follows the filter row under the hosting header. */
 .project-header > .project-filter-error-slot {
   position: absolute;
   top: 100%;
@@ -3611,7 +3611,7 @@ html.light-theme .settings-hint-error {
   background-color: var(--sidebar-bg);
 }
 
-/* #4810 - while an error shows, its panel paints over the next sticky header. */
+/* While an error shows, its panel paints over the next sticky header. */
 .project-panel:has(> .project-header > .project-filter-error-slot > .project-filter-error) {
   position: relative;
   z-index: 22;
@@ -3890,7 +3890,7 @@ html.light-theme .settings-hint-error {
   line-height: 1;
 }
 
-/* #1858 — a blocked menu is not a raised hand: this sibling overrides only the
+/* A blocked menu is not a raised hand: this sibling overrides only the
    base slot's background and colour so the two chips never share one, and the
    glyph inside is BlockedMenuIcon rather than the hand. No amber fallback value
    on purpose: if --status-blocked is ever dropped the chip loses its colour
@@ -3900,7 +3900,7 @@ html.light-theme .settings-hint-error {
   color: var(--status-blocked);
 }
 
-/* #2442 - the Co-managed message is TEXT, not a 15px icon chip. It must keep
+/* The Co-managed message is TEXT, not a 15px icon chip. It must keep
    .coord-communication-slot (the narrow-width keep-list at :8257 is a child
    combinator on that class), so this sibling undoes the icon box instead.
    display: block is load-bearing: the base slot is inline-flex, so without it
@@ -3925,7 +3925,7 @@ html.light-theme .settings-hint-error {
   font-size: var(--font-size-sm);
 }
 
-/* #775 — the raise-hand glyph inside the amber coordinator-row slot is now the
+/* The raise-hand glyph inside the amber coordinator-row slot is now the
    shared SVG hand (RaiseHandIcon), sized to sit in the 15px amber chip and
    tinted by the slot's amber `color` via fill: currentColor. */
 .coord-communication-icon {
@@ -3969,7 +3969,7 @@ html.light-theme .settings-hint-error {
   text-transform: uppercase;
 }
 
-/* #1730 - the row's identity chip. Deliberately NOT an .ac-discovery-badge: those
+/* The row's identity chip. Deliberately NOT an .ac-discovery-badge: those
    are uppercase, letter-spaced status pills, and deep-space dims every one of them
    to 0.95 opacity (sidebar.css:6883). This chip must read identically in all seven
    sidebar styles and both themes, so it carries its own geometry and takes no
@@ -4015,7 +4015,7 @@ html.light-theme .settings-hint-error {
   text-transform: none;
 }
 
-/* #1028 worktree-dirty repo badge — LETTERS ONLY go red; the violet background is
+/* Worktree-dirty repo badge — LETTERS ONLY go red; the violet background is
    inherited untouched from `.branch` above, which is what "letters only" means and
    why this rule sets `color` and nothing else.
 
@@ -4044,7 +4044,7 @@ html.light-theme .settings-hint-error {
   color: var(--status-exited);
 }
 
-/* #2064 - one box-shadow, two independently-set layers. Each state rule sets only
+/* One box-shadow, two independently-set layers. Each state rule sets only
    its own custom property, so `ci-running` and `stale` compose instead of
    overwriting each other; the var() fallbacks render the single-class cases. A
    third signal is one more variable and one more rule, not a combinatorial set.
@@ -4081,7 +4081,7 @@ html.light-theme .settings-hint-error {
   text-transform: none;
 }
 
-/* #2482 - the weekly-quota fill. ONE background-image layer and nothing else, so
+/* The weekly-quota fill. ONE background-image layer and nothing else, so
    `background-color`, `color`, `border-radius`, padding and font are untouched and
    the only new composite is the chip text over the red tint, on the used portion.
    The remaining-side stop is `transparent`, NOT the green tint: the base rule above
@@ -4089,13 +4089,13 @@ html.light-theme .settings-hint-error {
    rgba(16,185,129,0.45), and a green stop would composite green on green for an
    effective alpha of 1 - (1 - 0.45)^2 = 0.6975, leaving the remaining half visibly
    darker than an unfilled chip. `transparent` makes it byte-identical instead.
-   #2064 rejected a fill on `.branch` on measured contrast grounds, so this rule is
+   The chip work rejected a fill on `.branch` on measured contrast grounds, so this rule is
    measured, not assumed.
    Text #d1fae5 over the used red, over rgba(16,185,129,0.45), over rows #0a0a0f / #12121e /
-   #222227, WCAG 2.x from unrounded composited channels. #2565 (user request) raised the red from
+   #222227, WCAG 2.x from unrounded composited channels. A later user request raised the red from
    0.32 to 0.60: used 5.46 / 5.32 / 5.06 (was 6.91 / 6.58 / 6.01), unfilled control
    7.36 / 6.87 / 6.06. All six clear 4.5:1. The red is a
-   custom property so light theme sets its own (see the #2512 light rule). Re-measure if the red
+   custom property so light theme sets its own (see the light-theme rule). Re-measure if the red
    alpha changes. */
 .ac-discovery-badge.agent.quota-fill {
   background-image: linear-gradient(
@@ -4105,12 +4105,12 @@ html.light-theme .settings-hint-error {
   );
 }
 
-/* #2512 - light-theme palette. Text #064e3b over rgba(5,150,105,0.18) over light rows
+/* Light-theme palette. Text #064e3b over rgba(5,150,105,0.18) over light rows
    #f5f5f7 / #e8e8ec / #dcdce4 / banner rgba(0,102,204,0.04|0.08) on #f5f5f7, WCAG 2.x,
    unrounded composited channels: unfilled 7.24 / 6.54 / 5.94 / 6.90 / 6.56, quota used
    side over the light red rgba(239,68,68,0.22) 5.58 / 5.12 / 4.71 / 5.35 / 5.12.
    The dark 0.60 red would drop the active row to 3.27, below 4.5, so light keeps its own
-   0.22 (#2565, was 0.16).
+   0.22 (was 0.16).
    All clear 4.5:1. Re-measure if any alpha changes. */
 html.light-theme .ac-discovery-badge.agent {
   background-color: rgba(5, 150, 105, 0.18);
@@ -4129,7 +4129,7 @@ html.light-theme .ac-discovery-badge.running-peer {
   color: #2563eb;
 }
 
-/* #552 coordinator idle badge — minutes since the user's last message to a
+/* Coordinator idle badge — minutes since the user's last message to a
    coordinator. Translucent bg + saturated text to match the sibling badges in
    this row (separation by opacity/color, not borders). Lowercase ("45m") via
    text-transform:none, unlike the uppercase status labels. Three-class
@@ -4153,8 +4153,8 @@ html.light-theme .ac-discovery-badge.running-peer {
   color: var(--status-exited, #ff3b5c);
 }
 
-/* #552 auto-closed pill — NEUTRAL/muted on purpose so it reads as a state label
-   and stays distinct from the red idle badge. #580: the pill and the idle
+/* Auto-closed pill — NEUTRAL/muted on purpose so it reads as a state label
+   and stays distinct from the red idle badge. The pill and the idle
    counter are mutually exclusive (XOR gate), so a row shows one or the other,
    never both. Mirrors the muted `.disabled` badge; no border, per the
    industrial-dark "separation by opacity, not borders" aesthetic. */
@@ -4297,7 +4297,7 @@ html.light-theme .ac-discovery-badge.running-peer {
   min-width: 0;
 }
 
-/* #1859 - the blocked-menu rollup shared by the three header levels that can
+/* The blocked-menu rollup shared by the three header levels that can
    hide a row: the workgroup subgroup header, the orchestrators quick-group
    header and the project header. Same layout and pointer-events as the rail
    indicator, and the same var(--status-blocked) with no amber fallback; the
@@ -4607,7 +4607,7 @@ html.light-theme .ac-discovery-badge.running-peer {
   padding-left: max(0px, calc(calc(var(--spacing-md) + 20px) - var(--ac-rail-delta)));
 }
 
-/* #1351 — box geometry mirrors [data-sidebar-style="noir-minimal"] .ac-wg-group:
+/* Box geometry mirrors [data-sidebar-style="noir-minimal"] .ac-wg-group:
    the same 12px left inset and the same 1px separator, so the Coordinators header
    lines up with its sibling section headers instead of sitting 6px to their left.
    margin-right drops to 0 so the separator spans the same width as theirs. */
@@ -4821,7 +4821,7 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup {
   position: sticky;
 }
 
-/* #4821 - the light error row keeps today's background (no panel layer). */
+/* The light error row keeps today's background (no panel layer). */
 html.light-theme[data-sidebar-style="deep-space"] .project-filter-error-slot {
   background:
     linear-gradient(
@@ -5479,7 +5479,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .replica-item:has(.ac-disco
   font-size: 10px;
 }
 
-/* #1730 - the identity chip and the blocked-menu alert now live in this strip, so
+/* The identity chip and the blocked-menu alert now live in this strip, so
    the strip itself can no longer be hidden: an unhovered worker row would lose its
    name and its alert. Hide only the status chips, and only while the row is not
    hovered, so every child returns to its own display value on hover with no
@@ -5726,7 +5726,7 @@ html.light-theme[data-sidebar-style="neon-circuit"] .replica-item.active {
 
 /* =============================================================================
    COORDINATOR QUICK-ACCESS SECTION
-   #1351 — the section is a real collapsible section: .coord-quick-access-group
+   The section is a real collapsible section: .coord-quick-access-group
    wraps the ac-wg-header and the .coord-quick-access row list. The visibility
    gate lives on the GROUP, never on the inner strip: if it slid back onto the
    strip, the header would stay visible in every style that hides the strip and
@@ -5844,7 +5844,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access-group {
 
 /* ---- Neon Circuit: coordinator quick-access enabled ---- */
 
-/* #1351 — 6px margin + 1px border + 7px padding = the 14px left inset of
+/* 6px margin + 1px border + 7px padding = the 14px left inset of
    [data-sidebar-style="neon-circuit"] .ac-wg-group (4 + 2 + 8), so the header
    lines up with its siblings. The frame keeps its own 6px right margin. */
 [data-sidebar-style="neon-circuit"] .coord-quick-access-group {
@@ -5965,7 +5965,7 @@ html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access-group {
   inset-block: -1px; left: -9px; right: 7px;
 }
 
-/* #1755 - passive "someone is working here" wash. `working` is set by
+/* Passive "someone is working here" wash. `working` is set by
    ProjectPanel from isReplicaWorking / roomIsWorking; both predicates
    predate this issue.
 
@@ -5985,7 +5985,7 @@ html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access-group {
    carries no z-index on purpose - pushed behind the content it would sit under
    those opaque backgrounds and disappear in exactly the selected and hovered
    cases. `inset: 0` is the padding box, so the active rail stays clean at any
-   configured width (#1796).
+   configured width.
 
    The alphas encode an ordering, not a strength: room wash < hover < working
    row < selection, measured as luminance distance from --sidebar-bg. See the
@@ -6033,8 +6033,8 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
 }
 
 /* =============================================================================
-   #2236 phase 3 - compact sidebar: the banner overlay, the compact row, and
-   content removal (#2283). Appended, but the compact rules win by specificity,
+   Phase 3 - compact sidebar: the banner overlay, the compact row, and
+   content removal. Appended, but the compact rules win by specificity,
    never by position: each is compound-keyed on .sidebar-layout.sidebar-compact
    and outranks its phase-1 or per-style rival.
    ============================================================================= */
@@ -6109,7 +6109,7 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
   outline-offset: -3px;
 }
 
-/* #2655 - keyboard proxy for clickable rows; see RowKeyProxy.tsx. */
+/* Keyboard proxy for clickable rows; see RowKeyProxy.tsx. */
 .ac-row-key-proxy {
   position: absolute;
   inset: 0;
@@ -6175,7 +6175,7 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
 /* In compact the row is the toggle. visibility: hidden also removes the hidden
    children from hit-testing, so the activation button cannot swallow a click.
    Hidden children keep their layout box, so in the narrow rail their text would wrap
-   and grow the row (#2519). nowrap keeps the same line count as the expanded row, so the
+   and grow the row. nowrap keeps the same line count as the expanded row, so the
    height matches it; the banner's overflow: hidden clips the unwrapped text. */
 .sidebar-layout.sidebar-compact .root-agent-banner > :not(.root-agent-banner-toggle) {
   visibility: hidden;
@@ -6206,13 +6206,13 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
   display: none;
 }
 
-/* #2655 - overlay panels focused on mount so Escape reaches their backdrop;
+/* Overlay panels focused on mount so Escape reaches their backdrop;
    the programmatic focus must not draw a ring. */
 .ac-escape-focus-host:focus {
   outline: none;
 }
 
-/* #2744 - light-mode palette for the legacy toast and for the selection-lock /
+/* Light-mode palette for the legacy toast and for the selection-lock /
    agent-scope / lock-conflict family. Amber #e3b341, #f2d98a and #c8ab6a and
    green #35f2a6 were picked for the dark surface; on #f5f5f7 they fall to
    1.18-2.03. #8a6400 and #0f7a4d clear 4.3 on every tint these rules use.
@@ -6244,7 +6244,7 @@ html.light-theme .selection-lock-future .decision-tag {
   color: #0f7a4d;
 }
 
-/* #2744 - the rest-state control drew a white 22% border and a white 4% wash,
+/* The rest-state control drew a white 22% border and a white 4% wash,
    both invisible on the light surface. Same weights, inverted. */
 html.light-theme .selection-lock-remove {
   border-color: rgba(0, 0, 0, 0.22);
@@ -6255,7 +6255,7 @@ html.light-theme .selection-lock-remove:hover:not(:disabled) {
   border-color: rgba(138, 100, 0, 0.6);
 }
 
-/* #2744 - these rules read --danger and --status-error, which are undefined
+/* These rules read --danger and --status-error, which are undefined
    and are deliberately left undefined because their call sites pass different
    literals (--danger: #ff6b6b, #ef4444, #c0392b; --status-error: #e06c75,
    #ff5f56). The var() declarations stay exactly as written, so dark keeps each
@@ -6270,7 +6270,7 @@ html.light-theme .tpl-agency-install-error {
   color: #b91c1c;
 }
 
-/* #2744 - light-mode palette for the literals that were picked for the dark
+/* Light-mode palette for the literals that were picked for the dark
    surface. Families and values come from the issue-2744 plan: amber #8a6400,
    green #0f7a4d, red #b91c1c, cyan #0e7490, blue #0b5ed7, violet #6d28d9,
    slate #475569. Added as overrides, so the dark cascade is byte-identical. */
@@ -6330,7 +6330,7 @@ html.light-theme .ac-discovery-badge.disabled {
   color: #475569;
 }
 
-/* #2744 - the comparison table head hardcoded a near-black panel while its
+/* The comparison table head hardcoded a near-black panel while its
    text follows --sidebar-fg-dim, which flips: 1.70 in light mode. */
 html.light-theme .agent-comparison-table-head {
   background: var(--sidebar-surface);
@@ -6344,7 +6344,7 @@ html.light-theme .agent-comparison-table-head {
 }
 .light-theme .sidebar-task-label:focus-visible { outline-color: #2563eb; }
 
-/* #3027 - halo around the row that opened the replica context menu. Sits under
+/* Halo around the row that opened the replica context menu. Sits under
    the menu (9999) and its flyouts (10000); never takes pointer input. */
 .replica-menu-halo-clip {
   position: fixed;
@@ -6369,7 +6369,7 @@ html.light-theme .agent-comparison-table-head {
   .replica-menu-halo { animation: none; }
 }
 
-/* #3367 — "WWW" text glyph sized to the emoji siblings. */
+/* "WWW" text glyph sized to the emoji siblings. */
 .toolbar-gear-btn.web-browser-toggle-btn {
   font-size: 9px;
   font-weight: 700;

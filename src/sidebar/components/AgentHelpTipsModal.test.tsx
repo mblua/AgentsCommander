@@ -67,7 +67,7 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-describe("AgentHelpTipsModal (#2143)", () => {
+describe("AgentHelpTipsModal", () => {
   it("Escape closes the window", async () => {
     const [open, setOpen] = createSignal(true);
     const root = document.createElement("div");

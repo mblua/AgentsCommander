@@ -49,7 +49,7 @@ function mount(props: {
   );
 }
 
-describe("LoopTargetMissingModal (#2171)", () => {
+describe("LoopTargetMissingModal", () => {
   let dispose: (() => void) | null = null;
 
   afterEach(() => {

@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 // The third case asserts that each light-theme override EXISTS and DIFFERS from
 // the :root value. It deliberately does NOT pin the bytes #0066cc, #ca8a04 and
 // #16a34a. The light amber and the light green are known, disclosed contrast
-// shortfalls (#1708 acceptance criterion 6, 2.47 on #ebebf0, and #1731, 2.77 on
+// shortfalls (acceptance criterion 6, 2.47 on #ebebf0, and #1731, 2.77 on
 // the same surface), so retuning any of these light values is a legitimate
 // follow-up; a byte pin would make that follow-up fail here with a message that
 // says nothing about contrast. Presence is asserted separately from inequality
@@ -33,7 +33,7 @@ function tokenValue(body: string, token: string): string | null {
   return match ? match[1].trim() : null;
 }
 
-describe("#1708/#1731 context-menu icon colours", () => {
+describe("context-menu icon colours", () => {
   it.each([
     ["the detach icon", "--sidebar-accent", ".session-context-detach-icon"],
     ["the TASK-title pencil", "--status-pending", ".session-context-task-icon"],

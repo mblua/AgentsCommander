@@ -29,7 +29,7 @@ function byTestId<T extends HTMLElement = HTMLElement>(testId: string): T {
   return element;
 }
 
-describe("ArchivedProjectsModal (#881)", () => {
+describe("ArchivedProjectsModal", () => {
   beforeEach(() => {
     resetUiStoresForTests();
   });

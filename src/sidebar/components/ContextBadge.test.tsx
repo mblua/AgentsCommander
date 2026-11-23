@@ -42,7 +42,7 @@ function renderBadge(percent: number | null | undefined) {
   return { dispose };
 }
 
-describe("ContextBadge (#1033)", () => {
+describe("ContextBadge", () => {
   afterEach(() => {
     document.body.innerHTML = "";
   });
@@ -142,7 +142,7 @@ describe("ContextBadge (#1033)", () => {
 });
 
 // The scoped badge reads the P10 owner and colors only bg/border.
-describe("ContextBadge history scope (#3532 P11)", () => {
+describe("ContextBadge history scope", () => {
   const SCOPE = {
     projectPath: "C:/proj",
     runtimeSessionId: "00000000-0000-4000-8000-000000000001",
@@ -429,7 +429,7 @@ describe("ContextBadge history scope (#3532 P11)", () => {
     expect(cardOf(badge).hidden).toBe(true);
   });
 
-  describe("#4796 hover delay", () => {
+  describe("hover delay", () => {
     const touchAt = (badge: HTMLElement) => {
       const e = new Event("pointerdown", { bubbles: true });
       Object.defineProperty(e, "pointerType", { value: "touch" });

@@ -1,4 +1,4 @@
-// Script line-length debt ratchet (#4130): a changed script under scripts/ may keep or
+// Script line-length debt ratchet: a changed script under scripts/ may keep or
 // reduce its count of lines over 100 Unicode characters, never grow it. Counts are per
 // file, so debt removed in one script never compensates debt added to another.
 import { gateCli, isMain } from './sanitizing_baseline.mjs';

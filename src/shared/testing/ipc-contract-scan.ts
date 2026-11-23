@@ -1,6 +1,6 @@
-// #4316 - pure scanner for the frontend `invoke` vs Rust `#[tauri::command]` contract.
+// Pure scanner for the frontend `invoke` vs Rust `#[tauri::command]` contract.
 // Input is path -> text maps; no fs access and no globals. Used only by
-// src/shared/ipc-contract.test.ts. Rules R1-R7, F1-F5 and C1-C4 are in the #4316 plan.
+// src/shared/ipc-contract.test.ts. Rules R1-R7, F1-F5 and C1-C4 are in the plan.
 import ts from "typescript";
 
 export type Sources = Record<string, string>; // repo-relative "/" path -> file text

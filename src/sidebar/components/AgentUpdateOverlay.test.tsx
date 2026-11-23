@@ -132,7 +132,7 @@ function nodeItems(): HTMLElement[] {
   );
 }
 
-describe("AgentUpdateOverlay (#1327, #1551)", () => {
+describe("AgentUpdateOverlay", () => {
   let fake: FakeTransport;
   let restore: () => void;
   let dispose: (() => void) | null = null;
@@ -332,7 +332,7 @@ describe("AgentUpdateOverlay (#1327, #1551)", () => {
     expect(byTestId("agent-update.node.c").getAttribute("title")).toBe("c update");
   });
 
-  it("#1691 - every terminal row is ONE string with no separator, from the result's own fields", () => {
+  it("every terminal row is ONE string with no separator, from the result's own fields", () => {
     setAgentUpdateStore({
       inProgress: true,
       nodes: [
@@ -413,7 +413,7 @@ describe("AgentUpdateOverlay (#1327, #1551)", () => {
     expect(bar.querySelector<HTMLElement>(".agent-update-progress-fill")!.style.width).toBe("67%");
   });
 
-  it("#1691 - the prompt callout, the timeline and both controls coexist in the required DOM order", () => {
+  it("the prompt callout, the timeline and both controls coexist in the required DOM order", () => {
     setAgentUpdateStore({
       inProgress: true,
       prompt: PROMPT,
@@ -571,7 +571,7 @@ describe("AgentUpdateOverlay (#1327, #1551)", () => {
     expect(toastStore.items[0].message).toBe("Auto-update failed for Bad (bad-stub): exit code 1");
   });
 
-  it("#1691 - install_state_changed after finished never rewrites a terminal row's outcome", async () => {
+  it("install_state_changed after finished never rewrites a terminal row's outcome", async () => {
     await wire();
     fake.emitFromBackend("agent_updates_started", { nodes: [node("a", "A", installed("1.0", 0))] });
     fake.emitFromBackend("agent_updates_finished", { results: [unchanged("a", "A", "1.0")] });
@@ -706,7 +706,7 @@ describe("AgentUpdateOverlay (#1327, #1551)", () => {
   });
 });
 
-describe("AgentUpdateOverlay cancellation controls (#1691)", () => {
+describe("AgentUpdateOverlay cancellation controls", () => {
   let fake: FakeTransport;
   let restore: () => void;
   let dispose: (() => void) | null = null;
