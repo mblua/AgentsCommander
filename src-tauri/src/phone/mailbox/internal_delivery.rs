@@ -320,7 +320,7 @@ impl MailboxPoller {
                                 return;
                             }
                         }
-                        // #2586 - the internal-notice injector is a non-wake path that reports
+                        // The internal-notice injector is a non-wake path that reports
                         // `Unknown`, so this readiness is not carried.
                         let _ = self.settle_live_before_inject(app, session_id).await;
                     };
@@ -378,7 +378,7 @@ impl MailboxPoller {
         ),
         String,
     > {
-        // #1271 - copy the configured default host shell from the SAME snapshot
+        // Copy the configured default host shell from the SAME snapshot
         // that builds the spawn below, before the snapshot moves into the
         // resolution task (Phase 1 items 1-2: never read one half of the pair
         // after configuration has changed).
@@ -438,7 +438,7 @@ impl MailboxPoller {
         let agents = {
             let settings = app.pty_settings();
             let settings = settings.read().await;
-            // #2716 (B3, option C): the same refusal as `resolve_agent_command`.
+            // (B3, option C): the same refusal as `resolve_agent_command`.
             if let Some(path) = settings.agents_layer.unreadable_path() {
                 return Err(crate::config::settings::agents_unreadable_session_error(
                     path,
@@ -817,7 +817,7 @@ impl MailboxPoller {
                     results.pop_front()
                 }
                 .unwrap_or(Ok(()));
-                // (#1001 PR1 / G6) On a successful inject, if a consumption
+                // (PR1 / G6) On a successful inject, if a consumption
                 // verdict is scripted, run the SAME verdict_to_result the
                 // production path uses so AC3 covers the real conversion. No
                 // scripted verdict => Ok (existing hooked tests unchanged).
@@ -871,7 +871,7 @@ impl MailboxPoller {
         if result.is_ok() {
             wake_receipt::mark_response_submitted(response, msg);
         }
-        // #552 auto-close: a successful inter-agent wake is activity for the
+        // Auto-close: a successful inter-agent wake is activity for the
         // recipient team's silence clock (NOT the badge; inter-agent is not a
         // user message). This single site covers both wake paths (deliver_wake
         // and the spawned-wake path), which both funnel through here. The
@@ -880,7 +880,7 @@ impl MailboxPoller {
         if result.is_ok() {
             touch_silence();
         }
-        // (#1001 PR1 / G6) Route the successful-inject return through the
+        // (PR1 / G6) Route the successful-inject return through the
         // shared verdict_to_result so this production site runs the exact
         // conversion the AC3 hooked test exercises. PR1 wires no oracle yet,
         // so the verdict is NotApplicable => Ok(()): today's write-receipt

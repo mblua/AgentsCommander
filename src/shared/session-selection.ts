@@ -41,7 +41,7 @@ function requirePlainDataRecord(
   if (
     keys.length !== exactKeys.length ||
     keys.some((key) => typeof key !== "string") ||
-    exactKeys.some((key) => !Object.prototype.hasOwnProperty.call(value, key))
+    exactKeys.some((key) => !Object.hasOwn(value, key))
   ) {
     return fail(path, `expected exact keys ${exactKeys.join(",")}`);
   }

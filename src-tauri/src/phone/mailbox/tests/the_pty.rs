@@ -92,7 +92,7 @@ pub(super) async fn boundary_rig(fixture: &MailboxFixture) -> BoundaryRig {
     }
 }
 
-/// #1682 - the privileged exact-agent-input plane bypasses `mark_busy`, so
+/// The privileged exact-agent-input plane bypasses `mark_busy`, so
 /// the boundary transaction itself is the arming site for it.
 #[tokio::test]
 async fn the_pty_input_boundary_arms_the_session() {
@@ -149,7 +149,7 @@ async fn the_pty_input_boundary_arms_the_session() {
     );
 }
 
-/// #1682 - the single injection funnel behind the inter-agent wake, so one
+/// The single injection funnel behind the inter-agent wake, so one
 /// arming site there covers every injection caller (round-1 blocker B1).
 #[tokio::test]
 async fn an_injected_text_block_arms_the_session() {

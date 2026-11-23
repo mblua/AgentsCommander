@@ -247,7 +247,7 @@ fn config_wire_shape_is_camel_case() {
     assert_eq!(default, "{\"enabled\":false,\"catalogPath\":null}");
 }
 
-/// #2232 phase 7: the queue is a sibling of `config.json` and `state.json`,
+/// Phase 7: the queue is a sibling of `config.json` and `state.json`,
 /// directly under `.co-managed/`, never a subdirectory of an outbox.
 #[test]
 fn queue_dir_is_a_sibling_of_the_config_and_state_files() {
@@ -357,7 +357,7 @@ fn globally_available_accepts_a_padded_key() {
     assert!(globally_available(true, "  k  "));
 }
 
-/// #2525 D-d: `Ready` implies `globally_available`, so the sweep never
+/// D-d: `Ready` implies `globally_available`, so the sweep never
 /// releases a demand an available room should hold.
 #[test]
 fn a_ready_room_is_never_globally_unavailable() {

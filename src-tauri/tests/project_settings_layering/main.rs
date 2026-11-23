@@ -1,4 +1,4 @@
-//! #1265 layering guard: `crate::commands::project_settings` may not name the
+//! Layering guard: `crate::commands::project_settings` may not name the
 //! browser command dispatcher `crate::web::commands`, and the emitter module
 //! `crate::web::event_broadcast` may not name anything but the WebSocket
 //! fan-out.
@@ -14,7 +14,7 @@
 //! `sccSize 1`. A green result here means "no known spelling is present", never
 //! "the cycle is impossible".
 //!
-//! WHY IT GUARDS TWO MODULES AND NOT ONE. #1265 took
+//! WHY IT GUARDS TWO MODULES AND NOT ONE. The layering fix took
 //! `commands::project_settings` out of the knot by moving the emitter down into
 //! `web::event_broadcast`, and the argument that the emitter module cannot be
 //! absorbed by the knot rests on it having exactly one outgoing arc, to
@@ -66,7 +66,7 @@
 //! This list is maintained by the review loop. When a reviewer proves a spelling
 //! that reaches the browser command dispatcher from the guarded module and still
 //! passes this file, it is appended here. Appending an entry is part of
-//! reviewing #1265 and is expected; it changes nothing else.
+//! reviewing the layering fix and is expected; it changes nothing else.
 //!
 //! **This file is the canonical copy.** Section 5.5 of
 //! `.ac/plans/1265-extract-project-settings-from-scc.md` quotes it verbatim, but that
@@ -132,7 +132,7 @@
 //!      resolver scans both arms of a platform module, so a forbidden reference
 //!      in either arm is caught, but which arm rustc compiled is not known here
 //!      and the failure message cannot say.
-//!  11. `broadcast_all_r` moving. After #1265 there are two dual-transport
+//!  11. `broadcast_all_r` moving. After the fix there are two dual-transport
 //!      emitters in two modules: `broadcast_all` in `web::event_broadcast` and
 //!      `broadcast_all_r` in `web::commands`. Section 3.2 of the plan closes the
 //!      decision to leave `broadcast_all_r` where it is, because moving it would
@@ -150,7 +150,7 @@
 //!      that deletion does not compile: the type is in `broadcast_all`'s
 //!      signature. It is written down because the shrinking-set argument is the
 //!      thing somebody will be trusting on the day it stops being true. The
-//!      same asymmetry is recorded in `loops_layering.rs` for #1252.
+//!      same asymmetry is recorded in `loops_layering.rs`.
 //!  13. ANY `use crate::<knot member>::...` from the guarded module, and not
 //!      only a reference to `web::commands`. The twelve entries above are all
 //!      written about spellings of that one reference, but the cycle does not
@@ -161,7 +161,7 @@
 //!      `src/commands/project_settings.rs`: knot 88 to 89,
 //!      `sccSize(commands::project_settings)` 1 to 89, level of `web::commands`
 //!      3 back down to 2, arcs 976 to 977, and **this file green throughout:
-//!      3 passed, 0 failed**. #1265 is undone and no test in the repository
+//!      3 passed, 0 failed**. The fix is undone and no test in the repository
 //!      goes red.
 //!
 //!      CAUSE, and it is an asymmetry between the two guarded modules rather
@@ -178,7 +178,7 @@
 //!      it reports. Closing it in this file is cheap and symmetric with what
 //!      already exists, assert `seen.anchored` for `GUARDED_MODULE` against an
 //!      `ALLOWED_GUARDED_CRATE_REFERENCES` table the way the emitter module
-//!      already does. That is tracked in **#1268** and is deliberately not
+//!      already does. That is tracked separately and is deliberately not
 //!      done here: it would change the anchor contract of Section 4.3 of
 //!      `.ac/plans/1265-extract-project-settings-from-scc.md`, which is
 //!      specification, and appending here is what Section 9.3.5 contemplates.
@@ -197,8 +197,8 @@ use source_text::{aliases_a_module_group, children_under, normalized};
 /// child of `crate::web`, sorted.
 ///
 /// `broadcast` is the `WsBroadcaster` type in the signature of the
-/// `update_project_groups` command and predates #1265. `event_broadcast` is the
-/// emitter #1265 moved below both surfaces, and it is listed **because it must
+/// `update_project_groups` command and predates the fix. `event_broadcast` is the
+/// emitter the fix moved below both surfaces, and it is listed **because it must
 /// be there**: this is an equality, so if that import silently disappears the
 /// assertion fails rather than passing quieter.
 ///
@@ -215,7 +215,7 @@ const ALLOWED_WEB_REFERENCES: [(&str, &str); 2] = [
 /// Every `(file, child)` reference the emitter module is allowed to make under
 /// `crate::`, sorted.
 /// The production row pins `WsBroadcaster` in `broadcast_all`'s signature.
-/// The child test file imports the same fan-out after its extraction in #3188.
+/// The child test file imports the same fan-out after its extraction.
 const ALLOWED_EMITTER_CRATE_REFERENCES: [(&str, &str); 2] = [
     ("src/web/event_broadcast.rs", "web"),
     ("src/web/event_broadcast/tests.rs", "web"),
@@ -256,7 +256,7 @@ const ALLOWED_EMITTER_WEB_REFERENCES: [(&str, &str); 2] = [
 const ALLOWED_EMITTER_SUPER_REFERENCES: [(&str, &str); 1] =
     [("src/web/event_broadcast/tests.rs", "broadcast_all")];
 
-/// The child #1265 removed, called out separately so its failure carries the
+/// The child the fix removed, called out separately so its failure carries the
 /// explanation of the cycle rather than the generic allowlist message.
 const FORBIDDEN_WEB_CHILD: &str = "commands";
 
@@ -267,10 +267,10 @@ const SUPER_ANCHOR: &str = "super::";
 /// The module this guard is written about, as path segments below `crate`.
 const GUARDED_MODULE: [&str; 2] = ["commands", "project_settings"];
 
-/// The module #1265 created to hold the emitter, as path segments below `crate`.
+/// The module the fix created to hold the emitter, as path segments below `crate`.
 const EMITTER_MODULE: [&str; 2] = ["web", "event_broadcast"];
 
-/// The emitter #1265 moved, and the one file that may define it.
+/// The emitter the fix moved, and the one file that may define it.
 ///
 /// The name only. `defines_emitter` decides what counts as a definition, because
 /// `fn broadcast_all(` as a literal needle misses `fn broadcast_all (` and, more
@@ -389,7 +389,7 @@ fn expected(table: &[(&str, &str)]) -> Vec<(String, String)> {
 // The guards
 // ---------------------------------------------------------------------------
 
-/// #1265: `commands::project_settings` used to call
+/// `commands::project_settings` used to call
 /// `crate::web::commands::broadcast_all`, which put the Tauri command and the
 /// browser dispatcher in a mutual pair and held the command inside an 89 module
 /// cyclic SCC. The emitter moved to `web::event_broadcast` so both surfaces
@@ -497,14 +497,14 @@ fn project_settings_names_no_web_module_above_it() {
     );
 }
 
-/// #1265 Section 4.3: the emitter module cannot be absorbed by the knot because
+/// Section 4.3: the emitter module cannot be absorbed by the knot because
 /// its only outgoing arc goes to `web::broadcast`, which has none of its own.
 ///
 /// **That is a claim about outgoing arcs, and this test is the only thing that
 /// holds it.** Measured on the arc record: adding one arc from
 /// `web::event_broadcast` to any knot member takes the knot from 88 back to 90
 /// and puts `commands::project_settings` back inside it, leaving the crate worse
-/// than before #1265, while every assertion in the test above stays green,
+/// than before the fix, while every assertion in the test above stays green,
 /// because that module's own file did not change.
 ///
 /// Two equalities, one per anchor. `crate::` pins the first segment and `web::`
@@ -594,7 +594,7 @@ fn the_emitter_home_names_nothing_but_the_websocket_fan_out() {
     );
 }
 
-/// #1265 criterion 8: the emitter moved, it was not copied. Two copies would
+/// Criterion 8: the emitter moved, it was not copied. Two copies would
 /// drift and the layering claim would be false while every arc assertion still
 /// passed.
 ///

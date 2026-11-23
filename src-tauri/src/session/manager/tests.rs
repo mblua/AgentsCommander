@@ -71,7 +71,7 @@ impl SessionManager {
         }
     }
 
-    /// #1063: insert a pending create (hidden from public reads, visible to the
+    /// Insert a pending create (hidden from public reads, visible to the
     /// deletion-only snapshot) at `working_directory`, for cross-module deletion
     /// race tests.
     pub(crate) async fn insert_pending_session_for_test(&self, working_directory: String) -> Uuid {

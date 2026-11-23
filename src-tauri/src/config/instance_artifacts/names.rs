@@ -219,7 +219,7 @@ pub(crate) const CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT: &str =
 pub(crate) const CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT: &str =
     "coding-agents/..agents.migration-v1.json.*.tmp";
 
-// #2470 - layered file names: `<name>.<NN>.<owner>[.no-git].<ext>`, as
+// Layered file names: `<name>.<NN>.<owner>[.no-git].<ext>`, as
 // `docs/reference/file-naming.md` defines them.
 
 /// NN and owner are ONE token, never two: they are 1:1, and two spellings of one
@@ -284,12 +284,12 @@ pub(crate) const LAYERED_NAME_PROBES: [(&str, &str); 7] = [
     (layered_name!("x", instance, no_git, "e"), NO_GIT_MARKER),
 ];
 
-// Target names. B1b (#2714) switched the settings and blocking-menus ones;
+// Target names. B1b switched the settings and blocking-menus ones;
 // the rest stay unused until their own phase.
 pub(crate) const SETTINGS_TARGET_NAME: &str = layered_name!("settings", instance, no_git, "json");
 pub(crate) const SETTINGS_LOCAL_TARGET_NAME: &str =
     layered_name!("settings", personal, no_git, "json");
-/// #2717 (B4a) - a project's `.ac/project-settings.json`, layer 50. The same
+/// (B4a) - a project's `.ac/project-settings.json`, layer 50. The same
 /// bytes as `SETTINGS_LOCAL_TARGET_NAME` on purpose: two artifacts, each named
 /// from the rule, in two directories.
 pub(crate) const PROJECT_SETTINGS_TARGET_NAME: &str =
@@ -310,20 +310,20 @@ pub(crate) const BLOCKING_MENUS_LOCAL_TARGET_NAME: &str =
     layered_name!("blocking-menus", personal, no_git, "json");
 pub(crate) const BLOCKING_MENUS_REMOTE_CHECK_TARGET_NAME: &str =
     layered_name!("blocking-menus", state, no_git, "json");
-/// #2786 (C1) - the agent state file beside the `config.json` it belongs to.
+/// (C1) - the agent state file beside the `config.json` it belongs to.
 /// It holds the runtime tooling keys; `config.json` keeps the decisions.
 pub(crate) const CONFIG_STATE_TARGET_NAME: &str = layered_name!("config", state, no_git, "json");
-/// #2714 - the settings writer's temporaries, `<name>.<pid>.<op>.tmp`: no
+/// The settings writer's temporaries, `<name>.<pid>.<op>.tmp`: no
 /// leading dot, so the atomic-write glob cannot match them.
 pub(crate) const SETTINGS_TMP_GLOB: &str = concat!(
     layered_name!("settings", instance, no_git, "json"),
     ".*.tmp"
 );
-/// #2714 - the one concrete migration backup, written by
+/// The one concrete migration backup, written by
 /// `write_pre_384_v1_backup`; a registry test ties it to `SETTINGS_MIGRATION_BACKUP_GLOB`.
 pub(crate) const SETTINGS_MIGRATION_BACKUP_384_V1_NAME: &str =
     layered_name!("settings", instance, no_git, "pre-384-v1.json");
-/// #2714 - the rotation glob in the layered spelling; a registry test derives
+/// The rotation glob in the layered spelling; a registry test derives
 /// it from `SETTINGS_BACKUP_PREFIX` and `SETTINGS_BACKUP_SUFFIX`.
 pub(crate) const SETTINGS_BACKUP_ROTATION_TARGET_GLOB: &str =
     layered_name!("settings", instance, no_git, "backup.*.json");
@@ -335,7 +335,7 @@ pub(crate) const CODING_AGENTS_LOCAL_TARGET_NAME: &str =
 pub(crate) const CODING_AGENTS_PROJECT_TARGET_NAME: &str = layered_name!("agents", project, "json");
 pub(crate) const CODING_AGENTS_LOCK_TARGET_NAME: &str =
     concat!(".", layered_name!("agents", default, "json"), ".lock");
-/// #2715 - the user-owned overrides layer and the catalog write lock, switched
+/// The user-owned overrides layer and the catalog write lock, switched
 /// to their target names. The table rows use the root-relative twins.
 pub(crate) const CODING_AGENTS_LOCAL_FILENAME: &str = CODING_AGENTS_LOCAL_TARGET_NAME;
 pub(crate) const CODING_AGENTS_LOCAL_ARTIFACT: &str = concat!(
@@ -348,25 +348,25 @@ pub(crate) const CODING_AGENTS_LOCK_ARTIFACT: &str = concat!(
     layered_name!("agents", default, "json"),
     ".lock"
 );
-/// #2715 - the pre-migration catalog lock sidecar. A retired name kept only so
+/// The pre-migration catalog lock sidecar. A retired name kept only so
 /// the leftover the naming migration deliberately never deletes stays ignored.
 pub(crate) const CODING_AGENTS_RETIRED_LOCK_ARTIFACT: &str = "coding-agents/.agents.json.lock";
-/// #2715 - every catalog file the naming migration demotes,
+/// Every catalog file the naming migration demotes,
 /// `<old name>.deprecated-<n>.no-git`: one glob keeps each set-aside copy out of Git.
 pub(crate) const CODING_AGENTS_SET_ASIDE_ARTIFACT: &str = "coding-agents/*.deprecated-*.no-git";
-/// #2716 (B3) - the instance file that holds `agents` and `codingAgentProfiles`,
+/// (B3) - the instance file that holds `agents` and `codingAgentProfiles`,
 /// beside the settings file.
-/// #2718 (B4b) - a Loop's `_loop_*/state.json`: AC working memory with no
+/// (B4b) - a Loop's `_loop_*/state.json`: AC working memory with no
 /// competing layer.
 pub(crate) const LOOP_STATE_TARGET_NAME: &str = layered_name!("loop", state, no_git, "json");
-/// #2718 (B4b) - the Loop state write temporary, `<name>.<uuid>.tmp`, derived
+/// (B4b) - the Loop state write temporary, `<name>.<uuid>.tmp`, derived
 /// from the destination name.
 pub(crate) const LOOP_STATE_TMP_TARGET_GLOB: &str =
     concat!(layered_name!("loop", state, no_git, "json"), ".*.tmp");
 pub(crate) const AGENTS_INSTANCE_TARGET_NAME: &str =
     layered_name!("agents", instance, no_git, "json");
 pub(crate) const AGENTS_INSTANCE_FILE_NAME: &str = AGENTS_INSTANCE_TARGET_NAME;
-/// #2716 (B3) - the agents-file writer's temporaries, `<name>.<pid>.<op>.tmp`,
+/// (B3) - the agents-file writer's temporaries, `<name>.<pid>.<op>.tmp`,
 /// the same shape as `SETTINGS_TMP_GLOB`.
 pub(crate) const AGENTS_INSTANCE_TMP_GLOB: &str =
     concat!(layered_name!("agents", instance, no_git, "json"), ".*.tmp");
@@ -399,7 +399,7 @@ pub(crate) const CONFIG_IDENTITY_RESERVATION_TMP: &str = concat!(
     ".*.tmp"
 );
 
-/// #2713 - the naming-migration journal, which is also its completion marker:
+/// The naming-migration journal, which is also its completion marker:
 /// one file, so there is one source of truth. `config::naming_migration` owns it.
 pub(crate) const NAMING_MIGRATION_STATE_NAME: &str =
     layered_name!("naming-migration", state, no_git, "json");
@@ -415,7 +415,7 @@ pub(crate) const NAMING_MIGRATION_LOCK_NAME: &str = concat!(
     ".lock"
 );
 
-/// #1968 - the single publication temporary-name formula,
+/// The single publication temporary-name formula,
 /// `.{destination}.{pid}.{counter}.tmp`. The catalog writer aliases it and the
 /// generated-policy test derives the journal temporary from it, so the writer
 /// and the ignore rule cannot drift apart. Leaf on purpose: `format!` only.

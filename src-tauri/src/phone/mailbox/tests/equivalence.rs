@@ -1,4 +1,4 @@
-//! Source-order controls supplement the existing runtime suites (#3946 P20).
+//! Source-order controls supplement the existing runtime suites.
 use rust_source_scrub::{scrub, Literals};
 use sha2::{Digest, Sha256};
 use std::path::Path;

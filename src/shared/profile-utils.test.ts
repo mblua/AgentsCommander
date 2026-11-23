@@ -587,7 +587,7 @@ describe("shouldMaskEnvValue (#1052 env value masking rule)", () => {
 // inside `deriveMatrixRoot`) and F3 (`:472`, `isWgReplicaPath`). Left
 // unrewired, both silently refuse to recognise a Room replica for profile
 // scope. The function names keep the retired word (Rule P0, out of scope, so
-// #1615 owns them); only the predicate widened.
+// another issue owns them); only the predicate widened.
 describe("profile-utils, Room replicas (#1614 F2/F3)", () => {
   it("isWgReplicaPath accepts a Room replica and still accepts a legacy one", () => {
     expect(isWgReplicaPath("C:/repo/.ac/room-7-dev-team/__agent_dev-webpage-ui")).toBe(true);

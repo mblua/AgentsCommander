@@ -78,7 +78,7 @@ pub(super) fn collect_agent_delete_plan_guarded(
 
     for wg_dir in list_workgroup_dirs(base) {
         let replica = wg_dir.join(format!("__agent_{agent_name}"));
-        // #1063: exact `symlink_metadata` handling instead of `Path::exists`, which
+        // Exact `symlink_metadata` handling instead of `Path::exists`, which
         // collapses access and other inspection errors to false. Exact `NotFound`
         // means absent and adds no target (committed-intent pruning by agent
         // component still covers any stale rows at commit); every other inspection
@@ -210,7 +210,7 @@ pub(super) async fn prepare_agent_delete_metadata(
     })
 }
 
-// #1063: the async agent-delete metadata helpers below are superseded in
+// The async agent-delete metadata helpers below are superseded in
 // production by `persist_agent_delete_metadata_blocking` (run under the blocking
 // project→team→settings transaction). They are retained only as `#[cfg(test)]`
 // scaffolding for the pre-existing focused rollback/restore/format tests.

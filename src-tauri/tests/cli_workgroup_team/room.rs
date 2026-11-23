@@ -212,27 +212,31 @@ fn purge_room_and_purge_wg_produce_identical_outbox_messages() {
         };
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // Retry until the first message parses, so a read can never see it
+        // before it is complete.
         let mut found = None;
         while std::time::Instant::now() < deadline {
             let files = outbox_files(&root);
-            if !files.is_empty() {
-                found = Some(files[0].clone());
-                break;
+            if let Some(path) = files.first() {
+                let parsed = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
+                if let Some(value) = parsed {
+                    found = Some(value);
+                    break;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         let _ = child.kill();
         let _ = child.wait();
 
-        let path = found.unwrap_or_else(|| {
+        let mut v = found.unwrap_or_else(|| {
             panic!(
-                "{sub} {flag}: no outbox message was written under {}",
+                "{sub} {flag}: no complete outbox message was written under {}",
                 root.display()
             )
         });
-        let mut v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read outbox"))
-                .expect("outbox json");
 
         // The wire value is Rule P0 (section 3.10, D13) and must survive the
         // rename verbatim, or an in-flight message breaks across versions.
@@ -297,5 +301,5 @@ fn outbox_files(root: &Path) -> Vec<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// #2374 - `room activity` black-box fixtures and tests.
+// `room activity` black-box fixtures and tests.
 // ---------------------------------------------------------------------------

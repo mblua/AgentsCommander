@@ -1,6 +1,6 @@
 use super::*;
 
-/// #973 - the size a real view fitted is handed down untouched. That is the whole point of
+/// The size a real view fitted is handed down untouched. That is the whole point of
 /// the type: the PTY opens at the size the terminal already is, so nothing has to resize it
 /// during the child's startup.
 #[test]
@@ -16,7 +16,7 @@ fn a_real_fitted_size_is_handed_down_as_is() {
     );
 }
 
-/// #973 - the case a zero check misses. xterm clamps a collapsed container to 2x1 rather
+/// The case a zero check misses. xterm clamps a collapsed container to 2x1 rather
 /// than reporting a zero, so `2x1` is what a degenerate box actually looks like coming out
 /// of `fit()` - well-formed, positive, and not a terminal anybody is looking at.
 #[test]

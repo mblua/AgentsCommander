@@ -185,7 +185,7 @@ describe("pinned toasts and the dismiss/re-push race (#1857)", () => {
 
   it("2. the threshold is exactly four: the pinned toast survives 0..3 prior errors too", () => {
     // Characterisation, NOT a falsifier: all four sub-cases pass against the
-    // pre-#1857 implementation as well. It pins WHERE the measured threshold is;
+    // earlier implementation as well. It pins WHERE the measured threshold is;
     // test 1 is the falsifier. See acceptance criterion 6.
     for (const priorErrors of [0, 1, 2, 3]) {
       toastStore.clear();

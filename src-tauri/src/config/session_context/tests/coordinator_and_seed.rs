@@ -86,7 +86,7 @@ fn bootstrap_self_handoff_skill_is_indexed_in_replica_context() {
     assert_self_handoff_skill_contract(&content);
 }
 
-/// #1369 (C4) AC-3: the #664 heuristic's verdict is invariant across the
+/// AC-3: the healing heuristic's verdict is invariant across the
 /// rename. Neither spelling is in the closed `is_known_legacy_default_heading`
 /// list, so a rendered context carrying either heading is rejected whether or
 /// not the fast-path guard in `looks_like_generated_legacy_default_context`
@@ -98,7 +98,7 @@ fn legacy_default_heuristic_rejects_both_repos_headings() {
 
     // The reconstruction re-derives the skills section from the matrix root
     // it extracts out of the content, so the fixture must be built with the
-    // index of a REAL root, exactly as the #664 healing tests do.
+    // index of a REAL root, exactly as the healing tests do.
     let temp = tempfile::tempdir().expect("tempdir");
     let ac_root = temp.path().join(".ac");
     let matrix_root = ac_root.join("_agent_dev-rust");
@@ -311,7 +311,7 @@ fn privileged_pty_context_is_added_only_to_verified_workgroup_coordinator() {
 
 #[test]
 fn coordinator_template_no_longer_carries_inline_self_maintenance() {
-    // #640: the coordinator's self-maintenance directive moved OUT of the raw
+    // The coordinator's self-maintenance directive moved OUT of the raw
     // template into the gated SELF_MAINTENANCE_AUTO_SECTION (single source).
     // The raw template must no longer carry it, must keep the screenshot
     // guidance that preceded the removed block, and stay em-dash-free.
@@ -330,7 +330,7 @@ fn coordinator_template_no_longer_carries_inline_self_maintenance() {
 
 #[test]
 fn coordinator_template_carries_raise_hand_guidance_and_shared_template_does_not() {
-    // #684: the coordinator template gains a short raise-hand usage guide
+    // The coordinator template gains a short raise-hand usage guide
     // beside the screenshot guidance. It must be coordinator-only, so the
     // shared agent template (every non-coordinator agent) must NOT carry it.
     let coordinator = get_default_coordinator_template();
@@ -345,7 +345,7 @@ fn coordinator_template_carries_raise_hand_guidance_and_shared_template_does_not
 
 #[test]
 fn coordinator_template_carries_cross_workgroup_rule() {
-    // #1030: the user-approved cross-workgroup bullet, verbatim. Asserted as
+    // The user-approved cross-workgroup bullet, verbatim. Asserted as
     // ONE exact string rather than fragments: a body keeping the routing and
     // reply fragments but dropping the "only when your role, the user, or the
     // Root Agent authorizes it" clause between them would satisfy a fragment
@@ -379,7 +379,7 @@ fn coordinator_template_carries_cross_workgroup_rule() {
 
 #[test]
 fn materialized_context_gates_self_maintenance_directive_by_flag() {
-    // #640: the gated SELF_MAINTENANCE_AUTO_SECTION is appended to a coding
+    // The gated SELF_MAINTENANCE_AUTO_SECTION is appended to a coding
     // agent's materialized context only when auto_self_clear is true. Driven
     // through the production materialize path, not the raw template.
     let temp = tempfile::tempdir().expect("tempdir");
@@ -411,7 +411,7 @@ fn materialized_context_gates_self_maintenance_directive_by_flag() {
     assert!(!off_content.contains("following the `self-handoff` skill"));
 }
 
-/// #2031: a rendered replica context file carries the Answering section once.
+/// A rendered replica context file carries the Answering section once.
 #[test]
 fn materialized_replica_context_carries_answering_section() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -436,7 +436,7 @@ fn materialized_replica_context_carries_answering_section() {
 
 #[test]
 fn coordinator_on_disk_legacy_self_maintenance_is_stripped_and_replaced() {
-    // #640 M1: an existing workgroup froze the OLD `## Self-Maintenance` block
+    // An existing workgroup froze the OLD `## Self-Maintenance` block
     // into its persisted Context.coordinator.md on disk. The render-time strip
     // must remove it so the materialized context has EXACTLY ONE such section
     // (the new gated one) when ON, and ZERO when OFF (proving OFF truly

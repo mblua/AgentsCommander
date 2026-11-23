@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1005 S5 / G3: expected values captured from the BASE-COMMIT blob
+/// S5 / G3: expected values captured from the BASE-COMMIT blob
 /// (`git show 409b7f90:...agency-agents-roles/SKILL.md`), never from this
 /// const. LF-folded first (G8) so the pin is checkout-invariant.
 #[test]
@@ -29,7 +29,7 @@ fn agency_agents_roles_before_token_minimization_snapshot_is_byte_exact() {
     );
 }
 
-/// #1005 S5 failing-first proof for the audit skill's `legacy_snapshots`
+/// S5 failing-first proof for the audit skill's `legacy_snapshots`
 /// entry (the list is non-empty for the first time). Goes through
 /// `ensure_root_agent_dir_at` so the REAL `DEFAULT_ROOT_SKILLS` table is on
 /// trial, not a caller-supplied list.
@@ -59,7 +59,7 @@ fn frozen_audit_skill_is_repaired_to_current() {
     );
 }
 
-/// #1005 S5 failing-first proof for the agency skill's SECOND
+/// S5 failing-first proof for the agency skill's SECOND
 /// `legacy_snapshots` entry, through the REAL table like the audit twin.
 #[test]
 fn frozen_agency_v2_skill_is_repaired_to_current() {
@@ -114,7 +114,7 @@ fn agency_agents_roles_pre_yaml_fix_snapshot_is_byte_exact() {
     );
 }
 
-/// Anti-drift (#1005 S5, E5.6; replaces
+/// Anti-drift (S5, E5.6; replaces
 /// `shipped_agency_skill_is_the_snapshot_with_a_quoted_description`, whose
 /// old==new-minus-one-quote derivation could not survive a real rewrite).
 /// If anyone edits a shipped `SKILL.md` without freezing a new snapshot and

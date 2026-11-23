@@ -1,6 +1,6 @@
 use super::*;
 
-// #2718 (B4b) - rows E5 to E15 of the phase plan. Names are literal oracles.
+// B4b: rows E5 to E15 of the phase plan. Names are literal oracles.
 
 const B4B_OLD: &str = "state.json";
 

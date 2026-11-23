@@ -144,7 +144,7 @@ fn inner_matched_selection_loads_once() {
     call(tmp.path(), "via-new-b");
 }
 
-// ---- #3532 P14: context-history state registration (Tauri edge harness) -------------------
+// ---- P14: context-history state registration (Tauri edge harness) -------------------
 
 type HistoryReceiver = tokio::sync::mpsc::Receiver<crate::history_runtime::IngressMessage>;
 

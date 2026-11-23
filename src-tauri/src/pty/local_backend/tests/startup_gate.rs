@@ -38,7 +38,7 @@ fn size_the_child_sees(master: &Arc<Mutex<Box<dyn MasterPty + Send>>>) -> (u16, 
     (s.cols, s.rows)
 }
 
-/// #973 - THE COLD-START CASE. This is the one the user hits every morning.
+/// THE COLD-START CASE. This is the one the user hits every morning.
 ///
 /// `TerminalView` lives inside `<Show when={activeSessionId}>`, so when the app opens
 /// with no active session there is no terminal host to measure, and the frontend cannot
@@ -125,7 +125,7 @@ fn once_the_child_has_rendered_resizes_go_straight_through() {
     );
 }
 
-/// #973 (C) - a resize that changes nothing must not be sent. `ConPTY` hands even a
+/// (C) - a resize that changes nothing must not be sent. `ConPTY` hands even a
 /// same-size resize to the child as a real event, and the view fires 5-20 of them.
 #[test]
 fn a_resize_that_changes_nothing_is_not_sent() {
@@ -142,7 +142,7 @@ fn a_resize_that_changes_nothing_is_not_sent() {
     );
 }
 
-/// #973 - a degenerate resize that lands WHILE THE GATE IS HOLDING must not evict the
+/// A degenerate resize that lands WHILE THE GATE IS HOLDING must not evict the
 /// real size the view is waiting to give the child.
 ///
 /// This walks the path `pty_resize` actually walks - `resize_instance`, gate and all -
@@ -184,7 +184,7 @@ fn a_degenerate_resize_cannot_evict_the_size_held_for_the_child() {
     );
 }
 
-/// #973 - the guard INSIDE `send_size_to_conpty`, which is defence in depth: the last line
+/// The guard INSIDE `send_size_to_conpty`, which is defence in depth: the last line
 /// before `master.resize()`, and the one `hand_over_held_size` relies on when it applies a
 /// size that has been sitting in the gate. The guard that keeps a `0x0` off the request
 /// path is in `resize_instance`, ahead of the gate - see

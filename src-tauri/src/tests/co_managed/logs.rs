@@ -61,7 +61,7 @@ fn p4_all_scores() -> Vec<(&'static str, f32)> {
     ]
 }
 
-/// #2455 test 1 (E): no candidate text and no API key reach the log.
+/// Test 1 (E): no candidate text and no API key reach the log.
 #[tokio::test]
 async fn p4_co_managed_logs_never_carry_candidate_text_or_the_api_key() {
     crate::logging::test_install_logger();
@@ -222,7 +222,7 @@ fn assert_cycle_logs_hide_secrets(
     );
 }
 
-/// #2455 test 8 (D, round 7): the request-build and malformed-body legs
+/// Test 8 (D, round 7): the request-build and malformed-body legs
 /// of `send_once` each log a warn line of their own.
 #[tokio::test]
 async fn p4_send_once_logs_request_build_and_malformed_body_failures() {
@@ -286,7 +286,7 @@ async fn p4_send_once_logs_request_build_and_malformed_body_failures() {
     );
 }
 
-/// #2455 test 2 (F): the discovery tick adds no line for a steady state.
+/// Test 2 (F): the discovery tick adds no line for a steady state.
 #[tokio::test]
 async fn p4_discovery_tick_logs_nothing_for_a_steady_state() {
     crate::logging::test_install_logger();
@@ -341,7 +341,7 @@ async fn p4_drop_reason<R: tauri::Runtime>(
     (lines[0].clone(), reason)
 }
 
-/// #2455 test 3 (A): the eight trigger drops carry eight distinct reasons.
+/// Test 3 (A): the eight trigger drops carry eight distinct reasons.
 #[tokio::test]
 async fn p4_eight_trigger_drops_log_eight_distinct_reasons() {
     crate::logging::test_install_logger();
@@ -433,7 +433,7 @@ async fn p4_eight_trigger_drops_log_eight_distinct_reasons() {
     );
 }
 
-/// #2455 test 4 (D4-b): classify lines carry the cycle's session tag, and
+/// Test 4 (D4-b): classify lines carry the cycle's session tag, and
 /// the dry run carries `dry-run`.
 #[tokio::test]
 async fn p4_classify_lines_carry_the_session_tag_and_the_dry_run_tag() {
@@ -484,7 +484,7 @@ async fn p4_classify_lines_carry_the_session_tag_and_the_dry_run_tag() {
     assert!(!tagged.is_empty(), "classify must log with the cycle's tag");
 }
 
-/// #2455 test 5 (D): the success status reaches the log; a retried 503
+/// Test 5 (D): the success status reaches the log; a retried 503
 /// logs two warn lines, attempt 1 and attempt 2.
 #[tokio::test]
 async fn p4_send_once_logs_the_status_attempt_and_latency() {
@@ -540,7 +540,7 @@ async fn p4_send_once_logs_the_status_attempt_and_latency() {
     assert!(ok_lines[0].contains("latency_ms="), "{ok_lines:?}");
 }
 
-/// #2455 test 6 (B): the cycle-start line names the trigger kind.
+/// Test 6 (B): the cycle-start line names the trigger kind.
 #[tokio::test]
 async fn p4_cycle_start_names_the_trigger_kind() {
     crate::logging::test_install_logger();
@@ -598,7 +598,7 @@ async fn p4_cycle_start_names_the_trigger_kind() {
     );
 }
 
-/// #2455 test 7 (B, round 6): the route line names the resolved variant
+/// Test 7 (B, round 6): the route line names the resolved variant
 /// and its effect kind, from inside `co_managed_cycle`.
 #[tokio::test]
 async fn p4_route_line_names_the_variant_and_kind() {

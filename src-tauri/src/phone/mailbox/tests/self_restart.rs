@@ -270,7 +270,7 @@ async fn self_restart_driver_restarts_uses_new_id_and_cleans_pending() {
     assert!(pending.is_empty());
 }
 
-/// #1940 - the self-switch driver takes the shared selection operation turn only
+/// The self-switch driver takes the shared selection operation turn only
 /// for the publication -> restart -> alias span. The sustained-idle wait stays
 /// outside it, a concurrent guarded operation cannot acknowledge while the
 /// persist and its restart are in flight (and does acknowledge before the

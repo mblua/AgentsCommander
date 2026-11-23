@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- #2413: close markers survive a failed coordinator create ----
+// ---- close markers survive a failed coordinator create ----
 
 const MARKER_CWD: &str = "C:/ac-test/project/.ac/wg-2413-dev-team/__agent_tech-lead";
 
@@ -76,7 +76,7 @@ fn manual_event(value: &str) -> (String, String) {
     )
 }
 
-/// #2413 T1
+/// T1
 #[test]
 fn restore_close_markers_puts_back_original_auto_timestamp() {
     let (app, clocks, events) = marker_unit_app();
@@ -94,7 +94,7 @@ fn restore_close_markers_puts_back_original_auto_timestamp() {
     assert!(!clocks.lock().unwrap().has_create_ledger(&fqn));
 }
 
-/// #2413 T2
+/// T2
 #[test]
 fn restore_close_markers_puts_back_original_manual_timestamp() {
     let (app, clocks, events) = marker_unit_app();
@@ -111,7 +111,7 @@ fn restore_close_markers_puts_back_original_manual_timestamp() {
     );
 }
 
-/// #2413 T3: a manual close during the failing create wins over the auto restore.
+/// T3: a manual close during the failing create wins over the auto restore.
 #[test]
 fn restore_close_markers_manual_wins() {
     let (app, clocks, events) = marker_unit_app();
@@ -130,7 +130,7 @@ fn restore_close_markers_manual_wins() {
     assert_eq!(drain(&events), vec![auto_event("null")]);
 }
 
-/// #2413 T4
+/// T4
 #[test]
 fn restore_close_markers_noop_when_nothing_cleared() {
     let (app, clocks, events) = marker_unit_app();
@@ -144,7 +144,7 @@ fn restore_close_markers_noop_when_nothing_cleared() {
     assert!(!clocks.lock().unwrap().has_create_ledger(&fqn));
 }
 
-/// #2413 T4
+/// T4
 #[test]
 fn restore_close_markers_succeeded_never_restores() {
     let (app, clocks, events) = marker_unit_app();
@@ -158,7 +158,7 @@ fn restore_close_markers_succeeded_never_restores() {
     assert!(!clocks.lock().unwrap().has_create_ledger(&fqn));
 }
 
-/// #2413 T12: a ticket dropped without an end counts as a failure.
+/// T12: a ticket dropped without an end counts as a failure.
 #[test]
 fn dropped_ticket_restores_marker() {
     let (app, clocks, _events) = marker_unit_app();
@@ -170,7 +170,7 @@ fn dropped_ticket_restores_marker() {
     assert!(!clocks.lock().unwrap().has_create_ledger(&fqn));
 }
 
-/// #2413 T13: once the spawn fence is set, no end restores anything.
+/// T13: once the spawn fence is set, no end restores anything.
 #[test]
 fn fenced_ticket_never_restores() {
     for use_drop in [false, true] {
@@ -217,7 +217,7 @@ fn fenced_ticket_never_restores() {
     assert_eq!(drain(&events), vec![auto_event("null")]);
 }
 
-/// #2413 grinch step-9: a failed create's restore paused before its emit must
+/// Grinch step-9: a failed create's restore paused before its emit must
 /// not deliver its timestamp after a newer create's clear. The UI-visible
 /// state (last event) must match the clock.
 #[test]
@@ -277,7 +277,7 @@ fn restore_emit_never_lands_after_newer_create_clear() {
     );
 }
 
-/// #2413 T5: the spawn fence is set before the spawn await and cleared only
+/// T5: the spawn fence is set before the spawn await and cleared only
 /// on a spawn `Err` without a launch.
 #[test]
 fn create_session_inner_fences_marker_ticket_around_spawn() {
@@ -372,7 +372,7 @@ impl Drop for MarkerCreateFixture {
     }
 }
 
-/// #2413 T6
+/// T6
 #[tokio::test]
 async fn create_session_inner_restores_auto_closed_marker_on_spawn_failure() {
     let f = MarkerCreateFixture::new(Arc::new(FailingSpawnBackend::default()));
@@ -389,7 +389,7 @@ async fn create_session_inner_restores_auto_closed_marker_on_spawn_failure() {
     close_test_coordinator(&f.app).await;
 }
 
-/// #2413 T7
+/// T7
 #[tokio::test]
 async fn create_session_inner_restores_manual_closed_marker_on_spawn_failure() {
     let f = MarkerCreateFixture::new(Arc::new(FailingSpawnBackend::default()));
@@ -405,7 +405,7 @@ async fn create_session_inner_restores_manual_closed_marker_on_spawn_failure() {
     close_test_coordinator(&f.app).await;
 }
 
-/// #2413 T8: a newer overlapping create that succeeded wins; no stale restore.
+/// T8: a newer overlapping create that succeeded wins; no stale restore.
 #[tokio::test]
 async fn create_session_inner_failed_create_does_not_restore_after_newer_create() {
     let f = MarkerCreateFixture::new(Arc::new(FailingSpawnBackend::default()));
@@ -431,7 +431,7 @@ async fn create_session_inner_failed_create_does_not_restore_after_newer_create(
     close_test_coordinator(&f.app).await;
 }
 
-/// #2413 T11: overlapping creates that all fail restore the marker exactly once.
+/// T11: overlapping creates that all fail restore the marker exactly once.
 #[tokio::test]
 async fn create_session_inner_two_failed_overlapping_creates_restore_marker() {
     let f = MarkerCreateFixture::new(Arc::new(FailingSpawnBackend::default()));
@@ -456,7 +456,7 @@ async fn create_session_inner_two_failed_overlapping_creates_restore_marker() {
     close_test_coordinator(&f.app).await;
 }
 
-/// Test backend for #2413 T14/T15.
+/// Test backend for T14/T15.
 /// `block`: `spawn` records the id (live) and waits for `release` after signaling `entered`.
 /// Otherwise: `spawn` marks the launch witness, then fails with no session.
 #[derive(Default)]
@@ -542,7 +542,7 @@ impl crate::pty::backend::PtyBackend for MarkerSpawnBackend {
     }
 }
 
-/// #2413 T14: a create cancelled while spawn runs keeps the markers cleared.
+/// T14: a create cancelled while spawn runs keeps the markers cleared.
 #[tokio::test]
 async fn create_session_inner_keeps_markers_cleared_when_cancelled_after_spawn() {
     // Variant 1: the create future is dropped mid-spawn.
@@ -688,7 +688,7 @@ async fn failed_tracker_foreign_common_create_keeps_real_legacy_backend_result()
     close_test_coordinator(&fixture.app).await;
 }
 
-/// #2413 T15: a spawn `Err` after the backend launched keeps the markers cleared,
+/// T15: a spawn `Err` after the backend launched keeps the markers cleared,
 /// even though the backend reports no session.
 #[tokio::test]
 async fn create_session_inner_keeps_markers_cleared_when_spawn_fails_after_launch() {
@@ -706,7 +706,7 @@ async fn create_session_inner_keeps_markers_cleared_when_spawn_fails_after_launc
     close_test_coordinator(&f.app).await;
 }
 
-/// #2411 T1b: `create_session_inner_impl` calls the coordinator-create helper
+/// T1b: `create_session_inner_impl` calls the coordinator-create helper
 /// exactly once (source guard, same pattern as the archive-gate test below).
 #[test]
 fn create_session_inner_calls_note_coordinator_create_once() {

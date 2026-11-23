@@ -210,7 +210,7 @@ pub(crate) fn supports_self_handoff_switch(shell: &str) -> bool {
     )
 }
 
-/// #2586 D3 - the readiness decision that preceded an injection, carried only
+/// D3 - the readiness decision that preceded an injection, carried only
 /// so the submit-seam observation can say whether the settle gate timed out.
 /// `Unknown` is for non-wake injection paths, which run no settle gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,11 +220,11 @@ pub(crate) enum SettleReadiness {
     Unknown,
 }
 
-/// #2586 D2 - chars in one redaction window. A row sharing any run of this many
+/// D2 - chars in one redaction window. A row sharing any run of this many
 /// consecutive chars with the payload (after whitespace collapsing) is redacted.
 const REDACTION_WINDOW: usize = 8;
 
-/// #2586 D2 - rows kept per observation: the last non-empty ones.
+/// D2 - rows kept per observation: the last non-empty ones.
 const SEAM_OBSERVATION_ROWS: usize = 6;
 
 /// Trim, then collapse every whitespace run (including `\n` and `\r`) to one
@@ -271,7 +271,7 @@ fn strip_seam_row_decoration(row: &str) -> &str {
         .trim_end()
 }
 
-/// #2586 D2 - render one submit-seam observation. Pure: no timer, no PTY.
+/// D2 - render one submit-seam observation. Pure: no timer, no PTY.
 ///
 /// Stated leak limit, not a no-leak guarantee: no run of `REDACTION_WINDOW` or
 /// more consecutive payload chars (modulo whitespace collapsing) survives, and
@@ -324,7 +324,7 @@ pub(crate) fn format_submit_seam_observation(
     out
 }
 
-/// #2586 D2 - one observation of the submit seam. The `PtyManager` mutex is
+/// D2 - one observation of the submit seam. The `PtyManager` mutex is
 /// taken and released inside this synchronous fn, so no guard crosses an
 /// await; a poisoned mutex answers `None`, never a panic or an error.
 fn observe_submit_seam(
@@ -402,7 +402,7 @@ pub async fn inject_text_into_session<S: InjectionHost + ?Sized>(
     inject_text_into_session_with_pre_write_check(app, session_id, text, || Ok(())).await
 }
 
-/// #2336 - peer-wake text injection: subject to the per-session typing hold.
+/// Peer-wake text injection: subject to the per-session typing hold.
 /// The mailbox's standard message delivery and its logical remote command
 /// delivery call this. The follow-up body after a logical command deliberately
 /// keeps the plain `inject_text_into_session` above: that body was already
@@ -717,7 +717,7 @@ async fn check_injection_hold<S: InjectionHost + ?Sized>(
         }
     }
 
-    // #2336 - the typing hold gate, still under the per-session writer permit so
+    // The typing hold gate, still under the per-session writer permit so
     // a key written against this session is observed before any payload byte.
     // Peer wakes record their IDs; internal notices defer without registering
     // an ID. Plain, restart-resume and logical follow-up writes remain exempt.
@@ -813,7 +813,7 @@ where
         submit_injected_enters(&permit, &pty_manager, session_id, settle, text, &mut watch).await?;
     }
 
-    // #1682 - an injected text block is a message to the agent, submitted on
+    // An injected text block is a message to the agent, submitted on
     // every branch but R8, so it arms this session and the busy->idle edges
     // that follow stamp `tooling.lastAgentMessageAt`. Single funnel for every
     // injection path (inter-agent wake, Loop delivery, the self-clear, self-switch
@@ -825,7 +825,7 @@ where
         let session_mgr = app.sessions();
         let manager = session_mgr.read().await.clone();
         manager.arm_agent_turn(session_id).await;
-        // #1682 - the text write above marked this session through
+        // The text write above marked this session through
         // `mark_successful_pty_write_busy` (`:388`); this clear cancels that mark.
         // It keys on ARMING, not on proven delivery: R8 arms and clears with
         // nothing submitted. Self-cancelling here, so no caller needs its own site.
@@ -893,7 +893,7 @@ async fn submit_injected_enters(
         log::warn!("[inject] Enter (2/2) failed for session {session_id} (non-fatal): {error}");
     }
 
-    // #2586 D2 - T2: one added wait after the second Enter, observation only.
+    // D2 - T2: one added wait after the second Enter, observation only.
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
     observe_submit_seam(pty_manager, session_id, "T2", settle, text, watch)?;
 

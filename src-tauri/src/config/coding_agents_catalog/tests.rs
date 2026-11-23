@@ -145,11 +145,11 @@ fn seed_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
 }
 
-/// #1912 - support-override test tables: all 9 rows spelled out, in the
+/// Support-override test tables: all 9 rows spelled out, in the
 /// shipped order, exactly one `false` each. Reaching the PRODUCTION
 /// wrappers through `with_builtin_agent_support_for_test` is the point: the
 /// controls below prove behavior on the real call chain, not on copies.
-/// `TABLE_MUSE_OFF` mirrors the shipped table (#1999 disables muse); the
+/// `TABLE_MUSE_OFF` mirrors the shipped table (muse off); the
 /// all-enabled control drives the opposite direction.
 const TABLE_MUSE_OFF: &[(&str, bool)] = &[
     ("claude", true),
@@ -185,7 +185,7 @@ const TABLE_ALL_ENABLED: &[(&str, bool)] = &[
     ("muse", true),
 ];
 
-/// #2736 P1 - the shipped `installCommands` pin, kept OUT of
+/// The shipped `installCommands` pin, kept OUT of
 /// `embedded_default_matches_current_presets_exactly` so that test stays
 /// under the pinned cognitive complexity threshold of 25.
 fn assert_shipped_install_commands_2736(key: &str, def: &CodingAgentDefinition) {
@@ -207,7 +207,7 @@ fn assert_shipped_install_commands_2736(key: &str, def: &CodingAgentDefinition) 
     }
 }
 
-/// #2736 - the shipped `installCommands` value for `key`, if any.
+/// The shipped `installCommands` value for `key`, if any.
 fn expected_install_2736(key: &str) -> Option<&'static str> {
     match key {
         "claude" | "codex" | "hermes" | "cursor" | "pi" | "opencode" | "antigravity" | "grok" => {
@@ -217,7 +217,7 @@ fn expected_install_2736(key: &str) -> Option<&'static str> {
     }
 }
 
-/// #2736 - a managed base of the shipped claude row, current revision.
+/// A managed base of the shipped claude row, current revision.
 fn managed_claude_base_2736(ac_dir: &Path) {
     let revision = managed_content_sha256(&supported_shipped_definitions());
     write_managed_base(ac_dir, &shipped_def_json(&["claude"]), &revision, true);
@@ -231,7 +231,7 @@ fn claude_of(report: &CatalogReport) -> &CodingAgentDefinition {
         .expect("claude entry")
 }
 
-// ---- #769 Phase 2: masters + re-seed --------------------------------
+// ---- Phase 2: masters + re-seed --------------------------------
 
 fn master(cmd: &str) -> &'static EmbeddedSeedMaster {
     EMBEDDED_SEED_MASTERS
@@ -240,7 +240,7 @@ fn master(cmd: &str) -> &'static EmbeddedSeedMaster {
         .unwrap()
 }
 
-// ---- #1318 relocation, migration, per-project seeding ----------------
+// ---- relocation, migration, per-project seeding ----------------
 
 fn legacy_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
@@ -257,7 +257,7 @@ fn legacy_catalog_json() -> Vec<u8> {
     .into_bytes()
 }
 
-// ---- #1912 support switch: read gate + seed gate --------------------
+// ---- support switch: read gate + seed gate --------------------
 
 fn assert_no_key(agents: &[CodingAgentDefinition], key: &str) {
     assert!(!agents.iter().any(|a| a.key == key), "{key} must be absent");
@@ -267,7 +267,7 @@ fn keys_of(agents: &[CodingAgentDefinition]) -> Vec<&str> {
     agents.iter().map(|a| a.key.as_str()).collect()
 }
 
-// ---- #1963 P1: persisted-only catalog report --------------------------
+// ---- P1: persisted-only catalog report --------------------------
 
 fn write_report_manifest(ac_dir: &Path, contents: &str) {
     let path = manifest_path(ac_dir);
@@ -294,7 +294,7 @@ fn create_manifest_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
 }
 
 // -----------------------------------------------------------------------
-// #1968 P5 - managed base, local overrides, migration, recovery, locks.
+// Managed base, local overrides, migration, recovery, locks.
 // -----------------------------------------------------------------------
 
 fn ac_dir_for(project: &Path) -> PathBuf {
@@ -545,7 +545,7 @@ fn test09_regular_local_and_read_denied_preserved() {
     assert_eq!(test09_inventory(dir.path()), before);
 }
 
-// ---- #1968 migration, recovery, locks and read-only proof ----------------
+// ---- migration, recovery, locks and read-only proof ----------------
 
 fn migration_journal_json(ac_dir: &Path) -> serde_json::Value {
     read_json(&migration_journal_path(ac_dir))
@@ -653,7 +653,7 @@ fn spawn_catalog_lock_child(dir: &Path) -> (PathBuf, std::process::Child) {
     (canonical, child)
 }
 
-// ---- #2715 (B2): the `agents.*` family rename -------------------------
+// ---- B2: the `agents.*` family rename -------------------------
 
 const OLD_BASE: &str = "agents.json";
 const OLD_LOCAL: &str = "agents.local.json";
@@ -758,7 +758,7 @@ fn deprecated_entries(dir: &Path) -> Vec<String> {
     names
 }
 
-/// Leaves a genuinely interrupted #1968 project migration under the
+/// Leaves a genuinely interrupted project migration under the
 /// PRE-migration names: the transaction stops at `point`.
 fn interrupted_1968_migration(catalog: &Path, point: &'static str) -> Vec<u8> {
     let source = legacy_catalog_json();
@@ -786,7 +786,7 @@ const B2_CHILD_JOURNAL_ENV: &str = "AC_2715_CATALOG_CHILD_JOURNAL";
 const B2_CHILD_TEST_FQN: &str =
     "config::coding_agents_catalog::tests::catalog_rename_migration::b2_catalog_migration_child";
 
-// ---- #2021: no-project instance catalog seeding ------------------------
+// ---- no-project instance catalog seeding ------------------------
 
 /// The no-project report as the settings wrapper builds it for `config_dir`.
 fn instance_report(config_dir: &Path) -> CatalogReport {

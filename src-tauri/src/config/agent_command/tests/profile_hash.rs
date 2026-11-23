@@ -17,7 +17,7 @@ fn profile_content_hash_is_deterministic_and_16_lowercase_hex() {
 
 #[test]
 fn profile_content_hash_placeholder_and_expansion_agree() {
-    // #2431 (D10) - the executable reduces to its basename, so the raw
+    // D10: the executable reduces to its basename, so the raw
     // placeholder form and its expansion are the same identity. Supersedes
     // the old "raw hashes differently from expanded" property.
     let env = BTreeMap::new();
@@ -33,7 +33,7 @@ fn profile_content_hash_placeholder_and_expansion_agree() {
 
 #[test]
 fn profile_content_hash_changes_on_agent_base_command_edit() {
-    // #597 - the hash now fingerprints the EFFECTIVE command (base + cell), so
+    // The hash now fingerprints the EFFECTIVE command (base + cell), so
     // an edit to the agent base command flips it even with the cell unchanged.
     let s1 = settings_with_cell("codex --one", "A", cell("--p", BTreeMap::new()));
     let s2 = settings_with_cell("codex --two", "A", cell("--p", BTreeMap::new()));
@@ -83,7 +83,7 @@ fn profile_content_hash_uses_effective_cell_after_fallback() {
     assert_eq!(spawn.profile_resolution.effective_profile, "C");
     assert_eq!(spawn.profile_resolution.cell.command, "codex --c");
     // The stamped hash is the EFFECTIVE (post-fallback C) cell composed with
-    // the agent base command, not D. (#597)
+    // the agent base command, not D.
     let agent_cfg = settings.agents.iter().find(|a| a.id == "codex").unwrap();
     let expected = profile_content_hash(
         &super::compose_effective_command(
@@ -204,7 +204,7 @@ fn raw_merged_profile_env_overlays_cell_over_agent_raw() {
         ("kc".to_string(), "cell".to_string()),
     ]);
     let merged = super::raw_merged_profile_env(&ag, &cell_env);
-    // #2431 - keys fold to uppercase on every OS.
+    // Keys fold to uppercase on every OS.
     let key = |k: &str| k.to_ascii_uppercase();
     assert_eq!(merged.get(&key("ka")).map(String::as_str), Some("agent"));
     assert_eq!(merged.get(&key("kb")).map(String::as_str), Some("cell")); // profile wins
@@ -228,7 +228,7 @@ fn profile_content_hash_normalizes_env_keys_case_insensitively() {
     );
 }
 
-// #2431 - portable profile digest.
+// Portable profile digest.
 
 #[test]
 fn profile_content_hash_is_portable_across_path_shapes() {
@@ -368,7 +368,7 @@ fn cell_identity_matches_the_spawn_path() {
     );
 }
 
-// #1551 - the shared program resolver lifted out of `commands::session`.
+// The shared program resolver lifted out of `commands::session`.
 
 #[test]
 fn resolve_program_explicit_path_requires_a_file() {
@@ -461,4 +461,4 @@ fn is_bare_program_token_cases() {
     assert!(!is_bare_program_token(r"bin\claude"));
 }
 
-// #2434 - tiered resolution of a stored coding-agent reference.
+// Tiered resolution of a stored coding-agent reference.

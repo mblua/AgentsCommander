@@ -4,7 +4,7 @@ use super::claim_and::{
 };
 use super::*;
 
-/// (#1399 T9 / R1) A panicking worker cannot strand its claim: the
+/// A panicking worker cannot strand its claim: the
 /// `WakeOutcomeReport` guard reports a transient error from the unwind, the
 /// drain releases ownership, and the attempt is counted. Without the guard
 /// the claim stays owned forever and reclamation skips it on every cycle.
@@ -130,7 +130,7 @@ async fn assert_panic_worker_phase1(
     assert_phase1_retained(refs, hooks, poller, source, original, content).1
 }
 
-/// (#1399 T12) A real Windows exclusive directory handle makes production
+/// A real Windows exclusive directory handle makes production
 /// verification fail for both raw spellings; the cycle drops both aliases
 /// before any scan or reclamation, and the next cycle recovers exactly one
 /// canonical survivor whose live claim is untouched.
@@ -245,7 +245,7 @@ fn outbox_verification_failure_drops_aliases_before_reclamation() {
     assert_eq!(poller.live_claims.len(), 1);
 }
 
-/// (#1399 T10) Ten real guard drops from claim-only state restore the
+/// Ten real guard drops from claim-only state restore the
 /// origin before counting and reach the unchanged terminal rejection path.
 #[tokio::test]
 async fn ten_guard_drops_reach_terminal_rejection() {
@@ -324,7 +324,7 @@ async fn ten_guard_drops_reach_terminal_rejection() {
     }
 }
 
-/// (#1399 T11) Observation failure retains exact retry state, while a
+/// Observation failure retains exact retry state, while a
 /// successfully observed missing origin and claim are pruned.
 #[test]
 fn retry_prune_retains_state_when_presence_observation_fails() {
@@ -361,7 +361,7 @@ fn retry_prune_retains_state_when_presence_observation_fails() {
     assert!(!retry_tracker.contains_key(&missing));
 }
 
-/// (#1399 T13) A worker restoring the origin between the two absence probes
+/// A worker restoring the origin between the two absence probes
 /// must not lose the counted attempt: the live ledger retains the entry.
 #[test]
 fn retry_prune_retains_state_when_live_claim_restores_between_probes() {
@@ -411,7 +411,7 @@ fn retry_prune_retains_state_when_live_claim_restores_between_probes() {
     assert!(live_claims.contains(&claim));
 }
 
-/// (#1399 AC-2) Two messages to one target inside one cycle: the first is
+/// Two messages to one target inside one cycle: the first is
 /// claimed and handed off, the second gets `LaneBusy` and stays untouched in
 /// the outbox, and exactly one spawn happens while the delivery is in
 /// flight.

@@ -198,7 +198,7 @@ fn harness(registered: &[&str], teams: Vec<TeamMembers>, fallback_result: bool) 
     harness_with(settings, teams, fallback_result)
 }
 
-/// #4049: a harness over an explicit Settings snapshot.
+/// A harness over an explicit Settings snapshot.
 fn harness_with(settings: AppSettings, teams: Vec<TeamMembers>, fallback_result: bool) -> Harness {
     let fallbacks = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&fallbacks);
@@ -741,7 +741,7 @@ fn sidebar_exited_local_session_is_unknown() {
     assert!(response["entries"][0].get("windows").is_none());
 }
 
-// ---- Settings retention (#4049) ----------------------------------------------------------
+// ---- Settings retention ----------------------------------------------------------
 
 /// Settings registering `project` with history off and the given retention.
 fn disabled_settings(project: &str, retention: u32) -> AppSettings {
@@ -805,7 +805,7 @@ fn settings_retention_overrides_any_heatmap_file_for_every_report() {
     }
 }
 
-// ---- Session windows (#4091) -------------------------------------------------------------
+// ---- Session windows -------------------------------------------------------------
 
 /// A count-mode query: the newest `count` sessions before a fixed cutoff.
 fn recent(project: &str, agent: Option<&str>, count: u32) -> Value {

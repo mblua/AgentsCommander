@@ -174,7 +174,7 @@ fn historical_windows_customization_is_preserved_with_and_without_state() {
     }
 }
 
-// #1065 Stage F activation coverage. These tests drive the real context
+// Activation coverage. These tests drive the real context
 // publication engine through a held `ProjectSeedManifestGuard` with a production
 // recording closure, asserting the resulting manifest row. Removing the
 // `record_project_context_publication` adapter call would leave no manifest and
@@ -335,7 +335,7 @@ fn old_coordinator_default_is_known_generated_without_raise_hand() {
     ));
 }
 
-/// #1005 S4 / G3: the frozen v2 snapshot must stay byte-identical to what the
+/// S4 / G3: the frozen v2 snapshot must stay byte-identical to what the
 /// #684..1dd0b58 builds shipped. Expected values captured by a one-off run of
 /// the shipped accessor AT base commit 1dd0b58, never from this const.
 #[test]
@@ -352,7 +352,7 @@ fn coordinator_pre_token_minimization_snapshot_is_byte_exact() {
     );
 }
 
-/// #1030: the frozen v3 coordinator snapshot must stay byte-identical to
+/// The frozen v3 coordinator snapshot must stay byte-identical to
 /// what shipped at base commit 4acadfe5. Expected values captured by a one-off
 /// run of the shipped accessor AT 4acadfe5 (plan E2), never from this const.
 #[test]
@@ -369,7 +369,7 @@ fn coordinator_pre_cross_workgroup_snapshot_is_byte_exact() {
     );
 }
 
-/// #1571 T1: the frozen v4 coordinator snapshot must stay byte-identical to
+/// T1: the frozen v4 coordinator snapshot must stay byte-identical to
 /// what shipped at base commit ecc6527b. Expected values captured by a one-off
 /// run of the shipped accessor AT ecc6527b (plan 3.6), never from this const.
 #[test]
@@ -386,11 +386,11 @@ fn coordinator_pre_orchestrator_rename_snapshot_is_byte_exact() {
     );
 }
 
-/// #1571 T5: the frozen v1 coordinator snapshot had no byte pin, and the
+/// T5: the frozen v1 coordinator snapshot had no byte pin, and the
 /// existing `old_coordinator_default_is_known_generated_without_raise_hand`
 /// cannot detect an edit to it: its recognizer assertion is self-referential
 /// and its three `contains()` assertions do not cover the first line, which is
-/// the very sentence the #1571 rename rewrites elsewhere. Expected values
+/// the very sentence the rename rewrites elsewhere. Expected values
 /// captured by a one-off run AT ecc6527b (plan 9.1), never from this const.
 #[test]
 fn old_coordinator_raise_hand_snapshot_is_byte_exact() {
@@ -406,7 +406,7 @@ fn old_coordinator_raise_hand_snapshot_is_byte_exact() {
     );
 }
 
-/// #1005 S4 failing-first migration proof: the `assert_ne` fails while the live
+/// S4 failing-first migration proof: the `assert_ne` fails while the live
 /// template still equals the frozen v2 bytes (pre-rewrite), and the sync half
 /// proves a pristine v2 file on disk auto-upgrades to the current default.
 #[test]

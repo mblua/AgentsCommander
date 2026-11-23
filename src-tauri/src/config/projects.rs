@@ -170,7 +170,7 @@ pub fn register_new_project(
     let store = NewProjectSettingsStore::CallerOwned;
     #[cfg(not(test))]
     let store = NewProjectSettingsStore::Production;
-    // #1065 Stage F: production activates seed-manifest emission for the CLI
+    // Stage F: production activates seed-manifest emission for the CLI
     // `new-project` fresh-root registration path; a `#[cfg(test)]` lib build stays
     // non-emitting so existing unit tests keep manifest-free temp projects.
     #[cfg(not(test))]
@@ -326,7 +326,7 @@ impl PreparedNewProject {
 }
 
 pub(crate) fn prepare_new_project(raw_path: &str) -> Result<PreparedNewProject, ProjectError> {
-    // #1065 Stage F: the production build activates seed-manifest emission for the
+    // Stage F: the production build activates seed-manifest emission for the
     // GUI/web fresh-root registration path; a `#[cfg(test)]` lib build stays
     // non-emitting so existing unit tests keep manifest-free temp projects.
     #[cfg(not(test))]
@@ -433,7 +433,7 @@ where
     }
 
     {
-        // #1065 Stage F: record each freshly created project context template into
+        // Stage F: record each freshly created project context template into
         // the seed manifest at its commit-point time, under the gate held since
         // acquisition (plan sections 5.2/6.3). `activation` is `None` for a test or
         // unactivated caller, so the closure is a no-op and setup stays manifest-free.
@@ -565,7 +565,7 @@ fn upsert_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
     appended
 }
 
-/// #778: remove the entry whose `normalize_for_compare` key matches `abs_path`,
+/// Remove the entry whose `normalize_for_compare` key matches `abs_path`,
 /// then re-derive the legacy `project_path` head. The inverse of
 /// `upsert_project_path`; used by the `remove_project` command AFTER it has
 /// reconciled `project_paths` from disk, so removing against the fresh list
@@ -586,7 +586,7 @@ pub fn remove_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
     removed
 }
 
-/// #881: move `abs_path` from the active list to the archived list.
+/// Move `abs_path` from the active list to the archived list.
 pub fn archive_project_path(settings: &mut AppSettings, abs_path: &str) -> bool {
     let key = normalize_for_compare(abs_path);
     let matched = settings

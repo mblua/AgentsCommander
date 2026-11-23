@@ -63,7 +63,7 @@ impl PublishedManifestRow {
         Ok(row)
     }
 
-    /// #1318 - one coding-agent catalog publication row: `.ac/coding-agents/
+    /// One coding-agent catalog publication row: `.ac/coding-agents/
     /// agents.json`, `builtin` source, scope `catalog:coding-agents`. Records
     /// the WRITE, not content validity: a verbatim-migrated legacy catalog that
     /// does not parse still records its copy (the read path self-heals).
@@ -361,7 +361,7 @@ pub(crate) fn validate_row(row: &PublishedManifestRow) -> Result<(), SeedManifes
             let expected_scope = match row.path.serialized.as_str() {
                 ".ac/Context.AgentsCommander.md" => "context:agentscommander",
                 ".ac/Context.coordinator.md" => "context:coordinator",
-                // #1605: the per-platform `{{HOST_PLATFORM_RULES}}` files join the
+                // The per-platform `{{HOST_PLATFORM_RULES}}` files join the
                 // project-context scope set (mirrors
                 // `manifest_scope_for_project_context_filename` in session_context.rs;
                 // literals kept here to avoid a new module arc).
@@ -724,7 +724,7 @@ pub(crate) fn read_bounded_file(
     Ok(raw)
 }
 
-/// #1968 - narrow READ-ONLY query: does this project's seed manifest carry a
+/// Narrow READ-ONLY query: does this project's seed manifest carry a
 /// canonical coding-agent catalog publication row for
 /// `.ac/coding-agents/agents.json`?
 ///

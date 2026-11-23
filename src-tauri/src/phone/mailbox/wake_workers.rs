@@ -57,9 +57,9 @@ impl MailboxPoller {
         }
     }
 
-    /// (#1399) A delivery-only poller for a detached worker. `deliver_wake` and
+    /// A delivery-only poller for a detached worker. `deliver_wake` and
     /// its whole `&self` callee chain read `app.state::<...>()` (see the
-    /// #791 note at the top of `deliver_wake`), so a fresh instance sharing
+    /// Note at the top of `deliver_wake`), so a fresh instance sharing
     /// the same message warnings is equivalent to `&self` for the tail. Test hooks
     /// are carried across because `MailboxTestHooks` is `Arc`-based and `Clone`.
     pub(crate) fn delivery_poller(&self) -> Self {
@@ -90,7 +90,7 @@ impl MailboxPoller {
                     biased;
                     () = shutdown.token().cancelled() => {
                         log::info!("[MailboxPoller] Shutdown signal received, stopping");
-                        // (#1399) Detach instead of cancelling: dropping a
+                        // Detach instead of cancelling: dropping a
                         // JoinSet cancels its tasks, which would cut a wake
                         // mid-inject. Detached workers run to completion
                         // best-effort, and any claim cut off by process exit
@@ -156,7 +156,7 @@ impl MailboxPoller {
         }
     }
 
-    /// (#1399) Return every claim with no live owner to the outbox. A claim is
+    /// Return every claim with no live owner to the outbox. A claim is
     /// unowned iff it is absent from `self.live_claims`: at the first cycle
     /// the set is empty, so every claim left by a previous process is
     /// returned; afterwards a claim is skipped while its worker is running or
@@ -197,7 +197,7 @@ impl MailboxPoller {
                 // Receipt recovery has no authenticated full-return delivery proof.
                 let origin_absent =
                     matches!(mailbox_disk::mailbox_path_try_exists(&origin), Ok(false));
-                // (#1399 R6) Keep the Result: `remove_file` fails under exactly
+                // (R6) Keep the Result: `remove_file` fails under exactly
                 // the locked-handle condition that is ordinary on Windows, and
                 // a log line reporting an action that did not happen costs an
                 // hour in an incident. Self-heals on a later cycle either way.
@@ -224,7 +224,7 @@ impl MailboxPoller {
         }
     }
 
-    /// (#1399) Reserve the target's lane, claim the file on disk, and hand the
+    /// Reserve the target's lane, claim the file on disk, and hand the
     /// delivery tail to a detached worker.
     ///
     /// MUST stay a synchronous `fn`. Between the `rename` and the
@@ -286,7 +286,7 @@ impl MailboxPoller {
             return WakeHandoff::LaneBusy;
         };
         let claim = wake_claim_path(path);
-        // (#1399 G8) A worker that finished after this cycle's drain has
+        // (G8) A worker that finished after this cycle's drain has
         // already renamed the file back and freed its lane, but its outcome is
         // still queued. Re-claiming now would race that outcome against a path
         // this claim is about to invalidate. Refuse until the outcome is
@@ -313,7 +313,7 @@ impl MailboxPoller {
         self.wake_workers.spawn(async move {
             let _reservation = reservation;
             let _response_delivery = response_delivery;
-            // (#1399 R1) RAII, for the same reason `_reservation` is: an
+            // (R1) RAII, for the same reason `_reservation` is: an
             // unwind must not be able to skip the report.
             let mut report = WakeOutcomeReport::new(outcomes, origin.clone());
             let outcome =
@@ -329,7 +329,7 @@ impl MailboxPoller {
         WakeHandoff::Spawned
     }
 
-    /// (#1399) Join every finished worker so `JoinSet::len()` means "in
+    /// Join every finished worker so `JoinSet::len()` means "in
     /// flight" when the cap is checked; runs at the top of the cycle,
     /// mirroring the dispatcher's reap-before-dispatch.
     fn reap_wake_workers(&mut self) {
@@ -346,7 +346,7 @@ impl MailboxPoller {
         }
     }
 
-    /// (#1399) Settle one finite snapshot of worker reports. Ownership ends only
+    /// Settle one finite snapshot of worker reports. Ownership ends only
     /// after the corresponding on-disk state is settled and the outcome can be
     /// recorded without racing reclamation or an absent terminal-rejection input.
     pub(crate) async fn drain_wake_outcomes(&mut self) {
@@ -439,7 +439,7 @@ impl MailboxPoller {
         }
     }
 
-    /// (#1399) Deterministic replacement for "the delivery finished inside
+    /// Deterministic replacement for "the delivery finished inside
     /// `poll()`". Takes no `AppHandle`: joining and draining need none, and the
     /// drain is the SHARED `drain_wake_outcomes` rather than a second copy.
     #[cfg(test)]
@@ -532,7 +532,7 @@ impl MailboxPoller {
 
     fn poll_outbox_entries(&self, outbox_dir: &Path) -> Option<Vec<PathBuf>> {
         let (mut entries, claims) = outboxes::read_entries(outbox_dir)?;
-        // (#1399 R2) Reclamation renames files a live worker may own, and
+        // (R2) Reclamation renames files a live worker may own, and
         // the ownership test is path-keyed, so it runs only where the
         // outbox identity is established: an unverifiable spelling of an
         // aliased outbox can never resurrect a live claim. An outbox that
@@ -613,7 +613,7 @@ impl MailboxPoller {
         // Poll session-requests directory (from create-agent CLI)
         self.poll_session_requests(app).await;
 
-        // #786: poll coding-agent-requests (from `coding-agent` CLI mutations).
+        // Poll coding-agent-requests (from `coding-agent` CLI mutations).
         self.poll_coding_agent_requests(app).await;
 
         Ok(())
@@ -706,7 +706,7 @@ impl MailboxPoller {
 
         self.snapshot_scanner.finish_cycle();
 
-        // (#1399) A live claim owns its retry state. Otherwise prune only after
+        // A live claim owns its retry state. Otherwise prune only after
         // fallible probes prove both durable spellings absent, so counted state
         // remains able to reach MAX_DELIVERY_ATTEMPTS.
         prune_retry_tracker(
@@ -745,7 +745,7 @@ impl MailboxPoller {
 
     async fn begin_poll_cycle(&mut self) -> std::time::Instant {
         self.snapshot_scanner.begin_cycle();
-        // (#1399) The two timing lines the issue authorizes: one at the top
+        // The two timing lines the issue authorizes: one at the top
         // of the cycle and one at the bottom, each reporting elapsed ms,
         // outboxes scanned, and messages processed. Together they prove the
         // scanner returns in milliseconds instead of holding the loop for
@@ -755,7 +755,7 @@ impl MailboxPoller {
             "[mailbox] poll cycle started elapsed_ms={} outboxes=0 messages=0",
             cycle_started.elapsed().as_millis()
         );
-        // (#1399) Reap, then drain, before any outbox work: joined workers
+        // Reap, then drain, before any outbox work: joined workers
         // free cap slots, and an outcome's path can belong to any outbox, so
         // the drain is per-cycle, not per-outbox. Draining before the scans
         // also means a rename-back the drain rejects cannot be re-claimed in
@@ -818,7 +818,7 @@ impl MailboxPoller {
         }
     }
 
-    /// (#1399) The retry/reject bookkeeping for one outbox message: `Ok`
+    /// The retry/reject bookkeeping for one outbox message: `Ok`
     /// clears retry state, `Err` counts an attempt and rejects at the attempt
     /// ceiling. Called inline for a message the scanner settled itself, and
     /// from the outcome drain for a message a worker settled. Takes `path`
@@ -833,7 +833,7 @@ impl MailboxPoller {
                 self.retry_tracker.remove(&path);
             }
             Err(e) => {
-                // #2336 - the typing hold shares the menu guard's exemption: a
+                // The typing hold shares the menu guard's exemption: a
                 // deferred wake is "not yet", never an attempt, and the file is
                 // already back at its original path (the claim restore ran
                 // before this bookkeeping).

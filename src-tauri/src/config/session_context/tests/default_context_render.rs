@@ -74,7 +74,7 @@ fn current_producer_renders_reject_broad_global_read_grants() {
     assert!(root.contains("Every registered AgentsCommander project folder"));
     assert!(root.contains("projectPaths` in `project-paths.json"));
     assert!(root.contains("## Root Agent Authority and Chain of Command"));
-    // #1795: this fixture's room has no `.ac` grandparent, so
+    // This fixture's room has no `.ac` grandparent, so
     // `replica_shared_roots` fails closed at check 3 and the block keeps its
     // four-entry text verbatim. Fail-closed evidence, not a renumbering.
     assert!(
@@ -205,7 +205,7 @@ fn exact_current_legacy_rendered_default_remains_verbatim_compatibility() {
     let temp = tempfile::tempdir().expect("tempdir");
     let ac_root = temp.path().join(".ac");
     let matrix_root = ac_root.join("_agent_dev-rust");
-    // #1795 (plan 3.11 H2, `T-g2`). Step 0 measured the margin
+    // Plan 3.11 H2 (`T-g2`). Step 0 measured the margin
     // `resolved.len() - current.len()` on the unchanged tree at 737 bytes, below
     // the `S` this change adds to `current` alone, so this test would have gone
     // red for correct code. The one pre-authorized remedy is the `nested` level:
@@ -264,7 +264,7 @@ fn stale_hybrid_root_keeps_authority_and_scope_grant() {
         "{out}"
     );
     assert!(out.contains("**You answer to the user, and to no one else.**"));
-    // Project-scope write grant (ROOT_PROJECT_SCOPE_ENTRY; #1005 S3 removed the Allowed bullet).
+    // Project-scope write grant (ROOT_PROJECT_SCOPE_ENTRY; S3 removed the Allowed bullet).
     assert!(out.contains(
         "you may create, modify, and delete files anywhere under ANY project folder registered"
     ));

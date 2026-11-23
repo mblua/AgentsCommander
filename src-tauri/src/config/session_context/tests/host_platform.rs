@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn default_context_embeds_filename_only_warning() {
-    // #923 D3: the two-step `--send` guidance is emitted for agents that can
+    // D3: the two-step `--send` guidance is emitted for agents that can
     // actually send. A `MessagingContextMode::None` root cannot (cli/send.rs
     // rejects a `--root` with no `wg-<N>-*` ancestor), so it now renders the
     // no-messaging-directory arm instead. Assert against a real WG replica.
@@ -19,7 +19,7 @@ fn default_context_embeds_filename_only_warning() {
 
 #[test]
 fn default_context_embeds_send_receipt_rule() {
-    // #1596: the recipe mandates a captured `Queued:` enqueue receipt before
+    // The recipe mandates a captured `Queued:` enqueue receipt before
     // reporting a message as sent; a missing receipt means NOT enqueued.
     let out = default_context(
         "C:/fake/wg-7-dev-team/__agent_architect",
@@ -36,7 +36,7 @@ fn default_context_embeds_send_receipt_rule() {
 #[cfg(target_os = "windows")]
 #[test]
 fn default_context_embeds_windows_shell_routing_pointer() {
-    // #1605: the #1596 Git Bash paragraph moved to the
+    // The Git Bash paragraph moved to the
     // `{{HOST_PLATFORM_RULES}}` block (single source of truth); messaging now
     // carries only a pointer to it.
     let out = default_context(
@@ -53,7 +53,7 @@ fn default_context_embeds_windows_shell_routing_pointer() {
 #[cfg(target_os = "windows")]
 #[test]
 fn default_context_embeds_host_platform_rules_block() {
-    // #1605 T-1: a Windows host session carries the Git Bash routing rule in
+    // T-1: a Windows host session carries the Git Bash routing rule in
     // the platform block plus the messaging pointer.
     let out = default_context(
         "C:/fake/wg-7-dev-team/__agent_architect",
@@ -77,7 +77,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
 #[cfg(not(target_os = "windows"))]
 #[test]
 fn default_context_non_windows_embeds_minimal_platform_block() {
-    // #1605 T-2: Linux/macOS host sessions render only the minimal block.
+    // T-2: Linux/macOS host sessions render only the minimal block.
     let out = default_context(
         "C:/fake/wg-7-dev-team/__agent_architect",
         None,
@@ -90,7 +90,7 @@ fn default_context_non_windows_embeds_minimal_platform_block() {
 
 #[test]
 fn container_session_omits_host_platform_rules_block() {
-    // #1605 T-3: a container (transport-api) session renders no host platform
+    // T-3: a container (transport-api) session renders no host platform
     // rules block (the Windows messaging pointer may still name the block,
     // so assert on the heading) and no raw placeholder.
     let out = render_agent_context_template_inner(
@@ -112,7 +112,7 @@ fn container_session_omits_host_platform_rules_block() {
 #[cfg(target_os = "windows")]
 #[test]
 fn root_prologue_embeds_host_platform_rules_block() {
-    // #1605 T-4: the Root runtime prologue renders the platform block as its
+    // T-4: the Root runtime prologue renders the platform block as its
     // 10th block between CLI context and session credentials.
     let out = render_root_runtime_prologue_inner(
         "C:/fake/ac-root-agent",
@@ -138,7 +138,7 @@ fn root_prologue_embeds_host_platform_rules_block() {
 
 #[test]
 fn container_root_prologue_omits_host_platform_rules_block() {
-    // #1605 T-5: a container root renders no host platform rules block.
+    // T-5: a container root renders no host platform rules block.
     let out = render_root_runtime_prologue_inner(
         "C:/fake/ac-root-agent",
         &no_skill_section(),
@@ -154,7 +154,7 @@ fn container_root_prologue_omits_host_platform_rules_block() {
 
 #[test]
 fn personalized_template_without_host_platform_rules_token_appends_fallback() {
-    // #1605 T-6: a preserved personalized template lacking the token (and a
+    // T-6: a preserved personalized template lacking the token (and a
     // root-agent-shaped fixture, per the owner's `Context.root-agent.md`
     // probe) receives exactly one `## Host Platform Rules` section via the
     // append fallback.
@@ -199,7 +199,7 @@ fn personalized_template_without_host_platform_rules_token_appends_fallback() {
 
 #[test]
 fn host_platform_rules_reads_project_file_each_materialization() {
-    // #1605 T-7: every materialization re-reads `.ac/Context.platform.<os>.md`
+    // T-7: every materialization re-reads `.ac/Context.platform.<os>.md`
     // (no cache, no rebuild): edit the file, render again, get the new text.
     let temp = tempfile::tempdir().expect("tempdir");
     let ac = temp.path().join(".ac");
@@ -246,7 +246,7 @@ fn host_platform_rules_reads_project_file_each_materialization() {
 
 #[test]
 fn render_seeds_missing_platform_file_absent_only() {
-    // #1625 T-1 (replaces the missing case of #1605 T-8): the render path
+    // T-1 (replaces the missing case of the old T-8): the render path
     // seeds the missing platform files absent-only through the seeder
     // lifecycle before reading: the host file and all three platform files
     // exist byte-equal to their embedded defaults, the state records
@@ -361,7 +361,7 @@ fn render_seeds_missing_platform_file_absent_only() {
 
 #[test]
 fn host_platform_rules_empty_file_falls_back_to_embedded_default() {
-    // #1625 T-2 (replaces the empty case of #1605 T-8): an empty platform
+    // T-2 (replaces the empty case of the old T-8): an empty platform
     // file renders the embedded default (single block) and is preserved
     // as-is: it is never seeded over, and no state entry is created for it
     // (silent preservation of the unowned empty file via
@@ -405,7 +405,7 @@ fn host_platform_rules_empty_file_falls_back_to_embedded_default() {
 
 #[test]
 fn render_with_container_mounts_never_seeds_platform_files() {
-    // #1625 T-4: a container session renders no host platform rules block
+    // T-4: a container session renders no host platform rules block
     // and never seeds the platform files (the early return precedes the
     // seed guard); no state file is created either.
     let temp = tempfile::tempdir().expect("tempdir");
@@ -444,7 +444,7 @@ fn render_with_container_mounts_never_seeds_platform_files() {
 
 #[test]
 fn deleted_platform_file_is_reseeded_absent_only() {
-    // #1625 T-5: after a render-triggered seed, deleting the host platform
+    // T-5: after a render-triggered seed, deleting the host platform
     // file re-seeds it absent-only on the next render (file byte-equal to
     // the default again) and the state keeps the current platform versions.
     let temp = tempfile::tempdir().expect("tempdir");
@@ -501,7 +501,7 @@ fn deleted_platform_file_is_reseeded_absent_only() {
 
 #[test]
 fn render_never_overwrites_edited_platform_file() {
-    // #1625 T-6: an existing custom platform file renders as-is and is
+    // T-6: an existing custom platform file renders as-is and is
     // never touched by the seed guard (no sync runs over existing files).
     let temp = tempfile::tempdir().expect("tempdir");
     let ac = temp.path().join(".ac");
@@ -533,7 +533,7 @@ fn render_never_overwrites_edited_platform_file() {
 
 #[test]
 fn coordinator_session_profile_embeds_host_platform_rules_once() {
-    // #1605 T-9: the block reaches coordinator sessions through the global
+    // T-9: the block reaches coordinator sessions through the global
     // render exactly once; the coordinator body adds no duplicate.
     let replica = default_context(
         "C:/fake/wg-7-dev-team/__agent_architect",

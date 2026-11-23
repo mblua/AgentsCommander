@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1682 - the smallest app the stamp path resolves state from: the
+/// The smallest app the stamp path resolves state from: the
 /// `SessionManager` for `get_last_agent_message`, and the substantive-input
 /// tracker for gate 2. Deliberately manages no `WsBroadcaster`, so
 /// `broadcast_all_r` reduces to `tauri::Emitter::emit` and a `listen_any`
@@ -16,7 +16,7 @@ fn agent_stamp_test_app(
         .expect("build agent stamp test app")
 }
 
-/// #1682 - a local channel over the stamp event. Not `capture_session_lifecycle`,
+/// A local channel over the stamp event. Not `capture_session_lifecycle`,
 /// which is shared and scoped to four other event names.
 fn capture_agent_message_events(
     app: &tauri::App<tauri::test::MockRuntime>,
@@ -30,24 +30,24 @@ fn capture_agent_message_events(
     receiver
 }
 
-/// #1682 - the per-instance file the stamp is written into: since #2816
+/// The per-instance file the stamp is written into: since the pair change
 /// (C3) the state file, never the tracked `config.json` beside it.
 fn stamp_config_path(cwd: &std::path::Path) -> PathBuf {
     cwd.join(crate::config::agent_local_dir_name())
         .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
 }
 
-/// #2816 (C3) - a suppressed write leaves neither the state file nor the
+/// (C3) - a suppressed write leaves neither the state file nor the
 /// tracked `config.json` it used to create.
 fn no_stamp_file(cwd: &std::path::Path) -> bool {
     let state = stamp_config_path(cwd);
     !state.exists() && !state.with_file_name("config.json").exists()
 }
 
-/// #1682 - `tooling.lastAgentMessageAt` read straight off the file, so the
+/// `tooling.lastAgentMessageAt` read straight off the file, so the
 /// assertion does not go through the same reader the command uses.
 fn stored_stamp(cwd: &std::path::Path) -> Option<String> {
-    // #2816 (C3) - the stamp must never be in the tracked file.
+    // (C3) - the stamp must never be in the tracked file.
     let tracked = stamp_config_path(cwd).with_file_name("config.json");
     if let Ok(raw) = std::fs::read_to_string(&tracked) {
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("tracked json");
@@ -64,7 +64,7 @@ fn stored_stamp(cwd: &std::path::Path) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-/// #1682 - one session with the `agent_id` and `working_directory` the caller
+/// One session with the `agent_id` and `working_directory` the caller
 /// needs, armed or not.
 async fn stamp_test_session(
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -92,7 +92,7 @@ async fn stamp_test_session(
     session.id
 }
 
-/// #1682 - assert exactly one `session_agent_message` arrived for `id`
+/// Assert exactly one `session_agent_message` arrived for `id`
 /// carrying `at`, and nothing else.
 fn assert_one_event(events: &std::sync::mpsc::Receiver<String>, id: Uuid, at: &str, context: &str) {
     let payload = events

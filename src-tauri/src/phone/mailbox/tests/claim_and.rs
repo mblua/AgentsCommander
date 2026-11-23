@@ -4,7 +4,7 @@ use crate::pty::manager::{
     ReturnDeliveryProof,
 };
 
-/// (#1399 T6 / G8) A claim cannot be re-taken while its previous outcome is
+/// A claim cannot be re-taken while its previous outcome is
 /// undrained: `claim_and_spawn_wake` refuses, spawns nothing, and leaves
 /// the file untouched. Without the guard this returns Spawned and lands a
 /// second attempt inside one cycle.

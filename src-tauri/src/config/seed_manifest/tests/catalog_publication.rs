@@ -1,7 +1,7 @@
 use super::*;
 
 // -----------------------------------------------------------------------
-// #1968 - the narrow read-only catalog-publication query.
+// The narrow read-only catalog-publication query.
 // -----------------------------------------------------------------------
 
 fn catalog_publication_row() -> Result<PublishedManifestRow, SeedManifestError> {

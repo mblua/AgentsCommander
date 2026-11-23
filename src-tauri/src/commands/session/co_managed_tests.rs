@@ -20,7 +20,7 @@ pub(crate) struct RoomFixture {
 }
 
 // Accessors, so the phase-4 supervisor tests can share this fixture without
-// reaching into its fields (#2232 phase 4).
+// reaching into its fields.
 impl RoomFixture {
     pub(crate) fn temp_path(&self) -> &std::path::Path {
         self._temp.path()

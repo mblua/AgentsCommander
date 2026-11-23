@@ -127,7 +127,7 @@ function agentDisplayName(name: string): string {
 
 function teamMemberDisplayLabel(agentName: string): string {
   const parts = agentName.replaceAll("\\", "/").split("/");
-  const agent = (parts[parts.length - 1] ?? "").replace(/^__?agent_/, "");
+  const agent = (parts.at(-1) ?? "").replace(/^__?agent_/, "");
   const project = parts[0];
   return project && project !== agent ? `${agent}@${project}` : agent;
 }

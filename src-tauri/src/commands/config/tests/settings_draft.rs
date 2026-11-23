@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn settings_draft_events_flag_agent_base_command_edit() {
-    // #592/#597 - a bare agent base-command edit changes the effective-command
+    // A bare agent base-command edit changes the effective-command
     // drift hash, so save_settings_draft must emit coding_agent_profiles_updated
     // even though the profile cells and envs are untouched. This is the bug the
     // user hit editing `claude` -> `claude-amp -c ...` in Settings -> Coding Agents.

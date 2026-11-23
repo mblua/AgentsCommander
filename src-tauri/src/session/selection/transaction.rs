@@ -559,7 +559,7 @@ impl<C: SelectionContext> SelectionTransaction<C> {
         cause: SelectionCause,
         mutations: LifecycleMutations,
     ) -> Result<CommitResult, String> {
-        // #1149 - the single funnel that returns a `CommitResult` outward, so the
+        // The single funnel that returns a `CommitResult` outward, so the
         // only place the birth-edge records can be appended.
         //
         // The `let` binding is load-bearing. As a tail expression the temporary

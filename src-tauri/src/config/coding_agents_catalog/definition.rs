@@ -26,7 +26,7 @@ use super::{
     EMBEDDED_DEFAULT_CATALOG_JSON,
 };
 
-/// #2736 - wire strings are `"high" | "medium" | "low"`.
+/// Wire strings are `"high" | "medium" | "low"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TestedLevel {
@@ -35,7 +35,7 @@ pub enum TestedLevel {
     Low,
 }
 
-/// #2736 - the tested level of a built-in key; `None` for any other key.
+/// The tested level of a built-in key; `None` for any other key.
 pub(crate) fn tested_level_for(key: &str) -> Option<TestedLevel> {
     BUILTIN_TESTED_LEVEL
         .iter()
@@ -43,7 +43,7 @@ pub(crate) fn tested_level_for(key: &str) -> Option<TestedLevel> {
         .map(|(_, level)| *level)
 }
 
-/// #2736 - the install command for THIS host: the platform key when present,
+/// The install command for THIS host: the platform key when present,
 /// else `default`. `windows` for `target_os` = "windows", `macos` for "macos",
 /// `linux` for "linux"; every other target uses `default`.
 pub(crate) fn resolve_install_command(commands: &InstallCommands) -> &str {
@@ -69,7 +69,7 @@ pub(crate) fn install_command_for_os<'a>(commands: &'a InstallCommands, os: &str
     platform.unwrap_or(&commands.default)
 }
 
-/// #2736 - is this catalog entry's command present on this machine? PATH math
+/// Is this catalog entry's command present on this machine? PATH math
 /// only: `normalize_legacy_agent_command` reduces the catalog string to its
 /// program token, then `agent_command::resolve_program` resolves it (bare name
 /// through `effective_search_path` plus PATHEXT on Windows; explicit path by
@@ -90,7 +90,7 @@ pub(crate) fn command_is_present_with(
     }
 }
 
-/// #2736 - one welcome-status row. A SEPARATE type from
+/// One welcome-status row. A SEPARATE type from
 /// `CodingAgentDefinition`: that struct is persisted and hashed, and a catalog
 /// field would be patchable from disk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -134,7 +134,7 @@ pub(crate) fn default_catalog_schema_version() -> u32 {
     CATALOG_SCHEMA_VERSION
 }
 
-/// #2124 - optional per-agent idle-burst filter tuning. A present object on the
+/// Optional per-agent idle-burst filter tuning. A present object on the
 /// effective catalog entry activates the filter for mapped sessions; absent or
 /// `null` leaves it off. Every subfield is optional: an absent one takes the
 /// default declared in `session/profile.rs`.
@@ -154,7 +154,7 @@ pub struct IdleBurstConfig {
     pub prior_silence_secs: Option<f64>,
 }
 
-/// #2736 - optional per-OS install command for a coding agent. Every value is
+/// Optional per-OS install command for a coding agent. Every value is
 /// ONE complete shell command string, never argv tokens. `default` applies to
 /// any platform without its own key.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -194,7 +194,7 @@ pub struct CodingAgentDefinition {
     pub isolated_home: bool,
     /// Optional per-agent config-folder seed. Passthrough/authoring data in
     /// Phase 1: the embedded default ships it UNSET, so no agent seeds a folder
-    /// and spawn behavior is byte-unchanged. Phase 2 wires it to the #598 tier.
+    /// and spawn behavior is byte-unchanged. Phase 2 wires it to the config-seed tier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_seed: Option<ConfigSeedConfig>,
     /// May the user delete this built-in from the catalog? Ships `true` for all
@@ -202,7 +202,7 @@ pub struct CodingAgentDefinition {
     /// deletable.
     #[serde(default = "default_true")]
     pub removable: bool,
-    /// #1318/#1323 - per-agent update-command sequence seeded by AC: an ORDERED
+    /// Per-agent update-command sequence seeded by AC: an ORDERED
     /// array of COMPLETE command strings, each executed sequentially
     /// (updateCommands[0], then [1], ...) to install a new agent version, e.g.
     /// `["claude --update"]` or `["claude --update", "npm i -g @scope/cli"]`.
@@ -213,22 +213,22 @@ pub struct CodingAgentDefinition {
     /// follow-up update-check feature only.
     #[serde(default)]
     pub update_commands: Vec<String>,
-    /// #1318 - stable catalog default for auto-update. Newly registered agents
+    /// Stable catalog default for auto-update. Newly registered agents
     /// default to false ("No"). The per-user choice lives in
     /// `AppSettings.agent_auto_update_by_command`, keyed by command. Inert: the
     /// runtime reads only the settings map.
     #[serde(default)]
     pub auto_update: bool,
-    /// #2124 - optional idle-burst filter for this agent's sessions. Declared
-    /// after the pre-#2124 fields on purpose: field order is serialization
+    /// Optional idle-burst filter for this agent's sessions. Declared
+    /// after the older fields on purpose: field order is serialization
     /// order, and the managed revision hash is taken over this serialization.
-    /// `install_commands` (#2736) now follows it for the same reason, so a new
+    /// `install_commands` now follows it for the same reason, so a new
     /// field never reorders the bytes of an existing one. NOT part of the
     /// `settings.agents[]` snapshot: it is resolved from the effective catalog
     /// at every spawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_burst: Option<IdleBurstConfig>,
-    /// #2736 - optional per-OS install command. One COMPLETE shell command string
+    /// Optional per-OS install command. One COMPLETE shell command string
     /// per platform key; `default` is required when the object is present. Declared
     /// LAST for the same reason as `idle_burst`: field order is serialization order
     /// and the managed revision hash is taken over this serialization.
@@ -315,7 +315,7 @@ pub struct CodingAgentCatalog {
     pub agents: Vec<CodingAgentDefinition>,
 }
 
-/// #2892: an independent schema2 candidate, never a schema1 patch/composition.
+/// An independent schema2 candidate, never a schema1 patch/composition.
 /// Existing readers, seeders and writers continue to use `CodingAgentCatalog`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -483,7 +483,7 @@ fn populate_catalog_profile_hashes(catalog: &mut CodingAgentCatalogSchema2) {
     }
 }
 
-/// #2893: source-local decoding. Schema1 is a complete base only; project and
+/// Source-local decoding. Schema1 is a complete base only; project and
 /// personal patches cannot donate commands or inherit another source's fields.
 #[allow(dead_code, reason = "P02 reader; production activation is a later cut")]
 pub(crate) fn parse_independent_catalog(
@@ -609,7 +609,7 @@ pub(crate) fn validate_definition(def: &CodingAgentDefinition) -> Result<(), Str
     Ok(())
 }
 
-/// #2736 - every present `installCommands` value obeys the per-string
+/// Every present `installCommands` value obeys the per-string
 /// `updateCommands` rules (non-blank, no control character, U+2028 or U+2029).
 /// The field name goes in the context; the command text is never echoed.
 pub(crate) fn validate_install_commands(
@@ -633,7 +633,7 @@ pub(crate) fn validate_install_commands(
     Ok(())
 }
 
-/// #2124 - the `idleBurst` value rules, shared by the base path
+/// The `idleBurst` value rules, shared by the base path
 /// (`validate_definition`) and, by construction, the strict local parser:
 /// `maxBytes` is a non-negative integer and is already typed `u64` here;
 /// `maxSecs` and `priorSilenceSecs` must be finite and >= 0. Absent is legal
@@ -662,7 +662,7 @@ pub(crate) fn is_supported_builtin(key: &str, table: &[(&str, bool)]) -> bool {
     !table.iter().any(|(k, on)| *k == key && !*on)
 }
 
-/// #1967 P4 - the array-returning read adapter over the persisted-only report.
+/// The array-returning read adapter over the persisted-only report.
 /// `Ok` carries the validated persisted definitions exactly as the report
 /// selected them (a valid empty list is honored verbatim: the user removed all
 /// built-ins); `Err` carries the report's unavailability diagnostic (code +
@@ -732,9 +732,9 @@ pub(crate) fn registered_project_roots(settings: &AppSettings) -> Vec<PathBuf> {
 /// projects keep today's read behavior); an absent instance catalog is
 /// `baseUnavailable`, never the embedded default.
 ///
-/// #1967 P4 - Result adapter over `load_catalog_report_for_settings`: one
+/// Result adapter over `load_catalog_report_for_settings`: one
 /// settings snapshot selects the root and the untouched report drives both the
-/// selection and the diagnostics. P5 (#1968) extends the resolver behind this
+/// selection and the diagnostics. P5 extends the resolver behind this
 /// same adapter.
 pub fn load_catalog_for_settings(
     settings: &AppSettings,

@@ -128,14 +128,14 @@ pub const COORDINATOR_CONTEXT_TEMPLATE_FILENAME: &str = "Context.coordinator.md"
 pub const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str =
     crate::config::instance_artifacts::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME;
 
-/// #1605: per-platform project `.ac` files whose content IS the rendered
+/// Per-platform project `.ac` files whose content IS the rendered
 /// `{{HOST_PLATFORM_RULES}}` block (including its `## Host Platform Rules`
 /// heading). Project-level only; never seeded in the app-config directory.
 pub const HOST_PLATFORM_RULES_FILENAME_WINDOWS: &str = "Context.platform.windows.md";
 pub const HOST_PLATFORM_RULES_FILENAME_LINUX: &str = "Context.platform.linux.md";
 pub const HOST_PLATFORM_RULES_FILENAME_MACOS: &str = "Context.platform.macos.md";
 
-/// #1605: embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
+/// Embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
 /// Windows host sessions. Single source for both the `.ac/Context.platform.windows.md` seed
 /// and the render fallback.
 pub(crate) const DEFAULT_HOST_PLATFORM_RULES_WINDOWS: &str = concat!(
@@ -147,7 +147,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
     r#"-lc '...'` and capture CLI output with `2>&1 | Out-String`."#
 );
 
-/// #1605: embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
+/// Embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
 /// Linux host sessions (106 bytes; sha256
 /// 848e6bd25a001b091dd419fb665d2114abc5e5c2a19429fc820144aaa6190790 at
 /// 047248bc). Single source for both the `.ac/Context.platform.linux.md` seed
@@ -156,7 +156,7 @@ pub(crate) const DEFAULT_HOST_PLATFORM_RULES_LINUX: &str = r#"## Host Platform R
 
 This session runs on a Linux host; no platform-specific shell routing rules apply."#;
 
-/// #1605: embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
+/// Embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
 /// macOS host sessions (106 bytes; sha256
 /// a305af4fce8148ac80d8e197b02142738a6056959e9b72bee43689b3d01cdc4d at
 /// 047248bc). Single source for both the `.ac/Context.platform.macos.md` seed
@@ -177,7 +177,7 @@ pub(crate) enum CreateOnlyPublication {
 /// Map a managed project context-template filename to its canonical v1 seed-manifest
 /// scope, or `None` for a non-project template (the Root agent context) that carries
 /// no manifest row. The project scopes are the closed enum in plan section 4.2
-/// (#1605 adds the per-platform `context:platform` scope for the three
+/// (plus the per-platform `context:platform` scope for the three
 /// `Context.platform.<os>.md` files).
 pub(crate) fn manifest_scope_for_project_context_filename(filename: &str) -> Option<&'static str> {
     if filename == GLOBAL_CONTEXT_TEMPLATE_FILENAME {
@@ -196,7 +196,7 @@ pub(crate) fn manifest_scope_for_project_context_filename(filename: &str) -> Opt
     }
 }
 
-/// #1065 Stage F: record a context-template publication into the project seed
+/// Stage F: record a context-template publication into the project seed
 /// manifest under an already-held gate.
 ///
 /// `published_at` must be the commit-point time carried by
@@ -346,7 +346,7 @@ fn ensure_session_context_with_config(
     Ok(file_path.to_string_lossy().to_string())
 }
 
-/// #4752: restrictions are lifted only for a local (non-container) unleashed replica.
+/// Restrictions are lifted only for a local (non-container) unleashed replica.
 pub(crate) fn restrictions_for(container: bool, unleashed: bool) -> WorkspaceRestrictions {
     if !container && unleashed {
         WorkspaceRestrictions::Lifted
@@ -355,7 +355,7 @@ pub(crate) fn restrictions_for(container: bool, unleashed: bool) -> WorkspaceRes
     }
 }
 
-/// #1795 backstop for a project or a room that predates #1795. Bootstrap
+/// Backstop for a project or a room that predates shared locations. Bootstrap
 /// (`config::seeded_context_templates`) and room creation (`commands::entity_creation`)
 /// create these eagerly and hard-error on failure.
 ///
@@ -414,7 +414,7 @@ pub enum ManagedContextTarget {
 }
 
 impl ManagedContextTarget {
-    /// `pub` since #529: the launch-time resolver in `agent_command.rs` and the
+    /// `pub` because the launch-time resolver in `agent_command.rs` and the
     /// detection fallback in `commands/session.rs` map a detected target to its
     /// filename.
     pub fn filename(self) -> &'static str {
@@ -428,16 +428,16 @@ impl ManagedContextTarget {
 }
 
 /// Special token in context[] that resolves to the global AgentsCommanderContext.md.
-/// #979: `pub(crate)` so `root_agent.rs` migrates Root `context[]` arrays against this
+/// `pub(crate)` so `root_agent.rs` migrates Root `context[]` arrays against this
 /// exact constant instead of duplicating the literal.
 pub(crate) use super::root_agent::CONTEXT_TOKEN_GLOBAL;
 
 /// Special token in context[] that generates workspace repo info from the "repos" field.
 const CONTEXT_TOKEN_REPOS: &str = "$REPOS_WORKSPACE_INFO";
 
-/// #1369 (C4): the pre-rename spelling of `{{AGENT_REPOS}}`. These bytes are on
+/// C4: the pre-rename spelling of `{{AGENT_REPOS}}`. These bytes are on
 /// users' disks: the token was written into every seeded
-/// `.ac/Context.AgentsCommander.md` from #658 through v2, and a customized or
+/// `.ac/Context.AgentsCommander.md` from its first version through v2, and a customized or
 /// user-ignored template is preserved by `sync_one_template` and never
 /// auto-upgraded. The alias therefore has NO expiry. Never edit.
 const LEGACY_AGENT_REPOS_PLACEHOLDER: &str = "{{WORKSPACE_REPOS}}";
@@ -536,9 +536,9 @@ const WORKGROUP_GIT_SCOPE: &str =
     "`room-*/` and `wg-*/` are gitignored; origin Agent Matrices are \
     not and can be tracked. Git discovery above replica and Matrix roots is blocked. \
     State-changing Git belongs in `repo-*`; read-only Git is allowed within scope.";
-/// #1614 D8b: the exact `WORKGROUP_GIT_SCOPE` bytes shipped at d7008b34.
+/// The exact legacy `WORKGROUP_GIT_SCOPE` bytes shipped at d7008b34.
 /// Read only by `legacy_rendered_default_context_for_generation`, which
-/// reconstructs a pre-#1369 `Context.AgentsCommander.md` for byte
+/// reconstructs an older `Context.AgentsCommander.md` for byte
 /// comparison. Never used for current runtime output. 220 bytes, sha256
 /// A386B52D...566D (plan section 3.12 Table B); pinned by
 /// `workgroup_git_scope_split_is_correct`. Never edit.
@@ -546,7 +546,7 @@ const WORKGROUP_GIT_SCOPE_BEFORE_ROOM_RENAME: &str = "`wg-*/` workgroups are git
     Agent Matrices are not and can be tracked. Git discovery above replica and Matrix roots is \
     blocked. State-changing Git belongs in `repo-*`; read-only Git is allowed within scope.";
 
-// Frozen warning bytes shipped before #1072. These constants are only for
+// Frozen warning bytes shipped by older builds. These constants are only for
 // compatibility recognition and must never be used for current runtime output.
 const LEGACY_GIT_SCOPE_WITH_MATRIX_BEFORE_1072: &str = "Your replica directory and origin Agent \
     Matrix are typically inside a parent repository's `.ac/` folder, which is `.gitignore`d. Do \

@@ -124,7 +124,7 @@ function publish(ci: CiState, staleness: StalenessState, behindBy: number | null
   });
 }
 
-/** Marks the repo dirty through the channel #1028 owns, which this phase must not
+/** Marks the repo dirty through the channel the dirty badge owns, which this phase must not
  *  disturb: the two signals have to be additive. */
 function markDirty(): void {
   replicaVolatileStore.applyDiscoveryBranchUpdate(REPLICA_PATH, "main", [REPO_PATH], ["main"], [

@@ -68,7 +68,7 @@ fn local_spawn_witness_unset_when_spawn_command_fails() {
     backend.kill(id).expect("kill spawned child");
 }
 
-// #3516 tests 12-20: preflight launch preparation and the contained runner end to end.
+// Tests 12-20: preflight launch preparation and the contained runner end to end.
 
 fn preflight_request(cwd: &str) -> PreflightLaunchRequest {
     PreflightLaunchRequest {
@@ -284,7 +284,7 @@ fn default_trait_method_refuses() {
     );
 }
 
-// #3317 - the native-exit evidence of `kill_observed` and its retained reaper.
+// The native-exit evidence of `kill_observed` and its retained reaper.
 
 #[derive(Debug)]
 struct GatedChild {

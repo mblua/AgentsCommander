@@ -4,7 +4,7 @@ use super::*;
 pub(super) struct FailingSpawnBackend {
     pub(super) spawned: Mutex<Vec<Uuid>>,
     pub(super) killed: Mutex<Vec<Uuid>>,
-    /// #973 - every (cols, rows) a spawn was asked for.
+    /// Every (cols, rows) a spawn was asked for.
     pub(super) sizes: Mutex<Vec<(u16, u16)>>,
 }
 
@@ -17,7 +17,7 @@ impl FailingSpawnBackend {
         self.killed.lock().unwrap().clone()
     }
 
-    /// #973 - the sizes the PTY would have been opened at.
+    /// The sizes the PTY would have been opened at.
     pub(super) fn sizes(&self) -> Vec<(u16, u16)> {
         self.sizes.lock().unwrap().clone()
     }
@@ -34,7 +34,7 @@ impl crate::pty::backend::PtyBackend for FailingSpawnBackend {
     ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
         Box::pin(async move {
             self.spawned.lock().unwrap().push(spec.id);
-            // #973 - the size the ConPTY would have been opened at.
+            // The size the ConPTY would have been opened at.
             self.sizes.lock().unwrap().push((spec.cols, spec.rows));
             Err(crate::errors::AppError::PtyError(
                 "synthetic spawn failure".to_string(),

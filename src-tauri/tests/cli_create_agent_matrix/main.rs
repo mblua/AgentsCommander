@@ -139,7 +139,7 @@ fn project_with_workspace(tmp: &Path) -> PathBuf {
 }
 
 /// Assert a CLI-emitted path string points to the same directory/file as
-/// `expected`. #1077: `create-agent-matrix` prints the SELECTED CANONICAL path
+/// `expected`. `create-agent-matrix` prints the SELECTED CANONICAL path
 /// (§3.4), so a raw `tmp.path()` expectation breaks on a CI runner whose %TEMP%
 /// is an 8.3 short name (`RUNNER~1` vs the canonical `runneradmin`).
 /// Canonicalizing both sides compares filesystem identity, robust to 8.3

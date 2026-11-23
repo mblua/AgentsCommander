@@ -1,4 +1,4 @@
-//! #1252 layering guard: nothing under `src/loops/` may reach up into the Tauri
+//! Layering guard: nothing under `src/loops/` may reach up into the Tauri
 //! command surface, except through the references `loops::delivery` already
 //! carried before that issue.
 //!
@@ -26,7 +26,7 @@
 //!
 //! This list is maintained by the review loop. When a reviewer proves a spelling
 //! that reaches the command surface from `src/loops/` and still passes this
-//! file, it is appended here. Appending an entry is part of reviewing #1252 and
+//! file, it is appended here. Appending an entry is part of reviewing the layering fix and
 //! is expected; it changes nothing else.
 //!
 //!   1. Re-export laundering. A module outside `src/loops/` writes
@@ -62,7 +62,7 @@ use std::path::{Path, PathBuf};
 /// Every `(file, child)` reference under `src/loops/` that is allowed to name a
 /// child of `crate::commands`, sorted.
 ///
-/// #3260 retains only pure provider/selection predicates in `commands::session`.
+/// Retains only pure provider/selection predicates in `commands::session`.
 /// PTY and lifecycle delegation now live at the edge. Other command children
 /// remain forbidden, as does `session` named from another core file.
 ///
@@ -87,7 +87,7 @@ use std::path::{Path, PathBuf};
 /// being true.
 const ALLOWED_COMMAND_REFERENCES: [(&str, &str); 1] = [("src/loops/delivery.rs", "session")];
 
-/// The child #1252 removed, called out separately so its failure carries the
+/// The child the layering fix removed, called out separately so its failure carries the
 /// explanation of the cycle rather than the generic allowlist message.
 const FORBIDDEN_COMMAND_CHILD: &str = "loops";
 
@@ -99,7 +99,7 @@ const ANCHOR: &str = "commands::";
 /// A comment is whitespace to the Rust lexer, so `commands /* x */ ::loops` is
 /// the same path as `commands::loops`. Normalization collapses whitespace but
 /// never removed comments, so that spelling broke the `commands::` anchor and
-/// passed, and it was measured reintroducing the whole #1252 cycle
+/// passed, and it was measured reintroducing the whole cycle
 /// (`cyclicSccs = 2`) with this guard, `cargo fmt --check` and
 /// `cargo clippy -- -D warnings` all green. This is a class rather than one
 /// spelling: block, line, nested and multi-line comments all do it, which is why
@@ -161,7 +161,7 @@ fn aliases_the_command_group(body: &str) -> bool {
 /// A leading `r#` is dropped first. `r#loops` is the raw-identifier spelling of
 /// `loops` and names the same module, but reading it literally stopped at the
 /// `#` and reported the child as `r`, so the reference was caught by the
-/// membership assertion instead of by the #1252 message that explains it.
+/// membership assertion instead of by the message that explains it.
 fn leading_segment(item: &str) -> String {
     let item = item.strip_prefix("r#").unwrap_or(item);
     let mut segment: String = item
@@ -256,7 +256,7 @@ fn command_children(body: &str) -> Result<Vec<String>, &'static str> {
 /// **Do not add an extension filter here.** `rustc` decides what to compile from
 /// the module tree; a filter decides from the name, and production code lives in
 /// the gap between the two. The obvious filter, `extension == "rs"`, was measured
-/// letting the module that caused #1252 out of the scan in two ways. On a
+/// letting the module that caused the cycle out of the scan in two ways. On a
 /// case-insensitive filesystem `mod scheduler;` resolves `scheduler.RS` while
 /// `"RS" == "rs"` is false, so renaming that one file removed it from the scan
 /// and the cycle came back whole with this guard green. And
@@ -295,7 +295,7 @@ fn relative_of(path: &Path) -> String {
         .replace('\\', "/")
 }
 
-/// #1252: `loops::scheduler` used to call `crate::commands::loops::emit_loop_change`,
+/// `loops::scheduler` used to call `crate::commands::loops::emit_loop_change`,
 /// which made the domain depend on the Tauri command surface and put the two
 /// modules in a 2 member cycle. The emitter moved to `loops::events` so both
 /// sides depend downward.

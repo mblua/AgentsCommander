@@ -1,4 +1,4 @@
-//! Bounded final session persistence for the exit path (#4929).
+//! Bounded final session persistence for the exit path.
 use std::future::Future;
 use std::time::Duration;
 

@@ -65,7 +65,7 @@ fn copy_file_over_cap_is_streamed_without_substitution() {
     assert!(out.starts_with(b"%AC_REPLICA_ROOT%"));
 }
 
-// ---- %USER_HOME% in seeded content (#924) ------------------------------
+// ---- %USER_HOME% in seeded content ------------------------------
 
 /// `dirs::home_dir()` forward-slashed. `None` on a machine without a home,
 /// where the token is expected to stay literal.
@@ -301,7 +301,7 @@ fn warning_uses_effective_codex_home_for_codex() {
     assert!(w.contains("active"), "{w}");
 }
 
-/// #1873 - Muse has no AC-managed config-dir warning and ships no built-in
+/// Muse has no AC-managed config-dir warning and ships no built-in
 /// seed, factory master, or credential flow; a user-configured `configSeed`
 /// still resolves provider-neutrally through the same path every agent uses.
 #[test]

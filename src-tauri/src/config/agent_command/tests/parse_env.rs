@@ -148,7 +148,7 @@ fn effective_env_helpers_apply_removals_and_last_wins() {
 
 #[test]
 fn build_spawn_concatenates_agent_base_and_cell_params() {
-    // #597 - the cell holds params only; they append to the agent base command,
+    // The cell holds params only; they append to the agent base command,
     // so base `codex` + cell `--profile fast` launches `codex --profile fast`.
     let settings = settings_with_cell("codex", "B", cell("--profile fast", BTreeMap::new()));
 
@@ -312,7 +312,7 @@ fn profile_codex_home_is_effective_when_isolation_is_off() {
     assert!(spawn.generated_env.is_empty());
 }
 
-// #2561 - the agent command joins with `\`, a separator only on Windows.
+// The agent command joins with `\`, a separator only on Windows.
 #[cfg(windows)]
 #[test]
 fn ac_root_command_expands_after_parse_for_replica_launch_root() {
@@ -324,7 +324,7 @@ fn ac_root_command_expands_after_parse_for_replica_launch_root() {
         .join("wg-7-dev-team")
         .join("__agent_dev-rust");
     std::fs::create_dir_all(&replica).unwrap();
-    // #597 - under concatenation the binary (placeholder included) lives in the
+    // Under concatenation the binary (placeholder included) lives in the
     // agent base command and the cell holds the param. The placeholder must
     // still expand on the composed token list so the launched shell is the
     // expanded binary path.
@@ -579,4 +579,4 @@ fn duplicate_env_keys_are_rejected_case_insensitively_on_windows() {
     assert!(err.contains("duplicate env keys"), "{err}");
 }
 
-// #529 - instructions filename resolver + safety validation.
+// Instructions filename resolver + safety validation.
