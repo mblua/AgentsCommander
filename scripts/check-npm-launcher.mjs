@@ -685,7 +685,8 @@ function runLauncherScenarios() {
 
   test('H3', () => {
     freshBin();
-    makeBundle(binDir, { exeBytes: NODE_BYTES });
+    const { exePath } = makeBundle(binDir, { exeBytes: NODE_BYTES });
+    if (process.platform !== 'win32') fs.chmodSync(exePath, 0o755);
     const r = runLauncher(['-e', CHILD_SCRIPT, 'hello-arg'], { forceDarwin: true });
     expectExit(r, 0, 'H3');
     assertIncludes(r.stdout, 'AC_MARKER:hello-arg', 'H3 stdout');
@@ -693,7 +694,8 @@ function runLauncherScenarios() {
 
   test('H4', () => {
     freshBin();
-    makeBundle(binDir, { exeBytes: NODE_BYTES });
+    const { exePath } = makeBundle(binDir, { exeBytes: NODE_BYTES });
+    if (process.platform !== 'win32') fs.chmodSync(exePath, 0o755);
     const r = runLauncher(['-e', 'process.exit(7)'], { forceDarwin: true });
     expectExit(r, 7, 'H4');
   });
