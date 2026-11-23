@@ -20,7 +20,7 @@ pub fn get_instance_label() -> String {
     crate::config::profile::instance_label().to_string()
 }
 
-/// `pub(crate)` since #1171: `set_watchers_geometry` lives in `commands/window.rs` beside the
+/// `pub(crate)` because `set_watchers_geometry` lives in `commands/window.rs` beside the
 /// window it belongs to, and must write its one field through this same candidate-save-publish
 /// path rather than a second one of its own.
 pub(crate) async fn persist_narrow_settings_update(
@@ -43,13 +43,13 @@ pub(crate) async fn persist_narrow_settings_update_with_saver(
     Ok(())
 }
 
-/// #2306 P2 - the ordered-move rejection while the local overlay owns the whole
+/// The ordered-move rejection while the local overlay owns the whole
 /// top-level `agents` key. Stable token shared by the Tauri command and the
 /// browser route (transport parity).
 pub(crate) const AGENT_ORDER_OVERLAY_PINNED: &str =
     "agent order is controlled by the local settings overlay (settings.local.json)";
 
-/// #2306 P2 - fallible sibling of `persist_narrow_settings_update_with_saver`,
+/// Fallible sibling of `persist_narrow_settings_update_with_saver`,
 /// used by the ordered move.
 ///
 /// Same candidate-save-publish pattern with two differences:
@@ -84,7 +84,7 @@ pub(crate) async fn persist_narrow_settings_update_fallible_with_saver(
 }
 
 /// Narrow setter for `sounds_enabled`. Same candidate-save-publish
-/// pattern as the other narrow setters (issue #158). Replaces the toolbar's
+/// pattern as the other narrow setters. Replaces the toolbar's
 /// previous full-object `update_settings(next)` call, which could clobber
 /// unrelated fields from a stale `settingsStore.current` snapshot.
 #[tauri::command]
@@ -99,7 +99,7 @@ pub async fn set_sounds_enabled(
 }
 
 /// Narrow setter for `theme_light`. Same candidate-save-publish
-/// pattern as `set_sounds_enabled` (issue #289). Lets the UI persist the
+/// pattern as `set_sounds_enabled`. Lets the UI persist the
 /// user's light/dark mode choice without going through `update_settings`,
 /// which could clobber unrelated fields from a stale snapshot.
 #[tauri::command]
@@ -113,7 +113,7 @@ pub async fn set_theme_light(
     .await
 }
 
-/// Narrow setter for `main_resource_monitor_attached` (#587). Same
+/// Narrow setter for `main_resource_monitor_attached`. Same
 /// candidate-save-publish pattern as `set_theme_light`; lets the central-view
 /// toggle persist without a get+update round-trip racing `SettingsModal`.
 #[tauri::command]
@@ -127,7 +127,7 @@ pub async fn set_main_resource_monitor_attached(
     .await
 }
 
-/// #965 narrow setter for the rail collapse snapshot. Same candidate-save-publish
+/// Narrow setter for the rail collapse snapshot. Same candidate-save-publish
 /// pattern as `set_theme_light`: holds the `SettingsState` write lock across
 /// `save_settings`, so it cannot lose an interleaved `update_settings`.
 /// ONE command for both fields: the rail always persists its whole snapshot, so a
@@ -181,7 +181,7 @@ pub async fn set_rail_collapse(
     set_rail_collapse_inner(settings.inner(), collapsed_projects, favorites_collapsed).await
 }
 
-/// #2306 P2 - narrow owner of the registered-agent move. Mutates only the
+/// Narrow owner of the registered-agent move. Mutates only the
 /// `agents` vector under the settings write guard, persists through the
 /// preserving `save_settings`, and returns the authoritative ordered ids.
 #[tauri::command]
@@ -245,7 +245,7 @@ pub(crate) async fn move_coding_agent_inner_with_saver(
         .collect())
 }
 
-/// #2542 - narrow owner of the one-step reorder: moves `id` to `target_index`
+/// Narrow owner of the one-step reorder: moves `id` to `target_index`
 /// when `expected_ids` still matches the effective order. Mutates only the
 /// `agents` vector under the settings write guard and persists through the
 /// preserving `save_settings`.
@@ -316,7 +316,7 @@ pub(crate) fn move_coding_agent_event_payload(id: &str) -> serde_json::Value {
     serde_json::json!({ "op": "move", "agentId": id })
 }
 
-/// #612 apply the runtime log level (no-op under `RUST_LOG`) and broadcast so
+/// Apply the runtime log level (no-op under `RUST_LOG`) and broadcast so
 /// every webview re-applies its own console gate. Single point that both the
 /// dedicated `set_log_level` command and the `SettingsModal` Save path reuse.
 pub(crate) fn apply_and_broadcast_log_level(app: &AppHandle, level: &str) {
@@ -333,7 +333,7 @@ pub(crate) fn apply_and_broadcast_log_level(app: &AppHandle, level: &str) {
     let _ = app.emit("log_level_changed", serde_json::json!({ "level": level }));
 }
 
-/// #612 canonical command to change ONLY the log level: validates, persists
+/// Canonical command to change ONLY the log level: validates, persists
 /// `logLevel`, applies live, broadcasts. Used by programmatic callers / future
 /// quick-switch; the `SettingsModal` uses the form Save path (`save_settings_draft`).
 #[tauri::command]

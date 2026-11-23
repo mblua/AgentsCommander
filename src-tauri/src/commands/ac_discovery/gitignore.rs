@@ -9,7 +9,7 @@ use std::path::Path;
 /// Ensure the Project AC Root .gitignore exists and contains all required exclusion patterns.
 /// Called during project creation, workgroup creation, and opportunistically during discovery.
 ///
-/// #2434 - also ignores every configured agent's instructions filename, read
+/// Also ignores every configured agent's instructions filename, read
 /// from the saved settings. Callers that already hold an `AppSettings` call
 /// [`ensure_ac_root_gitignore_with_names`] directly.
 pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {

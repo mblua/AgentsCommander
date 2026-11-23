@@ -131,7 +131,7 @@ pub async fn set_instance_profile_override(
     agent_path: String,
     profile: Option<String>,
 ) -> Result<(), String> {
-    // #1940 - settings snapshot, guarded profile write and event publication are
+    // Settings snapshot, guarded profile write and event publication are
     // one owned selection operation, so this override cannot interleave with a
     // broad apply or a self-switch persist/restart.
     let app_handle = app.clone();

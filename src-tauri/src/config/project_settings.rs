@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::naming_migration;
 
-/// #2717 (B4a) - the layer-50 name, composed once in the registry.
+/// The layer-50 name, composed once in the registry.
 pub const PROJECT_SETTINGS_FILE: &str =
     crate::config::instance_artifacts::PROJECT_SETTINGS_TARGET_NAME;
 pub const MAX_WORKGROUP_GROUPS: usize = 80;
@@ -33,7 +33,7 @@ pub struct WorkgroupGroup {
     pub id: String,
     pub name: String,
     pub regex: String,
-    /// (#965) Pinned into the rail's cross-project `Favorites` section. Absent on
+    /// Pinned into the rail's cross-project `Favorites` section. Absent on
     /// legacy configs => false. Lives on the group record so it survives rename
     /// (`id` is a stable UUID), travels with reorder, and dies with the group.
     #[serde(default)]
@@ -49,7 +49,7 @@ pub struct WorkgroupGroupsConfig {
     pub show_all: bool,
     #[serde(default = "default_true")]
     pub show_ungrouped: bool,
-    /// (#777) Built-in optional Non-stop watchdog group. Absent on legacy configs.
+    /// Built-in optional Non-stop watchdog group. Absent on legacy configs.
     #[serde(default)]
     pub non_stop: Option<NonStopGroupConfig>,
 }
@@ -65,7 +65,7 @@ impl Default for WorkgroupGroupsConfig {
     }
 }
 
-// (#777) Non-stop watchdog config, mirrored to `NonStopGroupConfig` in
+// Non-stop watchdog config, mirrored to `NonStopGroupConfig` in
 // `src/shared/types.ts`. All numeric ranges are repaired (clamped) on load by
 // `normalize_groups_config`, never fatally rejected, so a bad/hand-edited value
 // can never nuke the user's real groups.
@@ -110,8 +110,8 @@ pub struct NonStopGroupConfig {
     pub telegram: NonStopTelegramConfig,
     #[serde(default)]
     pub sound: NonStopSoundConfig,
-    /// (#1257) Pinned into the rail's cross-project `Favorites` section, mirroring
-    /// the group flag added by #965. Absent on legacy configs => false. Lives on
+    /// Pinned into the rail's cross-project `Favorites` section, mirroring
+    /// the group flag. Absent on legacy configs => false. Lives on
     /// the record, so it dies with it: `save_workgroup_groups` removes the whole
     /// `nonStop` key when `non_stop` is `None`, which makes an orphan favorite
     /// impossible. No `skip_serializing_if`: a non-favorite must still emit an
@@ -146,13 +146,13 @@ fn default_match_none_regex() -> String {
     "(?!)".to_string()
 }
 
-/// #2717 (B4a) - the pre-migration name, moved to `PROJECT_SETTINGS_FILE`.
+/// The pre-migration name, moved to `PROJECT_SETTINGS_FILE`.
 const LEGACY_PROJECT_SETTINGS_RENAME: naming_migration::Rename = naming_migration::Rename {
     from: "project-settings.json",
     to: PROJECT_SETTINGS_FILE,
 };
 
-/// #2717 (B4a) - the pre-migration lock sidecar. Held beside the new one for the
+/// The pre-migration lock sidecar. Held beside the new one for the
 /// whole scope, so a pre-migration binary is still excluded; never renamed.
 const LEGACY_PROJECT_SETTINGS_LOCK: &str = ".project-settings.json.lock";
 

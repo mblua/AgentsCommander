@@ -5,7 +5,7 @@ export const isTauri =
 
 export const isBrowser = !isTauri;
 
-/// #777 True when the host OS is Windows, read from the user agent because the
+/// True when the host OS is Windows, read from the user agent because the
 /// webview exposes no direct OS API. Used for platform-specific UI text, e.g.
 /// the default-shell hint in src/sidebar/components/SettingsModal.tsx:1931.
 export const isWindows =

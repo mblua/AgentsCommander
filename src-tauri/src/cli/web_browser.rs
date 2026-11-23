@@ -1,4 +1,4 @@
-//! `web-browser` CLI verb (#3367): drives the embedded web browser shown over
+//! `web-browser` CLI verb: drives the embedded web browser shown over
 //! the terminal pane. Delivered through the outbox like `raise-hand`.
 
 use clap::{Args, Subcommand};

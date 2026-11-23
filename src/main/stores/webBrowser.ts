@@ -1,7 +1,7 @@
 import { createSignal } from "solid-js";
 import type { WebBrowserSnapshot } from "../../shared/ipc";
 
-// #3367 — last page state reported by the backend for the embedded web
+// Last page state reported by the backend for the embedded web
 // browser (URL, title, loading). Which central view is shown lives in
 // centralView.ts; this store only mirrors the page.
 const BLANK: WebBrowserSnapshot = { url: "about:blank", title: "", loading: false, visible: false };

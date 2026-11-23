@@ -1,4 +1,4 @@
-//! #4780: the AgentsCommander context of a temp room (limited, or lifted once Unleashed).
+//! The AgentsCommander context of a temp room (limited, or lifted once Unleashed).
 //! Layering: uses only `crate::config` leaves and `crate::filesystem::session_context`.
 
 use crate::config::instance_artifacts::CONTEXT_CACHE_DIR_NAME;

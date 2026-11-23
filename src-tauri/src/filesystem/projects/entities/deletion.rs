@@ -130,7 +130,7 @@ pub(crate) fn is_file_in_use_error(e: &std::io::Error) -> bool {
     }
 }
 
-/// Typed outcome of removing one replica directory (#1063, plan section 5.4).
+/// Typed outcome of removing one replica directory (plan section 5.4).
 ///
 /// Replaces the prior bare `Ok(())` so lifecycle callers can distinguish a real
 /// removal from a proven absence and prune manifest rows only for `Removed` or an
@@ -168,7 +168,7 @@ pub(crate) enum WgDeleteOutcome {
 }
 
 impl WgDeleteOutcome {
-    /// Whether the original user-visible workgroup path is gone (#1063, plan
+    /// Whether the original user-visible workgroup path is gone (plan
     /// section 5.4). `true` for `Deleted` and `Partial` (the atomic rename moved
     /// the original path away, so its replica config rows are no longer active
     /// even when hidden-orphan cleanup failed); `false` for `Blocked`/`Other`,

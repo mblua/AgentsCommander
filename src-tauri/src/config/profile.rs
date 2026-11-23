@@ -7,7 +7,7 @@
 //!
 //! `BUILD_PROFILE` (set by build.rs) is the fallback for titles, badges, ports
 //! and the single-instance mutex when the binary name has no underscore
-//! suffix. It does NOT influence the configuration directory name (#1868): an
+//! suffix. It does NOT influence the configuration directory name: an
 //! unsuffixed executable always maps to the canonical `.agentscommander`.
 
 use std::path::Path;
@@ -16,14 +16,14 @@ use std::sync::OnceLock;
 /// Build profile string — "dev", "prod", or "stage".
 /// Used as fallback for titles, badges, ports and the mutex name when the
 /// binary name has no underscore suffix. Never consulted for the config
-/// directory name (#1868).
+/// directory name.
 pub const BUILD_PROFILE: &str = env!("BUILD_PROFILE");
 
 /// Extract suffix from binary name: `agentscommander_foo` -> Some("foo").
 /// Returns None for plain `agentscommander` (no underscore = prod).
 /// First-underscore parsing: `agentscommander_` is `Some("")` and hyphens are
 /// never suffixes. `pub(super)` so the parent `config` resolver can route on
-/// the same parser instead of growing a second one (#1868).
+/// the same parser instead of growing a second one.
 pub(super) fn binary_suffix_from_path(path: &Path) -> Option<String> {
     path.file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
@@ -54,9 +54,9 @@ fn capitalize_suffix(suffix: &str) -> String {
 
 /// The configuration directory name under $HOME.
 ///
-/// #1868: an executable without an underscore suffix (or no usable executable
+/// An executable without an underscore suffix (or no usable executable
 /// at all) selects `$HOME/.agentscommander`, independently of `BUILD_PROFILE`,
-/// install location and any portable marker. #1930: this is the only HOME
+/// install location and any portable marker. This is the only HOME
 /// name. A suffixed executable `agentscommander_<suffix>` never selects a
 /// HOME directory. This is internal storage, not release identity.
 pub fn config_dir_name() -> &'static str {
@@ -66,7 +66,7 @@ pub fn config_dir_name() -> &'static str {
 /// Application title for the sidebar window.
 /// Runtime suffix: "AC [SUFFIX]" (uppercased).
 /// No suffix: falls back to `BUILD_PROFILE` behaviour.
-/// The short "AC" prefix keeps the OS taskbar tooltip compact (issue #606);
+/// The short "AC" prefix keeps the OS taskbar tooltip compact;
 /// only this literal prefix changed, the suffix-derivation logic is unchanged.
 pub fn app_title() -> &'static str {
     static TITLE: OnceLock<String> = OnceLock::new();
@@ -87,7 +87,7 @@ pub fn app_title_suffix() -> &'static str {
 }
 
 /// Single-instance identity. Windows uses it as the mutex name; Linux derives
-/// the lock file name from it (#4788). Each suffix gets its own identity
+/// the lock file name from it. Each suffix gets its own identity
 /// so different instances can run simultaneously.
 pub fn mutex_name() -> &'static str {
     static NAME: OnceLock<String> = OnceLock::new();
@@ -104,7 +104,7 @@ pub fn mutex_name() -> &'static str {
     })
 }
 
-/// #4788: Linux lock file name for a mutex name: no `Local\` prefix, no
+/// Linux lock file name for a mutex name: no `Local\` prefix, no
 /// trailing NUL, plus `.lock`. Case is kept, so the Linux identity equals the
 /// Windows mutex identity.
 #[cfg(target_os = "linux")]
@@ -113,7 +113,7 @@ fn single_instance_lock_file_name(mutex: &str) -> String {
     format!("{}.lock", name.trim_end_matches('\0'))
 }
 
-/// #4788: Linux GUI single-instance lock. `false` only when another process
+/// Linux GUI single-instance lock. `false` only when another process
 /// holds this identity's lock; every failure lets the GUI run (fail-open).
 #[cfg(target_os = "linux")]
 pub fn try_acquire_single_instance_lock() -> bool {
@@ -127,13 +127,13 @@ pub fn try_acquire_single_instance_lock() -> bool {
     )
 }
 
-/// #786: side-effect-free probe of whether a GUI instance for THIS binary
+/// Side-effect-free probe of whether a GUI instance for THIS binary
 /// identity is already running, by OPENING (not creating) the single-instance
 /// mutex. `OpenMutexW` never creates the mutex, so unlike `CreateMutexW` this
 /// cannot race a starting GUI into refusing to launch. The CLI uses it to route
 /// coding-agent mutations: GUI up -> queue through the poller; GUI down ->
 /// direct write. Windows-only; returns false off-Windows (no probe exists there,
-/// even on Linux where #4788 enforces single-instance with a lock file, so a
+/// even on Linux where the app enforces single-instance with a lock file, so a
 /// running GUI is not detected and callers fall back to the direct write path -
 /// a documented platform gap).
 #[cfg(target_os = "windows")]
@@ -204,7 +204,7 @@ pub fn web_server_port() -> u16 {
     }
 }
 
-/// Default control-plane API server port (#791). Distinct from the web server
+/// Default control-plane API server port. Distinct from the web server
 /// port so a dev and a prod build on one host do not collide. Mirrors
 /// `web_server_port`'s profile-awareness (dev/stage hardcoded, unknown suffix
 /// hashed, prod fallback), offset into the 98xx range above the web ports.

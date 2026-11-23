@@ -58,7 +58,7 @@ Windows host session: use `C:\Program Files\Git\bin\bash.exe` for all shell work
     r#"Out-String`."#
 );
 
-/// #1605: the three per-EXECUTION-platform `{{HOST_PLATFORM_RULES}}` files
+/// The three per-EXECUTION-platform `{{HOST_PLATFORM_RULES}}` files
 /// (`Context.platform.<os>.md`), seeded absent-only in project `.ac` roots and
 /// carried through `sync_one_template` with seeded/observed state, edit
 /// preservation and a pending-update offer.
@@ -145,7 +145,7 @@ pub(crate) fn actionable_project_spec_by_filename(
     Ok(spec)
 }
 
-/// #979: exact recognition of a STANDALONE (app-config) generated global context.
+/// Exact recognition of a STANDALONE (app-config) generated global context.
 ///
 /// True only for byte-for-byte UTF-8 equality with the current built-in default or
 /// with the frozen 307-byte snapshot above. No normalization of whitespace, line
@@ -153,7 +153,7 @@ pub(crate) fn actionable_project_spec_by_filename(
 /// a CRLF copy, an invalid-UTF-8 file, a one-byte edit, or a state entry claiming
 /// ownership is UNKNOWN, and unknown content is backed up, never deleted.
 ///
-/// #1748: the PROJECT `global` spec is distribution-owned and names no recognizer,
+/// The PROJECT `global` spec is distribution-owned and names no recognizer,
 /// so this is the only recognizer for these bytes. It must never be pointed at
 /// `project_specs()`: a second consumer would make a future edit to it silently
 /// change project behavior.
@@ -168,7 +168,7 @@ pub(crate) fn is_known_generated_standalone_global_template(content: &str) -> bo
         || content == GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
 }
 
-/// #1605: per-platform generated recognizers — equality with the current
+/// Per-platform generated recognizers — equality with the current
 /// platform default or a frozen historical snapshot. A future default change MUST first freeze the
 /// previous default as a snapshot const and extend the recognizer, so seeded
 /// files auto-update and edited files are preserved with the pending-update

@@ -242,7 +242,7 @@ pub(crate) async fn read_terminal_snapshot_security_settings_strict_offloaded(
     }
 }
 
-/// The sole persistence owner for the #1173 disclosure gate. The caller holds
+/// The sole persistence owner for the disclosure gate. The caller holds
 /// the managed settings write guard while this function serializes every AC
 /// process with the settings file lock and compares against current disk truth.
 pub(crate) fn compare_and_set_terminal_snapshots_enabled(
@@ -303,7 +303,7 @@ pub(crate) fn compare_and_set_terminal_snapshots_enabled_at_path(
         return Err("terminal_snapshot_setting_conflict".to_string());
     }
 
-    // #1737 (D17): the disk-decoded candidate must carry the overlay VALUES, not just
+    // The disk-decoded candidate must carry the overlay VALUES, not just
     // the overlay state, because the `disk_gate == enabled` early return below adopts
     // it with no save and no re-decode. The `None` arm clones the live settings and
     // already carries both.
@@ -344,7 +344,7 @@ pub(crate) fn compare_and_set_terminal_snapshots_enabled_at_path(
         return Ok(candidate);
     }
 
-    // #2306 P1 - renumber in the candidate's current (effective) vector order
+    // Renumber in the candidate's current (effective) vector order
     // right before the direct write; never re-sort from stored ordinals.
     normalize_agent_order(&mut candidate.agents);
     let written = match save_settings_value_locked(
@@ -392,7 +392,7 @@ pub(crate) fn decode_disk_settings_for_terminal_snapshot_cas(
         report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
     })?;
     replace_project_projection(value.as_object_mut().unwrap(), &selected.projection);
-    // #2716 (B3) 4.2b: the same merge as `parse_settings_json`, in the same layer
+    // 4.2b: the same merge as `parse_settings_json`, in the same layer
     // order, under the overlay reapplied below. The decoded value is adopted and
     // written, so without it an empty `agents` would reach the agents file.
     let main_profile_owner = value.as_object().expect("settings object").clone();
@@ -420,7 +420,7 @@ pub(crate) fn decode_disk_settings_for_terminal_snapshot_cas(
     {
         value["codingAgentProfiles"] = profiles.clone();
     }
-    // #1737 (D17): re-apply the overlay to the disk-decoded object, so the
+    // Re-apply the overlay to the disk-decoded object, so the
     // `disk_gate == enabled` early return does not hand the caller base values.
     // Pinned before the project decode, and therefore strictly before
     // `candidate.terminal_snapshots_enabled = enabled` runs on the typed value.
@@ -435,7 +435,7 @@ pub(crate) fn decode_disk_settings_for_terminal_snapshot_cas(
     settings.project_path_state = Arc::new(state);
     set_agents_layer_state(&mut settings, settings_path, agents_layer);
     settings.coding_agent_identity_physical = Some(Arc::new(identity_physical));
-    // #2306 P1 - finalize before the caller's no-op return or direct write, so
+    // Finalize before the caller's no-op return or direct write, so
     // both the returned and the written snapshot carry contiguous ordinals.
     // Overlay values stay in memory: `save_settings_value_locked` restores the
     // base `agents` array before writing the file.
@@ -447,12 +447,12 @@ pub(crate) fn decode_disk_settings_for_terminal_snapshot_cas(
         &mut settings,
         &settings_path.display().to_string(),
     );
-    // #4091: coherent colour before the no-op return or the write.
+    // Coherent colour before the no-op return or the write.
     settings.normalize_context_history_sessions();
     Ok(settings)
 }
 
-/// #2348 - the sole persistence owner for the main-window placement pair. The
+/// The sole persistence owner for the main-window placement pair. The
 /// caller holds the managed settings write guard while this function serializes
 /// every AC process with the settings file lock. Returns the re-decoded settings
 /// the caller must adopt.
@@ -471,7 +471,7 @@ pub(crate) fn set_main_window_placement_at_path(
     geometry: &WindowGeometry,
     display_state: MainWindowDisplayState,
 ) -> Result<AppSettings, String> {
-    // #1737 (D7c): `restore_base` is the last writer over the base file, so a
+    // `restore_base` is the last writer over the base file, so a
     // placement write beneath an overlay that owns either placement key would be
     // silently reverted. Refuse with the stable signal instead of pretending.
     if current
@@ -532,11 +532,11 @@ pub(crate) fn project_lists_from_projection(
             .map(str::to_string)
             .into_iter()
             .collect(),
-        // #881: non-string elements are dropped here, but rejected in the
+        // Non-string elements are dropped here, but rejected in the
         // archivedProjectPaths arm below. Deliberate. `projectPaths` only feeds
         // discovery; `archivedProjectPaths` feeds session retention, where a
         // silently-emptied list deletes sessions. Tightening this one is
-        // #888's call, not #881's.
+        // a separate decision.
         Some(serde_json::Value::Array(arr)) => arr
             .iter()
             .filter_map(|x| x.as_str().map(str::to_string))
@@ -556,7 +556,7 @@ pub(crate) fn project_lists_from_projection(
     let archived_project_paths = match value.get("archivedProjectPaths") {
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::Array(arr)) => {
-            // #881 R2-G5: a non-string element is corruption, not an entry to
+            // R2-G5: a non-string element is corruption, not an entry to
             // skip. The `projectPaths` arm above silently drops non-strings;
             // do not copy that here. `[123]` would read as `Some(vec![])`,
             // meaning disk authoritatively says nothing is archived.
@@ -588,7 +588,7 @@ pub(crate) fn project_lists_from_projection(
     }))
 }
 
-/// #778/#881: overwrite `settings`' in-memory project lists with the
+/// Overwrite `settings`' in-memory project lists with the
 /// disk-authoritative ones. The deliberate list mutators
 /// (`open_project`/`new_project`/`remove_project`)
 /// call this under the `SettingsState` write lock BEFORE they add/remove, so a
@@ -618,7 +618,7 @@ pub(crate) fn refresh_project_paths_from_path(
     Ok(())
 }
 
-/// #1077 §4.3 step 2: fresh-read and fully re-decode the six disk fields (so a
+/// §4.3 step 2: fresh-read and fully re-decode the six disk fields (so a
 /// post-startup CLI write is authoritative), replacing the runtime lists with the
 /// SELECTED canonical paths and installing the fresh hidden pair state. Aborts
 /// (`Err`) on a present-but-invalid whole object; keeps the live runtime/hidden

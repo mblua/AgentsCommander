@@ -25,7 +25,7 @@ pub async fn keep_custom_context_template(
     )
 }
 
-/// #1065 Stage F: explicit context-template overwrite recorded under the gate.
+/// Explicit context-template overwrite recorded under the gate.
 ///
 /// Overwrite is a user-initiated action, so a contention/unsafe gate failure
 /// returns a retryable busy error (never a silent skip); a pre-contention gate
@@ -99,7 +99,7 @@ pub async fn overwrite_context_template_with_default(
     let ac_root = existing_ac_root(Path::new(&path))
         .ok_or_else(|| format!("Project AC Root not found for {path}"))?;
     crate::config::seed_manifest::run_blocking_owned(move || {
-        // #1065 Stage F: production records the overwrite under the gate; a
+        // Production records the overwrite under the gate; a
         // `#[cfg(test)]` lib build stays non-emitting.
         #[cfg(not(test))]
         let activation = Some(crate::config::seed_manifest::ManifestActivationToken::production());

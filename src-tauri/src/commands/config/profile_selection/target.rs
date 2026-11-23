@@ -21,7 +21,7 @@ use super::wire::{
     SelectionState,
 };
 
-/// #1941 - one identified candidate plus its canonical Matrix dir, kept so a
+/// One identified candidate plus its canonical Matrix dir, kept so a
 /// fingerprint never has to re-resolve identity from a mutable path.
 pub(crate) struct ProfileCandidate {
     pub(crate) target: ProfileAssignmentTarget,
@@ -63,7 +63,7 @@ pub(crate) fn scope_fault_code(
     }
 }
 
-/// #1941 - the complete identified candidate set for one scope, together with
+/// The complete identified candidate set for one scope, together with
 /// whether the directory walk could establish that set.
 pub(crate) struct ProfileTargetEnumeration {
     pub(crate) anchor_dir: PathBuf,
@@ -83,7 +83,7 @@ impl ProfileTargetEnumeration {
     }
 }
 
-/// #1941 - directory-walk accumulator. A read failure is a visible warning that
+/// Directory-walk accumulator. A read failure is a visible warning that
 /// makes the scope counts incomplete, never a silent skip: an unreadable member
 /// could be protected, so the scope can no longer certify a total.
 #[derive(Default)]
@@ -139,7 +139,7 @@ pub(crate) fn profile_assignment_requires_explicit_confirmation(
     *scope != ProfileAssignmentScope::Replica || mode == AssignmentMode::AssignAndLock
 }
 
-/// #1941 - a conflict decision belongs only to a bulk assign-and-lock; anything
+/// A conflict decision belongs only to a bulk assign-and-lock; anything
 /// else is rejected before enumeration so no client boolean can widen force.
 pub(crate) fn validate_assignment_decision_scope(
     scope: &ProfileAssignmentScope,
@@ -166,12 +166,12 @@ pub(crate) fn validate_profile_assignment_confirmation(
 ) -> Result<(), String> {
     match provided {
         Some(value) if value == fingerprint => Ok(()),
-        // #1941 - the legacy deliberate replica assignment keeps working without
+        // The legacy deliberate replica assignment keeps working without
         // a fingerprint; every bulk, assignAndLock and removal path needs one.
         None if *scope == ProfileAssignmentScope::Replica && mode == AssignmentMode::Ordinary => {
             Ok(())
         }
-        // #2051 - no fingerprint at all is a client contract failure, not a
+        // No fingerprint at all is a client contract failure, not a
         // target change: never report it as a stale preview.
         None => Err(
             "confirmationMissing: This operation requires the preview confirmation, and none was \
@@ -221,7 +221,7 @@ pub(crate) async fn classify_restart_failure(
     }
 }
 
-/// #1941 - the scope anchor must be a strictly validated `__agent_*` replica
+/// The scope anchor must be a strictly validated `__agent_*` replica
 /// inside a `room-*`/`wg-*` directory whose canonical origin Matrix lives under
 /// a configured project root. An origin Matrix or the Root Agent is never a
 /// lockable replica target, and no client-supplied target list is accepted.
@@ -329,7 +329,7 @@ pub(crate) fn enumerate_profile_assignment_targets(
             ) {
                 Ok(read) => read,
                 Err((fault, _message)) => {
-                    // #1941 - an unprovable identity inside the scope means membership
+                    // An unprovable identity inside the scope means membership
                     // cannot be established: keep the diagnostic visible and refuse to
                     // certify a scope total for it.
                     warnings.push(format!(
@@ -522,7 +522,7 @@ pub(crate) fn build_profile_assignment_target(
     }
 }
 
-/// #1941 - strict state to wire fields. An invalid state carries its diagnostic
+/// Strict state to wire fields. An invalid state carries its diagnostic
 /// and never a synthesized `selectionLocked: false`.
 pub(crate) fn target_selection_wire(
     state: &crate::config::coding_agent_profiles::ReplicaSelectionState,

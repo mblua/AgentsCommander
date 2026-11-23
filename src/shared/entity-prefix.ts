@@ -1,4 +1,4 @@
-/** On-disk prefix of a Room directory (#1614). */
+/** On-disk prefix of a Room directory. */
 export const ROOM_DIR_PREFIX = "room-";
 /** On-disk prefix of a legacy Workgroup directory. Never produced again; still supported. */
 export const LEGACY_WORKGROUP_DIR_PREFIX = "wg-";

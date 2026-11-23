@@ -1,6 +1,6 @@
 //! Filesystem locations that `AgentsCommander` creates and shares between agents:
 //! four project-level directories under a project's `.ac` root, and one room-level
-//! directory under a room root. #1795.
+//! directory under a room root.
 //!
 //! Leaf module by design: it depends on `std` only. `config::session_context`,
 //! `config::seeded_context_templates` and `commands::entity_creation` all call into

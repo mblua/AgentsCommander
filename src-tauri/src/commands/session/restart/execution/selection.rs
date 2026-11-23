@@ -53,7 +53,7 @@ pub(crate) fn resolve_restart_selection(
             .map(|mut spawn| {
                 // A matched restart records the ORIGINAL request; the matched
                 // letter lives in `effective_profile`, its provenance in the
-                // #2451 carriers.
+                // carriers.
                 if authoritative {
                     if let Some(original) = selected_requested_profile {
                         spawn.profile_resolution.requested_profile = original.to_string();

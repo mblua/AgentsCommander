@@ -19,7 +19,7 @@ use crate::config::settings::{
     SettingsState, OVERLAY_KEY_AGENTS,
 };
 
-// ── #1077 SettingsSnapshot: the get_settings client response ────────────────
+// ── SettingsSnapshot: the get_settings client response ────────────────
 
 /// Tagged raw string field state (absent vs JSON null vs string). `present ==
 /// false` always pairs with `value == None`.
@@ -126,13 +126,13 @@ pub struct SettingsSnapshot {
     #[serde(flatten)]
     pub settings: AppSettings,
     pub project_path_resolution: ProjectPathResolution,
-    /// #1347 - absolute path of the instance `settings.json` this snapshot was
+    /// Absolute path of the instance `settings.json` this snapshot was
     /// built for, so the UI can name the file that holds the plaintext secrets.
     /// `None` only when `config_dir()` itself is unresolvable (no `current_exe()`
     /// and no home dir); there is no `skip_serializing_if`, so the key is always
     /// present on the wire and is `null` in that degraded mode.
     pub settings_file_path: Option<String>,
-    /// #2306 P2 - read-only disclosure that the local `settings.local.json`
+    /// Read-only disclosure that the local `settings.local.json`
     /// overlay owns the whole top-level `agents` key. While true, an ordered
     /// move cannot be durable: the writer restores the overlay's base array to
     /// `settings.json` and reapplies the overlay-effective array only to
@@ -140,11 +140,11 @@ pub struct SettingsSnapshot {
     /// a move. Deliberately NOT a field of `AppSettings`: a client draft can
     /// never carry or forge overlay ownership.
     pub overlay_owns_agents: bool,
-    /// #2716 (B3, option C) - read-only disclosure that the agents file could
+    /// Read-only disclosure that the agents file could
     /// not be read, so no agent session may start. Same stance as
     /// `overlay_owns_agents`: never a field a client draft can carry.
     pub agents_layer_unreadable: bool,
-    /// #2716 (B3, option C) - the unreadable agents file's path, for the notice.
+    /// The unreadable agents file's path, for the notice.
     pub agents_file_path: Option<String>,
 }
 
@@ -341,7 +341,7 @@ pub(crate) fn build_project_path_resolution(
 }
 
 /// Snapshot builder: clone `settings`, clear the root token, attach the
-/// resolution report, and record the instance settings-file path (#1347).
+/// resolution report, and record the instance settings-file path.
 /// Shared by the Tauri and WebSocket transports so both clients receive the
 /// identical report and `rootToken` is absent from each. The only non-argument
 /// input is the process-wide, cached instance location behind `config_dir()`.
@@ -357,7 +357,7 @@ pub(crate) fn settings_snapshot_from(
     SettingsSnapshot {
         settings: cleaned,
         project_path_resolution: resolution,
-        // #1347: derived from the process instance location, deliberately NOT
+        // Derived from the process instance location, deliberately NOT
         // from `settings_snapshot_helper`'s injectable target, which is
         // a test-only reconciliation write target and not a client-facing
         // location. The owner preserves the existing display expression.

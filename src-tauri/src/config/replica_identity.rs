@@ -25,7 +25,7 @@ pub struct WgReplicaIdentity {
     pub identity: String,
 }
 
-/// #2557 - why a replica config could not be read or validated. Classified at
+/// Why a replica config could not be read or validated. Classified at
 /// the source so callers never parse the message text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplicaConfigFault {

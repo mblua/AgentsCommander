@@ -12,7 +12,7 @@
 /// `.{file_name}.{pid}.tmp`. Emitted unanchored: correct writers publish
 /// through subdirectories of the instance dir too, including directories this
 /// registry deliberately tracks, and an anchored rule would leave those
-/// leftovers visible in `git status` on every write (#1209, instance-dir half).
+/// leftovers visible in `git status` on every write (instance-dir half).
 pub(crate) const ATOMIC_WRITE_TMP_GLOB: &str = ".*.*.tmp";
 pub(crate) const SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME: &str =
     ".agentscommander-context-templates.json";
@@ -69,7 +69,7 @@ pub(crate) const COORDINATOR_CLOCKS_FILE_NAME: &str = "coordinator_clocks.json";
 /// glob cannot match it. A registry test derives this glob from
 /// `COORDINATOR_CLOCKS_FILE_NAME`.
 pub(crate) const COORDINATOR_CLOCKS_TMP_GLOB: &str = "coordinator_clocks.json.*.tmp";
-// #4752 P02: per-replica Unleash flag store and its write lock.
+// P02: per-replica Unleash flag store and its write lock.
 pub(crate) const UNLEASHED_REPLICAS_FILE_NAME: &str = "unleashed-replicas.json";
 pub(crate) const UNLEASHED_REPLICAS_LOCK_NAME: &str = ".unleashed-replicas.json.lock";
 pub(crate) const TEMP_ROOM_GROUPS_FILE_NAME: &str = "temp-room-groups.json";
@@ -93,59 +93,59 @@ pub(crate) const PROJECT_PATHS_RECOVERED_GLOB: &str =
     "project-paths.pre-migration.recovered-*.no-git.json";
 pub(crate) const PROJECT_REFRESH_REQUESTS_DIR_NAME: &str = "project-refresh-requests";
 pub(crate) const PTY_INPUT_LOCKS_DIR_NAME: &str = "pty-input-locks";
-/// #2374 - the whole-file remote CI view the daemon republishes each sweep and
+/// The whole-file remote CI view the daemon republishes each sweep and
 /// `room activity` reads. Machine-local and regenerated, so never committed.
 pub(crate) const REMOTE_ACTIVITY_SNAPSHOT_FILE_NAME: &str = "remote-activity.json";
 pub(crate) const SESSION_REQUESTS_DIR_NAME: &str = "session-requests";
-/// #1737 - operator-owned Markdown overrides. AC never creates, syncs, upgrades,
+/// Operator-owned Markdown overrides. AC never creates, syncs, upgrades,
 /// retires or manifest-records one; the row exists so a machine-local override is
 /// not committed by accident.
 pub(crate) const LOCAL_MARKDOWN_OVERRIDE_GLOB: &str = "*.local.md";
-/// #1737 - the operator-owned settings overlay, read at load and never written by AC.
+/// The operator-owned settings overlay, read at load and never written by AC.
 pub(crate) const SETTINGS_LOCAL_OVERRIDE_FILE_NAME: &str = SETTINGS_LOCAL_TARGET_NAME;
-/// #1905 - AC-owned shipped blocking-menu patterns; rewritten from embedded content at startup.
+/// AC-owned shipped blocking-menu patterns; rewritten from embedded content at startup.
 pub(crate) const BLOCKING_MENUS_SHIPPED_FILE_NAME: &str = BLOCKING_MENUS_SHIPPED_TARGET_NAME;
-/// #1905 - the operator-owned blocking-menu overlay, read at load; written once by the export.
+/// The operator-owned blocking-menu overlay, read at load; written once by the export.
 pub(crate) const BLOCKING_MENUS_LOCAL_FILE_NAME: &str = BLOCKING_MENUS_LOCAL_TARGET_NAME;
-/// #1925 - blocking-menu patterns downloaded from GitHub; written only by the startup download.
+/// Blocking-menu patterns downloaded from GitHub; written only by the startup download.
 pub(crate) const BLOCKING_MENUS_REMOTE_FILE_NAME: &str = BLOCKING_MENUS_REMOTE_TARGET_NAME;
-/// #1925 - time of the last remote blocking-menu download attempt; throttles it to once per 24 h.
+/// Time of the last remote blocking-menu download attempt; throttles it to once per 24 h.
 pub(crate) const BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME: &str =
     BLOCKING_MENUS_REMOTE_CHECK_TARGET_NAME;
-/// #2133 - the operator-owned per-agent help overlay, read at load and never written by AC.
+/// The operator-owned per-agent help overlay, read at load and never written by AC.
 pub(crate) const AGENT_HELP_LOCAL_FILE_NAME: &str = "agent-help.local.json";
-/// #2133 - AC-owned shipped per-agent help; rewritten from embedded content at startup.
+/// AC-owned shipped per-agent help; rewritten from embedded content at startup.
 pub(crate) const AGENT_HELP_SHIPPED_FILE_NAME: &str = "agent-help.json";
-/// #2133 - per-agent help downloaded from GitHub; written only by the startup download.
+/// Per-agent help downloaded from GitHub; written only by the startup download.
 pub(crate) const AGENT_HELP_REMOTE_FILE_NAME: &str = "agent-help.remote.json";
-/// #2133 - time of the last remote agent-help download attempt; throttles it to once per 24 h.
+/// Time of the last remote agent-help download attempt; throttles it to once per 24 h.
 pub(crate) const AGENT_HELP_REMOTE_CHECK_FILE_NAME: &str = "agent-help-remote-check.json";
 /// AC's own instance settings file. Every production reader and writer of the
 /// instance file names it through this constant.
 pub(crate) const SETTINGS_FILE_NAME: &str = SETTINGS_TARGET_NAME;
 pub(crate) const SETTINGS_LOCK_FILE_NAME: &str = SETTINGS_LOCK_TARGET_NAME;
-/// #2714 - the pre-migration lock sidecar. A retired name kept only so the
+/// The pre-migration lock sidecar. A retired name kept only so the
 /// leftover the naming migration deliberately never deletes stays ignored; the
 /// one row deliberately not composed by `layered_name!`.
 pub(crate) const SETTINGS_RETIRED_LOCK_NAME: &str = "settings.json.lock";
-/// #2994 - the settings owner's lifecycle lock: a stable sidecar, separate from
+/// The settings owner's lifecycle lock: a stable sidecar, separate from
 /// the transactional `SETTINGS_LOCK_FILE_NAME`, retained for the owner's whole
 /// lifetime and never unlinked on close.
 pub(crate) const SETTINGS_OWNER_LOCK_FILE_NAME: &str = "settings.owner.no-git.lock";
-/// #2994 - the settings owner's endpoint metadata. Reserved here so the runtime
+/// The settings owner's endpoint metadata. Reserved here so the runtime
 /// artifact is ignored before any writer publishes it.
 pub(crate) const SETTINGS_OWNER_ENDPOINT_FILE_NAME: &str = "settings-owner.endpoint.no-git.json";
 /// Covers every settings migration backup instance. The concrete names are
 /// composed by their own migrations, so this glob is registry-owned and no
 /// writer imports it.
 pub(crate) const SETTINGS_MIGRATION_BACKUP_GLOB: &str = SETTINGS_MIGRATION_BACKUP_TARGET_GLOB;
-/// #2058 - the bounded rotation of previous `settings.json` generations. Slot 1
+/// The bounded rotation of previous `settings.json` generations. Slot 1
 /// is the version the most recent save replaced. The writer composes the index
 /// at runtime, so the glob is the only tie between the rule and the artifact.
 pub(crate) const SETTINGS_BACKUP_PREFIX: &str = SETTINGS_BACKUP_TARGET_PREFIX;
 pub(crate) const SETTINGS_BACKUP_SUFFIX: &str = ".json";
 pub(crate) const SETTINGS_BACKUP_ROTATION_GLOB: &str = SETTINGS_BACKUP_ROTATION_TARGET_GLOB;
-/// #2714 - every file the naming migration demotes, `<old name>.deprecated-<n>.no-git`,
+/// Every file the naming migration demotes, `<old name>.deprecated-<n>.no-git`,
 /// in any family: one glob keeps every set-aside copy out of Git.
 pub(crate) const SET_ASIDE_GLOB: &str = "*.deprecated-*.no-git";
 pub(crate) const TELEGRAM_BRIDGE_LOG_FILE_NAME: &str = "telegram-bridge.log";
@@ -166,7 +166,7 @@ pub(crate) const CODING_AGENTS_CATALOG_DIR_NAME: &str = "coding-agents";
 /// The catalog manifest inside `coding-agents/`. The catalog module aliases it.
 pub(crate) const CODING_AGENTS_BASE_FILENAME: &str = CODING_AGENTS_BASE_TARGET_NAME;
 
-/// #1968 - declares one machine-local coding-agent catalog child: the FILE name
+/// Declares one machine-local coding-agent catalog child: the FILE name
 /// constant the catalog module aliases for its path composition, plus the
 /// root-relative table name derived from the single directory prefix, so the two
 /// can never drift apart.
@@ -181,7 +181,7 @@ macro_rules! coding_agents_child {
 // names for its path composition, while the table rows use the derived
 // root-relative names. The overrides layer and the write lock follow the
 // layered target names below.
-// Immutable by contract: an interrupted #1968 catalog migration resumes by this
+// Immutable by contract: an interrupted catalog migration resumes by this
 // exact name, so it has no layered target name and is never renamed.
 coding_agents_child!(
     CODING_AGENTS_MIGRATION_BACKUP_FILENAME,
@@ -195,7 +195,7 @@ coding_agents_child!(
     ".agents.migration-v1.json"
 );
 
-// #1968 - the four publication temporaries. The catalog writer composes each
+// The four publication temporaries. The catalog writer composes each
 // name at runtime from its destination (`managed_catalog_temp_name_for_destination`),
 // so no production code imports these file-name constants; they exist so the
 // registry can prove the table's policy patterns are the writer's real shapes.
