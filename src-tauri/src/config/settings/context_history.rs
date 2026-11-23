@@ -1,5 +1,5 @@
-//! #4049: app-scope enabled switch and retention days for the context-history heatmap.
-//! #4091: session-count windows and the session count that colours the map.
+//! App-scope enabled switch and retention days for the context-history heatmap.
+//! Session-count windows and the session count that colours the map.
 //!
 //! Pure types: the Settings store owns all IO. Retention accepts only integers
 //! 1..=365; enabled only JSON booleans. Any other JSON value falls back to its
@@ -8,7 +8,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-/// #4049: days of stored context history to keep. Serialized as the plain number.
+/// Days of stored context history to keep. Serialized as the plain number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextHistoryRetentionDays(u32);
 
@@ -62,7 +62,7 @@ where
     )
 }
 
-/// #4049 field deserializer for the enabled switch: only a JSON boolean is
+/// Field deserializer for the enabled switch: only a JSON boolean is
 /// accepted; any other value loads as `false` without failing the load.
 pub(crate) fn deserialize_context_history_enabled<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
@@ -78,10 +78,10 @@ where
     }))
 }
 
-/// #4091: the only default session-count array. Other surfaces read settings.
+/// The only default session-count array. Other surfaces read settings.
 pub(crate) const DEFAULT_SESSION_WINDOWS: [u32; 3] = [25, 100, 300];
 
-/// #4091: session counts that bucket the heat map. 1..=8 strictly ascending
+/// Session counts that bucket the heat map. 1..=8 strictly ascending
 /// integers in 1..=10000. Serialized as the plain JSON array.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextHistorySessionWindows(Vec<u32>);
@@ -134,7 +134,7 @@ impl Serialize for ContextHistorySessionWindows {
     }
 }
 
-/// #4091 field deserializer: never fails on valid JSON. The warning names the
+/// Field deserializer: never fails on valid JSON. The warning names the
 /// field, the JSON kind and a fixed reason.
 pub(crate) fn deserialize_context_history_session_windows<'de, D>(
     deserializer: D,
@@ -154,7 +154,7 @@ where
     )
 }
 
-/// #4091 field deserializer for the colour count: missing and null are `None`;
+/// Field deserializer for the colour count: missing and null are `None`;
 /// any other non-integer or out-of-range value is `None` with a warning. It
 /// never substitutes a count; membership is repaired by
 /// [`effective_color_sessions`].
@@ -185,7 +185,7 @@ where
     Ok(count)
 }
 
-/// #4091: the colour count kept when it is a member of `windows`, otherwise
+/// The colour count kept when it is a member of `windows`, otherwise
 /// the last effective member.
 pub(crate) fn effective_color_sessions(
     windows: &ContextHistorySessionWindows,

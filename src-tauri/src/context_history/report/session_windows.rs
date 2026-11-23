@@ -1,4 +1,4 @@
-//! Whole retained sessions and their count windows (#4091 P02).
+//! Whole retained sessions and their count windows.
 //!
 //! A session view holds one logical session's retained records in stable
 //! order. Count selection keeps the newest `N` known starts of every scope

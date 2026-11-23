@@ -45,7 +45,7 @@ pub enum MainSidebarSide {
     Right,
 }
 
-/// #2348 - saved display state of the unified main window. Deliberately only two
+/// Saved display state of the unified main window. Deliberately only two
 /// states: minimized and fullscreen are unrepresentable, so an odd window state
 /// can never be persisted as a placement.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,7 +131,7 @@ impl Default for TelegramNetworkPollErrorLogging {
     }
 }
 
-/// #1171 - one entry of the root `watchers` map, or whatever the user wrote there.
+/// One entry of the root `watchers` map, or whatever the user wrote there.
 ///
 /// **This wrapper is what stops a malformed watcher from destroying the settings file.**
 /// `parse_settings_json` (`:870-871`) deserializes `AppSettings` in ONE shot and
@@ -139,7 +139,7 @@ impl Default for TelegramNetworkPollErrorLogging {
 /// `AppSettings::default()`, leaving one log line. A hand-written `"mode": "State"`,
 /// `"commands": "claude"` or `"dedupeWindowMs": "2000"` would therefore start
 /// `AgentsCommander` with NO AGENTS CONFIGURED, and every later save would be refused by the
-/// #1077 write gate (`read_disk_object_for_write`, `:2565-2591`). With the wrapper the
+/// write gate (`read_disk_object_for_write`, `:2565-2591`). With the wrapper the
 /// consequence is one skipped watcher.
 ///
 /// `untagged` tries `Valid` first, so `Invalid` only ever catches what `WatcherConfig`
@@ -163,7 +163,7 @@ impl WatcherEntry {
     }
 }
 
-/// #1171 - one user-configured watcher.
+/// One user-configured watcher.
 ///
 /// `mode` and `pattern` stay REQUIRED. A watcher without either is not a watcher, and with
 /// the wrapper above the consequence of omitting one is a single skipped entry rather than a
@@ -194,7 +194,7 @@ pub struct WatcherConfig {
     pub captured_against: Option<String>,
 }
 
-/// #1171 - what a match means.
+/// What a match means.
 ///
 /// `state` is a reading: idempotent, gated, taken over the whole frame. `occurrence` is an
 /// event: every match the frame diff declares evaluable counts.
@@ -205,7 +205,7 @@ pub enum WatcherMode {
     Occurrence,
 }
 
-/// #1171 - what makes two `occurrence` matches "the same one" inside the dedupe window.
+/// What makes two `occurrence` matches "the same one" inside the dedupe window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WatcherDedupe {
@@ -219,7 +219,7 @@ pub enum WatcherDedupe {
     None,
 }
 
-/// #2482 - one entry of the root `quotaSources` map, or whatever the user wrote
+/// One entry of the root `quotaSources` map, or whatever the user wrote
 /// there. Same wrapper, same reason, as `WatcherEntry`: settings deserialize in
 /// one shot and any failure is replaced by `AppSettings::default()`, so a
 /// hand-written or newer-AC entry must cost one skipped source and never the whole
@@ -242,7 +242,7 @@ impl QuotaSourceEntry {
     }
 }
 
-/// #2482 - one configured quota source. **The multi-agent extension point.**
+/// One configured quota source. **The multi-agent extension point.**
 /// `kind` is the discriminant: adding Codex, Gemini or any other agent is one new
 /// variant here plus one match arm in `pty::agent_quota::source`. Nothing else in
 /// the engine changes, and an unrecognized `kind` from a newer AC lands in
@@ -253,14 +253,14 @@ impl QuotaSourceEntry {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum QuotaSourceConfig {
     /// Read the percentage from what the agent draws in its terminal, with the
-    /// screen-row scrape #1032 uses for the context badge. Capture group 1 is the
+    /// screen-row scrape uses for the context badge. Capture group 1 is the
     /// USED percentage of the 7-day window.
     ScreenRegex {
         pattern: String,
         #[serde(default = "default_true")]
         enabled: bool,
     },
-    /// #2686 - the same screen-row scrape, for an agent that draws what is LEFT of the
+    /// The same screen-row scrape, for an agent that draws what is LEFT of the
     /// window. Capture group 1 is the REMAINING percentage.
     ScreenRegexRemaining {
         pattern: String,
@@ -289,7 +289,7 @@ pub(crate) fn default_room_number_mask() -> String {
     "#".to_string()
 }
 
-/// #640 Resolve the effective auto-self-clear flag for an agent.
+/// Resolve the effective auto-self-clear flag for an agent.
 /// Precedence: the global master `auto_self_clear_enabled` is an absolute kill
 /// switch (off => off for all); else an explicit per-agent override
 /// (`auto_self_clear_by_agent[name]`) wins; else the class-aware default
@@ -370,13 +370,13 @@ pub(crate) fn default_web_bind() -> String {
     "127.0.0.1".to_string()
 }
 
-/// #791 - profile-aware default control-plane API port (delegates to
+/// Profile-aware default control-plane API port (delegates to
 /// `profile::api_server_port`, mirroring `default_web_port`).
 pub(crate) fn default_api_port() -> u16 {
     super::super::profile::api_server_port()
 }
 
-/// #791 - default control-plane API bind: loopback, safe-by-default. Mirrors
+/// Default control-plane API bind: loopback, safe-by-default. Mirrors
 /// `default_web_bind`. Widening for Docker is a deliberate operator action.
 pub(crate) fn default_api_bind() -> String {
     "127.0.0.1".to_string()
@@ -466,9 +466,9 @@ pub(crate) fn default_agent_process_kill_private_bytes() -> u64 {
     12 * 1024 * 1024 * 1024
 }
 
-/// #2336 - default `typing_hold_seconds`.
+/// Default `typing_hold_seconds`.
 pub const DEFAULT_TYPING_HOLD_SECONDS: u32 = 30;
-/// #2336 - accepted `typing_hold_seconds` bounds; outside them the Settings API
+/// Accepted `typing_hold_seconds` bounds; outside them the Settings API
 /// rejects the update and the live value is left unchanged.
 pub const TYPING_HOLD_SECONDS_MIN: u32 = 1;
 pub const TYPING_HOLD_SECONDS_MAX: u32 = 3600;
