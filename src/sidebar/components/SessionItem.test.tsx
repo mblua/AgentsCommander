@@ -617,7 +617,7 @@ describe("SessionItem identity chip", () => {
     ],
   };
 
-  it("renders the strip in the #1730 order with the chip after the drift badge", async () => {
+  it("renders the strip in the fixed order with the chip after the drift badge", async () => {
     sessionsStore.setSessionContext(MAXIMAL_ID, 42);
     const rendered = await renderRow(MAXIMAL_ROW, chipSettings());
     try {

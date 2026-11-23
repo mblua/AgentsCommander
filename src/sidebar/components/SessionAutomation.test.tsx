@@ -406,7 +406,7 @@ describe("session workflow automation hooks", () => {
   });
 });
 
-describe("Telegram indicator after #1730", () => {
+describe("Telegram indicator placement", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
