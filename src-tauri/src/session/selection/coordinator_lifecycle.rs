@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::pty::manager::PtyManager;
-use crate::session::manager::{PendingCreateBinding, SessionManager};
+use crate::session::manager::{CarrierPhysicalIdentity, PendingCreateBinding, SessionManager};
 use crate::session::session::SessionInfo;
 
 use super::admission::{BlockingSeedWorkTracker, CoordinatorPhase};
@@ -27,9 +27,10 @@ use super::payload::{SelectionCoordinatorError, SessionSelection};
 use super::replacement::{
     EntryCreateStage, EntryReleaseReceipt, EntryTerminal, EntryTerminalDisposition,
     OwnedEffectState, OwnedReplacementContinuation, OwnedReplacementDescriptor,
-    PreparedOwnedReplacement, ReplacementAdmissionStep, ReplacementCleanupAuthority,
-    ReplacementOwner, ReplacementProgress, ReplacementStage, ReplacementState, ResolvedReplacement,
-    RetainedReplacements, SourceExecutorGuard, SourceExecutorObservation,
+    OwnedReplacementWork, PreparedOwnedReplacement, ReplacementAdmissionStep,
+    ReplacementCleanupAuthority, ReplacementOwner, ReplacementProgress, ReplacementStage,
+    ReplacementState, ResolvedReplacement, RetainedReplacements, SourceExecutorGuard,
+    SourceExecutorObservation, WakePathValidation,
 };
 use super::{
     CoordinatorInner, CoordinatorJob, SelectionCoordinator, SelectionRequest,
@@ -483,17 +484,16 @@ impl SelectionCoordinator {
         &self,
         target: &str,
         previous: Uuid,
-        cwd: &crate::session::manager::CarrierPhysicalIdentity,
-        replica: &crate::session::manager::CarrierPhysicalIdentity,
+        paths: (&CarrierPhysicalIdentity, &CarrierPhysicalIdentity),
+        paths_current: WakePathValidation<'_>,
         manager: &SessionManager,
         pty: &Arc<Mutex<PtyManager>>,
     ) {
-        let matches_path =
-            |expected: &crate::session::manager::CarrierPhysicalIdentity,
-             observed: &crate::session::manager::CarrierPhysicalIdentity| {
-                expected.canonical_path() == observed.canonical_path()
-                    && expected.same_object(observed)
-            };
+        let (cwd, replica) = paths;
+        let matches_path = |expected: &CarrierPhysicalIdentity,
+                            observed: &CarrierPhysicalIdentity| {
+            expected.canonical_path() == observed.canonical_path() && expected.same_object(observed)
+        };
         let candidates = {
             let Ok(root) = self.inner.retained_replacements.lock() else {
                 return;
@@ -505,7 +505,8 @@ impl SelectionCoordinator {
                 .values()
                 .filter(|owner| match &owner.descriptor {
                     OwnedReplacementDescriptor::Replacement(d) => {
-                        d.target == target
+                        matches!(d.work, OwnedReplacementWork::OrdinaryOwned { .. })
+                            && d.target == target
                             && d.previous.id == previous
                             && matches_path(&d.cwd_identity, cwd)
                             && d.replica_identity
@@ -542,7 +543,7 @@ impl SelectionCoordinator {
                 #[cfg(test)]
                 fixture: None,
             }
-            .settle_wake_precommit(manager, pty, None)
+            .settle_wake_precommit(manager, pty, None, Some(paths_current))
             .await;
         }
     }

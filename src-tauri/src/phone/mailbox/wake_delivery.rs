@@ -26,7 +26,7 @@ use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
-use crate::session::selection::SourceExecutorGuard;
+use crate::session::selection::{OwnedReplacementContinuation, SourceExecutorGuard};
 use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::Arc;
@@ -135,7 +135,7 @@ async fn owned_snapshot(
 
 async fn owned_peer_completion(
     result: Result<OwnedPeerWakeStep, String>,
-    completion: &crate::session::selection::OwnedReplacementContinuation,
+    completion: &OwnedReplacementContinuation,
     manager: &SessionManager,
     pty: &Arc<Mutex<PtyManager>>,
 ) -> Result<OwnedPeerWakeStep, String> {
@@ -148,7 +148,12 @@ async fn owned_peer_completion(
             .await;
     }
     completion
-        .settle_wake_precommit(manager, pty, result.as_ref().err().map(String::as_str))
+        .settle_wake_precommit(
+            manager,
+            pty,
+            result.as_ref().err().map(String::as_str),
+            None,
+        )
         .await;
     result
 }
@@ -734,12 +739,21 @@ impl MailboxPoller {
                     .recover_wake_precommit(
                         &msg.to,
                         previous_id,
-                        &physical.clone().into(),
-                        &replica.clone().into(),
+                        (&physical.clone().into(), &replica.clone().into()),
+                        &|| {
+                            owned_replacement_directories(request).is_ok_and(|(cwd, root)| {
+                                cwd.canonical_path == physical.canonical_path
+                                    && cwd.object_id == physical.object_id
+                                    && root.canonical_path == replica.canonical_path
+                                    && root.object_id == replica.object_id
+                            })
+                        },
                         &manager,
                         &pty,
                     )
                     .await;
+                #[cfg(test)]
+                OwnedReplacementContinuation::fixture_after_wake_probe().await;
             }
             let stripe = gate
                 .acquire_target_lock(&msg.to)
@@ -898,8 +912,11 @@ impl MailboxPoller {
             let result = delivery
                 .execute_owned_peer_replacement(&app, &pty, &mut execution)
                 .await;
+            #[cfg(test)]
+            OwnedReplacementContinuation::fixture_before_wake_return().await;
+            drop(execution);
             source.returned(result.is_err());
-            drop((source, execution));
+            drop(source);
             let result = owned_peer_completion(result, &completion, &manager, &pty).await;
             log_core_end(&result, &id, &to, previous);
             result
@@ -908,14 +925,56 @@ impl MailboxPoller {
         result
     }
 
+    #[cfg(test)]
+    pub(crate) async fn fixture_wake_request<S: MailboxHost>(
+        &self,
+        app: &S,
+        msg: &OutboxMessage,
+    ) -> crate::session::create_contracts::OwnedReplacementCreateRequest {
+        let plan = self.resolve_wake_spawn_plan(app, msg).await.unwrap();
+        owned_replacement_request(plan, false).0
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn fixture_probe_once<S: MailboxHost>(
+        &self,
+        app: &S,
+        msg: &OutboxMessage,
+        previous: Uuid,
+    ) {
+        let fixture = OwnedReplacementContinuation::fixture_wake_rollback_state().unwrap();
+        let _resume = fixture.after_probe.arm();
+        let pause = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            fixture.after_probe.entered.notified(),
+        );
+        tokio::select! {
+            reached = pause => reached.expect("competing wake reached its authenticated probe"),
+            _ = self.fixture_probe_owned_wake(app, msg, previous) => panic!("wake missed probe"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn fixture_probe_owned_wake<S: MailboxHost>(
+        &self,
+        app: &S,
+        msg: &OutboxMessage,
+        previous: Uuid,
+    ) {
+        let request = self.fixture_wake_request(app, msg).await;
+        let _ = self
+            .admit_owned_peer_replacement(app, msg, &request, previous)
+            .await;
+    }
+
     fn with_owned_source_validation<S: MailboxHost>(
         &self,
         app: &S,
         msg: &OutboxMessage,
         request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
-        continuation: crate::session::selection::OwnedReplacementContinuation,
+        continuation: OwnedReplacementContinuation,
         physical: crate::path_identity::VerifiedPathIdentity,
-    ) -> crate::session::selection::OwnedReplacementContinuation {
+    ) -> OwnedReplacementContinuation {
         let validation_messages = Arc::clone(&self.messages);
         let validation_app = app.clone();
         let validation_message = msg.clone();

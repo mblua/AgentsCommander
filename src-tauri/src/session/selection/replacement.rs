@@ -369,10 +369,21 @@ impl Drop for SourceExecutorGuard {
     }
 }
 
+pub(super) type WakePathValidation<'a> = &'a (dyn Fn() -> bool + Sync);
+
 pub(super) enum PendingCleanupEvidence<'a> {
     ActualSetupFailure(&'a str),
     ObservedSourceStoppedOrReturnedFailure,
-    WakeHandoff,
+    WakeHandoff(Option<WakePathValidation<'a>>),
+}
+
+impl<'a> PendingCleanupEvidence<'a> {
+    pub(super) fn wake_path_validation(&self) -> Option<WakePathValidation<'a>> {
+        match self {
+            Self::WakeHandoff(validate) => *validate,
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -414,6 +425,20 @@ pub(super) struct PendingRollback {
     pub(super) cursor: RollbackCursor,
     pub(super) row: RollbackRow,
     pub(super) in_flight: bool,
+}
+
+pub(super) struct RollbackIdentity {
+    pub(super) binding: PendingCreateBinding,
+    pub(super) carrier: crate::config::sessions_persistence::PublishedCarrier,
+    pub(super) launch: Option<OwnedLaunchReceipt>,
+    pub(super) tracker: crate::pty::manager::ResponseCloseState,
+}
+
+pub(super) struct RollbackResume<'a> {
+    pub(super) continuation: &'a OwnedReplacementContinuation,
+    pub(super) binding: PendingCreateBinding,
+    pub(super) nonce: Uuid,
+    pub(super) attempt: Uuid,
 }
 
 impl ReplacementProgress {

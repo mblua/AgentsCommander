@@ -18,19 +18,33 @@ use crate::config::sessions_persistence::{
     OwnedReplacementPublicationOutcome,
 };
 use crate::pty::manager::PtyManager;
-use crate::session::manager::{PendingCreateBinding, SessionManager};
+use crate::session::manager::{
+    acquire_carrier_mutation_permit, CarrierMutationPermit, PendingCreateBinding, SessionManager,
+};
 
 use super::envelope::FinalizedOwnedCarryCapability;
 use super::replacement::{
     LifecycleEffectGuard, LifecycleEffectSlot, OwnedEffectState, OwnedLaunchReceipt,
     OwnedReplacementContinuation, OwnedReplacementDescriptor, PendingCleanupEvidence,
-    PendingSourceRefusal, ReplacementCleanupAuthority, ReplacementStage, RollbackRow,
-    SourceExecutorObservation,
+    PendingSourceRefusal, ReplacementCleanupAuthority, ReplacementStage, RollbackCursor,
+    RollbackIdentity, RollbackResume, RollbackRow, SourceExecutorObservation, WakePathValidation,
 };
-use super::SelectionCoordinator;
-
 #[cfg(test)]
 use super::replacement_fixture::{ReplacementFixtureAction, ReplacementFixtureCut};
+use super::SelectionCoordinator;
+
+impl RollbackIdentity {
+    async fn pending_row(&self, manager: &SessionManager) -> RollbackRow {
+        manager
+            .get_pending_session(self.binding)
+            .await
+            .as_ref()
+            .map_or(
+                RollbackRow::InitialNoRow,
+                OwnedReplacementContinuation::exact_rollback_row,
+            )
+    }
+}
 
 impl OwnedReplacementContinuation {
     /// Some(None) is the explicit newer-B path, never a replacement baseline.
@@ -406,7 +420,14 @@ impl OwnedReplacementContinuation {
         manager: &SessionManager,
         pty: &Arc<Mutex<PtyManager>>,
         actual_error: Option<&str>,
+        paths_current: Option<WakePathValidation<'_>>,
     ) {
+        #[cfg(test)]
+        if paths_current.is_some() {
+            if let Some(fixture) = Self::fixture_wake_rollback_state() {
+                *fixture.probe_candidate.lock().unwrap() = Some(self.owner.operation);
+            }
+        }
         let released = self.owner.state.lock().is_ok_and(|state| {
             state.executor_nonce == self.executor_nonce
                 && state.replacement.as_ref().is_some_and(|progress| {
@@ -422,12 +443,16 @@ impl OwnedReplacementContinuation {
         }
         if !self.precommit_rollback_completed() {
             let evidence = actual_error.map_or(
-                PendingCleanupEvidence::WakeHandoff,
+                PendingCleanupEvidence::WakeHandoff(paths_current),
                 PendingCleanupEvidence::ActualSetupFailure,
             );
             if !self.progress_pending_rollback(manager, pty, evidence).await {
                 return;
             }
+        }
+        #[cfg(test)]
+        if let Some(fixture) = Self::fixture_wake_rollback_state() {
+            fixture.before_terminal.reach().await;
         }
         if let Some(effect) = self.start_effect(LifecycleEffectSlot::WorkTransfer) {
             effect.complete(Ok(None));
@@ -645,6 +670,160 @@ impl OwnedReplacementContinuation {
             PendingCleanupEvidence::ObservedSourceStoppedOrReturnedFailure,
         )
         .await
+    }
+
+    pub(super) async fn progress_pending_rollback(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        evidence: PendingCleanupEvidence<'_>,
+    ) -> bool {
+        let paths_current = evidence.wake_path_validation();
+        #[cfg(test)]
+        if paths_current.is_some() {
+            if let Some(fixture) = Self::fixture_wake_rollback_state() {
+                fixture.before_probe_permit.notify_one();
+            }
+        }
+        let permit = acquire_carrier_mutation_permit().await;
+        let Some(identity) = self.rollback_identity() else {
+            return false;
+        };
+        if !self.rollback_owner_is_current() {
+            return false;
+        }
+        let (resume, row, cursor) = match self.resume_rollback(identity.binding, &evidence) {
+            Ok(Some((resume, claim))) => (resume, claim.row, claim.cursor),
+            Ok(None) => {
+                let row = identity.pending_row(manager).await;
+                if !manager
+                    .with_current_carrier_snapshot(&permit, |current| {
+                        paths_current.is_none_or(|check| check())
+                            && identity.preparing_matches(
+                                &permit,
+                                current,
+                                self.owner.operation,
+                                row,
+                            )
+                    })
+                    .await
+                    || !self.rollback_runtime_is_current(&identity, row, pty)
+                {
+                    return false;
+                }
+                let Some(resume) = self.begin_rollback(&identity, row, evidence) else {
+                    return false;
+                };
+                (resume, row, RollbackCursor::ClaimedBeforeSubmit)
+            }
+            Err(()) => return false,
+        };
+        drop(permit);
+        if cursor == RollbackCursor::ClaimedBeforeSubmit
+            && !self
+                .close_rollback_runtime(manager, pty, &identity, row, &resume, paths_current)
+                .await
+        {
+            return false;
+        }
+        let permit = acquire_carrier_mutation_permit().await;
+        if !self.rollback_owner_is_current() {
+            return false;
+        }
+        if cursor != RollbackCursor::RowAbsent
+            && !self
+                .remove_rollback_row(
+                    manager,
+                    pty,
+                    &identity,
+                    row,
+                    &resume,
+                    (&permit, paths_current),
+                )
+                .await
+        {
+            return false;
+        }
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                paths_current.is_none_or(|check| check())
+                    && self.release_rollback_preparing(pty, &identity, &resume, &permit, current)
+            })
+            .await
+    }
+
+    async fn close_rollback_runtime(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        identity: &RollbackIdentity,
+        row: RollbackRow,
+        resume: &RollbackResume<'_>,
+        paths_current: Option<WakePathValidation<'_>>,
+    ) -> bool {
+        use RollbackCursor::{ClaimedBeforeSubmit, CloseSubmitted, RuntimeAbsent};
+        let permit = acquire_carrier_mutation_permit().await;
+        if !self.rollback_owner_is_current()
+            || identity.pending_row(manager).await != row
+            || !manager
+                .with_current_carrier_snapshot(&permit, |current| {
+                    paths_current.is_none_or(|check| check())
+                        && identity.preparing_matches(&permit, current, self.owner.operation, row)
+                })
+                .await
+        {
+            return false;
+        }
+        #[cfg(test)]
+        let _contended = Self::fixture_hold_before_close(pty);
+        let Ok(pty) = pty.try_lock() else {
+            return false;
+        };
+        if !identity.tracker_matches(&pty) || !self.rollback_launch_matches(identity, row, &pty) {
+            return false;
+        }
+        let id = identity.binding.session_id();
+        let Some(kind) = pty.backend_kind(id) else {
+            return self.rollback_runtime_absent(identity, &pty)
+                && resume.advance(ClaimedBeforeSubmit, RuntimeAbsent);
+        };
+        if !resume.advance(ClaimedBeforeSubmit, CloseSubmitted) {
+            return false;
+        }
+        drop(permit);
+        pty.kill_for_kind(id, kind).is_ok()
+            && self.rollback_runtime_absent(identity, &pty)
+            && resume.advance(CloseSubmitted, RuntimeAbsent)
+    }
+
+    async fn remove_rollback_row(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        identity: &RollbackIdentity,
+        row: RollbackRow,
+        resume: &RollbackResume<'_>,
+        authority: (&CarrierMutationPermit, Option<WakePathValidation<'_>>),
+    ) -> bool {
+        let (permit, paths_current) = authority;
+        let preparing = manager
+            .with_current_carrier_snapshot(permit, |current| {
+                paths_current.is_none_or(|check| check())
+                    && identity.preparing_matches(permit, current, self.owner.operation, row)
+                    && (row != RollbackRow::InitialNoRow
+                        || self.record_initial_no_rollback_row(pty, identity, resume))
+            })
+            .await;
+        if !preparing || row == RollbackRow::InitialNoRow {
+            return preparing;
+        }
+        manager
+            .rollback_exact_pending_with_receipt(permit, identity.binding, |pending, remove| {
+                paths_current.is_none_or(|check| check())
+                    && row == Self::exact_rollback_row(pending)
+                    && self.record_removed_rollback_row(pty, identity, resume, remove)
+            })
+            .await
     }
 
     pub(super) fn pending_cleanup_runtime_matches(
