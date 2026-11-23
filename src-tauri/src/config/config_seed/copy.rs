@@ -188,7 +188,7 @@ pub(super) fn remove_seed_scratch(path: &Path, context: &str, unique_sfx: &str) 
     }
 }
 
-/// #769 P2 - true iff `path` is a readable directory containing at least one
+/// True iff `path` is a readable directory containing at least one
 /// regular, non-reparse FILE (searched recursively). The `CatalogDefault` tier uses
 /// this so an empty master (or a dir of only subdirs/links) reads as "not present"
 /// and the tier stays inert, keeping today's spawn behavior byte-identical.
@@ -372,7 +372,7 @@ pub(super) fn copy_file_substituted(
     ctx: Option<&PlaceholderContext>,
     substitute: bool,
 ) -> Result<(), String> {
-    // #769 P2: verbatim stream-copy when substitution is off (embedded->master and
+    // Verbatim stream-copy when substitution is off (embedded->master and
     // the reseed backup keep raw %AC_% tokens intact) or when no context is given.
     let ctx = match (substitute, ctx) {
         (true, Some(ctx)) => ctx,

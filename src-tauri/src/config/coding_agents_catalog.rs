@@ -1,12 +1,12 @@
-//! #769 Phase 1 - externalized, user-editable coding-agent catalog.
+//! Externalized, user-editable coding-agent catalog.
 //!
 //! The catalog is the "built-in coding agents you can add" list (display name,
-//! command, color, instructions filename, ...). Before #769 it was hardcoded in
+//! command, color, instructions filename, ...). Before that it was hardcoded in
 //! the frontend (`src/shared/agent-presets.ts`). This module makes it a
 //! backend-owned, on-disk, user-editable JSON manifest, seeded once from an
 //! embedded default and user-owned thereafter.
 //!
-//! #1318 - the catalog now lives in the project tree at
+//! The catalog now lives in the project tree at
 //! `<project>/.ac/coding-agents/agents.json` (same relative layout as before,
 //! including the `_seed/` masters tree), seeded per registered project at boot
 //! and on every registration route, with a deterministic migration that copies a
@@ -16,18 +16,18 @@
 //! SOURCE, never a target.
 //!
 //! Phase 1 scope (see `_plans/769-...` §14.2): the manifest scalars + one read
-//! command, only. NO per-agent config folders, NO #598 seed tier, NO provenance
+//! command, only. NO per-agent config folders, NO seed tier, NO provenance
 //! state file. `settings.agents`, `AgentConfig`, and the spawn/profile/resolver
 //! path are untouched.
 //!
 //! Seed model is **whole-file seed-once** (§14.1): write the embedded default iff
 //! `agents.json` is absent, then never touch it. A user who hand-removes a
 //! built-in has a *present* file, so the removal sticks (no re-seed path). A
-//! present-but-corrupt file is **never overwritten**; since #1967 P4 the read
+//! present-but-corrupt file is **never overwritten**; the read
 //! path reports it as `baseInvalid` instead of serving the embedded default in
 //! memory.
 //!
-//! #1912 - code-level support switch for the built-in coding agents:
+//! Code-level support switch for the built-in coding agents:
 //! `BUILTIN_AGENT_SUPPORT` below is the ONLY place a built-in is turned on or
 //! off. A `false` row is enforced by the persisted READ GATE in the report
 //! resolver (the key disappears from every persisted read path: the project and

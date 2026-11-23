@@ -10,7 +10,7 @@ use crate::config::instance_artifacts::{
     PROJECT_SETTINGS_TARGET_NAME, SET_ASIDE_GLOB,
 };
 
-/// #2717 (B4a) - the three `.ac/.gitignore` rows the project-settings rename
+/// The three `.ac/.gitignore` rows the project-settings rename
 /// needs, as `(pattern, comment)`. The one home of this table: the writer at
 /// registration (`commands::ac_discovery`) and the migration's own sweep
 /// (`config::project_settings`) both read it here. Composed from the registry
@@ -32,7 +32,7 @@ pub(crate) fn project_settings_ignore_rows() -> [(String, &'static str); 3] {
     ]
 }
 
-/// #2718 (B4b) - the three `.ac/.gitignore` rows the Loop state rename needs,
+/// The three `.ac/.gitignore` rows the Loop state rename needs,
 /// as `(pattern, comment)`, read by the writer at registration and by the Loop
 /// scope's own sweep. Composed from the registry at runtime.
 pub(crate) fn loop_state_ignore_rows() -> [(String, &'static str); 3] {
@@ -52,7 +52,7 @@ pub(crate) fn loop_state_ignore_rows() -> [(String, &'static str); 3] {
     ]
 }
 
-/// #2807 (C2) - the three `.ac/.gitignore` rows the agent state file needs, as
+/// The three `.ac/.gitignore` rows the agent state file needs, as
 /// `(pattern, comment)`, read by the writer at registration and by the config
 /// pair's own sweep. Composed from the registry at runtime.
 pub(crate) fn config_state_ignore_rows() -> [(String, &'static str); 3] {

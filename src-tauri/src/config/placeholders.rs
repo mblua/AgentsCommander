@@ -11,7 +11,7 @@ pub const AC_REPLICA_ROOT_PLACEHOLDER: &str = "%AC_REPLICA_ROOT%";
 pub const AC_WORKSPACE_ROOT_PLACEHOLDER: &str = "%AC_WORKSPACE_ROOT%";
 pub const AC_MATRIX_ROOT_PLACEHOLDER: &str = "%AC_MATRIX_ROOT%";
 
-/// The current user's home directory (#924). Deliberately NOT a member of
+/// The current user's home directory. Deliberately NOT a member of
 /// [`AC_PLACEHOLDER_TOKENS`]: that array is the launch-root GATE, and this token
 /// needs no AC context (it resolves from `dirs::home_dir()`, which is
 /// process-global). It is expanded in seeded file CONTENT only, never in the
@@ -20,7 +20,7 @@ pub const USER_HOME_PLACEHOLDER: &str = "%USER_HOME%";
 
 /// Single source of truth for the AC path-placeholder token set. Every site that
 /// gates on, validates, or scans these tokens MUST iterate this list, so adding a
-/// token wires the gate AND the `CODEX_HOME` validators at once (the #576 hard rule).
+/// token wires the gate AND the `CODEX_HOME` validators at once (the hard rule).
 /// Expansion in `expand_placeholders` stays as explicit per-token `if` blocks: each
 /// token has its own root field + error and fails closed if forgotten, so a loop
 /// there would obscure more than it saves.
@@ -47,7 +47,7 @@ const AC_PLACEHOLDER_LAUNCH_ROOT_ERROR: &str = "AC path placeholders require an 
 pub enum PlaceholderRootKind {
     AcReplicaOrRootAgent,
     NormalLaunchCwd,
-    /// A `<config_dir>/temp-room-trNN` launch root (#4786): has a replica root,
+    /// A `<config_dir>/temp-room-trNN` launch root: has a replica root,
     /// no workspace, no matrix.
     TempRoom,
 }
@@ -88,7 +88,7 @@ pub fn placeholder_context_for_launch_root(path: &Path) -> Result<PlaceholderCon
     };
 
     let (ac_root, matrix_root) = if root_kind == PlaceholderRootKind::TempRoom {
-        // #4786: a temp room belongs to no project, even if an unrelated `.ac` is above it.
+        // A temp room belongs to no project, even if an unrelated `.ac` is above it.
         (None, None)
     } else {
         let ac_root = crate::config::ac_root::find_ac_root_ancestor(&canonical);
@@ -104,7 +104,7 @@ pub fn placeholder_context_for_launch_root(path: &Path) -> Result<PlaceholderCon
     })
 }
 
-/// #4786: the RAW path is checked first, like every other temp-room caller, because
+/// The RAW path is checked first, like every other temp-room caller, because
 /// `config_dir()` is raw/uncanonicalized; the canonical path is an accepted alternative.
 fn is_temp_room_launch(raw: &Path, canonical: &Path) -> bool {
     crate::config::config_dir().is_some_and(|base| is_temp_room_launch_in(raw, canonical, &base))
@@ -123,7 +123,7 @@ fn is_temp_room_launch_in(raw: &Path, canonical: &Path, base: &Path) -> bool {
 /// `__agent_` prefix and require a non-empty `[A-Za-z0-9-]` name (the exact rule in
 /// that module's `validate_agent_name`). It INTENTIONALLY omits the canonical
 /// formula's on-disk `validate_local_matrix` (existence + containment) check, because
-/// the placeholder path must stay pure: no filesystem read, no config repair (#576 §8).
+/// the placeholder path must stay pure: no filesystem read, no config repair.
 /// Returns None for the root-agent, for normal (non-replica) launch roots, and for a
 /// degenerate/invalid replica leaf (e.g. `__agent_` empty name, or `__agent_bad.name`).
 fn derive_matrix_root(canonical: &Path, ac_root: Option<&Path>) -> Option<PathBuf> {
@@ -182,7 +182,7 @@ pub fn expand_placeholders(value: &str, context: &PlaceholderContext) -> Result<
     Ok(expanded)
 }
 
-/// #4786: a temp room gets its own clear error; every other kind keeps the old text.
+/// A temp room gets its own clear error; every other kind keeps the old text.
 fn missing_root_error(context: &PlaceholderContext, temp_room: &str, other: &str) -> String {
     if context.root_kind == PlaceholderRootKind::TempRoom {
         temp_room.to_string()
@@ -220,7 +220,7 @@ fn user_home() -> Option<&'static Path> {
 }
 
 /// Expand the 3 known AC tokens plus `%USER_HOME%` inside file CONTENT
-/// (#598 config-folder seed, #924 user home).
+/// Config-folder seed, user home).
 /// Unlike [`expand_placeholders`] this does NOT fail-closed on unknown `%...%`:
 /// a seeded template may legitimately contain other `%VAR%` text the tool reads
 /// at runtime, so unknown markers are left literal. Substituted paths are
@@ -237,7 +237,7 @@ pub fn expand_placeholders_in_content(value: &str, context: &PlaceholderContext)
     if let Some(mx) = &context.matrix_root {
         out = out.replace(AC_MATRIX_ROOT_PLACEHOLDER, &fwd(mx));
     }
-    // #924: best-effort, exactly like the AC tokens above. An undeterminable home
+    // Best-effort, exactly like the AC tokens above. An undeterminable home
     // leaves the token literal (already warned once by `user_home`) and NEVER
     // aborts the spawn.
     if out.contains(USER_HOME_PLACEHOLDER) {

@@ -5,7 +5,7 @@
 //! names in [`V1_COVERAGE_BOUNDARIES`] remain a stable compatibility vocabulary;
 //! they are not a list of current publishers and do not imply recorder wiring.
 //!
-//! #1318 - coverage grew to v2 (`coding_agent_catalog` kind): an existing v1
+//! Coverage grew to v2 (`coding_agent_catalog` kind): an existing v1
 //! manifest is upgraded IN PLACE on the first writer/reader acquire (see
 //! [`ProjectSeedManifestGuard::try_upgrade_v1_to_v2`]). Supported rows and their
 //! timestamps are preserved on disk, while legacy replica-config rows remain in

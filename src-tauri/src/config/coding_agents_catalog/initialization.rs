@@ -29,7 +29,7 @@ use super::{
 
 /// Which surface is being initialized. `Project` keeps the complete project
 /// state machine above it (recovery, migration, seed-manifest ownership);
-/// `Instance` is the #2021 no-project instance catalog, which may only
+/// `Instance` is the no-project instance catalog, which may only
 /// fresh-seed an absent base or refresh a stale managed one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InitScope {
@@ -100,7 +100,7 @@ fn recover_project_catalog(
 /// One initialization pass UNDER THE HELD CATALOG LOCK: recover an interrupted
 /// transaction, then refresh, migrate or fresh-seed exactly one base. Order is
 /// fixed by the plan: recovery first, then the base state machine. `scope`
-/// selects the #2021 instance policy: instance initialization never resumes a
+/// selects the instance policy: instance initialization never resumes a
 /// migration journal or backup, and never migrates a legacy file in place.
 pub(crate) fn initialize_catalog_under_lock(
     paths: &CatalogPaths,
@@ -109,7 +109,7 @@ pub(crate) fn initialize_catalog_under_lock(
 ) -> CatalogInitOutcome {
     let mut outcome = CatalogInitOutcome::default();
 
-    // #2021: no production caller has ever run this initialization on the
+    // No production caller has ever run this initialization on the
     // config dir, so a journal or backup beside an instance catalog cannot be
     // ours. Leave any such sidecar untouched and never resume it.
     if scope == InitScope::Project
@@ -162,7 +162,7 @@ pub(crate) fn initialize_catalog_under_lock(
                 }
                 CatalogBaseKind::ForeignManaged => {}
                 CatalogBaseKind::Legacy => {
-                    // #2021: a legacy instance file is the migration source for
+                    // A legacy instance file is the migration source for
                     // future projects; the instance scope never migrates or
                     // rewrites it in place.
                     if scope == InitScope::Project {
@@ -207,7 +207,7 @@ fn initialize_absent_catalog(
         },
         None => None,
     };
-    // #2021 2.3: a MANAGED (or foreign-managed) instance base is not
+    // 2.3: a MANAGED (or foreign-managed) instance base is not
     // importable legacy territory; importing it would fail with
     // MIGRATION_CONFLICT and leave the project without a catalog, so
     // fresh-seed the project's own managed base instead. A marker-less
@@ -263,7 +263,7 @@ pub(crate) fn run_catalog_initialization(
     )
 }
 
-/// #2021: initialize or refresh the INSTANCE catalog at
+/// Initialize or refresh the INSTANCE catalog at
 /// `<config_dir>/coding-agents/agents.json` when no project is registered, so
 /// the first-run Welcome surface lists the built-in coding agents.
 ///
@@ -278,7 +278,7 @@ pub(crate) fn ensure_seeded_instance(config_dir: &Path) -> Option<DateTime<Utc>>
 }
 
 /// [`ensure_seeded_instance`] with the naming-migration journal directory
-/// injected (#2715), so a test never touches the process-wide `config_dir()`.
+/// injected, so a test never touches the process-wide `config_dir()`.
 pub(crate) fn ensure_seeded_instance_in(
     config_dir: &Path,
     journal_dir: Option<&Path>,
@@ -293,7 +293,7 @@ pub(crate) fn run_catalog_initialization_with_scope(
     journal_dir: Option<&Path>,
     scope: InitScope,
 ) -> CatalogInitOutcome {
-    // #2715 5.4: the legacy instance catalog first, before any project lock
+    // 5.4: the legacy instance catalog first, before any project lock
     // exists for this pass, so the two catalog locks never nest. A failure
     // seeds nothing: a project must not get defaults beside a source that
     // could not be moved.
@@ -338,7 +338,7 @@ pub(crate) fn run_catalog_initialization_with_scope(
             }
         }
     };
-    // #2715 5.1: the family rename under the held catalog lock, immediately
+    // 5.1: the family rename under the held catalog lock, immediately
     // before the base can be created. `lock_scope_under_held` adds only the old
     // sidecar: re-opening the new one would block on this pass's own handle.
     let migrated = naming_migration::lock_scope_under_held(
@@ -375,7 +375,7 @@ pub(crate) fn run_catalog_initialization_with_scope(
 }
 
 // ---------------------------------------------------------------------------
-// #2715 (phase B2 of #2703) - the `agents.*` family rename, per catalog
+// The `agents.*` family rename, per catalog
 // directory, inside the one function every seeding entry point reaches.
 // ---------------------------------------------------------------------------
 
@@ -421,10 +421,10 @@ pub(crate) fn catalog_path_present(path: &Path) -> Result<bool, CatalogDiagnosti
 }
 
 /// Move the catalog family in `dir` (canonical) to its target names under the
-/// caller's held locks. Rule F1: in a project directory an interrupted #1968
+/// caller's held locks. Rule F1: in a project directory an interrupted
 /// migration is finished first, over the PRE-migration names, and a blocked
 /// one defers the scope and renames nothing. The instance directory never
-/// resumes a sidecar (#2021). Returns the recovery's publication instant.
+/// resumes a sidecar. Returns the recovery's publication instant.
 pub(crate) fn migrate_catalog_family(
     dir: &Path,
     legacy_catalog_dir: Option<&Path>,
@@ -532,7 +532,7 @@ fn record_catalog_family_completion(
     journal_dir: Option<&Path>,
     key: &str,
 ) -> Result<(), naming_migration::Refusal> {
-    // A lock sidecar and the two immutable #1968 sidecars are never renamed
+    // A lock sidecar and the two immutable migration sidecars are never renamed
     // or deleted, only noted.
     let mut notes = Vec::new();
     for (name, why) in [
@@ -562,7 +562,7 @@ fn record_catalog_family_completion(
     .map(|_| ())
 }
 
-/// #2715 5.4 - the legacy instance catalog is its own scope, migrated before
+/// 5.4 - the legacy instance catalog is its own scope, migrated before
 /// any project lock is taken, so a new project imports the real instance
 /// catalog. It holds no caller lock, so it takes both sidecars itself. A
 /// directory that does not exist holds nothing to rename and is not created.

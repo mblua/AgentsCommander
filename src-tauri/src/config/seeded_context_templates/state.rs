@@ -31,7 +31,7 @@ impl Default for SeededContextTemplateState {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SeededContextTemplateEntry {
     pub(crate) template_id: String,
-    /// #1748: `None` means a distribution-owned template, which records no version.
+    /// `None` means a distribution-owned template, which records no version.
     pub(crate) current_version: Option<u32>,
     pub(crate) last_seeded_sha256: Option<String>,
     pub(crate) last_observed_sha256: Option<String>,
@@ -46,11 +46,11 @@ pub(crate) struct SeededContextTemplateSpec {
     pub(crate) label: &'static str,
     pub(crate) current_version: u32,
     pub(crate) current_content: fn() -> &'static str,
-    /// #1748: `None` for a distribution-owned spec, which consults no recognizer.
+    /// `None` for a distribution-owned spec, which consults no recognizer.
     pub(crate) is_known_generated: Option<fn(&str) -> bool>,
     pub(crate) project_actionable: bool,
     pub(crate) suppress_unknown_without_state: bool,
-    /// #1748: the file is owned by the distribution. It is repaired on the
+    /// The file is owned by the distribution. It is repaired on the
     /// reporting sync path instead of being offered as a pending update.
     pub(crate) distribution_owned: bool,
 }
@@ -88,7 +88,7 @@ impl LoadedState {
         spec: SeededContextTemplateSpec,
     ) -> &mut SeededContextTemplateEntry {
         let next_version = (!spec.distribution_owned).then_some(spec.current_version);
-        // #1748: for a distribution-owned spec this is the ONLY field this call can change,
+        // For a distribution-owned spec this is the ONLY field this call can change,
         // and every downstream guard compares hashes, so nothing else would ever mark the
         // state dirty and an already-in-sync installation would keep its stale version on
         // disk forever. Compare through a shared borrow first, so the flag is set on the
@@ -169,7 +169,7 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     format!("{digest:x}")
 }
 
-/// #1748: the operator-owned override that replaces this template at render time.
+/// The operator-owned override that replaces this template at render time.
 /// Kept in lockstep with `config::local_overlay`, whose PRIVATE `MARKDOWN_LOCAL_SUFFIX`
 /// (`local_overlay.rs:28`) is the other half of the contract. The lockstep holds for a
 /// `.md` filename, which is the only kind any spec carries; for any other extension
