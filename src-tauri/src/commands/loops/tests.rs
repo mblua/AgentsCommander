@@ -151,7 +151,7 @@ fn extracted_mappings_reproduce_the_pre_phase_literals() {
     assert_eq!(patch.session_start, None);
 }
 
-/// #2695 command fixture: a project whose Room resolves (the shape of
+/// Command fixture: a project whose Room resolves (the shape of
 /// `make_coordinator_fixture`), one Loop with a pending run, a real
 /// `LoopScheduler` managed on a test app.
 struct CommandFixture {
@@ -322,7 +322,7 @@ impl GatedScan {
     }
 }
 
-/// #2695 T2 - a whole `update_loop` completes while a delivery is held.
+/// A whole `update_loop` completes while a delivery is held.
 #[tokio::test]
 async fn update_loop_completes_while_a_delivery_is_held() {
     let (fixture, gated) = gated_command_fixture().await;
@@ -364,7 +364,7 @@ async fn update_loop_completes_while_a_delivery_is_held() {
     fixture.assert_no_scan_audit_row();
 }
 
-/// #2695 T8 - the value guard alone: an unconditional writer that bumps
+/// The value guard alone: an unconditional writer that bumps
 /// no generation and changes no config.
 #[tokio::test]
 async fn scan_does_not_overwrite_a_state_changed_during_delivery() {
@@ -381,7 +381,7 @@ async fn scan_does_not_overwrite_a_state_changed_during_delivery() {
     fixture.assert_no_scan_audit_row();
 }
 
-/// #2695 T8b - the realistic ABA: toggle off then on.
+/// The realistic ABA: toggle off then on.
 #[tokio::test]
 async fn scan_does_not_overwrite_a_toggle_off_then_on() {
     let (fixture, gated) = gated_command_fixture().await;
@@ -395,7 +395,7 @@ async fn scan_does_not_overwrite_a_toggle_off_then_on() {
     fixture.assert_no_scan_audit_row();
 }
 
-/// #2695 T9 - the identity guard alone: delete, recreate with equal
+/// The identity guard alone: delete, recreate with equal
 /// fields, restore the S0 bytes. Only the generation differs.
 #[tokio::test]
 async fn scan_does_not_write_into_a_recreated_loop() {
@@ -415,7 +415,7 @@ async fn scan_does_not_write_into_a_recreated_loop() {
     fixture.assert_no_scan_audit_row();
 }
 
-/// #2695 T10 - a Loop deleted during delivery. No log capture exists in
+/// A Loop deleted during delivery. No log capture exists in
 /// this crate, so the leg is: the scan is Ok and nothing was recreated.
 #[tokio::test]
 async fn scan_survives_a_delete_during_delivery() {
@@ -430,7 +430,7 @@ async fn scan_survives_a_delete_during_delivery() {
     );
 }
 
-/// #2695 T14 - every command bumps the Loop generation.
+/// Every command bumps the Loop generation.
 #[tokio::test]
 async fn every_loop_command_bumps_the_generation() {
     let fixture = command_fixture();

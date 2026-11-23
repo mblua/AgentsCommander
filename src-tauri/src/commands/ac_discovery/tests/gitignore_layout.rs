@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1614 AC8, requirement (E). Creation moves to `room-`, so the Project AC
+/// Creation moves to `room-`, so the Project AC
 /// Root ignore file needs a `room-*/` entry or every Room created inside a
 /// git-tracked project becomes tracked content of the PARENT repository and
 /// the next parent `git checkout` or `git reset --hard` corrupts the child
@@ -25,7 +25,7 @@ fn ensure_ac_root_gitignore_creates_both_patterns() {
     );
 }
 
-/// #1968 - the project `.ac/.gitignore` carries the narrow coding-agent
+/// The project `.ac/.gitignore` carries the narrow coding-agent
 /// sidecar rules. The patterns are literals here (an independent oracle;
 /// production composes them from the registry), so this fixture pins the intended
 /// policy: every local/migration/temp sidecar is excluded, while the tracked
@@ -84,7 +84,7 @@ fn managed_catalog_ac_root_gitignore_carries_sidecar_rules() {
     );
 }
 
-/// #1614 AC8, the case that matters for EXISTING installations. The presence
+/// The case that matters for EXISTING installations. The presence
 /// test compares only the pattern line, so a `.gitignore` that already
 /// carries `wg-*/` gains `room-*/` on the next call and keeps whatever
 /// comment it already had, byte for byte. That asymmetry is intended and is
@@ -96,7 +96,7 @@ fn ensure_ac_root_gitignore_appends_room_to_a_legacy_only_file() {
     let ac_root = tmp.path().join(".ac");
     std::fs::create_dir(&ac_root).expect("create .ac");
 
-    // Exactly what a pre-#1614 installation has on disk.
+    // Exactly what an older installation has on disk.
     const LEGACY: &str = "# AgentsCommander: exclude room cloned repos from parent git \
         tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child \
         clones.\nwg-*/\n";
@@ -203,7 +203,7 @@ fn ensure_ac_root_gitignore_includes_delete_sentinels_on_create() {
     )));
 }
 
-/// #2807 (C2) E6 - each state path is ignored by its own anchored rule,
+/// Each state path is ignored by its own anchored rule,
 /// and the decisions file stays tracked.
 #[test]
 fn ac_root_gitignore_covers_the_config_state_file() {
@@ -639,7 +639,7 @@ fn seed_manifest_gitignore_rules_are_anchored_to_ac_root() {
     assert!(!ignored(".ac/nested/seed-manifest.toml"));
 }
 
-/// #2090 - an existing `.ac/.gitignore` carrying the retired
+/// An existing `.ac/.gitignore` carrying the retired
 /// `!/seed-manifest.toml` pair must lose the pair, keep every other byte and
 /// gain the ignore rule exactly once. A bare user negation is not removed
 /// (covered separately).
@@ -704,7 +704,7 @@ fn ensure_ac_root_gitignore_migrates_the_legacy_seed_manifest_block() {
     );
 }
 
-/// #2090 - the exact bytes an older build wrote must migrate to exactly the
+/// The exact bytes an older build wrote must migrate to exactly the
 /// bytes a fresh root gets, with no duplicated coordination rules and no
 /// leftover blank line.
 #[test]
@@ -746,7 +746,7 @@ fn ensure_ac_root_gitignore_migrated_root_matches_a_fresh_root() {
     );
 }
 
-/// #2090 - a `!/seed-manifest.toml` line without the retired AC comment is
+/// A `!/seed-manifest.toml` line without the retired AC comment is
 /// user intent; reconciliation must not remove it.
 #[test]
 fn ensure_ac_root_gitignore_preserves_a_bare_user_seed_manifest_negation() {
@@ -768,7 +768,7 @@ fn ensure_ac_root_gitignore_preserves_a_bare_user_seed_manifest_negation() {
     );
 }
 
-/// #2090 - the retired pair is matched on trimmed lines, so a `.gitignore`
+/// The retired pair is matched on trimmed lines, so a `.gitignore`
 /// converted to CRLF by Git or an editor is migrated too.
 #[test]
 fn ensure_ac_root_gitignore_migrates_a_crlf_legacy_seed_manifest_block() {
@@ -806,7 +806,7 @@ fn ensure_ac_root_gitignore_migrates_a_crlf_legacy_seed_manifest_block() {
     );
 }
 
-/// #3532 - `git check-ignore --no-index` exit status: 0 ignored, 1 visible.
+/// `git check-ignore --no-index` exit status: 0 ignored, 1 visible.
 fn git_ignores(repo: &std::path::Path, relative: &str) -> bool {
     let status = std::process::Command::new("git")
         .arg("-C")
@@ -821,7 +821,7 @@ fn git_ignores(repo: &std::path::Path, relative: &str) -> bool {
     }
 }
 
-/// #3532 - the context history directory is ignored exactly once, on a fresh
+/// The context history directory is ignored exactly once, on a fresh
 /// root and on a legacy root without the row; a second run changes no byte.
 /// The database and its journals are ignored while the user-managed
 /// `heatmap.json` and other `.ac` configuration stay visible.

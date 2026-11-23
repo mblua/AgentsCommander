@@ -310,7 +310,7 @@ fn try_atomic_delete_wg_blocked_with_restrictive_share_mode() {
     }
 }
 
-/// Suffix scheme invariant (#113 follow-up): the orphan name produced on a
+/// Suffix scheme invariant: the orphan name produced on a
 /// rename-success-then-remove-fails race must NOT match the
 /// `entity_prefix::has_entity_prefix` filters used by `ac_discovery` and
 /// `cli::list_peers`. We test this by asserting the format directly:
