@@ -196,7 +196,10 @@ pub(crate) trait ApiRequestResources:
 /// Shared state injected into every handler.
 #[derive(Clone)]
 pub struct ApiState {
-    #[allow(private_interfaces)]
+    #[allow(
+        private_interfaces,
+        reason = "pub field of pub ApiState holds the crate-private WindowScreenshotLimiter"
+    )]
     #[cfg(any(target_os = "windows", test))]
     pub window_screenshot_limiter: std::sync::Arc<WindowScreenshotLimiter>,
     /// Read-through client-token registry (mtime-gated).
