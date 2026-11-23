@@ -555,11 +555,10 @@ async fn find_coordinator_session<H: LoopDeliveryHost + ?Sized>(
                 false
             } else {
                 let pty_mgr = app.ptys();
-                let has_pty = pty_mgr
+                pty_mgr
                     .lock()
                     .map_err(|_| "PtyManager lock poisoned".to_string())?
-                    .has_session(id);
-                has_pty
+                    .has_session(id)
             }
         };
         if loop_candidate_is_live(&session.status, has_pty) {

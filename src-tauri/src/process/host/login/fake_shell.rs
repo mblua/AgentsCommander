@@ -1,5 +1,7 @@
 //! Test-only helper shared by login and agent_path tests (#4608).
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::path::{Path, PathBuf};
 
 /// Writes an executable `#!/bin/sh` script and returns its path once it can run.

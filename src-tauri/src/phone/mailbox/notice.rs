@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 pub(crate) use super::refresh::{ProjectRefreshEventPayload, ProjectRefreshPollBatch};
 
 use crate::config::injected_messages::render;
@@ -379,6 +381,10 @@ impl InternalSystemNotice {
     /// #1157 - the wording now lives in the operator-editable injected-message
     /// registry. This function keeps its signature and its threshold formatting;
     /// the only embedded copy of the text is `DEFAULT_CONTEXT_ALERT_TEMPLATE`.
+    #[allow(
+        clippy::expect_used,
+        reason = "a branch-stale notice always carries a commit count"
+    )]
     pub(crate) fn line(
         &self,
         warnings: &crate::config::injected_messages::MessageWarnings,

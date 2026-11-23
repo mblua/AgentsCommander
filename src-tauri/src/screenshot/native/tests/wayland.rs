@@ -420,8 +420,7 @@ async fn register_enabled(host: &WaylandHost, backend: &FakeBackend, r#gen: u64,
 
 async fn binding(host: &WaylandHost) -> u64 {
     let portal = host.hotkey.lock().unwrap().wayland.clone();
-    let binding = portal.lock().await.binding;
-    binding
+    portal.lock().await.binding
 }
 
 fn status(host: &WaylandHost) -> ScreenshotHotkeyStatus {

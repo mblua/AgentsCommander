@@ -443,11 +443,17 @@ pub(crate) enum TerminalSnapshotHostCancellationStage {
 
 #[cfg(test)]
 #[derive(Default)]
+struct TerminalSnapshotWorkerMilestones {
+    entered: bool,
+    completed: bool,
+}
+
+#[cfg(test)]
+#[derive(Default)]
 pub(crate) struct TerminalSnapshotBlockingControlState {
-    pub(crate) entered: bool,
+    worker: TerminalSnapshotWorkerMilestones,
     pub(crate) released: bool,
     pub(crate) deadline_expired: bool,
-    pub(crate) completed: bool,
     pub(crate) retained_payload_bytes: usize,
 }
 
@@ -474,9 +480,9 @@ impl TerminalSnapshotBlockingControl {
         let limit = Instant::now() + Duration::from_secs(60);
         let mut state = self.state.lock().expect("blocking control state");
         while if completed {
-            !state.completed
+            !state.worker.completed
         } else {
-            !state.entered
+            !state.worker.entered
         } {
             let remaining = limit.saturating_duration_since(Instant::now());
             assert!(!remaining.is_zero(), "{label}");
@@ -486,9 +492,9 @@ impl TerminalSnapshotBlockingControl {
                 .expect("blocking control wait");
             state = next;
             let reached = if completed {
-                state.completed
+                state.worker.completed
             } else {
-                state.entered
+                state.worker.entered
             };
             assert!(!timeout.timed_out() || reached, "{label}");
         }
@@ -534,7 +540,7 @@ impl TerminalSnapshotBlockingControl {
 
     pub(super) fn enter_worker(&self) {
         let mut state = self.state.lock().expect("blocking control state");
-        state.entered = true;
+        state.worker.entered = true;
         self.changed.notify_all();
         while !state.released {
             state = self
@@ -550,7 +556,7 @@ impl TerminalSnapshotBlockingControl {
 
     pub(super) fn complete_worker(&self) {
         let mut state = self.state.lock().expect("blocking control state");
-        state.completed = true;
+        state.worker.completed = true;
         self.changed.notify_all();
     }
 
