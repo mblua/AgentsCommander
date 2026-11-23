@@ -1,4 +1,4 @@
-// #3516/#3832 - the shared preflight test panel. Runs the visible draft preflight
+// The shared preflight test panel. Runs the visible draft preflight
 // commands and timeouts on a stopped agent folder, polls its progress (chained,
 // one `get` in flight) and cancels on close. Nothing is saved.
 import {

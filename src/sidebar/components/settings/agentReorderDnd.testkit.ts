@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 
-/** #2577 - test helpers for agent-list pointer drags (technique of
+/** Test helpers for agent-list pointer drags (technique of
  *  SettingsModal.automation.test.ts). jsdom has no PointerEvent and no layout:
  *  pointer events are MouseEvents with a defined pointerId. */
 export const dispatchPointer = (

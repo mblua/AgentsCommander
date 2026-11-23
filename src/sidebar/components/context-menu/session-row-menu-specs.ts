@@ -1,4 +1,4 @@
-// #1871 phase 1 - the *Spec helpers every session-row menu host builds its
+// The *Spec helpers every session-row menu host builds its
 // capability record from. Each helper returns `false` when its data is absent
 // and a spec otherwise. A helper never inspects a store, never reads a signal,
 // and never decides whether an item belongs in a host; it decides only whether

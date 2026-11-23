@@ -11,7 +11,7 @@ export type SessionDotClass =
   | "offline";
 
 /**
- * #882 Presentation projection: SessionActivity -> CSS dot class. Total and 1:1.
+ * Presentation projection: SessionActivity -> CSS dot class. Total and 1:1.
  * Editing a value here changes pixels only; no behavior reads a dot class.
  */
 const DOT_CLASS: Record<SessionActivity, SessionDotClass> = {

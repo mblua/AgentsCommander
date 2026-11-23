@@ -1,10 +1,10 @@
 import type { Component } from "solid-js";
 
 /**
- * #2379 - monochrome padlock for the typing-hold button. A color-emoji glyph
+ * Monochrome padlock for the typing-hold button. A color-emoji glyph
  * (U+1F512 / U+1F513) ignores `color`, so the open state could not be dimmed
  * and the closed state could not take the status-bar accent. Drawn as SVG with
- * `currentColor` (same approach as RaiseHandIcon, #775), so the button's color
+ * `currentColor` (same approach as RaiseHandIcon), so the button's color
  * paints both states on every platform. `closed` keeps the glyph semantics:
  * open lock = inactive, closed lock = active.
  */

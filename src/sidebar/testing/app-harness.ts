@@ -1,4 +1,4 @@
-// Test-only SidebarApp harness (#2271 dup gate). The transport arrangement the
+// Test-only SidebarApp harness. The transport arrangement the
 // sidebar App suites resolve before mount and the reconcile-timer spy they both
 // need live here, so each suite file carries only the data that varies at the
 // call site.
