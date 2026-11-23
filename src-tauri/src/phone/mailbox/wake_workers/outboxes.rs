@@ -22,7 +22,7 @@ pub(crate) fn scan_dirs(
                 .join("outbox")
         })
         .collect();
-    // (#1399 R9) Dedup BEFORE the app outbox is pushed: `retain` keeps the
+    // Dedup BEFORE the app outbox is pushed: `retain` keeps the
     // first occurrence, so running it over the full list could drop the
     // app entry in favour of an aliasing project spelling and silently
     // turn `is_app_outbox` false. This ordering makes that structurally
@@ -30,7 +30,7 @@ pub(crate) fn scan_dirs(
     dedup_outbox_dirs_by_object_id(&mut outbox_dirs);
     outbox_dirs.push(PathBuf::from(app_outbox_path));
 
-    // #2232 phase 7: the Co-managed provenance queues of every room an
+    // Phase 7: the Co-managed provenance queues of every room an
     // active session lives in. Each is its own scanned directory with its
     // own origin, never an outbox subdirectory (the sweep skips those).
     let mut queue_dirs: Vec<PathBuf> = Vec::new();
@@ -64,7 +64,7 @@ pub(crate) fn scan_dirs(
 }
 
 pub(crate) fn read_entries(outbox_dir: &Path) -> Option<(Vec<PathBuf>, Vec<PathBuf>)> {
-    // (#1399) One walk partitions the outbox root by extension:
+    // One walk partitions the outbox root by extension:
     // messages to scan and claim markers to reclaim. Deliberately
     // unbounded, exactly as today's scan is.
     let mut entries: Vec<PathBuf> = Vec::new();
@@ -89,7 +89,7 @@ pub(crate) fn read_entries(outbox_dir: &Path) -> Option<(Vec<PathBuf>, Vec<PathB
 }
 
 pub(crate) fn sort_entries(entries: &mut [PathBuf]) {
-    // (#1399) Process a batch in send order. `read_dir` yields NTFS
+    // Process a batch in send order. `read_dir` yields NTFS
     // filename order over random UUID names, so today's order is
     // arbitrary; once the per-target lane defers the rest of a
     // target's queue, that arbitrary order becomes the ADMISSION

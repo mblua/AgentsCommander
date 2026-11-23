@@ -210,7 +210,7 @@ pub fn unknown_agent_id_error(id: &str, agents: &[AgentConfig]) -> String {
     format!("agent id '{id}' not found. Available ids: {list}")
 }
 
-/// #2306 P1 - direction of a registered-agent move request. Serializes as the
+/// Direction of a registered-agent move request. Serializes as the
 /// `"up"`/`"down"` strings the picker sends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -219,7 +219,7 @@ pub enum AgentMoveDirection {
     Down,
 }
 
-/// #786 R8: PURE op application. Mutates `settings` in memory and runs the shared
+/// R8: PURE op application. Mutates `settings` in memory and runs the shared
 /// validator/repair suite; NEVER saves to disk. Both callers own persistence.
 pub fn apply_coding_agent_op(
     settings: &mut AppSettings,
@@ -243,7 +243,7 @@ pub fn apply_coding_agent_op(
             let mut new_agent = agent.clone();
             new_agent.label = new_agent.label.trim().to_string();
             ensure_backend_consistent(&mut new_agent)?;
-            // #2306 P1 - Add appends at position n; a caller-supplied `order` is
+            // Add appends at position n; a caller-supplied `order` is
             // ignored on purpose because only a move may choose a position.
             new_agent.order = Some(settings.agents.len() as u32);
             settings.agents.push(new_agent.clone());
@@ -261,7 +261,7 @@ pub fn apply_coding_agent_op(
                 .ok_or_else(|| unknown_agent_id_error(id, &settings.agents))?;
             let mut updated = settings.agents[idx].clone();
             apply_patch(&mut updated, patch)?;
-            // #2306 P1 - Update/relabel keeps the current position; `AgentPatch` has
+            // Update/relabel keeps the current position; `AgentPatch` has
             // no order field, so a patch can never move a tool.
             updated.order = Some(idx as u32);
             warn_on_duplicate_label(settings, updated.label.trim(), Some(idx));
@@ -291,7 +291,7 @@ pub fn apply_coding_agent_op(
         }
     };
 
-    // #2306 P1 - keep vector and ordinals aligned after every op: Add appended at
+    // Keep vector and ordinals aligned after every op: Add appended at
     // n, Remove compacted and Update kept its slot. Renumbering in current vector
     // order (never by stored ordinals) is the effective-view transition.
     normalize_agent_order(&mut settings.agents);
@@ -328,7 +328,7 @@ pub fn outcome_from_written(
     Ok(outcome)
 }
 
-/// #2306 P1 - pure "swap with the adjacent tool" transition over the effective
+/// Pure "swap with the adjacent tool" transition over the effective
 /// order.
 ///
 /// Effective order is derived on a temporary candidate first, so a rejected
@@ -386,7 +386,7 @@ pub fn move_registered_agent(
         .collect())
 }
 
-/// #2542 - pure "move one tool to `target_index`" transition over the
+/// Pure "move one tool to `target_index`" transition over the
 /// effective order, in one step.
 ///
 /// Like `move_registered_agent`, all validation runs on a finalized candidate,
@@ -442,7 +442,7 @@ pub fn reorder_registered_agent(
         .collect())
 }
 
-/// #2306 P1 - the single index of `id` in `agents`, rejecting an unknown or
+/// The single index of `id` in `agents`, rejecting an unknown or
 /// duplicated id. Comparison is exact: ids differing only by case are distinct
 /// records here, matching the move contract.
 fn unique_agent_index(agents: &[AgentConfig], id: &str) -> Result<usize, String> {

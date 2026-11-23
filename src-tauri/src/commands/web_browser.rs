@@ -1,4 +1,4 @@
-//! Embedded web browser (#3367): a borderless window owned by `main`, laid
+//! Embedded web browser: a borderless window owned by `main`, laid
 //! over the central terminal pane so it reads as part of the app.
 //!
 //! A separate owned window instead of a second webview inside `main` keeps

@@ -1,7 +1,7 @@
 import { Component } from "solid-js";
 
 /**
- * #2568 - the amber stripe that tells the user a stored coding-agent reference
+ * The amber stripe that tells the user a stored coding-agent reference
  * was not found and another profile was adopted. Shared by SessionItem and the
  * ProjectPanel replica rows so the two cannot drift. Presentational only: the
  * caller supplies the text and the dismiss action. stopPropagation is handled

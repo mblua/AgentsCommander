@@ -1,6 +1,6 @@
-//! #3516 - the preflight test: runs the SAVED chain on a stopped agent folder without a CLI
+//! The preflight test: runs the SAVED chain on a stopped agent folder without a CLI
 //! or a session. Describe, start, snapshot and cancel; the UI polls snapshots. Tauri-free.
-//! #3832 - lists saved-context targets and runs an optional request-only draft chain.
+//! Lists saved-context targets and runs an optional request-only draft chain.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -58,7 +58,7 @@ where
     serde::Deserialize::deserialize(deserializer)
 }
 
-/// #3832 - one unsaved stage: null or blank command means no stage; null timeout means 60 s.
+/// One unsaved stage: null or blank command means no stage; null timeout means 60 s.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PreflightDraftStage {
@@ -68,7 +68,7 @@ pub(crate) struct PreflightDraftStage {
     pub timeout_seconds: Option<u32>,
 }
 
-/// #3832 - the unsaved preflight fields of one request; never persisted.
+/// The unsaved preflight fields of one request; never persisted.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PreflightTestDraft {
@@ -92,7 +92,7 @@ fn validate_draft(draft: &PreflightTestDraft) -> Result<(), String> {
     Ok(())
 }
 
-/// #3832 - one candidate folder of the agent, resolved from saved settings only.
+/// One candidate folder of the agent, resolved from saved settings only.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PreflightTestTarget {
@@ -256,7 +256,7 @@ fn is_agent_folder(cwd: &str) -> bool {
         || crate::config::root_agent::is_root_agent_path(cwd)
 }
 
-/// #3832 - the draft chain, on local clones of the saved agent row and resolution only.
+/// The draft chain, on local clones of the saved agent row and resolution only.
 fn draft_stages(
     agent: &AgentConfig,
     resolution: &ProfileResolution,
@@ -401,7 +401,7 @@ pub(crate) async fn describe_preflight_target_inner(
     Ok(resolved.await?.description)
 }
 
-/// #3832 - the given candidate folders that are this agent's, from one saved snapshot.
+/// The given candidate folders that are this agent's, from one saved snapshot.
 /// Never scans, seeds or parses commands; the caller filters by `effective_profile`.
 pub(crate) async fn list_preflight_test_targets_inner(
     deps: &PreflightTestDeps,

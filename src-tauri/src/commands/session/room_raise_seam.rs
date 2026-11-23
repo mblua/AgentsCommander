@@ -1,5 +1,5 @@
-//! Test-only rendezvous inside [`super::raise_room_reader_demand_in`]
-//! (#2516), modelled on `commands::telegram::reader_demand_seam`.
+//! Test-only rendezvous inside [`super::raise_room_reader_demand_in`].
+//! Modelled on `commands::telegram::reader_demand_seam`.
 //!
 //! Two independent hit points, each armed for one session id and consumed
 //! on first hit: `before_readiness` sits after the demand-epoch sample and

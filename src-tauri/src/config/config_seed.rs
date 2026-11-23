@@ -1,4 +1,4 @@
-//! #598 - seed a template config folder (e.g. `.claude`) into a coding-agent
+//! Seed a template config folder (e.g. `.claude`) into a coding-agent
 //! replica at spawn time.
 //!
 //! Two phases:
@@ -39,7 +39,7 @@ pub enum ConfigSeedTier {
     MatrixBase,
     WorkspaceProfile,
     WorkspaceBase,
-    /// #769 Phase 2 - the shipped default config-folder master at
+    /// The shipped default config-folder master at
     /// `<config_dir>/coding-agents/_seed/<dest>/`. Appended LAST (lowest
     /// precedence) by the spawn caller. Unlike the four tiers above, this one is
     /// ABSENT-ONLY and NON-EMPTY-GATED in `perform_config_seed`: it fills
@@ -50,7 +50,7 @@ pub enum ConfigSeedTier {
     CatalogDefault,
 }
 
-/// #2162 - one candidate source folder: its tier, whether it carries the
+/// One candidate source folder: its tier, whether it carries the
 /// `.<os>` suffix, and the composed path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigSeedCandidate {
@@ -60,7 +60,7 @@ pub struct ConfigSeedCandidate {
     pub path: PathBuf,
 }
 
-/// #2162 - compile-time host OS token. `None` on any other target, which then
+/// Compile-time host OS token. `None` on any other target, which then
 /// contributes no OS candidates. Not user-overridable.
 pub fn host_os_token() -> Option<&'static str> {
     if cfg!(target_os = "linux") {
@@ -74,7 +74,7 @@ pub fn host_os_token() -> Option<&'static str> {
     }
 }
 
-/// #2162 - marker appended to the tier name in logs when an OS variant won.
+/// Marker appended to the tier name in logs when an OS variant won.
 pub(crate) fn os_marker(os_specific: bool) -> &'static str {
     if os_specific {
         "+os"
@@ -86,7 +86,7 @@ pub(crate) fn os_marker(os_specific: bool) -> &'static str {
 #[derive(Debug, Clone)]
 pub struct ResolvedConfigSeed {
     /// Candidate source folders, highest precedence first: matrix profile,
-    /// matrix base, workspace profile, workspace base. #2162: each tier is
+    /// matrix base, workspace profile, workspace base. Each tier is
     /// preceded by its `.<os>` variant when an OS token is supplied. Pure path
     /// math; no filesystem touched at resolve time.
     pub candidates: Vec<ConfigSeedCandidate>,
@@ -131,7 +131,7 @@ pub(crate) enum ConfigSeedSkipReason {
         dest: PathBuf,
         error: String,
     },
-    /// #1065 Stage F: the per-project seed-manifest gate timed out behind a
+    /// The per-project seed-manifest gate timed out behind a
     /// cooperating writer (or an unsafe/reparse project path failed closed), so
     /// seeding is skipped rather than racing that writer (plan section 6.5).
     GateUnavailable {
@@ -206,7 +206,7 @@ pub fn resolve_config_seed(
     // config; see ConfigSeedTier), so the matrix tiers mirror the workspace
     // naming (`default_profile_<l><dest>` / `default<dest>`) instead.
     //
-    // #2162: within EACH tier the `.<os>` variant is pushed first and the base
+    // Within EACH tier the `.<os>` variant is pushed first and the base
     // second, so an OS folder refines its own tier and never jumps one. With
     // `os_token == None` only the four plain candidates are produced.
     let mut candidates: Vec<ConfigSeedCandidate> = Vec::new();

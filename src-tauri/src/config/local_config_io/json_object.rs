@@ -20,8 +20,8 @@ use serde_json::Map;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-/// #4547 - internal errors of the local config JSON writer. Each variant keeps the
-/// failing io/serde error as `source()`; the text equals the pre-#4547 `format!`.
+/// Internal errors of the local config JSON writer. Each variant keeps the
+/// failing io/serde error as `source()`; the text equals the earlier `format!`.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum ConfigJsonError {
     #[error("Local config {} has no parent directory", path.display())]
@@ -140,7 +140,7 @@ where
     update_config_json_object_with_publish(path, allow_create, mutate, publish_temp_config)
 }
 
-/// #1938 - the publish step is a parameter so tests can force a publish failure
+/// The publish step is a parameter so tests can force a publish failure
 /// without a second copy of the read-modify-write body (mirrors
 /// `write_file_atomic_with_publish`). Production callers keep using
 /// `update_config_json_object`, which passes the real atomic publisher.
@@ -157,7 +157,7 @@ where
     let _writer = ConfigWriterActive::enter("update_config_json_object")?;
     let _guard = lock_local_config_writes();
 
-    // #1938 - the parent must exist before the sidecar can be resolved, and the
+    // The parent must exist before the sidecar can be resolved, and the
     // sidecar lock must be held before the existence check, the read, the
     // mutate closure, the temp write and the publish. The whole read-modify-
     // publish cycle therefore runs under one cross-process guard; moving any of

@@ -1,4 +1,4 @@
-//! Context-history runtime (#3532 P02): bounded capture of context changes.
+//! Context-history runtime: bounded capture of context changes.
 //!
 //! The scraper's sample bridge offers every outcome to [`HistoryIngress`],
 //! which stamps UTC time and a monotonic sequence and `try_send`s into a
@@ -71,7 +71,7 @@ pub(crate) struct StampedSample {
     pub(crate) stamp: Stamp,
 }
 
-/// What restart reports about one old instance (#3532 P03).
+/// What restart reports about one old instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RestartPhase {
     /// Teardown is about to start: close the old observation now.

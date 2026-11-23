@@ -5,7 +5,7 @@ export type ToastKind = "error" | "success" | "info";
 export interface ToastAction {
   label: string;
   onClick: () => void;
-  /** #1669: when false, clicking the action runs `onClick` and LEAVES the
+  /** When false, clicking the action runs `onClick` and LEAVES the
    *  toast up. Omitted or true keeps the original behavior (dismiss on click). */
   dismissOnClick?: boolean;
 }
@@ -17,10 +17,10 @@ export interface PushToastOptions {
    *  the per-kind default below. */
   durationMs?: number | null;
   action?: ToastAction;
-  /** #1669: optional second action rendered BEFORE `action`. */
+  /** Optional second action rendered BEFORE `action`. */
   secondaryAction?: ToastAction;
   tag?: string;
-  /** #1857: exempt this toast from kind-aware eviction. Exactly one such toast
+  /** Exempt this toast from kind-aware eviction. Exactly one such toast
    *  exists, the aggregated blocked-menu notice, so `MAX_VISIBLE` remains an
    *  honest cap: the last eviction tier can still take it. */
   pinned?: boolean;
@@ -37,7 +37,7 @@ export interface Toast {
   pinned?: boolean;
 }
 
-// Errors stay until dismissed (the #574 failure MUST be noticed); info/success
+// Errors stay until dismissed (a failure MUST be noticed); info/success
 // auto-dismiss. Matches the existing loop toast's ~3s feel for non-errors.
 const DEFAULT_DURATION_MS: Record<ToastKind, number | null> = {
   error: null,
@@ -45,8 +45,8 @@ const DEFAULT_DURATION_MS: Record<ToastKind, number | null> = {
   info: 4000,
 };
 
-// Cap on visible toasts. Past this, eviction walks three ordered tiers (#574
-// §15.3, #1857): the oldest NON-error unpinned toast, then the oldest unpinned
+// Cap on visible toasts. Past this, eviction walks three ordered tiers
+// (§15.3): the oldest NON-error unpinned toast, then the oldest unpinned
 // toast of any kind, then the oldest toast overall. A `pinned` toast is exempt
 // from the first two tiers only, so the aggregated blocked-menu notice outlives
 // a full stack of sticky errors while MAX_VISIBLE stays an honest hard cap.
@@ -100,7 +100,7 @@ function startToastExit(id: number): void {
 }
 
 function updateTaggedToast(existingIndex: number, opts: PushToastOptions): number {
-  // #1857: a tagged re-push onto a DYING toast must revive it. Without
+  // A tagged re-push onto a DYING toast must revive it. Without
   // this, the exit timer armed by the dismiss deletes the freshly painted
   // message 180 ms after that dismiss, counted from the dismiss.
   // Sole caller `push` passes a findIndex result already checked against -1.
@@ -135,7 +135,7 @@ function updateTaggedToast(existingIndex: number, opts: PushToastOptions): numbe
 
 function evictOverflow(next: Toast[]): number[] {
   const evicted: number[] = [];
-  // Three ordered eviction tiers (§15.3, #1857). Tier 1 keeps the kind-aware
+  // Three ordered eviction tiers (§15.3). Tier 1 keeps the kind-aware
   // rule for unpinned toasts: a transient info/success goes before an unread
   // sticky error. Tier 2 takes an unpinned ERROR, which fires when a pinned
   // toast arrives and every other visible toast is an error. That trade-off is

@@ -453,7 +453,7 @@ fn retain_candidate_row(
 
 /// The tree's only executable-stem rule, and the byte-for-byte twin of
 /// `executableTokenBasename` in `src/shared/profile-utils.ts`. It deliberately does
-/// not use `std::path::Path`, which ignores `\` off Windows (#2430).
+/// not use `std::path::Path`, which ignores `\` off Windows.
 pub(crate) fn command_token_basename(token: &str) -> String {
     let normalized = token.replace('\\', "/");
     let leaf = match normalized.rsplit('/').next() {
@@ -552,7 +552,7 @@ fn validate_agent_row(agent: &AgentConfig) -> Result<(), String> {
         &format!("Agent \"{}\" env settings", agent.label),
     )?;
 
-    // #529 (G8): reject a bad instructions filename here so the user gets a
+    // Reject a bad instructions filename here so the user gets a
     // clear IPC error at save, not a silent fallback at launch. Empty/absent
     // is allowed (means "use the command-derived default").
     if let Some(f) = agent.instructions_filename.as_deref() {
@@ -570,7 +570,7 @@ fn validate_agent_row(agent: &AgentConfig) -> Result<(), String> {
 }
 
 fn validate_agent_config_seed(agent: &AgentConfig) -> Result<(), String> {
-    // #598: reject a bad config-seed dest at save so the user gets a clear
+    // Reject a bad config-seed dest at save so the user gets a clear
     // IPC error here, not a silent fail-soft skip at launch. Inactive
     // (disabled or empty dest) is allowed (means "no seeding").
     if let Some(seed) = agent.config_seed.as_ref()
@@ -578,7 +578,7 @@ fn validate_agent_config_seed(agent: &AgentConfig) -> Result<(), String> {
     {
         validate_config_seed_dest(&seed.dest)
             .map_err(|e| format!("Agent \"{}\" config seed is invalid: {}", agent.label, e))?;
-        // #2162: a dest ending in an OS token names the same folder as
+        // A dest ending in an OS token names the same folder as
         // the OS variant of the shorter dest. Warn, never reject.
         if let Some(stem) = config_seed_dest_os_token_stem(&seed.dest) {
             if stem.is_empty() {
@@ -614,7 +614,7 @@ fn validate_profile_cells(settings: &AppSettings) -> Result<(), String> {
                 &format!("Coding agent profile '{agent_id}:{letter}' env settings"),
             )?;
             if cell.enabled && !cell.command.trim().is_empty() {
-                // #597 - the cell holds params appended to the agent base command,
+                // The cell holds params appended to the agent base command,
                 // so validate the COMPOSED effective command. Otherwise a banned
                 // provider flag (Claude --continue/-c or Codex manual resume /
                 // Antigravity --continue/-c) placed in the cell params escapes the
@@ -647,7 +647,7 @@ pub(crate) fn validate_agent_command_text(context: &str, command: &str) -> Resul
     // Pi selectors are user-authored configuration and intentionally outrank AC
     // automation. Canonical Pi identity must win before the independent legacy
     // provider-token scans below inspect model or provider option values.
-    // #1873 - the same holds for a directly configured Muse: any configured
+    // The same holds for a directly configured Muse: any configured
     // argument (resume, --last, UUID, prompt, --workspace ...) is user-authored,
     // suppresses AC injection, and is neither validated nor rewritten here. A
     // wrapper (`env muse ...`) is not Muse and keeps the legacy scans below.

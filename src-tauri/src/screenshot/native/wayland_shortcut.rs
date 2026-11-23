@@ -1,4 +1,4 @@
-//! #2774 Pure Wayland items (ids, rules, state). No `super` paths: keeps it out of the SCC.
+//! Pure Wayland items (ids, rules, state). No `super` paths: keeps it out of the SCC.
 
 use uuid::Uuid;
 

@@ -1,4 +1,4 @@
-//! #786 - shared op layer for scriptable Coding Agent configuration.
+//! Shared op layer for scriptable Coding Agent configuration.
 //!
 //! Single entry point (`apply_coding_agent_op`) used by BOTH the direct CLI
 //! write path (GUI closed) and the daemon-routed poller (GUI running), so the
@@ -15,7 +15,7 @@
 //!
 //! Queue transport (daemon path): the CLI drops a `CodingAgentRequest` JSON into
 //! `<config_dir>/coding-agent-requests/`; the `MailboxPoller` claims it with an
-//! atomic rename to `.processing` (#786 R2, closes the cancel false-negative
+//! atomic rename to `.processing` (closes the cancel false-negative
 //! race), applies it, writes a `CodingAgentResult` into `results/`, and deletes
 //! the `.processing` file LAST. The per-request handler is a pure,
 //! path-parameterized free function so it unit-tests against a tempdir with no

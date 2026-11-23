@@ -48,7 +48,13 @@ fn i2879_edges(edges: &I2879Edges) -> Vec<(&'static str, Uuid)> {
 }
 
 fn i2879_stamp(detector: &IdleDetector, id: Uuid) -> Instant {
-    *detector.activity.lock().unwrap().get(&id).expect("seeded")
+    *detector
+        .activity
+        .lock()
+        .unwrap()
+        .timestamps
+        .get(&id)
+        .expect("seeded")
 }
 
 /// `(kind, attached, last_valid)` of the current registration.
@@ -75,7 +81,12 @@ fn i2879_feature_frozen() {
     detector.register_session(codex, i2879_codex());
     detector.register_session(timed, IdleTuning::DEFAULT);
     let t0 = i2879_stamp(&detector, codex);
-    detector.activity.lock().unwrap().insert(timed, t0);
+    detector
+        .activity
+        .lock()
+        .unwrap()
+        .timestamps
+        .insert(timed, t0);
     let silence = *detector.silence.lock().unwrap().get(&codex).unwrap();
 
     let handle = detector.activity_consumer(codex).expect("Codex attaches");

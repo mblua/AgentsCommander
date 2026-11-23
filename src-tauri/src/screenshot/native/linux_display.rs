@@ -1,8 +1,8 @@
-//! Linux display-server detection (#1842).
+//! Linux display-server detection.
 
-// ── Linux display-server detection (#1842) ─────────────────────────────────
+// ── Linux display-server detection ─────────────────────────────────
 
-/// #2774 The message when the screenshot shortcut could not be registered with
+/// The message when the screenshot shortcut could not be registered with
 /// xdg-desktop-portal on Wayland (portal unreachable, or it would not bind the
 /// shortcut). It names the fix (install the desktop's portal backend) and keeps the
 /// Xorg fallback; the literal `"Xorg"` is asserted by a test.

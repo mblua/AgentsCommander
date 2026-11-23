@@ -1,6 +1,6 @@
-//! #1285 window capture (Windows-only).
+//! Window capture (Windows-only).
 
-// #1842: the window-capture region is Windows-only. Its consumers are gated
+// The window-capture region is Windows-only. Its consumers are gated
 // separately (`cli/mod.rs:28-31`, `api/handlers/mod.rs:60-61`); ungated on
 // Linux, `pub(crate) capture_window_png` and `parse_window_id` are dead code and
 // `cargo clippy --all-targets -- -D warnings` fails. Do NOT widen these to

@@ -177,7 +177,7 @@ fn saved_result(path: &Path, session_id: Uuid, session_name: String) -> Screensh
     // `path` is canonical (verbatim `\\?\` on Windows). Every containment
     // check above ran on the raw canonical PathBuf; only the user-facing string
     // (clipboard, saved event, result payload, log) is normalized via the shared
-    // #730 helper so it matches the clean paths the rest of the app now emits.
+    // helper so it matches the clean paths the rest of the app now emits.
     let path_string = crate::path_utils::path_to_string_without_windows_verbatim_prefix(path);
     log::info!("[screenshot] saved {path_string} for session '{session_name}'");
     ScreenshotCaptureResult {
@@ -187,11 +187,11 @@ fn saved_result(path: &Path, session_id: Uuid, session_name: String) -> Screensh
     }
 }
 
-/// #2774 Largest portal screenshot we read.
+/// Largest portal screenshot we read.
 #[cfg(target_os = "linux")]
 pub(super) const PORTAL_SCREENSHOT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
-/// #2774 Copy the portal's PNG into the replica. The portal's file is never
+/// Copy the portal's PNG into the replica. The portal's file is never
 /// modified or deleted.
 #[cfg(target_os = "linux")]
 pub(super) async fn save_portal_png(

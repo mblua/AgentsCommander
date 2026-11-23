@@ -120,7 +120,7 @@ impl MailboxPoller {
         .map_err(|_| C::UnsafePath)?;
         let config_value = crate::path_identity::parse_json_no_duplicates(&config_bytes)
             .map_err(|_| C::UnsupportedProfile)?;
-        // #2786 (C1) - the state file goes through the same guarded read as
+        // The state file goes through the same guarded read as
         // config.json (regular file, no-follow, size, duplicate keys); only a
         // missing file is absence. The shared loader's policy overlays it.
         let state_value = read_guarded_agent_state(target_root)?;

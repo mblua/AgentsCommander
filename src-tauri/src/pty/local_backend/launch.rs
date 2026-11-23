@@ -10,7 +10,7 @@ use crate::errors::AppError;
 use crate::pty::backend::ResolvedAgentHostShell;
 
 // ---------------------------------------------------------------------------
-// #1271 - Windows host-shell adapter for resolved agent commands.
+// Windows host-shell adapter for resolved agent commands.
 //
 // Four supported protocol classes, selected from the lower-cased final path
 // component of the configured default-shell program: Windows PowerShell
@@ -59,7 +59,7 @@ impl PreparedLaunch {
     }
 }
 
-/// The four #1271 Windows host-shell protocol classes.
+/// The four Windows host-shell protocol classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WindowsHostShellKind {
     PowerShell,
@@ -95,7 +95,7 @@ pub(super) fn configured_shell_kind(program: &str) -> WindowsHostShellKind {
     }
 }
 
-/// #1498 - Windows-only: `git-bash.exe` (the Git for Windows `MinTTY` launcher)
+/// Windows-only: `git-bash.exe` (the Git for Windows `MinTTY` launcher)
 /// and `mintty.exe` detach from the console, so a `ConPTY` host would acquire
 /// resources for a child that never attaches to them (blank PTY / detached
 /// window). Rejected before any resource acquisition, naming the program and
@@ -117,7 +117,7 @@ pub(super) fn reject_detached_launcher(program: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Standard #1271 error shape: names the configured default-shell program, the
+/// Standard error shape: names the configured default-shell program, the
 /// offending token, and the rejection category, and states that the agent
 /// adapter owns command execution (Section 4.3.1 item 6).
 pub(super) fn adapter_error(host_program: &str, token: &str, category: &str) -> AppError {
@@ -577,7 +577,7 @@ pub(super) fn posix_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-/// #1271 - the resolved batch child is launched through one explicit system-cmd
+/// The resolved batch child is launched through one explicit system-cmd
 /// child (`/D /V:OFF /S /C`). Its payload tokens are `'"' + <raw value> + '"'`:
 /// cmd's batch tokenizer is quote-aware but NOT backslash-aware (probe-proven),
 /// so the C-runtime `windows_arg` trailing-run doubling would corrupt a value
@@ -677,10 +677,10 @@ pub(super) fn powershell_script(command: &str, args: &[String]) -> String {
 
 // --- Section 4.6 - custom POSIX-compatible shell ----------------------------
 
-/// #1498 - terminal-only flags a POSIX host may keep for a bare terminal but
+/// Terminal-only flags a POSIX host may keep for a bare terminal but
 /// that never reach a resolved-agent launch: the login/interactive flags and
 /// the PowerShell `-NoLogo` relic that can ride along in migrated configs
-/// (today's Windows default shell argument; #1499 moves fresh defaults to Git
+/// (today's Windows default shell argument; fresh defaults use Git
 /// Bash). Case-insensitive exact match only: payload and rc flags such as `-c`
 /// or `--norc` are NOT terminal-only and stay rejected.
 pub(super) fn is_terminal_only_posix_arg(arg: &str) -> bool {
@@ -743,7 +743,7 @@ pub(super) fn prepare_launch(
         if let Some(host_shell) = resolved_agent_host_shell {
             return prepare_windows_resolved_agent_launch(command, args, host_shell);
         }
-        // #1271 - no resolved agent: keep the existing `cmd.exe /C` construction
+        // No resolved agent: keep the existing `cmd.exe /C` construction
         // byte-for-byte (a bare non-direct configured shell on Windows).
         let mut wrapped = vec!["/C".to_string(), command.to_string()];
         wrapped.extend(args.iter().cloned());
@@ -752,7 +752,7 @@ pub(super) fn prepare_launch(
             args: wrapped,
         });
     }
-    // #1498 - bare terminals and direct `.exe` agents: a detached launcher
+    // Bare terminals and direct `.exe` agents: a detached launcher
     // would acquire ConPTY resources for a child that never attaches, so
     // reject before any resource acquisition. The compile-time `cfg!(windows)`
     // guard keeps non-Windows behavior byte-identical (the branch is dead
@@ -773,7 +773,7 @@ pub(super) fn prepare_windows_resolved_agent_launch(
     host_shell: &ResolvedAgentHostShell,
 ) -> Result<PreparedLaunch, AppError> {
     validate_common_adapter_input(command, args, host_shell)?;
-    // #1498 - a configured host shell that is a detached launcher would
+    // A configured host shell that is a detached launcher would
     // spawn a detached MinTTY child on ConPTY resources; reject before
     // `openpty` and before any spawn accounting.
     reject_detached_launcher(&host_shell.program)?;
@@ -798,7 +798,7 @@ pub(super) fn prepare_windows_resolved_agent_launch(
             launch_args.push(cmd_payload(command, args));
         }
         WindowsHostShellKind::Posix => {
-            // #1498 - terminal-only configured flags (`-l`, `--login`, `-i`,
+            // Terminal-only configured flags (`-l`, `--login`, `-i`,
             // `-NoLogo`) may configure a bare terminal but never reach a
             // resolved-agent launch: the adapter owns only `-c` plus its
             // `exec` payload. Any other configured argument keeps the

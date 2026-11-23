@@ -1,4 +1,4 @@
-// #2245 - PID filter grammar for the Resource Monitor integral view.
+// PID filter grammar for the Resource Monitor integral view.
 //
 // Pure and dependency-free on purpose: it is the one place the typed text is
 // turned into an applied PID set, and keeping it importable without a DOM is

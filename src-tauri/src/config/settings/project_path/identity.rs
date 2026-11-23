@@ -9,7 +9,7 @@ use crate::filesystem::settings_sources;
 use std::ops::ControlFlow;
 use std::path::Path;
 
-// ── #1077 candidate validity and directory identity (§3.4) ─────────────────
+// ── Candidate validity and directory identity (§3.4) ─────────────────
 
 /// Filesystem identity of a canonical directory. On Unix `(st_dev, st_ino)`; on
 /// Windows `(dwVolumeSerialNumber, file index)` from an open handle. Used to

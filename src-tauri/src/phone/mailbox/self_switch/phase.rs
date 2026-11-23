@@ -71,8 +71,8 @@ where
         settle.as_secs(),
         flavor.phase2_verb
     );
-    // #749 - archive-first contract; see inject_handoff_prompt_with_archive.
-    // (#756) NOTE: the switch phase 1 fires NO Cleared event; it is a
+    // Archive-first contract; see inject_handoff_prompt_with_archive.
+    // NOTE: the switch phase 1 fires NO Cleared event; it is a
     // restart through restart_session_inner_with_activation (skip
     // Some(true)), which stamps record + mirror itself via C3. The
     // handoff lands on the CURRENT session_id (the post-switch id).
@@ -86,7 +86,7 @@ where
     )
     .await;
     if injected {
-        // (#756) switch handoff prompt is post-boundary content.
+        // Switch handoff prompt is post-boundary content.
         note_boundary(session_id, SelfClearBoundary::ContentInjected).await;
     }
 

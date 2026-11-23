@@ -1,6 +1,6 @@
 import type { Component, JSX } from "solid-js";
 
-/** #2655 - keyboard entry for a clickable sidebar row. Native button, stretched
+/** Keyboard entry for a clickable sidebar row. Native button, stretched
  *  over the row, pointer-events:none: mouse stays on the row, Tab/Enter/Space
  *  land here. Mirrors RootAgentBanner's .root-agent-banner-open. */
 export const ROW_KEY_PROXY_CLASS = "ac-row-key-proxy";

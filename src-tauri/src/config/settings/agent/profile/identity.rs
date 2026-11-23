@@ -1,4 +1,4 @@
-//! Agent identity for profiles (#2450) and the physical identity carrier.
+//! Agent identity for profiles and the physical identity carrier.
 //! Owns `agent_profile_identity`, orphan adoption in `adopt_orphaned_profiles`, the
 //! `coding_agent_identity_physical` carrier and its refresh under a held lock, the canonical
 //! identity projection hash and bootstrap revisions, and `write_identity_rows` on save.
@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
-/// #2450: stable, local-only identity of an agent, used to re-bind orphaned
+/// Stable, local-only identity of an agent, used to re-bind orphaned
 /// profiles. NOT the per-cell digest: a cell's own hash changes whenever that cell
 /// is edited, so keying a cell's home by it would move the home on every edit.
 /// The case-folded label is mixed in so two agents sharing a command and env stay
@@ -49,7 +49,7 @@ pub(crate) fn is_identity_shape(identity: &str) -> bool {
     identity.len() == 16 && identity.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// #2450: an agent's profile entry holds nothing real: absent, empty, or exactly
+/// An agent's profile entry holds nothing real: absent, empty, or exactly
 /// the empty `A` that repair creates, with no label overrides.
 pub(crate) fn is_profile_gap(profiles: &CodingAgentProfilesConfig, id: &str) -> bool {
     let no_labels = profiles
@@ -72,7 +72,7 @@ pub(crate) fn is_profile_gap(profiles: &CodingAgentProfilesConfig, id: &str) -> 
     no_labels && no_cells
 }
 
-/// #2450: re-bind an orphaned profile set to the agent that now carries its
+/// Re-bind an orphaned profile set to the agent that now carries its
 /// identity. Returns true when anything moved. NO-OP while any overlay is in
 /// force. Runs before every `repair_coding_agent_profiles_config` call, because
 /// repair fills a gap with an empty `A` that would otherwise hide it.
@@ -365,7 +365,7 @@ pub(crate) fn bootstrap_binding_revision(
     Ok(revision)
 }
 
-/// #2450: record `identityByAgent[id]` for every agent actually written to the
+/// Record `identityByAgent[id]` for every agent actually written to the
 /// base file. Under an overlay those are the agents `restore_base` leaves, so a
 /// clone is restored first and an overlay's effective definition is never
 /// recorded; `restore_base` itself still runs last over `out`. Rows for other

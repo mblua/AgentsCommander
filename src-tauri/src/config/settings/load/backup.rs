@@ -20,7 +20,7 @@ pub(crate) fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> R
     Ok(())
 }
 
-/// #2058 - number of previous `settings.json` generations kept beside the live
+/// Number of previous `settings.json` generations kept beside the live
 /// file. Slot 1 is the version the most recent save replaced, slot
 /// `SETTINGS_BACKUP_KEEP` the oldest kept; the next rotation drops it.
 pub(crate) const SETTINGS_BACKUP_KEEP: u32 = 5;
@@ -31,7 +31,7 @@ pub(crate) fn settings_backup_path(settings_path: &Path, index: u32) -> PathBuf 
     ))
 }
 
-/// #2058 - archive `previous` (the bytes a just-completed save replaced) into
+/// Archive `previous` (the bytes a just-completed save replaced) into
 /// slot 1, shifting the older slots down and dropping slot
 /// `SETTINGS_BACKUP_KEEP`.
 ///

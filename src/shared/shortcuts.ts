@@ -61,7 +61,7 @@ export function registerShortcuts(): ShortcutHandler {
         return;
       }
     }
-    // #2236 phase 5: after the shipped bindings, so a reserved letter never reaches here.
+    // After the shipped bindings, so a reserved letter never reaches here.
     if (matchesHotkeyEvent(e, currentHotkey())) {
       e.preventDefault();
       toggleSidebarCompact();

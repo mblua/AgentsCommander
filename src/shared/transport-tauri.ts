@@ -26,7 +26,7 @@ export class TauriTransport implements Transport {
     | null = null;
   private emitImpl: ((event: string, payload?: unknown) => Promise<void>) | null = null;
   /**
-   * #1363 - this webview's label, resolved HERE rather than at the call site.
+   * This webview's label, resolved HERE rather than at the call site.
    *
    * It lives in `init()` because `init()` is already awaited by every method
    * through `this.ready`: resolving it lazily inside `listen` would put a
@@ -40,7 +40,7 @@ export class TauriTransport implements Transport {
 
   private constructor() {
     // Use TauriTransport.create(): init() must start eagerly, in the same
-    // synchronous step that hands out the instance (#1363), and async work
+    // synchronous step that hands out the instance, and async work
     // does not belong in a constructor (Sonar S7059).
   }
 
@@ -60,7 +60,7 @@ export class TauriTransport implements Transport {
     // Never allowed to reject: `this.ready` is awaited by invoke/listen/emit
     // alike, so a throw here would take the whole transport down. An
     // unresolved label degrades a scoped listener to the unscoped `Any`
-    // registration the app shipped before #1363 — a bandwidth cost, not a
+    // registration the app shipped before scoping — a bandwidth cost, not a
     // black terminal.
     try {
       const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
@@ -71,7 +71,7 @@ export class TauriTransport implements Transport {
   }
 
   async invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-    // #1652 - the id is taken BEFORE `await this.ready`, so a call issued while
+    // The id is taken BEFORE `await this.ready`, so a call issued while
     // the dynamic import is still in flight is in the registry too. A stalled
     // `init()` would otherwise be an invisible way for every invoke to hang.
     const id = noteInvokeStart(cmd);
@@ -93,8 +93,8 @@ export class TauriTransport implements Transport {
       options?.scopeToCurrentWindow === true && this.currentWindowLabel !== null
         ? { target: this.currentWindowLabel }
         : undefined;
-    // #1652 - the backend -> frontend liveness leg. `scoped` MUST still be
-    // forwarded unchanged; dropping it is the #1363 defect.
+    // The backend -> frontend liveness leg. `scoped` MUST still be
+    // forwarded unchanged; dropping it breaks per-listener scoping.
     return this.listenImpl!(event, (e) => { noteEvent(event); callback(e.payload as T); }, scoped);
   }
 

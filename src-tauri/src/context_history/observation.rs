@@ -1,4 +1,4 @@
-//! Pure context-history observation (#3532 P02).
+//! Pure context-history observation.
 //!
 //! Three pure pieces shared by capture and the sidebar: the history scope of a
 //! session's working directory, the launch metadata parsed from its exact

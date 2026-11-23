@@ -1722,7 +1722,7 @@ P0-identifier	src-tauri/src/commands/task.rs	workgroup_root: strip_unc(&wg_root)
 P1-comment	src-tauri/src/commands/task.rs	/// Clear the workgroup TASK.md for the given session to the canonical Clean state.
 P1-comment	src-tauri/src/commands/task.rs	/// AND emits `workgroup_task_updated` for sibling sessions/windows.
 P1-comment	src-tauri/src/commands/task.rs	/// Clear the workgroup TASK.md addressed directly by its `wg-*` root path, for
-P1-comment	src-tauri/src/commands/task.rs	/// cold workgroups with no live/exited session to resolve from (#545). Mirrors
+P1-comment	src-tauri/src/commands/task.rs	/// cold workgroups with no live/exited session to resolve from. Mirrors
 P0-identifier	src-tauri/src/commands/task.rs	workgroup_root: String,
 P0-identifier	src-tauri/src/commands/task.rs	let wg_root = validate_wg_root(&workgroup_root, &project_paths)?;
 P4-log	src-tauri/src/commands/task.rs	log::info!("[task] clean_at for {} -> {:?}", workgroup_root, outcome);
@@ -2859,11 +2859,11 @@ P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	// Relaunch t
 P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	// (c2) #566 - two different projects running the same wg/role must NOT dedup
 P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	// Project A: register the (wg-1, tech-lead) group, then kill it so its
 P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	// Project B: same wg/role, different project. The predicate's
-P1-comment	src-tauri/src/resource_monitor/types.rs	/// #516 - human-readable workgroup label (e.g. "wg-5-dev-team"), or `None`
+P1-comment	src-tauri/src/resource_monitor/types.rs	/// Human-readable workgroup label (e.g. "wg-5-dev-team"), or `None`
 P1-comment	src-tauri/src/resource_monitor/types.rs	/// for non-WG launches. Root-agent groups carry "Root agent".
 P0-identifier	src-tauri/src/resource_monitor/types.rs	pub workgroup: Option<String>,
 P1-comment	src-tauri/src/resource_monitor/types.rs	/// `skip_serializing_if`) for parity with `workgroup`/`agent`, so the
-P1-comment	src-tauri/src/resource_monitor/types.rs	/// #516 - workgroup label derived from the spawn cwd (e.g. "wg-5-dev-team"),
+P1-comment	src-tauri/src/resource_monitor/types.rs	/// Workgroup label derived from the spawn cwd (e.g. "wg-5-dev-team"),
 P1-comment	src-tauri/src/resource_monitor/types.rs	/// "Root agent" for root-agent launches, or `None` for non-WG launches.
 P2-fixture	src-tauri/src/resource_monitor/watchdog.rs	workgroup: None,
 P2-fixture	src-tauri/src/resource_monitor/watchdog.rs	let (workgroup, agent, project) = match identity_triple {
@@ -2962,7 +2962,7 @@ P2-fixture	src-tauri/src/session/manager/tests/team.rs	const RUST_CWD: &str = "C
 P2-fixture	src-tauri/src/session/manager/tests/team.rs	const TEAM_KEY: &str = "myproj:wg-1-team";
 P2-fixture	src-tauri/src/session/manager/tests/team.rs	"C:\\repos\\myproj\\.ac\\wg-1-team\\scratch".into(),
 P2-fixture	src-tauri/src/session/manager/tests/team.rs	assert_eq!(fqn, "myproj:wg-1-team/lead");
-P1-comment	src-tauri/src/session/purge_guard.rs	/// (#885) Cross-cutting gate for `purge-wg`. Two jobs:
+P1-comment	src-tauri/src/session/purge_guard.rs	/// Cross-cutting gate for `purge-wg`. Two jobs:
 P2-fixture	src-tauri/src/session/purge_guard/tests.rs	let fqn_a = "proj:wg-1-devs/alice".to_string();
 P2-fixture	src-tauri/src/session/purge_guard/tests.rs	let fqn_b = "proj:wg-1-devs/bob".to_string();
 P1-comment	src-tauri/src/session/session.rs	/// `wg-`, and return that directory's `TASK.md` path. Returns `None` if no
@@ -3124,7 +3124,7 @@ P0-identifier	src-tauri/src/commands/task.rs	return Err(format!("room root is no
 P0-identifier	src-tauri/src/commands/task.rs	"room root is not a `room-*` or legacy `wg-*` Room directory: {}",	section 5.3 canonical dual-acceptance phrase; it must name both prefixes
 P0-identifier	src-tauri/src/config/coding_agent_profiles/paths.rs	"Room replica '{}' is not inside a `room-*` or legacy `wg-*` Room directory",	section 5.3 canonical dual-acceptance phrase; it must name both prefixes
 P0-identifier	src-tauri/src/config/entity_prefix.rs	//! On-disk prefix of a Room directory, and of the legacy Workgroup directory	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
-P0-identifier	src-tauri/src/config/entity_prefix.rs	/// Prefix of a legacy Workgroup directory. Never produced again (#1614); still	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
+P0-identifier	src-tauri/src/config/entity_prefix.rs	/// Prefix of a legacy Workgroup directory. Never produced again; still	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
 P0-identifier	src-tauri/src/config/entity_prefix.rs	pub const LEGACY_WORKGROUP_DIR_PREFIX: &str = "wg-";	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
 P0-identifier	src-tauri/src/config/entity_prefix.rs	} else if name.starts_with(LEGACY_WORKGROUP_DIR_PREFIX) {	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
 P0-identifier	src-tauri/src/config/entity_prefix.rs	Some(LEGACY_WORKGROUP_DIR_PREFIX)	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it

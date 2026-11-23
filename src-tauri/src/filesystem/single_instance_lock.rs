@@ -1,4 +1,4 @@
-//! #4788: Linux single-instance lock file. The name and the env read belong to
+//! Linux single-instance lock file. The name and the env read belong to
 //! `config::profile`; this module owns the directory rule and the disk I/O.
 
 use std::fs::{DirBuilder, OpenOptions};

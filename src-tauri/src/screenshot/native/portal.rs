@@ -1,4 +1,4 @@
-//! #2774 xdg-desktop-portal access for Wayland screenshot capture (ashpd 0.11.1).
+//! xdg-desktop-portal access for Wayland screenshot capture (ashpd 0.11.1).
 
 use std::collections::HashMap;
 use std::path::PathBuf;

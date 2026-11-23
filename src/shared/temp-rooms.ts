@@ -1,4 +1,4 @@
-// #4779 - Temporary Rooms: the IPC contract and the saved temp-room agent choice.
+// Temporary Rooms: the IPC contract and the saved temp-room agent choice.
 import {
   AC_MATRIX_ROOT_PLACEHOLDER,
   AC_WORKSPACE_ROOT_PLACEHOLDER,
@@ -7,7 +7,7 @@ import {
 import type { Transport } from "./transport";
 import type { SettingsSnapshot, WorkgroupGroupsConfig } from "./types";
 
-// #4805 - mirrors `TEMP_ROOMS_GROUPS_KEY` in `src-tauri/src/config/temp_rooms.rs`;
+// Mirrors `TEMP_ROOMS_GROUPS_KEY` in `src-tauri/src/config/temp_rooms.rs`;
 // never a real path.
 export const TEMP_ROOMS_GROUPS_KEY = "agentscommander://temp-rooms";
 
@@ -15,9 +15,9 @@ export const TEMP_ROOMS_GROUPS_KEY = "agentscommander://temp-rooms";
 export interface TempRoomInfo {
   name: string;
   path: string;
-  /** #4780: the stored Unleash flag; the store override wins. */
+  /** The stored Unleash flag; the store override wins. */
   unleashed: boolean;
-  /** #4805 - TASK.md title; null or absent without one. */
+  /** TASK.md title; null or absent without one. */
   taskTitle?: string | null;
 }
 
@@ -30,7 +30,7 @@ export interface TempRoomAgentChoice {
 /** Settings as the renderer reads and writes them, plus the temp-room choice. */
 export type SettingsWithTempRoom = SettingsSnapshot & { tempRoomAgent?: TempRoomAgentChoice };
 
-/** #4779 - temp-room commands over an injected transport (Tauri or WS). */
+/** Temp-room commands over an injected transport (Tauri or WS). */
 export function createTempRoomAPI(transport: Pick<Transport, "invoke">) {
   return {
     list: () => transport.invoke<TempRoomInfo[]>("list_temp_rooms"),
@@ -42,13 +42,13 @@ export function createTempRoomAPI(transport: Pick<Transport, "invoke">) {
   };
 }
 
-/** #4786 - placeholders that do not exist for a temp room (no workspace, no matrix). */
+/** Placeholders that do not exist for a temp room (no workspace, no matrix). */
 const TEMP_ROOM_UNAVAILABLE_PLACEHOLDERS = [
   AC_WORKSPACE_ROOT_PLACEHOLDER,
   AC_MATRIX_ROOT_PLACEHOLDER,
 ] as const;
 
-/** #4786 - unavailable placeholders the chosen agent's launch values use, fixed order. */
+/** Unavailable placeholders the chosen agent's launch values use, fixed order. */
 export function tempRoomUnavailablePlaceholders(
   settings: SettingsSnapshot,
   choice: TempRoomAgentChoice | undefined,
@@ -71,7 +71,7 @@ export function tempRoomUnavailablePlaceholders(
   return TEMP_ROOM_UNAVAILABLE_PLACEHOLDERS.filter((t) => values.some((v) => v.includes(t)));
 }
 
-/** #4786 - the red warning line for one unavailable placeholder. */
+/** The red warning line for one unavailable placeholder. */
 export function tempRoomPlaceholderWarning(token: string): string {
   return `${token} does not apply to Temporary Rooms: it does not exist for them.`;
 }
