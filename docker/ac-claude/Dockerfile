@@ -5,16 +5,13 @@ FROM node:22.23.2-trixie-slim
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash ca-certificates git \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN npm install -g --ignore-scripts @anthropic-ai/claude-code@2.1.319 \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g --ignore-scripts @anthropic-ai/claude-code@2.1.319 \
     && node "$(npm root -g)/@anthropic-ai/claude-code/install.cjs" \
-    && npm cache clean --force
-
-RUN mkdir -p /workspace /home/node/.claude \
-    && chown -R node:node /workspace /home/node/.claude
-
-RUN git config --system --add safe.directory '*'
+    && npm cache clean --force \
+    && mkdir -p /workspace /home/node/.claude \
+    && chown -R node:node /workspace /home/node/.claude \
+    && git config --system --add safe.directory '*'
 
 COPY --from=bridge /usr/local/bin/session-bridge /usr/local/bin/session-bridge
 COPY --from=bridge /usr/local/bin/agentscommander-api-helper /usr/local/bin/agentscommander-api-helper

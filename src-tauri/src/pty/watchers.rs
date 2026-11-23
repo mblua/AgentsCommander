@@ -725,7 +725,7 @@ impl WatcherEngine {
         // no backend resolved, no liveness probed.
         let Some(resolved) = self.patterns.resolve().await else {
             let mut ids: Vec<(Uuid, bool)> = {
-                let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+                let registered = self.registered.lock().unwrap_or_else(PoisonError::into_inner);
                 registered
                     .iter()
                     .map(|(id, session)| (*id, session.activity.is_some()))
@@ -772,7 +772,7 @@ impl WatcherEngine {
         // Snapshot first: the loop must not mutate `registered` while iterating it. The ids
         // are the union of sessions a user watcher reaches and those with internal consumers.
         let mut ids: Vec<(Uuid, Option<String>)> = {
-            let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+            let registered = self.registered.lock().unwrap_or_else(PoisonError::into_inner);
             registered
                 .iter()
                 .filter(|(_, session)| {
@@ -829,7 +829,7 @@ impl WatcherEngine {
         at: chrono::DateTime<chrono::Utc>,
     ) -> (Option<WatcherMatchBatch>, bool, ActivityDelivery) {
         let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registered = self.registered.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(session) = registered.get_mut(&id) else {
             return (None, false, None);
         };
@@ -976,7 +976,7 @@ impl WatcherEngine {
     /// `(degraded, suspended, count)` for one `(session, watcher)` pair.
     #[cfg(test)]
     fn watcher_state(&self, id: Uuid, watcher_id: &str) -> Option<(bool, bool, u64)> {
-        let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let registered = self.registered.lock().unwrap_or_else(PoisonError::into_inner);
         let state = registered.get(&id)?.watchers.get(watcher_id)?;
         Some((state.degraded, state.suspended_until.is_some(), state.count))
     }
@@ -985,7 +985,7 @@ impl WatcherEngine {
     /// sleeps for the suspension window.
     #[cfg(test)]
     fn expire_suspension_for_test(&self, id: Uuid, watcher_id: &str) {
-        let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registered = self.registered.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(state) = registered
             .get_mut(&id)
             .and_then(|session| session.watchers.get_mut(watcher_id))
