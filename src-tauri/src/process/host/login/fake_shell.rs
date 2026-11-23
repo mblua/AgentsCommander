@@ -1,4 +1,4 @@
-//! Test-only helper shared by login and agent_path tests (#4608).
+//! Test-only helper shared by login and agent_path tests.
 
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 

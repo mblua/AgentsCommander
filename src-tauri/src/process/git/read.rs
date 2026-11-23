@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// #1298 - bound for the one-shot branch detection below. Deliberately its own
+/// Bound for the one-shot branch detection below. Deliberately its own
 /// constant and not the sweeper's `DETECT_TIMEOUT`: this is a discovery-time
 /// one-shot on the async command body, not the poll loop's per-round bound, and
 /// the two must be able to move independently.
@@ -11,7 +11,7 @@ pub(crate) const BRANCH_DETECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Detect the git branch of a directory without blocking a runtime worker.
 ///
-/// #1298 - the previous synchronous version spawned a `std::process::Command`
+/// The previous synchronous version spawned a `std::process::Command`
 /// straight on the async body of `discover_ac_agents` / `discover_project` and
 /// held its Tokio worker for as long as `git` took, with no bound. Now
 /// `tokio::process` under `BRANCH_DETECT_TIMEOUT`, with `kill_on_drop(true)` so

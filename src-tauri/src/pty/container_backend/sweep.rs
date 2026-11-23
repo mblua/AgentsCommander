@@ -18,7 +18,7 @@ use std::sync::{Arc, TryLockError};
 use std::time::{Duration, Instant};
 
 impl ContainerTransportBackend {
-    /// #992 - Is the startup sweep load-bearing for THIS config dir, or a courtesy
+    /// Is the startup sweep load-bearing for THIS config dir, or a courtesy
     /// pass over containers another install left behind?
     ///
     /// SCOPED, and it is not a gate: the sweep runs either way. No container client
@@ -50,10 +50,10 @@ impl ContainerTransportBackend {
         };
         let token_manager = self.token_manager.clone();
         std::thread::spawn(move || {
-            // #992 - the registry read happens INSIDE the thread on purpose: the
+            // The registry read happens INSIDE the thread on purpose: the
             // caller is the Tauri setup hook and must not pay a file read.
             let load_bearing = Self::sweep_is_load_bearing(token_manager.as_ref());
-            // #992 - one line per start, at info, so the posture is observable. A
+            // One line per start, at info, so the posture is observable. A
             // design whose correct behavior is indistinguishable from its failure
             // mode in the log is not verifiable. Do not lower this to debug.
             log::info!(
@@ -86,11 +86,11 @@ impl ContainerTransportBackend {
                     if load_bearing {
                         log::warn!("[container-transport] startup orphan cleanup failed: {err}");
                     } else {
-                        // #992 - this install never created a container, so this
+                        // This install never created a container, so this
                         // failure means only that a courtesy pass over someone
                         // else's leftovers did not happen. That is not the user's
                         // problem and must not warn on every start: it is exactly
-                        // the log noise #992 was reported from.
+                        // the reported log noise.
                         log::debug!(
                             "[container-transport] opportunistic startup orphan sweep failed: {err}"
                         );

@@ -1,7 +1,7 @@
 //! Pseudo-terminal sessions: local and container backends, input routing and
 //! injection, output handling, idle and menu detection, and the session manager.
 
-pub(crate) mod agent_quota; // #2482 - weekly quota reading per agent session
+pub(crate) mod agent_quota; // weekly quota reading per agent session
 pub mod backend;
 pub(crate) mod backend_kind;
 pub(crate) mod container_backend;
@@ -20,15 +20,15 @@ pub mod inject;
 pub(crate) mod input_activity;
 pub(crate) mod input_limits;
 pub(crate) mod input_route;
-pub(crate) mod job; // #632 - per-agent Job Object for tree-kill
+pub(crate) mod job; // per-agent Job Object for tree-kill
 pub(crate) mod local_backend;
 pub mod manager;
-pub(crate) mod menu_guard; // #1646 / #1647 - proactive detection of terminal blocking menus
+pub(crate) mod menu_guard; // proactive detection of terminal blocking menus
 pub(crate) mod output;
 pub(crate) mod output_senders;
-// #2064 - the remote activity producer. `pub(crate)`: only `lib.rs` constructs it.
+// The remote activity producer. `pub(crate)`: only `lib.rs` constructs it.
 pub(crate) mod remote_watcher;
 pub(crate) mod response_close;
-pub mod spawn_diagnostics; // #942 - spawn/first-output/exit evidence for hang triage
+pub mod spawn_diagnostics; // spawn/first-output/exit evidence for hang triage
 pub(crate) mod terminal_snapshot;
-pub(crate) mod watchers; // #1171 - generic regex pattern watchers over PTY output
+pub(crate) mod watchers; // generic regex pattern watchers over PTY output

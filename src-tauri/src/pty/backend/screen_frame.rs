@@ -11,12 +11,12 @@
 /// **`sequence` is monotonic only within one parser instance.** `register_session` inserts a
 /// fresh parser at `output_sequence: 0` (`output.rs:109-116`). That is safe here only because
 /// session ids are minted per spawn and AC never reuses one, not even on respawn
-/// (`context_scrape/mod.rs:232-233`). #955's replay tolerates a reset; this engine does not.
+/// (`context_scrape/mod.rs:232-233`). The replay tolerates a reset; this engine does not.
 /// If a future "reattach in place" ever reuses an id, the stamp would move BACKWARDS and the
 /// engine could report `Unchanged` over a completely different screen.
 ///
 /// `output_sequence` itself is never modified by this module: it is also the replay ordering
-/// key `get_screen_snapshot` hands the frontend (`output.rs:274-285`, #955), and changing when
+/// key `get_screen_snapshot` hands the frontend (`output.rs:274-285`), and changing when
 /// it advances would change that contract. The seam only reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameStamp {
@@ -72,7 +72,7 @@ impl ScreenRowsSince {
     }
 }
 
-/// #1171 - the default `PtyBackend::screen_rows_since`, shared by the trait default so the
+/// The default `PtyBackend::screen_rows_since`, shared by the trait default so the
 /// mapping lives beside the types it maps into.
 ///
 /// Everything that is not rows becomes `Missing`: a backend that only implements
