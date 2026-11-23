@@ -40,7 +40,7 @@ impl IdleDetector {
                 response_close_for_idle.observe_detector(id, false, std::time::Instant::now());
                 log::debug!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
                 if let Some(app) = handle_for_idle.get() {
-                    // #2232 phase 7: the Co-managed decision travels in the same
+                    // Phase 7: the Co-managed decision travels in the same
                     // payload, emitted synchronously and FIRST (epic 3.6). A
                     // separate later event would always paint waiting before red.
                     // `is_armed` is lock-free and never reads settings or disk.
@@ -53,7 +53,7 @@ impl IdleDetector {
                     let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                     let mgr_clone = session_mgr.inner().clone();
                     let app_for_idle = app.clone();
-                    // #1682 - read the control-write mark on the watcher thread, at
+                    // Read the control-write mark on the watcher thread, at
                     // the edge instant. `Option<Duration>` is `Copy`, so it moves
                     // into the spawned task with no clone and no guard held.
                     let control_write_age = app
@@ -66,7 +66,7 @@ impl IdleDetector {
                             &mgr,
                         )
                         .await;
-                        // #1682 - a busy->idle edge on an armed session stamps
+                        // A busy->idle edge on an armed session stamps
                         // `tooling.lastAgentMessageAt`. A no-op unless a message write reached
                         // an arming site for this session in this process (R7 and R8 arm with
                         // nothing submitted), the user has no recent unsubmitted input in it,

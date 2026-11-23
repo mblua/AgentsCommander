@@ -1,4 +1,4 @@
-//! SCC-side gathering for the Co-managed predicates and the Room reader demand (#2232).
+//! SCC-side gathering for the Co-managed predicates and the Room reader demand.
 //! Collects session, settings, orchestrator and reader-kind inputs (`CoManagedInputs`) and calls
 //! the leaf `config::co_managed` for `effective_state` and `capturable`.
 //! Raises and releases the Room reader demand, and implements `ReaderDemandHost` for `AppHandle`.

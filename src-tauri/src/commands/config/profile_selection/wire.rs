@@ -7,7 +7,7 @@
 
 use std::hash::Hash;
 
-/// #2557 - one replica or folder the scope walk could not count, and why.
+/// One replica or folder the scope walk could not count, and why.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScopeFault {
@@ -37,7 +37,7 @@ pub enum ProfileAssignmentScope {
     Workgroup,
 }
 
-/// #1941 - requested publication policy. `Ordinary` preserves the stored lock
+/// Requested publication policy. `Ordinary` preserves the stored lock
 /// flag exactly; `AssignAndLock` publishes the pair and sets the flag, and is
 /// the only mode that offers a reviewed force for protected replicas.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -48,7 +48,7 @@ pub enum AssignmentMode {
     AssignAndLock,
 }
 
-/// #1941 - explicit review decision for a bulk assign-and-lock that found
+/// Explicit review decision for a bulk assign-and-lock that found
 /// protected replicas. There is deliberately no default: a conflict needs a
 /// choice, so the backend can never force a lock silently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -58,7 +58,7 @@ pub enum ConflictDecision {
     ForceReviewed,
 }
 
-/// #1941 - strict protection state of a replica, as read by #1939. `Invalid`
+/// Strict protection state of a replica, as read by the strict reader. `Invalid`
 /// is a diagnostic, never a permissive default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,7 +68,7 @@ pub enum SelectionState {
     Invalid,
 }
 
-/// #1941 - the protected pair as exposed on the wire. Both fields are `null`
+/// The protected pair as exposed on the wire. Both fields are `null`
 /// when no complete pair is stored.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,11 +87,11 @@ pub struct ProfileAssignmentTarget {
     pub identity_path: String,
     pub origin_project: Option<String>,
     pub live_session_ids: Vec<String>,
-    /// #1941 - the complete stored pair, or `null` when absent/invalid.
+    /// The complete stored pair, or `null` when absent/invalid.
     pub saved_pair: Option<SavedPair>,
-    /// #1941 - strict protection state; never a synthesized `false`.
+    /// Strict protection state; never a synthesized `false`.
     pub selection_state: SelectionState,
-    /// #1941 - the strict-read diagnostic when `selection_state` is invalid.
+    /// The strict-read diagnostic when `selection_state` is invalid.
     pub selection_error: Option<String>,
 }
 
@@ -104,12 +104,12 @@ pub struct PreviewCodingAgentProfileSelectionRequest {
     pub scope: ProfileAssignmentScope,
     #[serde(default)]
     pub restart_sessions: bool,
-    /// #1941 - absent keeps the legacy ordinary semantics.
+    /// Absent keeps the legacy ordinary semantics.
     #[serde(default)]
     pub assignment_mode: AssignmentMode,
 }
 
-/// #1941 - one explicit conflict outcome as offered by a preview.
+/// One explicit conflict outcome as offered by a preview.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectionDecisionProjection {
@@ -120,7 +120,7 @@ pub struct SelectionDecisionProjection {
     pub live_session_count: usize,
 }
 
-/// #1941 - both reviewable outcomes; present only when a bulk
+/// Both reviewable outcomes; present only when a bulk
 /// assign-and-lock preview actually found protected candidates. Each carries
 /// its own fingerprint, so the client echoes exactly the reviewed decision.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -140,13 +140,13 @@ pub struct PreviewCodingAgentProfileSelectionResult {
     pub requires_explicit_confirmation: bool,
     pub targets: Vec<ProfileAssignmentTarget>,
     pub warnings: Vec<String>,
-    /// #1941 - false when scoped membership could not be established from the
+    /// False when scoped membership could not be established from the
     /// directory walk (unreadable entries / unprovable identities).
     pub counts_complete: bool,
     pub candidate_count: usize,
     pub protected_count: usize,
     pub invalid_count: usize,
-    /// #1941 - valid protected candidates for a bulk assign-and-lock; zero for
+    /// Valid protected candidates for a bulk assign-and-lock; zero for
     /// every other mode.
     pub conflict_count: usize,
     pub decisions: Option<SelectionDecisions>,
@@ -170,7 +170,7 @@ pub struct ApplyCodingAgentProfileSelectionRequest {
     /// #1941 - absent keeps the legacy ordinary semantics.
     #[serde(default)]
     pub assignment_mode: AssignmentMode,
-    /// #1941 - required only for a bulk assign-and-lock that found protected
+    /// Required only for a bulk assign-and-lock that found protected
     /// candidates. Rejected in every other mode/scope combination.
     #[serde(default)]
     pub conflict_decision: Option<ConflictDecision>,
@@ -197,21 +197,21 @@ pub struct ApplyCodingAgentProfileSelectionResult {
     pub target_fingerprint: String,
     pub warnings: Vec<String>,
     pub errors: Vec<ProfileAssignmentError>,
-    /// #1941 - false-to-true lock flips only.
+    /// False-to-true lock flips only.
     pub newly_protected_paths: Vec<String>,
-    /// #1941 - valid protected replicas deliberately skipped by the policy.
+    /// Valid protected replicas deliberately skipped by the policy.
     pub skipped_locked_paths: Vec<String>,
-    /// #1941 - candidates whose strict protection state is invalid.
+    /// Candidates whose strict protection state is invalid.
     pub invalid_paths: Vec<String>,
-    /// #1941 - protected replicas left after the operation; `null` when the
+    /// Protected replicas left after the operation; `null` when the
     /// refresh cannot establish the total.
     pub locked_after_apply_count: Option<usize>,
-    /// #1941 - true only when a reviewed force actually overwrote a protected
+    /// True only when a reviewed force actually overwrote a protected
     /// target, never merely because a decision was selected.
     pub force_applied: bool,
 }
 
-// ── #1941 selection-lock removal and Matrix default wire contract ──────────
+// ── Selection-lock removal and Matrix default wire contract ──────────
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -244,7 +244,7 @@ pub struct SetReplicaSelectionDefaultRequest {
     pub confirmed_default_fingerprint: String,
 }
 
-/// #1941 - Matrix creation default (`tooling.replicaSelectionDefault`).
+/// Matrix creation default (`tooling.replicaSelectionDefault`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectionDefault {

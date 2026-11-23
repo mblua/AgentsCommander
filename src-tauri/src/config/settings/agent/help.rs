@@ -16,13 +16,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// #2133 - the embedded per-agent help, the shipped layer. P1 owns the file.
+/// The embedded per-agent help, the shipped layer. P1 owns the file.
 pub(crate) const EMBEDDED_AGENT_HELP_JSON: &str =
     include_str!("../../../../resources/agent-help/agent-help.json");
 
 pub const AGENT_HELP_SCHEMA_VERSION: u32 = 1;
 
-/// #2133 - a link at the end of a tip.
+/// A link at the end of a tip.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentHelpLink {
@@ -30,7 +30,7 @@ pub struct AgentHelpLink {
     pub url: String,
 }
 
-/// #2133 - one tip: a title, a body and an optional link.
+/// One tip: a title, a body and an optional link.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentHelpTip {
@@ -40,7 +40,7 @@ pub struct AgentHelpTip {
     pub link: Option<AgentHelpLink>,
 }
 
-/// #2133 - the help for one command stem, one agent, or the general block.
+/// The help for one command stem, one agent, or the general block.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentHelpEntry {
@@ -54,7 +54,7 @@ pub struct AgentHelpEntry {
     pub tips: Vec<AgentHelpTip>,
 }
 
-/// #2133 - one agent-help file; the embedded, local and remote layers share this shape.
+/// One agent-help file; the embedded, local and remote layers share this shape.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentHelpFile {
@@ -81,7 +81,7 @@ impl Default for AgentHelpFile {
     }
 }
 
-/// #2133 - an absolute `https` URL with a non-empty host. No URL crate: the prefix and the
+/// An absolute `https` URL with a non-empty host. No URL crate: the prefix and the
 /// host segment are all the help links need.
 pub(crate) fn is_https_url(value: &str) -> bool {
     value
@@ -108,7 +108,7 @@ pub(crate) fn check_agent_help_entry_urls(key: &str, entry: &AgentHelpEntry) -> 
     Ok(())
 }
 
-/// #2133 (D10) - the one parser all three layers go through, shaped like
+/// The one parser all three layers go through, shaped like
 /// `parse_blocking_menus_file`. The `Value` step rejects a JSON array, which serde would
 /// otherwise decode as an empty file.
 pub(crate) fn parse_agent_help_file(contents: &str) -> Result<AgentHelpFile, String> {
@@ -134,12 +134,12 @@ pub(crate) fn parse_agent_help_file(contents: &str) -> Result<AgentHelpFile, Str
     Ok(file)
 }
 
-/// #2133 - the operator-owned overlay lives next to `settings.json`.
+/// The operator-owned overlay lives next to `settings.json`.
 pub(crate) fn agent_help_local_path(settings_path: &Path) -> PathBuf {
     settings_path.with_file_name(AGENT_HELP_LOCAL_FILE_NAME)
 }
 
-/// #2133 (D7) - the user layer, no caps. A missing file is silent; any other rejection logs
+/// The user layer, no caps. A missing file is silent; any other rejection logs
 /// once and yields an empty layer plus the reason, which P4 hands to the UI.
 pub(crate) fn load_local_agent_help_file(settings_path: &Path) -> (AgentHelpFile, Option<String>) {
     let path = agent_help_local_path(settings_path);
@@ -168,13 +168,13 @@ pub(crate) fn load_local_agent_help_file(settings_path: &Path) -> (AgentHelpFile
     }
 }
 
-/// #2133 - the AC-owned shipped copy lives next to `settings.json`. Only the refresh writes it;
-/// nothing reads it back (the #1905 rule): the runtime uses `shipped_agent_help()`.
+/// The AC-owned shipped copy lives next to `settings.json`. Only the refresh writes it;
+/// nothing reads it back (the rule): the runtime uses `shipped_agent_help()`.
 pub(crate) fn agent_help_shipped_path(settings_path: &Path) -> PathBuf {
     settings_path.with_file_name(AGENT_HELP_SHIPPED_FILE_NAME)
 }
 
-/// #2133 - make the on-disk shipped file equal to the canonical form of the embedded content.
+/// Make the on-disk shipped file equal to the canonical form of the embedded content.
 /// True when written. A hand edit is overwritten at the next start: the file is AC-owned.
 /// Never fails: a write error is logged and startup continues on the embedded constant.
 pub(crate) fn refresh_shipped_agent_help_file(settings_path: &Path) -> bool {
@@ -211,7 +211,7 @@ pub(crate) fn refresh_shipped_agent_help_file_with_publish(
     }
 }
 
-/// #2133 - the startup entry point; the only agent-help function that resolves the config dir.
+/// The startup entry point; the only agent-help function that resolves the config dir.
 pub fn refresh_shipped_agent_help_from_config_dir() {
     match settings_path() {
         Some(path) => {
@@ -221,11 +221,11 @@ pub fn refresh_shipped_agent_help_from_config_dir() {
     }
 }
 
-/// #2133 - the git ref the published per-agent help is served from; named in every
+/// The git ref the published per-agent help is served from; named in every
 /// cache note. The URL literal that embeds it is P7's, with the SERVED-PATHS row.
 pub(crate) const REMOTE_AGENT_HELP_SOURCE_REF: &str = "main";
 
-/// #2133 (D4) - hard caps on the downloaded layer. Every cap counts UTF-8 bytes
+/// Hard caps on the downloaded layer. Every cap counts UTF-8 bytes
 /// (`str::len()`), not characters; TypeScript's `.length` counts UTF-16 code units instead.
 pub(crate) const REMOTE_AGENT_HELP_MAX_BYTES: usize = 64 * 1024;
 pub(crate) const REMOTE_AGENT_HELP_MAX_ENTRIES: usize = 40;
@@ -293,7 +293,7 @@ pub(crate) fn check_remote_agent_help_entry(
     Ok(())
 }
 
-/// #2133 (D4, D10) - the whole-file gate for the downloaded layer, shaped like
+/// (D4, D10) - the whole-file gate for the downloaded layer, shaped like
 /// `validate_remote_blocking_menus_file`. The first failed check rejects the whole file,
 /// never one entry; `byAgent` is rejected because the remote layer is `byCommand`-only.
 pub(crate) fn validate_remote_agent_help_file(contents: &str) -> Result<AgentHelpFile, String> {
@@ -316,7 +316,7 @@ pub(crate) fn validate_remote_agent_help_file(contents: &str) -> Result<AgentHel
     Ok(file)
 }
 
-/// #2133 - the response gate: status, body size and UTF-8 before the whole-file validator.
+/// The response gate: status, body size and UTF-8 before the whole-file validator.
 pub(crate) fn accept_remote_agent_help_response(
     status: u16,
     body: &[u8],
@@ -337,7 +337,7 @@ pub(crate) fn agent_help_remote_path(settings_path: &Path) -> PathBuf {
     settings_path.with_file_name(AGENT_HELP_REMOTE_FILE_NAME)
 }
 
-/// #2133 (D4) - the downloaded layer, re-validated at every read because the cache sits in a
+/// The downloaded layer, re-validated at every read because the cache sits in a
 /// directory the local user can edit. A rejected or unreadable cache yields an empty layer and
 /// one warning; a missing cache is silent.
 pub(crate) fn load_remote_agent_help_file(settings_path: &Path) -> AgentHelpFile {
@@ -362,7 +362,7 @@ pub(crate) fn load_remote_agent_help_file(settings_path: &Path) -> AgentHelpFile
     }
 }
 
-/// #2133 - replace the downloaded cache only after validation passed. The note records where
+/// Replace the downloaded cache only after validation passed. The note records where
 /// and when the bytes came from; `source_url` is the caller's, so this phase holds no URL.
 pub(crate) fn write_remote_agent_help_cache(
     settings_path: &Path,
@@ -383,7 +383,7 @@ pub(crate) fn write_remote_agent_help_cache(
     )
 }
 
-/// #2133 (D4) - the throttle stamp lives next to `settings.json`.
+/// The throttle stamp lives next to `settings.json`.
 pub(crate) fn agent_help_remote_check_path(settings_path: &Path) -> PathBuf {
     settings_path.with_file_name(AGENT_HELP_REMOTE_CHECK_FILE_NAME)
 }
@@ -394,7 +394,7 @@ pub(crate) struct RemoteAgentHelpCheckStamp {
     pub(crate) last_checked_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// #2133 (D4) - missing, unreadable and malformed stamps all mean "no throttle": the caller
+/// Missing, unreadable and malformed stamps all mean "no throttle": the caller
 /// treats `None` as due.
 pub(crate) fn read_remote_agent_help_check_stamp(
     settings_path: &Path,
@@ -407,7 +407,7 @@ pub(crate) fn read_remote_agent_help_check_stamp(
     Some(stamp.last_checked_at)
 }
 
-/// #2133 (D4) - written after every attempt that passed the due check, accepted or not.
+/// Written after every attempt that passed the due check, accepted or not.
 pub(crate) fn write_remote_agent_help_check_stamp(
     settings_path: &Path,
     at: chrono::DateTime<chrono::Utc>,
@@ -422,7 +422,7 @@ pub(crate) fn write_remote_agent_help_check_stamp(
     )
 }
 
-/// #2133 - a parse failure is a build defect T1 catches; production logs once and serves an
+/// A parse failure is a build defect T1 catches; production logs once and serves an
 /// empty file. The runtime reads this, never a disk copy.
 pub fn shipped_agent_help() -> &'static AgentHelpFile {
     static SHIPPED: OnceLock<AgentHelpFile> = OnceLock::new();

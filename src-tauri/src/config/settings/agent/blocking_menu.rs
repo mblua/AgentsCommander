@@ -1,7 +1,7 @@
 //! Blocking-menu patterns: the shipped, downloaded and local layers and their resolution.
 //! Owns `BlockingMenusFile` parsing, the remote cache gate with its size and pattern limits,
-//! the throttle stamp, `BlockingMenusStore::resolve_for`, the #1757 migration and the one-shot
-//! #1905 export of legacy `blockingMenus` arrays into the `.local` file.
+//! the throttle stamp, `BlockingMenusStore::resolve_for`, the migration and the one-shot
+//! export of legacy `blockingMenus` arrays into the `.local` file.
 //! It does not fetch over HTTP or watch files; callers pass the response and the store is
 //! built once per process.
 
@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// #1646 / #1647 - one entry of an agent's `blockingMenus` array, or whatever the user wrote there.
+/// One entry of an agent's `blockingMenus` array, or whatever the user wrote there.
 /// Untagged so `Invalid` catches malformed entries without failing settings deserialization.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -36,7 +36,7 @@ impl BlockingMenuEntry {
     }
 }
 
-/// #1646 / #1647 - one configured blocking menu pattern and notification.
+/// One configured blocking menu pattern and notification.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockingMenuConfig {
@@ -48,7 +48,7 @@ pub struct BlockingMenuConfig {
     pub captured_against: Option<String>,
 }
 
-/// #1757 - the Codex "Hooks need review" startup dialog. One literal, two consumers:
+/// The Codex "Hooks need review" startup dialog. One literal, two consumers:
 /// `apply_issue_1757_migration` (installs whose `blockingMenus` array was already materialized
 /// against the older default) and test T1 `embedded_content_matches_the_rust_literals`, which
 /// pins the embedded `settings-blocking-menus.json` to this constant so the two cannot drift.
@@ -64,32 +64,32 @@ pub(crate) fn codex_hooks_review_menu() -> BlockingMenuConfig {
     }
 }
 
-/// #1905 - the patterns AC ships, embedded at build time. The config-dir copy is a
+/// The patterns AC ships, embedded at build time. The config-dir copy is a
 /// materialization of this content; the runtime evaluates this constant, never the disk file.
 pub(crate) const EMBEDDED_BLOCKING_MENUS_JSON: &str =
     include_str!("../../../../resources/blocking-menus/settings-blocking-menus.json");
 
 pub const BLOCKING_MENUS_SCHEMA_VERSION: u32 = 1;
 
-/// #1925 (D2) - the ref the URL pins; the cached note names it.
+/// The ref the URL pins; the cached note names it.
 pub(crate) const REMOTE_BLOCKING_MENUS_SOURCE_REF: &str = "main";
-/// #1925 (D5) - hard cap on the downloaded body, checked while reading and on acceptance.
+/// Hard cap on the downloaded body, checked while reading and on acceptance.
 pub(crate) const REMOTE_BLOCKING_MENUS_MAX_BYTES: usize = 64 * 1024;
 
-/// #1925 (D6) - hard ceilings for the downloaded layer: 200 entries in total across
+/// Hard ceilings for the downloaded layer: 200 entries in total across
 /// every `byCommand` array, a pattern of 512 bytes and a notification of 200 bytes.
 pub(crate) const REMOTE_BLOCKING_MENUS_MAX_ENTRIES: usize = 200;
 pub(crate) const REMOTE_PATTERN_MAX_BYTES: usize = 512;
 pub(crate) const REMOTE_NOTIFICATION_MAX_BYTES: usize = 200;
 
-/// #1925 (D6) - compile ceiling for one downloaded pattern. The menu guard keeps one
+/// Compile ceiling for one downloaded pattern. The menu guard keeps one
 /// compiled copy per accepted pattern, so an accepted file adds at most
 /// 200 x 256 KiB = 50 MiB of compiled programs, plus each regex's lazy-DFA cache at
 /// the `regex` crate default. Reaching that ceiling needs repo-write access; the real
 /// published file compiles to a few KiB.
 pub(crate) const REMOTE_PATTERN_REGEX_SIZE_LIMIT: usize = 256 * 1024;
 
-/// #1925 (D7) - every accepted pattern must leave these rows alone. Matching is
+/// Every accepted pattern must leave these rows alone. Matching is
 /// `Regex::is_match`, unanchored, the way the guard matches, so a catch-all pattern
 /// that would silently defer every injection is rejected before it reaches the guard.
 /// Menu-like rows (`1. Yes`) are deliberately absent: a legitimate trust-menu pattern
@@ -114,7 +114,7 @@ pub(crate) fn default_blocking_menus_schema_version() -> u32 {
     BLOCKING_MENUS_SCHEMA_VERSION
 }
 
-/// #1905 - one blocking-menus file; the shipped file and the `.local` file share this shape.
+/// One blocking-menus file; the shipped file and the `.local` file share this shape.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockingMenusFile {
@@ -139,7 +139,7 @@ impl Default for BlockingMenusFile {
     }
 }
 
-/// #1905 (D6) - the one parser both files go through; the migration validates against it too.
+/// The one parser both files go through; the migration validates against it too.
 /// The `Value` step rejects a JSON array, which serde would otherwise decode as an empty file.
 pub(crate) fn parse_blocking_menus_file(contents: &str) -> Result<BlockingMenusFile, String> {
     let value =
@@ -158,7 +158,7 @@ pub(crate) fn parse_blocking_menus_file(contents: &str) -> Result<BlockingMenusF
     Ok(file)
 }
 
-/// #1925 (D4 to D7) - the whole-file gate for the downloaded cache. The first failed
+/// (D4 to D7) - the whole-file gate for the downloaded cache. The first failed
 /// check rejects the whole file, never one entry; `byAgent` is rejected because the
 /// remote layer is `byCommand`-only. Checked on arrival and again at every read.
 pub(crate) fn validate_remote_blocking_menus_file(
@@ -227,7 +227,7 @@ pub(crate) fn validate_remote_blocking_menus_file(
     Ok(file)
 }
 
-/// #1925 (D5) - accept a response only when the status, the byte size and the encoding
+/// Accept a response only when the status, the byte size and the encoding
 /// are all right; the body then goes through the same whole-file validator as the cache.
 pub(crate) fn accept_remote_blocking_menus_response(
     status: u16,
@@ -256,7 +256,7 @@ pub fn shipped_blocking_menus() -> &'static BlockingMenusFile {
     })
 }
 
-/// #1646 / #1647 / #1905 - the shipped patterns for a command, by executable stem.
+/// The shipped patterns for a command, by executable stem.
 pub fn default_blocking_menus_for_command(command: &str) -> Vec<BlockingMenuEntry> {
     let Some(stem) = crate::config::coding_agents_catalog::command_executable_basename(command)
     else {
@@ -288,7 +288,7 @@ pub(crate) fn pretty_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, serd
     Ok(bytes)
 }
 
-/// #1905 (D5) - make the on-disk shipped file equal to the embedded content. True when written.
+/// Make the on-disk shipped file equal to the embedded content. True when written.
 pub(crate) fn refresh_shipped_blocking_menus_file(settings_path: &Path) -> bool {
     let path = blocking_menus_shipped_path(settings_path);
     let Ok(canonical) = pretty_json_bytes(shipped_blocking_menus()) else {
@@ -315,7 +315,7 @@ pub(crate) fn refresh_shipped_blocking_menus_file(settings_path: &Path) -> bool 
     }
 }
 
-/// #1905 (D6) - the user layer. Every rejection logs once and yields an empty layer.
+/// The user layer. Every rejection logs once and yields an empty layer.
 pub(crate) fn load_local_blocking_menus_file(settings_path: &Path) -> BlockingMenusFile {
     let path = blocking_menus_local_path(settings_path);
     let contents = match crate::filesystem::agent_settings::read_blocking_menus_text(&path) {
@@ -335,7 +335,7 @@ pub(crate) fn load_local_blocking_menus_file(settings_path: &Path) -> BlockingMe
     }
 }
 
-/// #1925 (D4, D5) - the downloaded layer, re-validated at every read because the cache
+/// (D4, D5) - the downloaded layer, re-validated at every read because the cache
 /// sits in a directory the local user can edit. A rejected or unreadable cache yields an
 /// empty layer and one warning; a missing cache is silent.
 pub(crate) fn load_remote_blocking_menus_file(settings_path: &Path) -> BlockingMenusFile {
@@ -360,7 +360,7 @@ pub(crate) fn load_remote_blocking_menus_file(settings_path: &Path) -> BlockingM
     }
 }
 
-/// #1925 (D7, D8) - replace the downloaded cache only after validation passed. The note
+/// (D7, D8) - replace the downloaded cache only after validation passed. The note
 /// records where and when the bytes came from; the next accepted download replaces it and a
 /// file that fails validation at the next start is ignored.
 pub(crate) fn write_remote_blocking_menus_cache(
@@ -383,7 +383,7 @@ pub(crate) fn write_remote_blocking_menus_cache(
     )
 }
 
-/// #1925 (D4) - the throttle stamp lives next to `settings.json`.
+/// The throttle stamp lives next to `settings.json`.
 pub(crate) fn blocking_menus_remote_check_path(settings_path: &Path) -> PathBuf {
     settings_path.with_file_name(BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME)
 }
@@ -394,7 +394,7 @@ pub(crate) struct RemoteBlockingMenusCheckStamp {
     pub(crate) last_checked_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// #1925 (D4) - missing, unreadable and malformed stamps all mean "no throttle": the
+/// Missing, unreadable and malformed stamps all mean "no throttle": the
 /// caller treats `None` as due.
 pub(crate) fn read_remote_blocking_menus_check_stamp(
     settings_path: &Path,
@@ -407,7 +407,7 @@ pub(crate) fn read_remote_blocking_menus_check_stamp(
     Some(stamp.last_checked_at)
 }
 
-/// #1925 (D4) - written after every attempt that passed the due check, accepted or not.
+/// Written after every attempt that passed the due check, accepted or not.
 pub(crate) fn write_remote_blocking_menus_check_stamp(
     settings_path: &Path,
     at: chrono::DateTime<chrono::Utc>,
@@ -422,7 +422,7 @@ pub(crate) fn write_remote_blocking_menus_check_stamp(
     )
 }
 
-/// #1905 (D3, D10) - what the menu guard evaluates. Built once per process; no file watcher.
+/// (D3, D10) - what the menu guard evaluates. Built once per process; no file watcher.
 #[derive(Debug, Clone)]
 pub struct BlockingMenusStore {
     pub(crate) shipped: &'static BlockingMenusFile,
@@ -430,26 +430,26 @@ pub struct BlockingMenusStore {
     pub(crate) local: BlockingMenusFile,
 }
 
-/// #1757 - one-shot migration for installs whose Codex `blockingMenus` array was already
-/// materialized against the pre-#1757 default, which is every install created before this
+/// One-shot migration for installs whose Codex `blockingMenus` array was already
+/// materialized against the earlier default, which is every install created before this
 /// change. The legacy materialize step only filled `None` arrays, so those users would
 /// otherwise never receive the hooks-review pattern.
 ///
 /// Keyed by content, not by a marker field: the entry is appended only when no valid entry
 /// already carries `CODEX_HOOKS_REVIEW_PATTERN`, so the function is idempotent across
 /// restarts and adds no key to the settings schema. The check ignores `enabled`, so setting
-/// `enabled: false` on the entry is a durable off switch; deleting it is not (#1757 D2).
+/// `enabled: false` on the entry is a durable off switch; deleting it is not.
 ///
 /// Extends an ACTIVE set, never activates an inactive one: it only fills arrays that
 /// already exist (never `None`), and `Some(vec![])` is the field's documented
 /// "explicitly disabled" state.
 ///
-/// #1737 (D7c): an overlay that owns `agents` supplies the whole array and `restore_base`
+/// An overlay that owns `agents` supplies the whole array and `restore_base`
 /// writes the base array back on save, so appending here would be discarded on write and
 /// would overwrite the operator's in-memory array meanwhile. Owning `agents` therefore
 /// suppresses the migration, which then runs correctly the first time the overlay is removed.
 ///
-/// Since #1905 this runs only as the second step of `export_blocking_menus_to_local_file`.
+/// This runs only as the second step of `export_blocking_menus_to_local_file`.
 ///
 /// Returns true when any agent's array changed.
 pub fn apply_issue_1757_migration(settings: &mut AppSettings) -> bool {
@@ -496,7 +496,7 @@ pub(crate) fn abort_blocking_menus_export(local_path: &Path, why: &str) -> bool 
     false
 }
 
-/// #1905 (D7) - one-shot, state-keyed export of every `blockingMenus` array still in
+/// One-shot, state-keyed export of every `blockingMenus` array still in
 /// `settings.json`. Writes the `.local` file before it strips anything; true means "save".
 #[cfg(test)]
 pub(crate) fn export_blocking_menus_to_local_file(

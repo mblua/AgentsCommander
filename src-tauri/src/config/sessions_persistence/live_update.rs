@@ -15,7 +15,7 @@ use crate::session::session::{SessionCommunication, SessionCommunicationKind};
 use std::path::Path;
 use uuid::Uuid;
 
-/// #698 — outcome of an atomic raise-hand-and-persist attempt.
+/// Outcome of an atomic raise-hand-and-persist attempt.
 #[derive(Debug)]
 pub enum RaiseHandPersistOutcome {
     /// The hand was newly raised and the snapshot was saved durably. The caller
@@ -29,7 +29,7 @@ pub enum RaiseHandPersistOutcome {
     NotRaisable,
 }
 
-/// #698 — apply the raise-hand transition and persist the resulting snapshot
+/// Apply the raise-hand transition and persist the resulting snapshot
 /// atomically with respect to ALL session persistence.
 ///
 /// Fix for the HIGH grinch finding: the live mutation and its durable snapshot
@@ -105,7 +105,7 @@ pub(super) async fn raise_hand_and_persist_to_dir_result_core(
     Ok(RaiseHandPersistOutcome::Raised(communication))
 }
 
-/// #1669 - outcome of a set-blocked-menu-and-persist attempt. There is
+/// Outcome of a set-blocked-menu-and-persist attempt. There is
 /// deliberately no failure variant: a save failure cannot change the outcome,
 /// because the in-memory transition stands and the caller must still publish it.
 #[derive(Debug)]
@@ -123,15 +123,15 @@ pub enum BlockedMenuPersistOutcome {
     NotApplicable,
 }
 
-/// #1669 - apply the blocked-menu set transition and persist the resulting
+/// Apply the blocked-menu set transition and persist the resulting
 /// snapshot atomically with respect to ALL session persistence: take
 /// `sessions_save_lock()` FIRST, then mutate, snapshot and save under that single
 /// acquisition. Do NOT call `persist_current_state_result` here; it re-acquires
 /// the same non-reentrant tokio mutex and would deadlock.
 ///
 /// FAILURE POLICY DIFFERS FROM RAISE-HAND, deliberately: NO rollback, matching the
-/// #756 contract in `write_start_fresh_and_persist_to_dir_result`; but the transition
-/// is reported even when the save fails, which DIVERGES from #756 (it returns `Err`
+/// contract in `write_start_fresh_and_persist_to_dir_result`; but the transition
+/// is reported even when the save fails, which DIVERGES from the stamp path (it returns `Err`
 /// and reports nothing). Raise-hand can roll back because a user can raise a hand
 /// again; this cannot be retried. `MenuGuard::scan_tick`
 /// evaluates only on a CHANGED screen (`ScreenRowsSince::Unchanged` is an empty
@@ -231,7 +231,7 @@ pub(super) async fn set_blocked_menu_and_persist_to_dir_core(
     (BlockedMenuPersistOutcome::Changed(communication), error)
 }
 
-/// #1669 - clear a visible blocked-menu communication and persist the result
+/// Clear a visible blocked-menu communication and persist the result
 /// atomically. Returns `true` when a visible blocked-menu was actually cleared,
 /// which is exactly when the caller must publish `communication: null`. When
 /// nothing was visible to clear it returns BEFORE any save, so a scan tick over
@@ -316,21 +316,21 @@ pub(super) async fn clear_blocked_menu_and_persist_to_dir_core(
     }
 }
 
-/// #698: the user-input session-state transitions cleared by
+/// The user-input session-state transitions cleared by
 /// `clear_user_input_transitions_and_persist_result`, reported so the caller can
 /// decide whether to emit the raise-hand clear event.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClearedUserInputTransitions {
-    /// `start_fresh_on_restore` flipped `true -> false` (#630/#631 re-arm).
+    /// `start_fresh_on_restore` flipped `true -> false` (re-arm).
     pub cleared_start_fresh: bool,
-    /// A visible raise-hand was lowered (#698).
+    /// A visible raise-hand was lowered.
     pub cleared_raise_hand: bool,
 }
 
-/// #698: clear the user-input session-state transitions and persist the result
+/// Clear the user-input session-state transitions and persist the result
 /// atomically with respect to all session persistence. `clear_fresh` gates the
 /// `start_fresh_on_restore` re-arm to substantive post-boundary submissions
-/// (#871); lowering any visible raise-hand remains unconditional.
+/// only; lowering any visible raise-hand remains unconditional.
 ///
 /// Fix for the MEDIUM grinch finding: the two field clears previously ran in two
 /// separate critical sections with an await between them, so a concurrent persist
@@ -362,7 +362,7 @@ pub async fn clear_user_input_transitions_and_persist_result(
     .await
 }
 
-/// #4778 - load settings only when a transition will apply. A write that
+/// Load settings only when a transition will apply. A write that
 /// changes nothing reads no settings and takes no settings lock.
 pub(super) async fn clear_user_input_transitions_and_persist_lazy_result(
     mgr: &SessionManager,
@@ -385,7 +385,7 @@ pub(super) async fn clear_user_input_transitions_and_persist_lazy_result(
     .await
 }
 
-/// #4778 - same predicate as `clear_user_input_transitions_with_carrier_permit`,
+/// Same predicate as `clear_user_input_transitions_with_carrier_permit`,
 /// read-only. A stale `true` costs one settings read and no save (the mutation
 /// then reports nothing); a stale `false` means the change arrived after this
 /// write, so leaving it is the correct order.
@@ -454,7 +454,7 @@ pub(super) async fn clear_user_input_transitions_and_persist_to_dir_result_core(
     Ok(cleared)
 }
 
-/// (#756) Stamp the durable fresh intent (AC-driven clear boundary) and persist
+/// Stamp the durable fresh intent (AC-driven clear boundary) and persist
 /// the result atomically with respect to all session persistence. Returns
 /// Ok(true) iff the field transitioned false -> true (a snapshot was saved).
 /// Same lock discipline as `clear_user_input_transitions_and_persist_result`:
@@ -477,7 +477,7 @@ pub async fn set_start_fresh_and_persist_result(
     .await
 }
 
-/// (#756) Drop the durable fresh intent (AC injected post-boundary CONTENT) and
+/// Drop the durable fresh intent (AC injected post-boundary CONTENT) and
 /// persist. Returns Ok(true) iff the field transitioned true -> false.
 /// DELIBERATELY NARROW: touches only `start_fresh_on_restore`; never raise-hand,
 /// silence, or badge state (this is NOT the user-input choke point).
@@ -498,8 +498,8 @@ pub async fn clear_start_fresh_and_persist_result(
     .await
 }
 
-/// (#756) Shared core for the fresh-intent stamp/drop persist wrappers. Like the
-/// #698 helper, the in-memory mutation stands even if the save fails (Err
+/// Shared core for the fresh-intent stamp/drop persist wrappers. Like the
+/// helper, the in-memory mutation stands even if the save fails (Err
 /// reports the save failure; callers log a warn, no rollback).
 pub(super) async fn write_start_fresh_and_persist_to_dir_result(
     mgr: &SessionManager,

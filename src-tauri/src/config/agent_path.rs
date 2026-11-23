@@ -1,4 +1,4 @@
-//! #2589 - the search path used to resolve and run coding-agent binaries.
+//! The search path used to resolve and run coding-agent binaries.
 //!
 //! A GUI-launched app inherits a PATH without the user's login-profile entries
 //! (`~/.local/bin`, `~/.npm-global/bin`, nvm, ...). This module builds one

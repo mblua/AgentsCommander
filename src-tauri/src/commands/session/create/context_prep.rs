@@ -14,7 +14,7 @@ pub(crate) fn notify_replica_context_failure<R: tauri::Runtime>(
 ) {
     log::error!("Replica context validation failed: {e}");
     use tauri_plugin_dialog::DialogExt;
-    // #537 facet (b) - the old copy blamed "context files missing",
+    // Facet (b) - the old copy blamed "context files missing",
     // but the real cause is usually a transient config.json lock
     // during replica identity repair. State what actually failed;
     // the interpolated error carries the precise, retry-suggesting

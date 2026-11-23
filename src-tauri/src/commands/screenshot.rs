@@ -1,4 +1,4 @@
-//! #714 Screenshot capture Tauri commands.
+//! Screenshot capture Tauri commands.
 //!
 //! Thin IPC wrappers over `crate::screenshot`. All capture-state mutation,
 //! overlay teardown, and clipboard/clock side effects live in the screenshot
@@ -44,7 +44,7 @@ pub async fn screenshot_cancel_capture(
     crate::screenshot::cancel_capture(&app, state.inner(), &capture_id).await
 }
 
-/// #2774 Start a capture from the UI (titlebar camera). Same entry as a shortcut press:
+/// Start a capture from the UI (titlebar camera). Same entry as a shortcut press:
 /// the busy gate, repeat-press rules and failure toast all apply unchanged.
 #[tauri::command]
 pub fn screenshot_start_capture(app: AppHandle) {

@@ -7,7 +7,7 @@
 
 use uuid::Uuid;
 
-// #3083: closed diagnostic vocabulary; no client-selected target or text.
+// Closed diagnostic vocabulary; no client-selected target or text.
 pub(crate) const RAIL_DIAGNOSTIC_ERROR: &str = "invalid rail diagnostic";
 pub(crate) const RAIL_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -271,7 +271,7 @@ pub async fn save_debug_logs(content: String) -> Result<(), String> {
     Ok(())
 }
 
-/// #264 — read-and-clear the buffered ERROR-level log entries for the UI error
+/// Read-and-clear the buffered ERROR-level log entries for the UI error
 /// modal. The frontend calls this once on `ErrorModal` mount (to collect errors
 /// logged before the webview was listening) and again on every `error_log_event`
 /// ping. Sync (no I/O, no `.await`) — a sub-microsecond mutex take.
@@ -280,14 +280,14 @@ pub fn drain_error_logs() -> Vec<crate::logging::ErrorLogEntry> {
     crate::logging::error_sink().drain()
 }
 
-/// #3036 — sorted snapshot of the error-popup types muted for this process.
+/// Sorted snapshot of the error-popup types muted for this process.
 /// Memory only: a new process starts empty; a webview reload keeps it.
 #[tauri::command]
 pub fn get_error_popup_mutes() -> Vec<String> {
     crate::logging::error_sink().muted_snapshot()
 }
 
-/// #3036 — mute or unmute future popups for one captured `typeId`. Unknown IDs
+/// Mute or unmute future popups for one captured `typeId`. Unknown IDs
 /// are rejected without mutation; returns the sorted muted snapshot.
 #[tauri::command]
 pub fn set_error_popup_muted(type_id: String, muted: bool) -> Result<Vec<String>, String> {

@@ -25,7 +25,7 @@ pub async fn check_project_path(path: String) -> Result<bool, String> {
 #[tauri::command]
 pub async fn create_ac_project(path: String) -> Result<(), String> {
     crate::config::seed_manifest::run_blocking_owned(move || {
-        // #1065 Stage F: the bare fresh-root create publishes its project context
+        // The bare fresh-root create publishes its project context
         // templates under the sole production token; a `#[cfg(test)]` lib build
         // stays non-emitting so unit fixtures keep manifest-free `.ac` roots.
         #[cfg(not(test))]

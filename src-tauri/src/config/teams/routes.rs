@@ -30,7 +30,7 @@ use std::path::PathBuf;
 
 pub(crate) fn strict_wg_replica_anchor_from_cwd(cwd: &Path) -> Result<Option<PathBuf>, String> {
     let cwd_identity = crate::path_identity::verify_directory(cwd)?;
-    // #1535: an anchor binds only when it belongs to the project that owns
+    // An anchor binds only when it belongs to the project that owns
     // the cwd, i.e. its `wg_replica_layout.ac_root` equals the closest `.ac`
     // ancestor of the cwd. A `__agent_*` replica of an ANCESTOR project is
     // never an anchor for a nested-project cwd, so the ancestor's live
@@ -211,7 +211,7 @@ pub(crate) fn resolve_pty_input_target(
 }
 
 /// How many candidates the snapshot-target scan skipped, by kind. Counts only:
-/// nothing here may carry a path, a name, an FQN or a rule name (#2228 Tier B).
+/// nothing here may carry a path, a name, an FQN or a rule name.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct SnapshotDiscoverySkips {
     pub project_children: usize,
@@ -232,7 +232,7 @@ pub(crate) struct DiscoveredSnapshotTargets {
 
 /// Signature-preserving wrapper. `phone/mailbox.rs` iterates the returned
 /// `Vec` directly, so the counted form is additive and that caller compiles
-/// untouched (#2228).
+/// untouched.
 pub(crate) fn discover_verified_terminal_snapshot_targets(
     project_paths: &[String],
 ) -> Result<Vec<TerminalSnapshotTargetIdentity>, String> {
@@ -247,7 +247,7 @@ fn verify_unique_snapshot_projects(
     let mut project_objects = std::collections::HashSet::new();
     let mut verified_projects = Vec::new();
     for (name, path, origin) in projects {
-        // Defence-in-depth (#2228): after the skip at the enumeration site a
+        // Defence-in-depth: after the skip at the enumeration site a
         // scanned child that fails here can only have lost a TOCTOU race, so a
         // race degrades to a counted skip instead of aborting the whole scan.
         // No test covers this and none is claimed.
@@ -283,7 +283,7 @@ pub(crate) fn discover_verified_terminal_snapshot_targets_counted(
     let mut scanned_entries = 0usize;
     for (project, project_dir, origin) in projects {
         // Same defence-in-depth as the pre-pass above: no probe, no claimed
-        // coverage (#2228).
+        // coverage.
         let ac_root = match strict_project_ac_root(&project_dir) {
             Ok(Some(ac_root)) => ac_root,
             Ok(None) | Err(_) if origin == ProjectOrigin::ScannedChild => {
@@ -308,7 +308,7 @@ pub(crate) fn discover_verified_terminal_snapshot_targets_counted(
             if !crate::config::entity_prefix::has_entity_prefix(&name) {
                 continue;
             }
-            // #2228 Site B: a linked or junctioned room entry reaches this
+            // Site B: a linked or junctioned room entry reaches this
             // call with no metadata gate in front of it. Skip and count it
             // rather than aborting every other target of the scan.
             let Ok(workgroup_identity) = crate::path_identity::verify_directory(&workgroup_path)
@@ -331,7 +331,7 @@ pub(crate) fn discover_verified_terminal_snapshot_targets_counted(
                     continue;
                 };
                 let candidate = format!("{project}:{name}/{agent}");
-                // #2228 Site C: one stale or half-removed replica must not hide
+                // Site C: one stale or half-removed replica must not hide
                 // every other target.
                 let Ok(parsed) = parse_strict_pty_fqn(&candidate) else {
                     skips.replicas = skips.replicas.saturating_add(1);
@@ -427,7 +427,7 @@ pub fn verify_pty_input_route(
     })
 }
 
-/// Verify the distinct #1173 read capability. This deliberately does not call
+/// Verify the distinct read capability. This deliberately does not call
 /// the PTY-input route policy, mint input authority, or change Root actuation.
 pub(crate) fn verify_terminal_snapshot_route(
     sender_cwd: &Path,
@@ -472,7 +472,7 @@ pub(crate) fn verify_terminal_snapshot_route(
 
 /// Build a synthetic `PeerInfo` for the canonical Root Agent reply target,
 /// or `None` if the caller is not an identity-verified WG coordinator (the
-/// only relationship that can address the Root Agent — see #293 §3).
+/// only relationship that can address the Root Agent).
 ///
 /// `wg` is the caller's WG-replica detection result (already computed by
 /// `discover_peers`); `project_paths` is the effective settings slice the
@@ -483,14 +483,14 @@ pub(crate) fn build_root_agent_synthetic_peer(
 ) -> Option<PeerInfo> {
     // The caller is a coordinator iff `verified_wg_coordinator_target`
     // accepts its own FQN. Re-uses the same identity-cross-reference path
-    // (#277 §2.3) used by the root-sender side.
+    // used by the root-sender side.
     let my_fqn = format!("{}:{}/{}", wg.my_project, wg.my_wg_name, wg.my_agent_name);
     crate::config::teams::verified_wg_coordinator_target(&my_fqn, project_paths)?;
 
     root_agent_peer()
 }
 
-/// The Root Agent row without the coordinator check (temp-room callers, #4780).
+/// The Root Agent row without the coordinator check (temp-room callers).
 pub(crate) fn root_agent_peer() -> Option<PeerInfo> {
     let root_dir = crate::config::root_agent::root_agent_dir().ok()?;
     Some(synthetic_peer(
@@ -500,7 +500,7 @@ pub(crate) fn root_agent_peer() -> Option<PeerInfo> {
     ))
 }
 
-/// One reply-target row per existing temp room of the app config dir (#4780).
+/// One reply-target row per existing temp room of the app config dir.
 pub(crate) fn temp_room_peers() -> Vec<PeerInfo> {
     crate::config::config_dir().map_or_else(Vec::new, |base| temp_room_peers_in(&base))
 }

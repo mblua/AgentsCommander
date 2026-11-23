@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::filesystem::local_config;
 
-/// #537 - OS error codes that mean the destination config.json was only
+/// OS error codes that mean the destination config.json was only
 /// briefly held by another handle (a concurrent in-process reader, a second
 /// `AgentsCommander` instance, or antivirus / the Windows Search Indexer) at the
 /// instant we tried to publish, rather than a permanent failure. A short
@@ -26,18 +26,18 @@ use crate::filesystem::local_config;
 ///      5 `ERROR_ACCESS_DENIED` (commonly a transient AV lock on Windows)
 pub(super) const TRANSIENT_PUBLISH_OS_ERRORS: [i32; 4] = [1175, 32, 33, 5];
 
-/// #537 - publish attempt budget and backoff schedule, duplicated from the
-/// reviewed pattern in `sessions_persistence::rename_with_retry` (#280) per the
+/// Publish attempt budget and backoff schedule, duplicated from the
+/// reviewed pattern in `sessions_persistence::rename_with_retry` per the
 /// house "a little duplication over a premature abstraction" rule. Four
 /// attempts so all three backoff entries are used; the terminal attempt has no
 /// backoff. Worst-case added latency on a contended publish is the sum, 260 ms.
-/// Like #280 this uses `std::thread::sleep`, which briefly blocks the calling
+/// This uses `std::thread::sleep`, which briefly blocks the calling
 /// tokio worker; `update_config_json_object` is already fully synchronous, so
 /// this only enlarges an existing blocking window rather than adding a new one.
 pub(super) const PUBLISH_ATTEMPTS: u32 = 4;
 pub(super) const PUBLISH_BACKOFFS_MS: [u64; 3] = [10, 50, 200];
 
-/// #537 - true when a publish error looks like a transient lock collision we
+/// True when a publish error looks like a transient lock collision we
 /// should retry rather than a permanent failure. See `TRANSIENT_PUBLISH_OS_ERRORS`.
 pub(super) fn is_transient_publish_error(err: &std::io::Error) -> bool {
     if err
@@ -53,7 +53,7 @@ pub(super) fn is_transient_publish_error(err: &std::io::Error) -> bool {
     cfg!(not(windows)) && err.kind() == std::io::ErrorKind::PermissionDenied
 }
 
-/// #537 facet (b) - turn a publish failure into a message that reads clearly in
+/// Facet (b) - turn a publish failure into a message that reads clearly in
 /// both the "Assign to this replica" error row and the session-launch dialog. A
 /// transient lock collision gets a plain-language, retry-suggesting sentence
 /// instead of the cryptic raw "os error 1175"; the OS error code is still
@@ -169,7 +169,7 @@ pub(super) fn publish_temp_config_retry_with_attempt(
     )))
 }
 
-/// #2378 - NUL-terminated UTF-16 for a `ReplaceFileW` argument. Raw Win32
+/// NUL-terminated UTF-16 for a `ReplaceFileW` argument. Raw Win32
 /// paths are MAX_PATH-bound (the process has no `longPathAware` manifest), so
 /// an absolute `Disk` or `UNC` path is respelled in verbatim (`\\?\`) form.
 /// Every shape where the verbatim spelling could name a different object
@@ -297,11 +297,11 @@ pub(super) fn publish_temp_config_retry_with_attempt(
     backoff: &dyn Fn(std::time::Duration),
 ) -> Result<(), PreparedPairError> {
     guard.check()?;
-    // #537 - ReplaceFileW publishes the temp file over the existing
+    // ReplaceFileW publishes the temp file over the existing
     // config.json. It returns ERROR_UNABLE_TO_REMOVE_REPLACED (1175) and
     // friends whenever another handle holds the destination for even an
     // instant, so a single collision used to fail the whole write. Retry the
-    // publish with a bounded backoff, mirroring rename_with_retry (#280).
+    // publish with a bounded backoff, mirroring rename_with_retry.
     let start = std::time::Instant::now();
     let mut last_err: Option<std::io::Error> = None;
     for attempt in 0..PUBLISH_ATTEMPTS {

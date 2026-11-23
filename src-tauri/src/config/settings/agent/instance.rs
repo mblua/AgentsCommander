@@ -1,4 +1,4 @@
-//! The agents file `agents.30.instance.no-git.json` beside `settings.json` (#2716 B3).
+//! The agents file `agents.30.instance.no-git.json` beside `settings.json`.
 //! Owns reading and decoding it, merging its `agents` and `codingAgentProfiles` groups into the
 //! load base, the atomic write, the one-shot export from `settings.json`, and the agents half of
 //! a save in `save_agents_instance_file`.

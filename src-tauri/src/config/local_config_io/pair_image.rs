@@ -136,7 +136,7 @@ pub(super) fn prepared_pair_image(
     Ok(PhysicalState::from_bytes(bytes))
 }
 
-/// #2786 (C1) - the caller-supplied cleanup sequence of `update_config_pair`:
+/// The caller-supplied cleanup sequence of `update_config_pair`:
 /// it edits the decisions map and the state map before `mutate` runs.
 pub(crate) type ConfigPairCleanup<'a> =
     &'a dyn Fn(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>;

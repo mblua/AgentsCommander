@@ -1,4 +1,4 @@
-//! #1157 - operator-editable templates for the messages `AgentsCommander` injects
+//! Operator-editable templates for the messages `AgentsCommander` injects
 //! into a coordinator PTY.
 //!
 //! The registry lives next to the executable, in `config_dir()`, as

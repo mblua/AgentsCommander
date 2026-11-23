@@ -58,15 +58,15 @@ pub(super) struct WorkgroupActivityItem {
     pub(super) working: bool,
     pub(super) ci_state: &'static str,
     pub(super) task_title: Option<String>,
-    /// #2473: sorted, deduped in-progress run ids; non-empty only when running.
+    /// Sorted, deduped in-progress run ids; non-empty only when running.
     pub(super) ci_run_ids: Vec<u64>,
-    /// #2473: sorted, deduped PR numbers of those runs; non-empty only when running.
+    /// Sorted, deduped PR numbers of those runs; non-empty only when running.
     pub(super) ci_pull_requests: Vec<u64>,
-    /// #2473: why `ci_state` is `unknown`; `None` otherwise.
+    /// Why `ci_state` is `unknown`; `None` otherwise.
     pub(super) ci_unknown_reason: Option<&'static str>,
 }
 
-/// The parsed `room activity` filters (#2473). Every present filter must match
+/// The parsed `room activity` filters. Every present filter must match
 /// (AND); an absent one matches everything.
 #[derive(Debug, Default)]
 pub(super) struct ActivityFilter {
@@ -335,7 +335,7 @@ pub(super) fn read_fresh_ci_snapshot(
     Ok(snapshot)
 }
 
-/// One canonical key's CI view after duplicate folding (#2473).
+/// One canonical key's CI view after duplicate folding.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct IndexedRepoCi {
     pub(super) ci: PersistedRepoCi,
@@ -392,7 +392,7 @@ pub(super) fn index_ci_entries(
     entries
 }
 
-/// A room's aggregate CI view (#2473): the legacy tri-state plus its detail.
+/// A room's aggregate CI view: the legacy tri-state plus its detail.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct RoomCi {
     pub(super) state: &'static str,
@@ -444,7 +444,7 @@ pub(super) fn repo_unknown_reason(entry: Option<&IndexedRepoCi>) -> Option<&'sta
 /// explicit unknown unless another repository is running. Pure, so the whole
 /// tri-state is unit-tested without files.
 ///
-/// #2473: `gate_reason` is the gate/snapshot reason (`ci-disabled`,
+/// `gate_reason` is the gate/snapshot reason (`ci-disabled`,
 /// `daemon-not-live`, `snapshot-unavailable`) when no entry could be read. Run
 /// ids / PRs are reported only when running; the reason only when unknown.
 pub(super) fn aggregate_room_ci(

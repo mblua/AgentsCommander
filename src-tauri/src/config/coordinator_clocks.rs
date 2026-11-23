@@ -21,7 +21,7 @@ use crate::filesystem::coordinator_clocks as clock_io;
 /// update so we do not emit/persist per keystroke.
 const COALESCE_SECS: i64 = 10;
 
-/// (#2413) Orders close-marker changes made by coordinator creates with their
+/// Orders close-marker changes made by coordinator creates with their
 /// events. The create's clear and a failed create's restore each hold it from
 /// the clocks change through their emits, so the UI receives their events in
 /// the same order as the clock changes. Taken before the clocks lock, never
@@ -45,7 +45,7 @@ impl CoordinatorCreateOrder {
 
 /// Persisted per-coordinator state, keyed by the coordinator FQN
 /// (`<project>:<wg>/<agent>`). One entry holds the persisted facts behind the
-/// unified idle counter (#580): the user-message clock (`last_user_message_at`),
+/// unified idle counter: the user-message clock (`last_user_message_at`),
 /// the last-real-activity clock (`last_activity_at`), and the auto-closed marker
 /// (`auto_closed_at`). All are wall-clock, persisted, FQN-keyed, and survive
 /// restart, so they share one map / one file (one source of truth). The badge and
@@ -57,7 +57,7 @@ pub struct ClockEntry {
     /// Badge clock: time of the user's last message to this coordinator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_user_message_at: Option<DateTime<Utc>>,
-    /// (#580) Wall-clock of the last REAL team activity (any member or the
+    /// Wall-clock of the last REAL team activity (any member or the
     /// coordinator), advanced by the auto-close evaluator from the in-memory
     /// silence clock. With `last_user_message_at` it forms the unified idle
     /// anchor `team_idle_since = max(last_user_message_at, last_activity_at)`,
@@ -72,13 +72,13 @@ pub struct ClockEntry {
     /// error exit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_closed_at: Option<DateTime<Utc>>,
-    /// #588 Manual-close marker: set when this coordinator was closed manually
+    /// Manual-close marker: set when this coordinator was closed manually
     /// by the user; cleared on reopen. `Some` => show the "manually-closed" pill.
     /// Mutually exclusive with `auto_closed_at` (hardened in `mark_*`), but the
     /// renderer treats manual as the winner if both were ever set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manually_closed_at: Option<DateTime<Utc>>,
-    /// (#756) Durable fresh-conversation intent, mirrored from the session
+    /// Durable fresh-conversation intent, mirrored from the session
     /// record's `start_fresh_on_restore` for coordinators. `Some` means: the
     /// newest provider transcript for this cwd predates the user's last
     /// fresh-boundary action (restart or successful logical clear: /clear or Pi
@@ -93,7 +93,7 @@ pub struct ClockEntry {
 }
 
 impl ClockEntry {
-    /// (#580) The unified team-idle anchor for this coordinator: the newer of the
+    /// The unified team-idle anchor for this coordinator: the newer of the
     /// user-message and last-activity clocks (`max`), or None if neither is set.
     /// The badge displays and auto-close triggers on this value. Single source for
     /// the max rule; mirrors `auto_close::team_idle_since_secs`, which folds the
@@ -116,13 +116,13 @@ pub struct CoordinatorClocks {
     map: HashMap<String, ClockEntry>,
     #[serde(skip)]
     dirty: bool,
-    /// (#2413) In-flight coordinator creates per FQN. In-memory only; never
+    /// In-flight coordinator creates per FQN. In-memory only; never
     /// persisted, never marks dirty.
     #[serde(skip)]
     creates: HashMap<String, CreateLedger>,
 }
 
-/// (#2413) Close markers a coordinator create cleared, kept so a failed create
+/// Close markers a coordinator create cleared, kept so a failed create
 /// can put them back with their original timestamps.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ClearedCloseMarkers {
@@ -130,7 +130,7 @@ pub struct ClearedCloseMarkers {
     pub manually_closed_at: Option<DateTime<Utc>>,
 }
 
-/// (#2413) Creates still running for one FQN and the markers they cleared.
+/// Creates still running for one FQN and the markers they cleared.
 #[derive(Debug, Default)]
 struct CreateLedger {
     active: u32,
@@ -138,7 +138,7 @@ struct CreateLedger {
 }
 
 impl CoordinatorClocks {
-    /// (#2413) Record the start of a coordinator create that cleared `cleared`.
+    /// Record the start of a coordinator create that cleared `cleared`.
     /// Per field, a newly cleared value replaces the escrowed one (it is the
     /// latest state).
     pub fn begin_coordinator_create(&mut self, fqn: &str, cleared: ClearedCloseMarkers) {
@@ -152,7 +152,7 @@ impl CoordinatorClocks {
         }
     }
 
-    /// (#2413) End one coordinator create. Returns the markers to restore: only
+    /// End one coordinator create. Returns the markers to restore: only
     /// for a failure that ends the last in-flight create. A success wipes the
     /// escrow: a session opened, so the markers must stay cleared.
     pub fn finish_coordinator_create(

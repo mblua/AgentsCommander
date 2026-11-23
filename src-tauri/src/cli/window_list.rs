@@ -1,6 +1,6 @@
 //! `window-list` CLI verb: prints the live native windows as `id<TAB>title`
 //! lines so users and agents can discover the canonical decimal `window_id`
-//! that `window-screenshot` requires. Windows only. Issue #1315.
+//! that `window-screenshot` requires. Windows only.
 
 use clap::Args;
 

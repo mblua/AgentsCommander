@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// #1318 - relative path of the coding-agent catalog publication row.
+/// Relative path of the coding-agent catalog publication row.
 pub(crate) const CODING_AGENTS_CATALOG_REL_PATH: &str = ".ac/coding-agents/agents.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

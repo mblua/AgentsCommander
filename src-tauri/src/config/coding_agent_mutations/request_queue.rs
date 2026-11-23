@@ -37,7 +37,7 @@ pub struct CodingAgentRequest {
 pub struct CodingAgentResult {
     pub request_id: String,
     pub ok: bool,
-    /// #786: `"add"|"update"|"remove"` on success. Mirrored into the daemon-path
+    /// `"add"|"update"|"remove"` on success. Mirrored into the daemon-path
     /// stdout so the JSON shape matches the direct (GUI-closed) path exactly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub op: Option<String>,
@@ -123,7 +123,7 @@ pub fn write_coding_agent_request(dir: &Path, req: &CodingAgentRequest) -> Resul
     Ok(final_path)
 }
 
-/// #786 R4: the result writer OWNS the results dir (`create_dir_all` first) so
+/// R4: the result writer OWNS the results dir (`create_dir_all` first) so
 /// the very first result on a fresh config dir cannot fail for a missing dir.
 pub fn write_coding_agent_result(
     results_dir: &Path,
@@ -151,7 +151,7 @@ pub fn read_coding_agent_result(results_dir: &Path, request_id: &str) -> Option<
     serde_json::from_slice(&bytes).ok()
 }
 
-/// #786 R5: expiry with a saturating subtraction. A `created_at_ms` in the
+/// R5: expiry with a saturating subtraction. A `created_at_ms` in the
 /// future (wall clock stepped back between the CLI write and the poller read)
 /// yields age 0, so a fresh request is never wrongly rejected as expired.
 pub fn is_expired(created_at_ms: u64, now_ms: u64) -> bool {
@@ -164,7 +164,7 @@ pub(super) fn processing_path_for(request_path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// #786 R8: process ONE request file end to end. PURE of Tauri:
+/// R8: process ONE request file end to end. PURE of Tauri:
 /// `settings` is the candidate to mutate and `save` persists it. Order (R2):
 /// claim (atomic rename to `.processing`) -> parse -> expiry -> apply -> write
 /// result -> delete `.processing` LAST. Path-parameterized for tempdir tests.

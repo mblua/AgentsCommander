@@ -1,7 +1,7 @@
 //! `telegram-send-message` sends original plain text without an attachment.
 //! `telegram-send-image` CLI verb — sends a local image (or generic file) to
 //! a configured Telegram bot from an external terminal, bypassing the Tauri
-//! frontend. Issue #282.
+//! frontend.
 //!
 //! Reuses `commands::telegram::perform_send_image` so size/extension/symlink
 //! validation and multipart-upload logic live in exactly one place.

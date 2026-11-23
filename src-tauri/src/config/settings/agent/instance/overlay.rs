@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-/// #2716 (B3) - puts the agents file's groups back into the just-written object
+/// Puts the agents file's groups back into the just-written object
 /// for the save's re-decode. Like the load merge, `[]` stands in when neither file
 /// holds `agents`.
 pub(crate) fn restore_agents_groups_for_redecode(written: &mut Value, groups: Map<String, Value>) {

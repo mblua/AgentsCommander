@@ -14,7 +14,7 @@ use super::{
     ROOT_ROLE_MD,
 };
 
-/// #1614 D8a: `ROOT_ROLE_MD` exactly as it shipped through base commit
+/// D8a: `ROOT_ROLE_MD` exactly as it shipped through base commit
 /// d7008b34, frozen so a pristine pre-rename root context keeps being
 /// recognized. Wired into BOTH root lists: the `old_generated` array in
 /// `is_known_generated_root_context_template` AND `migrate_root_role_file`'s
@@ -96,7 +96,7 @@ Before creating any new specialist agent (any role-defined `create-agent-matrix`
     r#"invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
 "#
 );
-/// #3024: `Context.root-agent.md` exactly as it shipped at base commit f6e5d08,
+/// `Context.root-agent.md` exactly as it shipped at base commit f6e5d08,
 /// before the delegated-report rule was scoped to the assigner. Frozen so a
 /// pristine v9 copy keeps auto-upgrading. Never edit.
 ///
@@ -104,7 +104,7 @@ Before creating any new specialist agent (any role-defined `create-agent-matrix`
 ///     git show f6e5d08:src-tauri/src/config/root_agent_defaults/Context.root-agent.md
 /// len 19240, sha256
 /// 3b323448ab8ed018b9111aae969e0bf6a46186772b469e6cf8958390d824a6d9. Raw string
-/// literal, never `include_str!` (#914): LF everywhere. Pinned by
+/// literal, never `include_str!`: LF everywhere. Pinned by
 /// `root_context_before_reporting_scope_snapshot_is_byte_exact`.
 pub(crate) const ROOT_CONTEXT_BEFORE_REPORTING_SCOPE_MD: &str = concat!(
     r#"# AgentsCommander Root Runtime "#,
@@ -540,7 +540,7 @@ This file owns the Root instructions. Edits, removed sections, and empty bytes t
 "#
 );
 
-/// #1555: preserve the pristine template before the minimal resume policy.
+/// Preserve the pristine template before the minimal resume policy.
 const ROOT_CONTEXT_BEFORE_MINIMAL_HANDOFF_MD: &str = concat!(
     "# AgentsCommander Root Runtime Context\n\nYou are running inside an AgentsCommander sess",
     "ion - a terminal session manager coordinating multiple AI agents.\n\n## Core Concepts\n",

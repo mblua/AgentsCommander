@@ -6,13 +6,13 @@
 
 use std::path::{Path, PathBuf};
 
-// ── #1077 portable instance-relative path codec ────────────────────────────
+// ── Portable instance-relative path codec ────────────────────────────
 //
 // Encodes/decodes the OS-neutral, `/`-separated companion form that pairs an
 // absolute project path with the running executable's instance base. The wire
 // grammar is deliberately strict and fail-closed: every decode rejection means
 // the companion "did not load" and the absolute side is used instead. See
-// plan #1077 §3.3. JSON extraction/serialization of these strings lives in
+// the plan §3.3. JSON extraction/serialization of these strings lives in
 // `config/settings.rs`; this module owns only the lexical grammar.
 
 /// Reasons a persisted instance-relative companion string fails to decode.
