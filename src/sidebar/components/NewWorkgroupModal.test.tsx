@@ -648,3 +648,99 @@ describe("New Room team search and optional title (#2788)", () => {
     expect(fake.callsFor("create_workgroup")).toHaveLength(2);
   });
 });
+
+describe("#4945 New Room label association and combobox baseline", () => {
+  const labelFor = (id: string) =>
+    document.querySelector<HTMLLabelElement>(`label[for="${id}"]`)!;
+  const cancelBtn = () =>
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="newRoom.cancel"]')!;
+  const expectLabelled = (id: string, text: string, control: HTMLElement, away: HTMLElement) => {
+    const label = labelFor(id);
+    expect(label.textContent).toBe(text);
+    expect(label.control).toBe(control);
+    const labels = Array.from((control as HTMLInputElement).labels ?? []);
+    expect(labels).toEqual([label]);
+    away.focus();
+    expect(document.activeElement).toBe(away);
+    // jsdom forwards label activation as a click on the control but, unlike
+    // browsers, does not move focus; pin that and focus the forwarded target.
+    const forwarded: EventTarget[] = [];
+    const seen = (e: Event) => forwarded.push(e.target!);
+    control.addEventListener("click", seen);
+    label.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    control.removeEventListener("click", seen);
+    expect(forwarded).toEqual([control]);
+    expect(document.activeElement).toBe(away);
+    (forwarded[0] as HTMLElement).focus();
+    expect(document.activeElement).toBe(control);
+  };
+
+  it("Team label (AaHUB_6qkehT9D_3bUHY) is bound to new-room-team-search", () => {
+    mount();
+    expectLabelled("new-room-team-search", "Team", search(), cancelBtn());
+  });
+
+  it("Task Title label (AaHUB_6qkehT9D_3bUHd) is bound to new-room-task-title", () => {
+    mount();
+    expect(title().id).toBe("new-room-task-title");
+    expectLabelled("new-room-task-title", "Task Title", title(), cancelBtn());
+  });
+
+  it("positive control: a for/id mismatch is detected by the same assertions", () => {
+    mount();
+    const stray = document.createElement("label");
+    stray.htmlFor = "new-room-task-title-missing";
+    stray.textContent = "Task Title";
+    document.body.appendChild(stray);
+    expect(stray.control).toBeNull();
+    expect(Array.from(title().labels ?? [])).not.toContain(stray);
+    expect(() => expect(stray.control).toBe(title())).toThrow();
+  });
+
+  it("baseline: clicking a row confirms the team", () => {
+    mount();
+    choose("Beta");
+    expect(confirmed().textContent).toBe("Selected team: Beta");
+    expect(list().hidden).toBe(true);
+  });
+
+  it("baseline: row mousedown keeps focus in the search input", () => {
+    mount();
+    search().focus();
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    rows()[0].dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(search());
+  });
+
+  it("baseline: ArrowDown then Enter on the combobox confirms via aria-activedescendant", () => {
+    mount();
+    search().focus();
+    key(search(), "ArrowDown");
+    key(search(), "ArrowDown");
+    expect(search().getAttribute("aria-activedescendant")).toBe("new-room-team-option-1");
+    expect(key(search(), "Enter").defaultPrevented).toBe(true);
+    expect(confirmed().textContent).toBe("Selected team: Beta");
+    expect(document.activeElement).toBe(search());
+  });
+
+  it("baseline: Escape closes the list first, then the modal", () => {
+    const { onClose } = mount();
+    search().focus();
+    expect(list().hidden).toBe(false);
+    key(search(), "Escape");
+    expect(list().hidden).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+    key(search(), "Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("baseline: Tab closes the list and does not cancel leaving", () => {
+    mount();
+    search().focus();
+    expect(list().hidden).toBe(false);
+    expect(key(search(), "Tab").defaultPrevented).toBe(false);
+    expect(list().hidden).toBe(true);
+    expect(confirmed().textContent).toBe("No team selected.");
+  });
+});

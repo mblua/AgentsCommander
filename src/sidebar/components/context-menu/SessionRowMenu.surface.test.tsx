@@ -593,3 +593,130 @@ describe("#1871 SessionRowMenu surface mechanics", () => {
     expect(q("rootAgent.menu")).not.toBeNull();
   });
 });
+
+// #4945 baseline: click locality of the root surface and the Add to Group flyout.
+describe("#4945 SessionRowMenu surface propagation baseline", () => {
+  const countWindow = (types: string[]) => {
+    const seen: string[] = [];
+    const fn = (e: Event) => seen.push(e.type);
+    for (const t of types) window.addEventListener(t, fn);
+    return { seen, stop: () => types.forEach((t) => window.removeEventListener(t, fn)) };
+  };
+  const rightClick = (el: Element): boolean =>
+    el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    host?.dispose();
+    host = null;
+    vi.useRealTimers();
+    cleanupDom?.();
+    cleanupDom = null;
+    document.body.replaceChildren();
+    vi.restoreAllMocks();
+  });
+
+  it("root interior click keeps the menu open and reaches the window zero times", async () => {
+    const h = mountHost();
+    await openMenu();
+    const win = countWindow(["click"]);
+    click(menuEl());
+    win.stop();
+    expect(win.seen).toHaveLength(0);
+    expect(h.onDismiss).not.toHaveBeenCalled();
+    expect(q("rootAgent.menu")).not.toBeNull();
+  });
+
+  it("a descendant menu item still activates", async () => {
+    const onSelect = vi.fn();
+    mountHost();
+    await openMenu({ caps: { restart: { onSelect } } });
+    click(q("rootAgent.restart")!);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("outside click dismisses", async () => {
+    const h = mountHost();
+    await openMenu();
+    click(document.body);
+    expect(h.onDismiss).toHaveBeenCalledTimes(1);
+    expect(q("rootAgent.menu")).toBeNull();
+  });
+
+  it("outside right-click dismisses", async () => {
+    const h = mountHost();
+    await openMenu();
+    rightClick(document.body);
+    expect(h.onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape dismisses", async () => {
+    const h = mountHost();
+    await openMenu();
+    windowKey("Escape");
+    expect(h.onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleanup: after dismiss further window clicks do not dismiss again", async () => {
+    const h = mountHost();
+    await openMenu();
+    windowEvent("click");
+    windowEvent("click");
+    windowEvent("contextmenu");
+    expect(h.onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("Add to Group: keyboard Enter and Space on the trigger open the flyout", async () => {
+    for (const key of ["Enter", " "]) {
+      const h = host ?? mountHost();
+      await openMenu({ caps: { addToGroup: groupSpec() } });
+      expect(q(GROUP_TEST_IDS.flyout)).toBeNull();
+      const notCanceled = keyDown(q(GROUP_TEST_IDS.trigger)!, key);
+      expect(notCanceled).toBe(false);
+      expect(q(GROUP_TEST_IDS.flyout)).not.toBeNull();
+      windowKey("Escape");
+      expect(h.onDismiss).toHaveBeenCalled();
+    }
+  });
+
+  it("Add to Group: mouseenter inside the grace cancels the pending close", async () => {
+    mountHost();
+    await openMenu({ caps: { addToGroup: groupSpec() } });
+    const trigger = q(GROUP_TEST_IDS.trigger)!;
+    mouseEnter(trigger);
+    mouseLeave(trigger);
+    vi.advanceTimersByTime(179);
+    mouseEnter(q(GROUP_TEST_IDS.flyout)!);
+    vi.advanceTimersByTime(500);
+    expect(q(GROUP_TEST_IDS.flyout)).not.toBeNull();
+  });
+
+  it("Add to Group: mouseleave from the flyout eventually closes it", async () => {
+    mountHost();
+    await openMenu({ caps: { addToGroup: groupSpec() } });
+    mouseEnter(q(GROUP_TEST_IDS.trigger)!);
+    const flyout = q(GROUP_TEST_IDS.flyout)!;
+    mouseEnter(flyout);
+    mouseLeave(flyout);
+    vi.advanceTimersByTime(180);
+    expect(q(GROUP_TEST_IDS.flyout)).toBeNull();
+  });
+
+  it("Add to Group: flyout clicks and right-clicks reach the window zero times", async () => {
+    const h = mountHost();
+    await openMenu({ caps: { addToGroup: groupSpec() } });
+    mouseEnter(q(GROUP_TEST_IDS.trigger)!);
+    const flyout = q(GROUP_TEST_IDS.flyout)!;
+    const win = countWindow(["click", "contextmenu"]);
+    click(flyout);
+    rightClick(flyout);
+    win.stop();
+    expect(win.seen).toHaveLength(0);
+    expect(h.onDismiss).not.toHaveBeenCalled();
+    expect(q(GROUP_TEST_IDS.flyout)).not.toBeNull();
+  });
+});

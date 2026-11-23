@@ -90,4 +90,86 @@ describe("AcDiscoveryPanel context files overlay keyboard (#2660)", () => {
     await waitFor(() => expect(fake.callsFor("set_replica_context_files")).toHaveLength(1));
     expect(overlay()).not.toBeNull();
   });
+
+  const replicaMenu = () => document.body.querySelector<HTMLElement>(".session-context-menu");
+  const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const countWindow = (type: string) => {
+    const seen: Event[] = [];
+    const fn = (e: Event) => seen.push(e);
+    window.addEventListener(type, fn);
+    return { seen, stop: () => window.removeEventListener(type, fn) };
+  };
+  const openReplicaMenu = async () => {
+    await waitFor(() => expect(rendered.root.querySelector(".replica-item")).not.toBeNull());
+    contextMenu(rendered.root.querySelector(".replica-item")!);
+    await waitFor(() => expect(replicaMenu()).not.toBeNull());
+    await tick();
+  };
+  const clickEvt = (el: Element) =>
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+  it("replica menu propagation: interior click stays open with zero window clicks", async () => {
+    await openReplicaMenu();
+    const win = countWindow("click");
+    clickEvt(replicaMenu()!);
+    win.stop();
+    expect(win.seen).toHaveLength(0);
+    expect(replicaMenu()).not.toBeNull();
+  });
+
+  it("replica menu propagation: child menu button acts", async () => {
+    await openReplicaMenu();
+    const option = Array.from(replicaMenu()!.querySelectorAll<HTMLElement>("button"))
+      .find((el) => el.textContent?.trim() === "Context Files")!;
+    clickEvt(option);
+    await waitFor(() => expect(overlay()).not.toBeNull());
+    expect(replicaMenu()).toBeNull();
+  });
+
+  it("replica menu propagation: non-Escape key keeps it open; Escape dismisses", async () => {
+    await openReplicaMenu();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", cancelable: true }));
+    expect(replicaMenu()).not.toBeNull();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+    await waitFor(() => expect(replicaMenu()).toBeNull());
+  });
+
+  it("replica menu propagation: outside click dismisses", async () => {
+    await openReplicaMenu();
+    clickEvt(document.body);
+    await waitFor(() => expect(replicaMenu()).toBeNull());
+  });
+
+  it("Context Files: backdrop click closes", async () => {
+    await openPanel();
+    clickEvt(overlay()!);
+    await waitFor(() => expect(overlay()).toBeNull());
+  });
+
+  it("Context Files: document Escape closes", async () => {
+    await openPanel();
+    press(document.body, "Escape");
+    await waitFor(() => expect(overlay()).toBeNull());
+  });
+
+  it("Context Files: native Close button closes", async () => {
+    await openPanel();
+    const close = document.body.querySelector<HTMLButtonElement>(".ctx-files-close")!;
+    expect(close.tagName).toBe("BUTTON");
+    clickEvt(close);
+    await waitFor(() => expect(overlay()).toBeNull());
+  });
+
+  it("Context Files: nested interior click keeps it open, zero window clicks", async () => {
+    await openPanel();
+    const win = countWindow("click");
+    const nested = document.body.querySelector<HTMLElement>(".ctx-files-header")!;
+    clickEvt(nested);
+    clickEvt(panel());
+    win.stop();
+    expect(win.seen).toHaveLength(0);
+    expect(overlay()).not.toBeNull();
+    clickEvt(document.body.querySelector(".ctx-files-close")!);
+    await waitFor(() => expect(overlay()).toBeNull());
+  });
 });

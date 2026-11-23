@@ -7,6 +7,7 @@ import SidebarApp from "../App";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   baseSettings,
+  contextMenu,
   installBrowserDomStubs,
   registerCompactHostForTests,
   renderWithFakeTransport,
@@ -424,5 +425,74 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
     await Promise.resolve();
     expect(currentHotkey()).toBe(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
     expect(r.toggle.getAttribute("aria-label")).toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
+  });
+
+  // #4945 P5 characterization: pointer, native and contextmenu paths on the
+  // banner group, pinned in both expanded and compact modes.
+  const MENU_SEL = '[data-ac-testid="rootAgent.menu"]';
+  const fire = (el: Element) =>
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+  describe.each([
+    ["expanded", false],
+    ["compact", true],
+  ] as const)("9. #4945 %s banner activation paths", (_mode, isCompact) => {
+    beforeEach(() => {
+      setSidebarCompactMode(isCompact);
+      sessionsStore.setSessions([rootLive()]);
+    });
+
+    it("9a. a bubbling click on the group hook opens the session exactly once", async () => {
+      const r = renderBanner();
+      expect(r.root.querySelector(BANNER_SEL)).toBe(r.banner);
+      expect(r.banner.getAttribute("role")).toBe("group");
+      fire(r.banner);
+      await waitFor(() => expect(selections(r.fake)).toBe(1));
+      await waitFor(() => expect(r.open.disabled).toBe(false));
+      expect(selections(r.fake)).toBe(1);
+    });
+
+    it("9b. a click on the native open button activates exactly once", async () => {
+      const r = renderBanner();
+      fire(r.open);
+      await waitFor(() => expect(selections(r.fake)).toBe(1));
+      await waitFor(() => expect(r.open.disabled).toBe(false));
+      expect(selections(r.fake)).toBe(1);
+    });
+
+    it("9c. the toggle and a nested control cause zero session opens", async () => {
+      vi.spyOn(voiceRecorder, "autoExecuteSessionId").mockReturnValue("root");
+      const cancel = vi
+        .spyOn(voiceRecorder, "cancelAutoExecute")
+        .mockImplementation(() => undefined);
+      const r = renderBanner();
+      fire(r.toggle);
+      expect(sidebarCompact()).toBe(!isCompact);
+      const nested = r.banner.querySelector(".voice-cancel-execute") as HTMLButtonElement;
+      expect(nested).not.toBeNull();
+      fire(nested);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(selections(r.fake)).toBe(0);
+    });
+
+    it("9d. a bubbling contextmenu on the group opens the menu, no session open", async () => {
+      const r = renderBanner();
+      expect(document.querySelector(MENU_SEL)).toBeNull();
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      r.banner.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      await waitFor(() => expect(document.querySelector(MENU_SEL)).not.toBeNull());
+      expect(selections(r.fake)).toBe(0);
+    });
+
+    it("9e. a contextmenu from a child (the status dot) also opens the menu", async () => {
+      const r = renderBanner();
+      const dot = r.banner.querySelector(":scope > .session-item-status") as HTMLElement;
+      contextMenu(dot);
+      await waitFor(() => expect(document.querySelector(MENU_SEL)).not.toBeNull());
+      expect(selections(r.fake)).toBe(0);
+    });
   });
 });
