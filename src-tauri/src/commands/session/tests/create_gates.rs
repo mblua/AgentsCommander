@@ -381,7 +381,7 @@ async fn create_session_inner_rolls_back_pre_created_session_on_spawn_error() {
         true,
         None,
         None,
-        // #973 - headless caller: no terminal to measure, keep 120x30.
+        // Headless caller: no terminal to measure, keep 120x30.
         None,
         CreateSelectionIntent::User,
     )
@@ -401,7 +401,7 @@ async fn create_session_inner_rolls_back_pre_created_session_on_spawn_error() {
     assert_eq!(backend.killed().len(), 1);
 }
 
-/// #973 - THE REGRESSION. Red against main, which hardcodes `cols: 120, rows: 30`.
+/// THE REGRESSION. Red against main, which hardcodes `cols: 120, rows: 30`.
 ///
 /// AC used to open every `ConPTY` at 120x30 and let the frontend correct it 300-500 ms
 /// later. That correction lands inside a coding agent's TUI startup, and a resize there
@@ -801,7 +801,7 @@ async fn create_session_opens_the_pty_at_the_size_the_view_supplied() {
     );
 }
 
-/// #973 - backward compatibility. Every headless caller (startup restore, the delivery
+/// Backward compatibility. Every headless caller (startup restore, the delivery
 /// loop, the phone mailbox, the CLI, tests) has no terminal to measure and must keep
 /// AC's historical 120x30. Those sessions are never attached to a view, so nothing
 /// resizes them, and none of them ever hit this bug.
@@ -847,7 +847,7 @@ async fn create_session_without_a_view_keeps_the_historical_120x30() {
     );
 }
 
-/// #973 - opening a 0-column `ConPTY` would be worse than the bug we are fixing, so a
+/// Opening a 0-column `ConPTY` would be worse than the bug we are fixing, so a
 /// degenerate fitted size must fall back rather than be honoured.
 ///
 /// It does not come from xterm: `fit()` clamps to `MINIMUM_COLS` = 2 / `MINIMUM_ROWS` = 1. It is
@@ -895,7 +895,7 @@ async fn a_degenerate_fitted_size_falls_back_instead_of_opening_a_zero_column_pt
     );
 }
 
-/// #2411 T1: the coordinator-create helper seeds the badge and clears both
+/// T1: the coordinator-create helper seeds the badge and clears both
 /// close markers. Deleting any of its three clock calls fails this test.
 #[test]
 fn note_coordinator_create_on_app_seeds_and_clears_both_markers() {

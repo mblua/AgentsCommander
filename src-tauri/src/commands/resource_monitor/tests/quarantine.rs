@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1151 (W6) - a backend that quarantines the first cleanup on a stubborn child and,
+/// A backend that quarantines the first cleanup on a stubborn child and,
 /// once armed, BLOCKS inside `observe_tree`, which is `kill_group_inner`'s first
 /// backend call and therefore a deterministic barrier. Releasing the gate also makes
 /// the child verifiably gone, so the parked retry settles to Terminated.
@@ -133,7 +133,7 @@ impl ProcessTreeBackend for QuarantineGatedBackend {
     }
 }
 
-// #1151 (W2) - a LIVE public session keeps the coordinator plus Job Object path
+// A LIVE public session keeps the coordinator plus Job Object path
 // exactly as before: the transaction runs, the session finalizes once, and the
 // registry-only orphan path is never entered.
 #[tokio::test]
@@ -218,7 +218,7 @@ async fn live_public_session_still_uses_coordinator() {
     coordinator.close_and_join().await;
 }
 
-// #1151 (W5) - NON-REGRESSION. A destroy-retained root agent keeps its row as Exited,
+// NON-REGRESSION. A destroy-retained root agent keeps its row as Exited,
 // so contains_public_or_pending is still true and the coordinator path stays. An
 // implementation that keyed the orphan decision on "the PTY is gone" rather than "the
 // session row is gone" would silently divert this working path onto the new one.
@@ -303,7 +303,7 @@ async fn exited_row_still_uses_coordinator() {
     coordinator.close_and_join().await;
 }
 
-// #1151 (W6) - the orphan retry runs OFF the async runtime. kill_group can cost about
+// The orphan retry runs OFF the async runtime. kill_group can cost about
 // two seconds per stubborn PID, so inlining it would stall a Tokio worker.
 //
 // Exactly ONE worker thread is load-bearing, not a style choice: it makes "the async

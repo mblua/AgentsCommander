@@ -3,7 +3,7 @@ use super::*;
 /// Test 15: **Room demand scope.** A session in a room whose flag is off
 /// is not capturable and raises **no** Room demand, and no reader is
 /// spawned for it; the orchestrator session of a room with the flag on is
-/// capturable and raises one (#2756 U2a). This protects "rooms without the flag behave as
+/// capturable and raises one. This protects "rooms without the flag behave as
 /// today".
 #[tokio::test]
 async fn only_a_capturable_session_raises_the_room_demand() {
@@ -218,7 +218,7 @@ async fn a_detach_persistence_failure_releases_the_bot_demand_and_keeps_capture(
 
     // Capture continues with no send: the appended line reaches the slot
     // and acquires no `telegram.send_message` permit. The reader pins its
-    // first attach to the minted transcript (#2454), so "before detach"
+    // first attach to the minted transcript, so "before detach"
     // lands `Live`; `sends_before` is read after it, so the count holds.
     let dir = h.claude_projects_dir(&h.claude_config_dir, cwd);
     std::fs::create_dir_all(&dir).expect("transcript dir");
