@@ -1,6 +1,8 @@
+#[cfg(test)]
 use super::super::session::Session;
 use super::carrier::{acquire_carrier_mutation_permit, CarrierMutationPermit};
 use super::SessionManager;
+#[cfg(test)]
 use crate::pty::backend::SessionBackendKind;
 use uuid::Uuid;
 
@@ -108,13 +110,7 @@ impl SessionManager {
         clippy::too_many_arguments,
         reason = "PTY boundary checks target, sender, route, permit and both recipes"
     )]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn prepare_pty_input_boundary<'a, F, G>(
         &self,
         id: Uuid,
