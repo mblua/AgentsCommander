@@ -249,7 +249,7 @@ describe("sourceLabel", () => {
   });
 });
 
-describe("slugifyTemplateName dash trim (#4456 S8786)", () => {
+describe("slugifyTemplateName dash trim", () => {
   it.each([
     ["", ""],
     ["-", ""],
