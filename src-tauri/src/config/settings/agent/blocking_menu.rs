@@ -741,7 +741,7 @@ impl BlockingMenusStore {
         Self::with_layers(BlockingMenusFile::default(), local)
     }
 
-    /// #1925 - the downloaded cache plus the user layer; the argument order matches `resolve`.
+    /// The downloaded cache plus the user layer; the argument order matches `resolve`.
     pub(crate) fn with_layers(remote: BlockingMenusFile, local: BlockingMenusFile) -> Self {
         Self {
             shipped: shipped_blocking_menus(),
@@ -790,7 +790,7 @@ impl BlockingMenusStore {
     }
 
     /// D3 layer 0 first: an array still on the agent (settings.json not yet migrated, or an
-    /// overlay-owned agents array) is what applied before #1905 and keeps applying unchanged.
+    /// overlay-owned agents array) is what applied before the overlay and keeps applying unchanged.
     pub fn resolve_for(&self, agent: &AgentConfig) -> Vec<BlockingMenuEntry> {
         match &agent.blocking_menus {
             Some(entries) => entries.clone(),

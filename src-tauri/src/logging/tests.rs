@@ -1,5 +1,5 @@
 use super::*;
-// #612 the gate's enabled()/log() are `log::Log` trait methods; bring the
+// The gate's enabled()/log() are `log::Log` trait methods; bring the
 // trait into scope so the tests can call them on a `LevelGateLogger` value.
 use log::Log;
 
@@ -14,7 +14,7 @@ fn entry(message: &str) -> ErrorLogEntry {
     }
 }
 
-/// #3036 — an entry of emission-site type `type_id` carrying `message`.
+/// An entry of emission-site type `type_id` carrying `message`.
 fn typed(type_id: &str, message: &str) -> ErrorLogEntry {
     ErrorLogEntry {
         type_id: type_id.to_string(),
@@ -119,7 +119,7 @@ fn from_record_copies_all_fields_and_keeps_newlines() {
     assert_eq!(built.message, "line one\nline two");
 }
 
-/// #280 LOW-3 — companion to `from_record_redacts_telegram_token_in_message`
+/// LOW-3 — companion to `from_record_redacts_telegram_token_in_message`
 /// for the Gemini `?key=` shape. The voice.rs source-side fix moves
 /// the API key out of the URL entirely, but this defense-in-depth
 /// scrub catches any future caller that re-introduces the query
@@ -149,7 +149,7 @@ fn from_record_redacts_gemini_key_in_message() {
     );
 }
 
-/// #280 — the error modal payload reaches the UI; secrets must be
+/// The error modal payload reaches the UI; secrets must be
 /// scrubbed at `from_record` time so even a future caller that bypassed
 /// the source-side redaction in api.rs cannot leak a token into the
 /// frontend.
@@ -799,7 +799,7 @@ fn level_gate_atomic_flip_changes_verdict_at_runtime() {
 /// test, so the entry cannot be stolen between `log()` and `drain()`.
 #[test]
 fn error_record_survives_gate_at_strictest_level_and_reaches_264_sink() {
-    // #1883 — hold the shared sink-drain lock for the whole window: the
+    // Hold the shared sink-drain lock for the whole window: the
     // async mailbox test also read-and-clears this process-wide sink, so
     // drains must serialize. `blocking_lock()` is safe here because this
     // `#[test]` runs outside Tokio.

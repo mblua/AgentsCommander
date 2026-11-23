@@ -69,7 +69,7 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     // Bind once, broadcast to two consumers: the store write is for later
     // `pending.mgr.get_session` callers; the local-clone write is for the imminent emit.
     //
-    // DO NOT REMOVE OR GATE THIS CAPTURE. Issue #65 regression guard: removing
+    // DO NOT REMOVE OR GATE THIS CAPTURE. Regression guard: removing
     // or wrapping in a condition reintroduces the exact bug this plan fixes.
     // See _plans/bug-statusbar-dynamic-launch-args.md §10 and §15 for rationale.
     let effective = pending.shell_args.clone();
@@ -89,7 +89,7 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         }
     }
     pending.session.effective_shell_args = Some(effective);
-    // #3516 - the folder share lives to the end of `spawn`, so a preflight test never
+    // The folder share lives to the end of `spawn`, so a preflight test never
     // overlaps this launch.
     let (_share, stages) = share_and_stages(ctx, &pending, &spawn_cwd);
     let stages = match stages {
@@ -111,7 +111,7 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
             session_env_warnings: &mut session_env_warnings,
         },
     );
-    // #598 - seed the config folder before the PTY starts so the agent sees the
+    // Seed the config folder before the PTY starts so the agent sees the
     // templated config. Best-effort: never aborts the spawn. This is the single
     // execution chokepoint every real spawn funnels through (create / replica /
     // other variants, delivery / mailbox / web wakes); prevalidation never hits
@@ -134,7 +134,7 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
         LaunchGate::Refused(message) => return fail_launch(ctx, pending, message).await,
     }
 
-    // #2124 - the idle tuning this launch hands the detector: the agent kind
+    // The idle tuning this launch hands the detector: the agent kind
     // plus the EFFECTIVE catalog entry matched to the configured command.
     // One settings snapshot, released before the blocking filesystem read;
     // no lock is held across that I/O.
@@ -166,7 +166,7 @@ pub(crate) async fn spawn<'a: 'b, 'b, R: tauri::Runtime>(
     spawn_backend(ctx, input, spawn_spec, launch_witness, spawn_mark).await
 }
 
-/// #3516 - shares the launch folder (local only) and resolves the preflight stages.
+/// Shares the launch folder (local only) and resolves the preflight stages.
 /// The share is returned even on refusal so it is held across `fail_launch`.
 fn share_and_stages<'c, R: tauri::Runtime>(
     ctx: &'c CreateBodyContext<'_, R>,
@@ -207,7 +207,7 @@ enum LaunchGate {
     Refused(String),
 }
 
-/// #3516 - strict seed, then the same revalidation pair as `spawn_backend` inside
+/// Strict seed, then the same revalidation pair as `spawn_backend` inside
 /// `run_chain_if_current`, so a superseded restart runs zero preflights.
 async fn gate_launch<R: tauri::Runtime>(
     ctx: &CreateBodyContext<'_, R>,
@@ -307,7 +307,7 @@ async fn spawn_backend<R: tauri::Runtime>(
         ..
     } = ctx;
     let id = input.session.id;
-    // (#2413) Spawn fence: set BEFORE the first await of spawn, so a drop at
+    // Spawn fence: set BEFORE the first await of spawn, so a drop at
     // any point inside or after spawn keeps the close markers cleared.
     if let Some(t) = marker_ticket
         .lock()
@@ -388,7 +388,7 @@ fn child_environment(
     let mut configured_env = recipe_env
         .map(<[(std::string::String, std::string::String)]>::to_vec)
         .unwrap_or_default();
-    // #930 - inject the copy directory as a host-path CLAUDE_CONFIG_DIR so the
+    // Inject the copy directory as a host-path CLAUDE_CONFIG_DIR so the
     // container env translation below maps it to /workspace/.claude and the copied
     // token is actually read. Only present when we will copy and the user set none.
     if let Some(dir) = injected_claude_config_dir {
@@ -428,7 +428,7 @@ fn resource_launch_metadata(
     agent_id: &Option<String>,
     agent_label: &Option<String>,
 ) -> ResourceLaunchMetadata {
-    // #516 - human-readable WG + agent identity for the Resource Monitor row,
+    // Human-readable WG + agent identity for the Resource Monitor row,
     // derived from the deterministic spawn cwd (not the user-renamable
     // session.name). Root agents carry no wg-/__agent_ segments, so label them
     // explicitly with the bare replica dir name.
@@ -447,7 +447,7 @@ fn resource_launch_metadata(
             (None, None)
         }
     };
-    // #566 - project folder name for the Resource Monitor row, derived from
+    // Project folder name for the Resource Monitor row, derived from
     // the same deterministic spawn cwd as the (workgroup, agent) pair above.
     let project = crate::config::teams::project_from_path(cwd);
     ResourceLaunchMetadata {
@@ -480,7 +480,7 @@ async fn run_config_seed_work(
             control.enter();
         }
         let _seed_guard = lock.blocking_lock_owned();
-        // #1065 Stage F: production records the config-seed publication
+        // Stage F: production records the config-seed publication
         // under the per-project gate, acquired AFTER this global lock
         // (plan section 6.3 lock order) and dropped before returning; a
         // `#[cfg(test)]` lib build stays non-emitting.
@@ -609,7 +609,7 @@ async fn prepare_config_seed_stage<'a: 'b, 'b, R: tauri::Runtime>(
         }
     }
 
-    // #1063 test-only barrier: the seed transaction (if any) has acquired and
+    // Test-only barrier: the seed transaction (if any) has acquired and
     // released the project gate, but the create is still pending and unfinalized,
     // so a deletion's pending-inclusive snapshot must still observe it. No-op in
     // production.
@@ -657,7 +657,7 @@ struct SpawnEnvironmentInput<'a> {
     session_env_warnings: &'a mut Vec<crate::pty::container_paths::ContainerEnvWarning>,
 }
 
-/// Credential env for a spawn: none for plain shells (#4780: temp rooms get it).
+/// Credential env for a spawn: none for plain shells (temp rooms get it).
 fn credential_env_for(
     agent_id: Option<&str>,
     token: &uuid::Uuid,
@@ -839,14 +839,14 @@ fn build_spawn_spec<R: tauri::Runtime>(
     BackendSpawnSpec {
         id,
         agent_id: agent_id.clone(),
-        // #942 - the CLI identity from the canonical detector (`agent_kind`, resolved
+        // The CLI identity from the canonical detector (`agent_kind`, resolved
         // at the top of this function). The profile id above cannot stand in for it:
         // it is opaque, several profiles can drive the same CLI, and a coding-agent
         // launch can carry no profile id at all.
         coding_agent: agent_kind,
         cmd: shell.to_owned(),
         args: shell_args.to_vec(),
-        // #1271 - the configured host shell paired with a resolved agent
+        // The configured host shell paired with a resolved agent
         // command, carried as one immutable snapshot (never as loose
         // program/argument fields, so the pairing invariant cannot drift).
         resolved_agent_host_shell: resolved_agent_host_shell.cloned(),
@@ -856,7 +856,7 @@ fn build_spawn_spec<R: tauri::Runtime>(
         } else {
             Some(cwd.to_owned())
         },
-        // #973 - open the PTY at the size the terminal is actually going to be, so the
+        // Open the PTY at the size the terminal is actually going to be, so the
         // frontend never has to resize a child that is still starting up. Callers with no
         // view (restore loop, delivery loop, mailbox, CLI, tests) get PtyViewport::DEFAULT,
         // which is the 120x30 AC always used.

@@ -5,8 +5,10 @@
 //! It owns no long-lived state; slots and protections live in `carrier`, file writes in
 //! `write` and `store`, row snapshots in the `snapshot` submodule, orphans in `orphan`.
 
+mod recapture;
 mod snapshot;
 
+use self::recapture::{park_unreadable, RecaptureBackoff};
 pub use self::snapshot::snapshot_sessions;
 pub(super) use self::snapshot::{deduplicate_preserving_affected, snapshot_aggregate};
 pub(crate) use self::snapshot::{sanitize_failed_recoverable, strip_auto_injected_args};
@@ -123,6 +125,7 @@ pub(super) async fn purge_sessions_outside_project_paths_in_dir_locked(
         let mut permit = acquire_carrier_mutation_permit().await;
         let settings = settings.unwrap_or_else(super::super::settings::load_settings_for_cli);
         let mut foreign_done = HashSet::new();
+        let mut backoff = RecaptureBackoff::new("purge_outside_roots");
         loop {
             let before =
                 load_sessions_from_path_with_settings(&snapshot_path(&dir), Some(&settings));
@@ -154,7 +157,7 @@ pub(super) async fn purge_sessions_outside_project_paths_in_dir_locked(
                 }
             }
             drop(permit);
-            tokio::task::yield_now().await;
+            backoff.wait("protection_or_slot_mismatch").await;
             permit = acquire_carrier_mutation_permit().await;
         }
     })
@@ -318,7 +321,7 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
     mode: PersistMode,
     initial: Option<InitialCarrierIntent>,
 ) -> Result<Option<PublishedCarrier>, String> {
-    let mut foreign_done = HashSet::new();
+    let (mut foreign_done, mut backoff) = (HashSet::new(), RecaptureBackoff::new("current_state"));
     loop {
         let directory_identity = probe_publication_directory(dir, initial.is_some());
         let captured = {
@@ -328,14 +331,14 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
             }
             if resolve_publication_slot(dir, directory_identity).is_none() {
                 drop(permit);
-                tokio::task::yield_now().await;
+                backoff.wait("publication_slot_unresolved").await;
                 continue;
             }
             let epoch = current_publication_epoch(dir);
             let protections = all_carrier_protections();
             let (Some(epoch), Some(protections)) = (epoch, protections) else {
                 drop(permit);
-                return std::future::pending().await;
+                return park_unreadable("current_state").await;
             };
             let captured = mgr
                 .with_current_carrier_snapshot(&permit, Clone::clone)
@@ -372,7 +375,7 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
             .is_some_and(|slot| protected_keys_survive(&slot, &prep.kept, &captured.0));
         if !current || epoch != Some(captured.2) || !valid_protections || !keys_survive {
             drop(carrier_permit);
-            tokio::task::yield_now().await;
+            backoff.wait("capture_mismatch").await;
             continue;
         }
         // ForeignDone belongs to this accepted core. A whole-snapshot recapture
@@ -415,7 +418,7 @@ pub(super) async fn persist_current_state_to_dir_for_project_paths_result_core(
             }
             GuardedSaveAttempt::Recapture => {
                 drop(carrier_permit);
-                tokio::task::yield_now().await;
+                backoff.wait("guarded_save_recapture").await;
             }
         }
     }
@@ -693,12 +696,13 @@ pub(super) async fn persist_preparation_owned(
     failed: &[PersistedSession],
 ) -> Result<(), String> {
     let mut foreign_done = HashSet::new();
+    let mut backoff = RecaptureBackoff::new("preparation_owned");
     loop {
         let identity = probe_publication_directory(dir, false);
         let slot = resolve_publication_slot(dir, identity);
         let Some(slot) = slot else {
             drop(permit);
-            tokio::task::yield_now().await;
+            backoff.wait("publication_slot_unresolved").await;
             permit = acquire_carrier_mutation_permit().await;
             continue;
         };
@@ -752,7 +756,7 @@ pub(super) async fn persist_preparation_owned(
             }
         }
         drop(permit);
-        tokio::task::yield_now().await;
+        backoff.wait("protection_mismatch").await;
         permit = acquire_carrier_mutation_permit().await;
         let mut snapshot = snapshot_sessions(mgr).await;
         snapshot.extend(failed.iter().cloned());

@@ -1,13 +1,14 @@
 //! Settings loading: parse, compose layers and run startup migrations.
 //! Owns `compose_settings_parts` (project projection, agents file, overlay, decode with base
-//! fallback), `load_settings` with its root-token and migration save, the #248 and window
-//! migrations, and read-only probes such as `read_log_level_only`.
+//! fallback), `load_settings` and when it runs the root-token and migration save, the #248 and
+//! window migrations, and read-only probes such as `read_log_level_only`.
 //! Source capture, CLI loaders, backups and validation live in submodules; writing lives in `save`.
 
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::project_path as projects;
 use super::project_path::ProjectPathPersistenceState;
+use super::save::persist_loaded_settings_migrations;
 #[cfg(test)]
 use super::select_project_source_locked;
 use super::{
@@ -17,9 +18,9 @@ use super::{
     duplicate_profile_document, empty_project_transaction,
     ensure_project_paths_migrated_at_labeled_path, export_agents_to_instance_file,
     export_blocking_menus_with_startup, finalize_agent_order, merge_agents_instance_groups,
-    normalize_agent_backend_configs, normalize_agent_order, physical_profile_rows,
-    production_instance_base, project_migration_error_labeled, project_physical_profiles,
-    read_agents_instance_file, read_agents_instance_file_labeled, read_merged_top_level_key,
+    normalize_agent_backend_configs, physical_profile_rows, production_instance_base,
+    project_migration_error_labeled, project_physical_profiles, read_agents_instance_file,
+    read_agents_instance_file_labeled, read_merged_top_level_key,
     read_raw_project_source_labeled_with_limit, recheck_registered_profile_gate,
     refresh_agent_id_hashes, refresh_pair_id_hashes, registered_profile_raw_gate,
     registered_profiles_for_read, repair_coding_agent_profiles_config,
@@ -842,51 +843,6 @@ pub(crate) fn apply_loaded_window_migrations(settings: &mut AppSettings) {
         log::info!(
             "[settings-migration] seeded main_always_on_top from legacy sidebar_always_on_top"
         );
-    }
-}
-
-pub(crate) fn persist_loaded_settings_migrations(
-    settings: &mut AppSettings,
-    path: &Path,
-    legacy_profiles_detected: bool,
-    legacy_profiles_contents: &Option<String>,
-    startup: Option<&StartupAgentRows>,
-) {
-    let backup_ok = if legacy_profiles_detected {
-        match legacy_profiles_contents.as_deref() {
-            Some(contents) => match write_pre_384_v1_backup(path, contents) {
-                Ok(()) => true,
-                Err(e) => {
-                    log::error!(
-                        "Failed to persist settings v2 migration backup; leaving settings.json \
-                            untouched: {e}"
-                    );
-                    false
-                }
-            },
-            None => true,
-        }
-    } else {
-        true
-    };
-    if backup_ok {
-        // #2306 P1 - the migration write is authorized, so persist explicit
-        // contiguous ordinals. Finalize already ran at load; this renumber is
-        // the write-side guarantee and cannot re-sort or revive stale values.
-        normalize_agent_order(&mut settings.agents);
-        // #1077: route the startup root-token/migration write through PRESERVE
-        // mode so it cannot erase project companions/conflicts before the
-        // first snapshot, and so a present-but-invalid file is never
-        // overwritten (the preserve writer's disk gate returns Err). On
-        // success adopt the fresh-decoded settings so runtime/hidden agree.
-        match save_settings_value_with_startup(settings, path, ProjectWriteMode::Preserve, startup)
-        {
-            Ok(written) => *settings = written,
-            Err(error) => {
-                let _ =
-                    report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings);
-            }
-        }
     }
 }
 

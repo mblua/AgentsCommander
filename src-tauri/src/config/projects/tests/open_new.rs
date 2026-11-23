@@ -472,7 +472,7 @@ fn synchronous_new_project_refreshes_and_saves_disk_authoritative_settings() {
         disk_settings.project_paths,
         vec![expected_disk_only, expected_new_project]
     );
-    // #2716 (B3): the file no longer decodes as a whole `AppSettings` (its
+    // B3: the file no longer decodes as a whole `AppSettings` (its
     // `agents` moved to the agents file), so the written key is read raw.
     let saved: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(settings_path.with_file_name("project-paths.json")).unwrap(),
@@ -529,7 +529,7 @@ fn new_is_idempotent_for_registration() {
     assert_eq!(s.project_paths.len(), 1);
 }
 
-// Stage E (#1064) clone/no-backfill registration sentinel (plan section 10.3
+// Stage E clone/no-backfill registration sentinel (plan section 10.3
 // item 7, section 12 item 10, acceptance item 28/38): a cloned project
 // arrives with its `.ac` already present; registration never recreates it,
 // and re-discovery from a fresh settings snapshot neither backfills nor

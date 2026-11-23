@@ -1,6 +1,6 @@
 use super::*;
 
-/// #2015: shared pre-v2 fixture: `letters.A.name` plus
+/// Shared pre-v2 fixture: `letters.A.name` plus
 /// `matrix.codex.A.argv` legacy data under `codingAgentProfiles`.
 pub(super) const LEGACY_PROFILES_SETTINGS_FIXTURE: &str = r##"{
         "defaultShell": "bash",
@@ -446,7 +446,7 @@ fn validate_agent_commands_rejects_claude_continue() {
 
 #[test]
 fn validate_rejects_banned_continue_flag_in_cell_params() {
-    // #597 - the cell holds params only; the provider token (claude) lives in
+    // The cell holds params only; the provider token (claude) lives in
     // the base. The ban must still catch `--continue` typed in the cell, which
     // only works if validation runs on the COMPOSED command.
     let mut settings = settings_with_agents(&[("Claude", "claude")]);
@@ -477,7 +477,7 @@ fn validate_rejects_banned_continue_flag_in_cell_params() {
 
 #[test]
 fn validate_allows_continue_flag_when_base_is_not_claude() {
-    // #597 - the --continue ban is claude-specific. With a codex base the
+    // The --continue ban is claude-specific. With a codex base the
     // composed `codex --continue` is allowed, proving validation keys off the
     // composed provider token, not the raw cell text.
     let mut settings = settings_with_agents(&[("Codex", "codex")]);
@@ -574,7 +574,7 @@ fn validate_agent_commands_allows_explicit_pi_controls_in_composed_profile_cells
     }
 }
 
-/// #1873 - a directly configured Muse recipe is user-authored: a Codex-looking
+/// A directly configured Muse recipe is user-authored: a Codex-looking
 /// value plus manual `resume --last` passes, and the legacy Codex scan never
 /// runs. Base recipe and composed profile cell behave the same.
 #[test]
@@ -615,7 +615,7 @@ fn validate_agent_commands_allows_direct_muse_arguments_with_legacy_provider_col
     assert!(validate_agent_commands(&settings).is_ok());
 }
 
-/// #1873 - the same token sequence behind an `env` wrapper is not Muse, so
+/// The same token sequence behind an `env` wrapper is not Muse, so
 /// the pre-existing Codex manual-resume rejection still fires before spawn.
 #[test]
 fn validate_agent_commands_rejects_wrapped_muse_collision_before_spawn() {
@@ -673,7 +673,7 @@ fn validate_agent_commands_allows_codex_config_value_with_resume_text() {
     assert!(validate_agent_commands(&settings).is_ok());
 }
 
-// #529 - instructions filename validation surfaces at settings save (G8/Q6).
+// Instructions filename validation surfaces at settings save (G8/Q6).
 
 #[test]
 fn validate_agent_commands_rejects_unsafe_instructions_filename() {

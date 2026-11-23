@@ -612,7 +612,7 @@ fn room_activity_writes_nothing() {
 
     let items = activity_json(&bin, "ProjectAlpha");
     assert_eq!(activity_room(&items, "room-1-dev-team")["working"], true);
-    // #2473 B6: the filters add no write either.
+    // B6: the filters add no write either.
     let filtered = run_json(
         &bin,
         &[
@@ -651,10 +651,10 @@ fn room_activity_writes_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// #2473 - `room activity` filters and CI detail fields.
+// `room activity` filters and CI detail fields.
 // ---------------------------------------------------------------------------
 
-/// Snapshot entries with the #2473 optional fields.
+/// Snapshot entries with the optional fields.
 fn write_detailed_snapshot(config_dir: &Path, generated_at: &str, entries: &[serde_json::Value]) {
     let snapshot = serde_json::json!({
         "schemaVersion": 1,

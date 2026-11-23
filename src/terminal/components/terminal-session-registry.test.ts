@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #1283 - terminal-session-registry contract (plan 9.1, 14.4, 14.5.9).
+// Terminal-session-registry contract (plan 9.1, 14.4, 14.5.9).
 //
 // Capacity four, activation-based LRU ordering, exactly-once WebGL/Xterm/DOM
 // disposal, no visible/ReplayPending eviction, safe duplicate destroy, and

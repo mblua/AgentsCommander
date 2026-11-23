@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { declarations, declValue, scanRules, type ScannedRule } from "./css-test-helpers";
 
-// #2236 phase 3 (#2283) - compact sidebar CSS, pinned as bytes on disk. jsdom applies no
+// Compact sidebar CSS, pinned as bytes on disk. jsdom applies no
 // stylesheet and performs no layout: flushness and row height are D20 runtime gates. The sheet
 // is CRLF, so comments are blanked with line breaks kept. Pins 2-4 merge every exact block
 // carrying a selector, because base and phase blocks are separate and a first-match parser passes.

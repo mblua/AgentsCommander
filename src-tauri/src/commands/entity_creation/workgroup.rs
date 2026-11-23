@@ -372,14 +372,14 @@ pub(crate) fn remove_replica_dir(replica_dir: &Path) -> ReplicaRemovalOutcome {
         outcome,
         ReplicaRemovalOutcome::Removed | ReplicaRemovalOutcome::AlreadyAbsent
     ) {
-        // #4752: a replica that is gone keeps no Unleash flag.
+        // A replica that is gone keeps no Unleash flag.
         crate::config::unleashed_replicas::forget_under(replica_dir);
     }
     outcome
 }
 
 // ===========================================================================
-// #1063 lifecycle-removal seam (#1065 Stage F: activated recorder).
+// Lifecycle-removal seam (Stage F: activated recorder).
 //
 // Lifecycle deletion acquires the project seed-manifest gate so it serializes
 // against config-seed publication (plan sections 5.4/6.3): the lock ordering is
@@ -440,7 +440,7 @@ pub(crate) fn acquire_lifecycle_project_gate(
     }
 }
 
-/// Lifecycle prune (#1063, #1065 Stage F activated). The recorder call is compiled
+/// Lifecycle prune (Stage F activated). The recorder call is compiled
 /// in production; it runs only when a gate is held and an activation token was
 /// threaded, so a pre-contention gate degradation or an unactivated caller stays a
 /// no-op.
@@ -469,7 +469,7 @@ pub(super) fn prune_lifecycle_scope_if_activated(
 }
 
 /// Activation-gated prune of the config scope of a single replica `.ac/<workgroup>/__agent_<name>`
-/// (#1063, plan section 5.4 "AC removes one replica"). Used by CLI team-member removal.
+/// (plan section 5.4 "AC removes one replica"). Used by CLI team-member removal.
 pub(crate) fn prune_replica_config_scope(
     gate: Option<&mut ProjectSeedManifestGuard>,
     activation: Option<&ManifestActivationToken>,

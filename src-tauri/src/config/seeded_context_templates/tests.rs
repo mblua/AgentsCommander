@@ -16,7 +16,7 @@ fn hash_text(content: &str) -> String {
     sha256_hex(content.as_bytes())
 }
 
-/// #1748: until phase 02 returns the replacements from the public scan, the
+/// Until phase 02 returns the replacements from the public scan, the
 /// tests read them through the internal collector the scan already builds.
 fn scan_project_context_template_replacements_for_test(
     project_dir: &Path,
@@ -95,7 +95,7 @@ fn assert_one_publication(
     );
 }
 
-// ---------------------------------------------------------------- #979 retirement
+// ---------------------------------------------------------------- retirement
 
 fn live_global(config_dir: &Path) -> PathBuf {
     config_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME)

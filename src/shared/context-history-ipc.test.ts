@@ -14,7 +14,7 @@ import {
   type ReportQuery,
 } from "./context-history";
 
-// #3532 P06 - wire contract of the four context-history commands. The common
+// Wire contract of the four context-history commands. The common
 // changes fixture (Q, L) is the same one the Rust adapter tests pin: the
 // request travels NESTED as {request:{query:Q,logicalSessionId:L}}; the flat
 // spelling is refused by the backend with InvalidQuery.

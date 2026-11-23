@@ -176,7 +176,7 @@ fn recv_ws_event(rx: &mut tokio::sync::mpsc::Receiver<WsOutMsg>) -> Value {
     }
 }
 
-/// #1077: the display-canonical form of an existing directory - exactly what
+/// The display-canonical form of an existing directory - exactly what
 /// the six-field decoder selects for a valid project. Storing this (instead
 /// of the raw temp path) keeps the runtime-path assertions platform-robust:
 /// on Windows it equals the raw path, on Linux/CI it is the symlink-resolved
@@ -235,12 +235,12 @@ fn archive_snapshot(
     ArchiveSnapshot { sessions, pending }
 }
 
-// #2434 - instructions-filename rows shared by discovery and gitignore_layout.
+// Instructions-filename rows shared by discovery and gitignore_layout.
 fn floor_names() -> Vec<String> {
     vec!["CLAUDE.md".into(), "AGENTS.md".into()]
 }
 
-// #4752 P04: discovery sends the Unleash flag as camelCase `unleashed`.
+// Discovery sends the Unleash flag as camelCase `unleashed`.
 #[test]
 fn p04_replica_wire_has_unleashed_field() {
     let replica = AcAgentReplica {

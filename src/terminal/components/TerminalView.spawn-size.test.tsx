@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #973 — a coding agent's tile stays blank on spawn.
+// A coding agent's tile stays blank on spawn.
 //
 // AC opened every ConPTY at a hardcoded 120x30 and let the view correct it a few
 // hundred milliseconds later. That correction lands inside the agent's TUI
@@ -187,7 +187,7 @@ function setupTerminalTransport(fake: FakeTransport): void {
   fake.resolve("set_last_prompt", undefined);
   fake.resolve("create_session", session({ id: SPAWNED }));
 
-  // #1363: the selection path attaches and seeds from the snapshot the attach
+  // The selection path attaches and seeds from the snapshot the attach
   // resolves to. The snapshot reports the PTY size the terminal was created at
   // (backend truth) and carries no data, so no snapshot resize fires and the
   // resize/viewport behavior under test is untouched.
@@ -608,7 +608,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
       // The user drags the window. First attempts are never budget-gated, so
       // the drag's own send still goes out (and says "giving up" once more),
       // but it arms no retry: the attempt counter resets only on a success
-      // (#1439 round-2 residual, plan section 7). Bounded either way.
+      //. Bounded either way.
       spawned.emitResize(74, 24);
 
       await waitFor(() =>

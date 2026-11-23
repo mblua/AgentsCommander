@@ -11,7 +11,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { AgentConfig, CodingAgentEnv, ProfileCellConfig } from "../../shared/types";
 
-// #2611 — validateAgents was split into helpers. These tests pin its messages
+// ValidateAgents was split into helpers. These tests pin its messages
 // and its order (agents, then profile cells; first error wins) through the
 // rendered footer error and the Save path.
 
@@ -136,7 +136,7 @@ describe("SettingsModal validateAgents (#2611)", () => {
   });
 });
 
-// #3021 - base/profile labels and canonical keys on save after a mixed-key reload.
+// Base/profile labels and canonical keys on save after a mixed-key reload.
 describe("SettingsModal command field labels and writes (#3021)", () => {
   let cleanupDom: (() => void) | null = null;
 

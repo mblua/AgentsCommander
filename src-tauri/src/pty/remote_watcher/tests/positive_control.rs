@@ -231,7 +231,7 @@ fn compare_status_table_maps_to_staleness() {
     );
 }
 
-/// #2141 fail-open: `ahead_by` is a suppression input, not part of the
+/// Fail-open: `ahead_by` is a suppression input, not part of the
 /// classification, so a response without the field still maps to the same
 /// staleness state and reads `None`, which never suppresses.
 #[test]

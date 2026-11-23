@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #2236 phase 5 (D9a) — the veto proved against the handler TerminalView
+// The veto proved against the handler TerminalView
 // actually passes to attachCustomKeyEventHandler. Assertions 1, 2 and 5 are
 // production-bound; 3 and 4 are a declared simulation of propagation.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -159,7 +159,7 @@ describe("TerminalView hotkey handler (#2236 D9a)", () => {
     expect(stop).toHaveBeenCalled();
   });
 
-  // #4694 — pin copy, paste and Shift+Enter results before the handler split.
+  // Pin copy, paste and Shift+Enter results before the handler split.
   type ClipMock = { writeText: ReturnType<typeof vi.fn>; readText: ReturnType<typeof vi.fn> };
   function clipboardMock(text = ""): ClipMock {
     const value = {

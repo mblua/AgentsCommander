@@ -23,7 +23,7 @@ import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import { newWatcherConfig } from "./settings-watchers";
 
 /**
- * #1171 test 59.
+ * Test 59.
  *
  * `resolveSettingsSection` falls back to `"general"` for anything it does not know, with no
  * error and no log. That silence is why this is pinned: the watcher activity window's
@@ -52,7 +52,7 @@ describe("resolveSettingsSection (#1171)", () => {
 });
 
 /**
- * #1171 - the editor must not delete what it could not read.
+ * The editor must not delete what it could not read.
  *
  * The Rust `WatcherEntry` is untagged so a hand-written `"mode": "State"` costs one skipped
  * watcher instead of the whole `AppSettings` parse, and the invalid value is kept verbatim
@@ -88,7 +88,7 @@ describe("saving a settings draft that holds an unreadable watcher (#1171)", () 
 });
 
 /**
- * #1171 - "All agents" and an empty "Selected" are opposites, and they have to stay
+ * "All agents" and an empty "Selected" are opposites, and they have to stay
  * opposites all the way to the saved draft.
  *
  * `null` reaches every configured agent; `[]` reaches none. A plain multiselect cannot
@@ -263,7 +263,7 @@ function deferred<T>(): {
 }
 
 /**
- * #1171 test 58h. The reach answer belongs to exactly one REQUEST, and the guard is keyed on
+ * Test 58h. The reach answer belongs to exactly one REQUEST, and the guard is keyed on
  * that request rather than on "any change to the draft".
  *
  * The pair this replaces contradicted itself: an idempotence guard ("skip the call when the
@@ -660,7 +660,7 @@ describe("the reach preview, keyed on the request fingerprint (#1171 test 58h)",
   });
 
   /**
-   * #1171 test 58g, the editor half: a row the Rust decoder would reject is classified
+   * Test 58g, the editor half: a row the Rust decoder would reject is classified
    * unrecognised, is not sent, consumes no budget slot, and survives a save verbatim.
    */
   it("leaves rows the decoder would reject out of the request and intact in the save", async () => {
@@ -728,7 +728,7 @@ describe("the reach preview, keyed on the request fingerprint (#1171 test 58h)",
 });
 
 /**
- * #1171 tests 58i and 58k, through the rendered editor.
+ * Tests 58i and 58k, through the rendered editor.
  *
  * An empty pattern is a valid regex that matches every row, so Add plus an accidental Save
  * would otherwise activate a watcher that matches everything on every agent, fill the caps,
@@ -1047,7 +1047,7 @@ describe("the birth state of a watcher row and how it reads (#1171)", () => {
   });
 
   /**
-   * The other half of #1171 test 58g: the predicate rejects what serde rejects AND the editor
+   * The other half of test 58g: the predicate rejects what serde rejects AND the editor
    * cannot produce it. Writing a negative window would reclassify this very row as
    * unrecognised, taking it out of the editor in the middle of being edited.
    */

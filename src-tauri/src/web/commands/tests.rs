@@ -76,7 +76,7 @@ fn test_agent(id: &str) -> crate::config::settings::AgentConfig {
     }
 }
 
-/// #2306 P2 - a real `settings.json` + `settings.local.json` pair whose
+/// P2 - a real `settings.json` + `settings.local.json` pair whose
 /// overlay owns the top-level `agents` key, loaded through the production
 /// loader so the ownership is genuine.
 fn overlay_owned_agents_settings(dir: &std::path::Path) -> AppSettings {

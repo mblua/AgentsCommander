@@ -108,7 +108,7 @@ function findByTestId<T extends Element>(root: ParentNode, testId: string): T {
   return element as T;
 }
 
-/** #4785 - the shared filter controls (row, magnifier, input), mounted in `beforeEach`. */
+/** The shared filter controls (row, magnifier, input), mounted in `beforeEach`. */
 function filterControls(root: ParentNode = document) {
   return {
     row: findByTestId<HTMLDivElement>(root, "sidebar.regexFilter.row"),
@@ -117,7 +117,7 @@ function filterControls(root: ParentNode = document) {
   };
 }
 
-/** #4785 - transport that loads the default test project. */
+/** Transport that loads the default test project. */
 function projectFake() {
   const fake = new FakeTransport();
   fake.resolve("new_project", { path: projectPath, registered: true, created: false });
@@ -152,7 +152,7 @@ describe("ProjectPanel regex filter", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
-    // #4785 - the one sidebar filter control, mounted beside every panel.
+    // The one sidebar filter control, mounted beside every panel.
     const filterRoot = document.body.appendChild(document.createElement("div"));
     disposeFilter = render(
       () => (
@@ -313,7 +313,7 @@ describe("ProjectPanel regex filter", () => {
         expect(rendered.root.textContent).not.toContain("RUNNING");
       });
 
-      // #1790 option A: the word is no longer rendered but is still part of the
+      // Option A: the word is no longer rendered but is still part of the
       // running-peer match text. "dev-rust RUNNING" cannot be produced by any
       // other haystack of this row, so the chip surviving this query proves the
       // peer haystack is still live. The no-match query in between makes the
@@ -768,7 +768,7 @@ describe("ProjectPanel regex filter", () => {
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("nolabel"));
-      // #1730 - the strip is unconditional, so both badges are on screen.
+      // The strip is unconditional, so both badges are on screen.
       expect(rendered.root.textContent).toContain("A->B");
       expect(rendered.root.textContent).toContain("C->D");
 

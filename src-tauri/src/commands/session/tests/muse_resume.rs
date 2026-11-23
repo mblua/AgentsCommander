@@ -1,9 +1,9 @@
 use super::*;
 
-// --- #1873 Muse workspace-latest automatic resume --------------------------
+// --- Muse workspace-latest automatic resume --------------------------
 
 /// Test-only Muse settings row appended to `test_settings()`. Production ships
-/// no Muse row here; the #1860 catalog is the only built-in.
+/// no Muse row here; the shipped catalog is the only built-in.
 pub(super) fn muse_test_settings(command: &str) -> AppSettings {
     let mut settings = test_settings();
     settings.agents.push(AgentConfig {
@@ -149,7 +149,7 @@ fn assert_injector_preserves_configured_args() {
     assert_eq!(manual_args, manual.shell_args);
 }
 
-/// #1873 - the predicate is true only for the exact trusted recipe; every veto
+/// The predicate is true only for the exact trusted recipe; every veto
 /// is independent, and the injector fails closed without mutation on a wrong
 /// kind, fresh intent, missing provenance, or a second call.
 #[test]
@@ -311,7 +311,7 @@ async fn launch_durable_fresh_restore(
     .expect("durable-fresh restore launches")
 }
 
-/// #1873 - fresh (`true`), resume (`false`) and durable-fresh restore intent all
+/// Fresh (`true`), resume (`false`) and durable-fresh restore intent all
 /// flow through the single launch seam; only resume intent yields `resume --last`,
 /// and only in the effective vector.
 #[tokio::test]
@@ -400,7 +400,7 @@ async fn muse_fresh_and_resume_intents_share_one_launch_seam() {
     close_test_coordinator(&app).await;
 }
 
-/// #1873 - a directly configured Muse recipe with a Codex-looking value and
+/// A directly configured Muse recipe with a Codex-looking value and
 /// manual `resume --last` passes pre-spawn validation, is preserved byte-for-byte,
 /// and suppresses injection all the way to the backend.
 #[tokio::test]
@@ -552,7 +552,7 @@ fn assert_positive_control_spec(
     );
 }
 
-/// #1873 - the backend positive control: on macOS/Linux the spec and effective
+/// The backend positive control: on macOS/Linux the spec and effective
 /// vectors carry exactly the profile tokens while the configured argv stays
 /// empty; generic agent/profile env flows unchanged; the kind/wire value is
 /// Muse/"muse". Unsupported hosts stay plain.

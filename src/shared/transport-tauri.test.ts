@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #1363 - the half of listener scoping that only this layer can pin.
+// The half of listener scoping that only this layer can pin.
 //
 // `TerminalView.attachment.test.tsx` proves the app ASKS for a window-scoped
 // `pty_output` listener; it runs against a FakeTransport, so it cannot prove

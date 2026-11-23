@@ -199,7 +199,7 @@ impl SessionSelection {
         self.displayable
     }
 
-    // #1842: compiled on exactly the targets that compile `screenshot::native`,
+    // Compiled on exactly the targets that compile `screenshot::native`,
     // whose `live_capture_resolution_...` test is the only caller in the crate.
     // Keep this predicate equal to `screenshot/mod.rs`'s `native` predicate. A
     // plain `#[cfg(test)]` would leave these caller-less on targets outside the

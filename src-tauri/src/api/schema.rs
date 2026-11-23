@@ -1,4 +1,4 @@
-//! Versioned request/response DTOs for the in-daemon control-plane API (#791).
+//! Versioned request/response DTOs for the in-daemon control-plane API.
 //!
 //! Every request DTO layer carries `#[serde(deny_unknown_fields)]` so any
 //! client-supplied field outside the declared shape (notably the forbidden

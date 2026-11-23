@@ -58,7 +58,7 @@ describe("resource monitor IPC", () => {
     expect(JSON.stringify(args).toLowerCase()).not.toContain("pid");
   });
 
-  // #647 D: the result carries blockedBySecurity alongside the per-PID message;
+  // The result carries blockedBySecurity alongside the per-PID message;
   // the FE shows the AV-exclusion guidance only when the flag is set, never
   // replacing the per-PID detail.
   it("surfaces blockedBySecurity and the per-PID message from the kill result", async () => {
@@ -83,7 +83,7 @@ describe("resource monitor IPC", () => {
     expect(result.message).toContain("win32 error 5");
   });
 
-  // #647 (Step 7): success keys off `finalized`, not `!quarantined`. The wire
+  // Success keys off `finalized`, not `!quarantined`. The wire
   // result carries the flag so the FE can distinguish a verified teardown from a
   // `terminating` early-return that also reports `quarantined === false`.
   it("round-trips the finalized flag from the kill result", async () => {

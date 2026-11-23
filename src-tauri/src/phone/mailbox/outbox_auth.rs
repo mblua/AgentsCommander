@@ -208,7 +208,7 @@ impl MailboxPoller {
     }
 
     /// Process a single outbox message file.
-    /// `origin`: the directory the file was found in (#2232 phase 7). The
+    /// `origin`: the directory the file was found in (phase 7). The
     /// master/root-token origin is `OutboxOrigin::Master`.
     #[cfg(test)]
     pub(crate) async fn process_message<S: BrowserHost>(
@@ -246,7 +246,7 @@ impl MailboxPoller {
             .await
     }
 
-    /// (#1399) `deferred_tail`: `Some(slot)` when the caller owns a worker pool
+    /// `deferred_tail`: `Some(slot)` when the caller owns a worker pool
     /// and wants the delivery tail detached: the validated message is parked in
     /// `slot` and `Ok(())` is returned WITHOUT delivering. `None` runs the tail
     /// inline (the `#[cfg(test)]` `process_message` entry point). Every earlier
@@ -410,9 +410,9 @@ impl MailboxPoller {
         // layout (`<project>/<workspace>/wg-*/__agent_*/<local-dir>/outbox/<file>.json`),
         // include the derived `<project>` in the in-memory `paths` slice so qualified
         // WG-peer FQNs written by `cli::send` (which performs the symmetric walk-up
-        // augmentation — see #228 Step 1) resolve here too. Without this, the daemon
+        // augmentation) resolve here too. Without this, the daemon
         // re-rejects with `UnknownQualified` even though the CLI side succeeded.
-        // settings.json is NOT mutated. In-memory, this-message only. See #228 D1-a.
+        // settings.json is NOT mutated. In-memory, this-message only.
         match self
             .normalize_outbox_recipient(app, path, &mut msg, &outbox_project)
             .await?
@@ -630,7 +630,7 @@ impl MailboxPoller {
         is_app_outbox: bool,
         saw_session_token: bool,
     ) -> OutboxStage {
-        // ── #2232 phase 7: the Co-managed origin may express exactly one thing ──
+        // ── The Co-managed origin may express exactly one thing ──
         // A wake carrying a pointer. `action` and `command` are rejected here,
         // before the pre-routing dispatch below, because `purge-wg` and
         // `close-session` are destructive verbs and this origin is written by
@@ -654,7 +654,7 @@ impl MailboxPoller {
             ));
         }
 
-        // ── #617 self-clear: token-authorized self-operation ──
+        // ── Self-clear: token-authorized self-operation ──
         // Dispatched BEFORE the team-routing chain below. self-clear clears the
         // CALLER'S OWN context; it is authorized solely by session-token ownership
         // (proved just above: find_by_token + from==session_name anti-spoof), not by
@@ -675,7 +675,7 @@ impl MailboxPoller {
                     .await,
             ));
         }
-        // (#1632) Same pre-routing block, same reason: self-handoff-and-restart operates on the
+        // Same pre-routing block, same reason: self-handoff-and-restart operates on the
         // CALLER'S OWN session and is authorized by token ownership, not by team reachability.
         if msg.action.as_deref() == Some(SELF_RESTART_ACTION) {
             return Ok(std::ops::ControlFlow::Break(
@@ -688,7 +688,7 @@ impl MailboxPoller {
                 self.handle_raise_hand(app, path, msg, is_app_outbox).await,
             ));
         }
-        // (#3367) Same pre-routing block: the embedded web browser belongs to the
+        // Same pre-routing block: the embedded web browser belongs to the
         // app, so the token-owning caller is authorized by role, not team reach.
         if is_web_browser_action(msg.action.as_deref()) {
             return Ok(std::ops::ControlFlow::Break(
@@ -726,7 +726,7 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         root_agent_recipient: bool,
     ) -> OutboxStage {
-        // #2232 phase 7: no token, no master path, no anti-spoof. The FQN in
+        // Phase 7: no token, no master path, no anti-spoof. The FQN in
         // `from` is the credential and the destination check is the CLI's:
         // Root through the verified-coordinator validator, everything else
         // through `can_communicate`. An unreachable destination is rejected.
@@ -827,7 +827,7 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         outbox_project: &Option<String>,
     ) -> OutboxStage {
-        // #293 — coordinator → root recipient.
+        // Coordinator → root recipient.
         //
         // Build the same effective_project_paths slice the root-sender
         // branch uses (settings + the outbox file's WG-replica project

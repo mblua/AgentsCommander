@@ -19,7 +19,7 @@ mod provisioning;
 
 // ---- fixtures ---------------------------------------------------------
 
-/// #1614 AC7.12 / D17, recognizer family 5. `injected-messages.toml` is a
+/// AC7.12 / D17, recognizer family 5. `injected-messages.toml` is a
 /// USER-OWNED file: an entry the user has not edited is refreshed
 /// automatically when a new default ships, and reconciliation decides that
 /// by hashing the user's `template` against `known_default_sha256`.

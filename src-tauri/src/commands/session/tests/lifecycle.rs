@@ -53,7 +53,7 @@ async fn e2992_p42_invalid_prevents_spawn() {
     close_test_coordinator(&app).await;
 }
 
-// #1063: while a real create is paused at `before_project_gate` with its pending
+// While a real create is paused at `before_project_gate` with its pending
 // row inserted, the deletion-only pending-inclusive snapshot must observe its
 // working directory even though every public read hides it. This is the exact
 // property the Agent Matrix delete recheck relies on.
@@ -392,7 +392,7 @@ async fn restart_success_publishes_created_destroyed_selection_in_order() {
 
 #[tokio::test]
 async fn restart_of_live_wg_replica_session_does_not_sessionrace() {
-    // #1101: `teardown_old_for_restart` retains the old canonical row (non-Exited)
+    // `teardown_old_for_restart` retains the old canonical row (non-Exited)
     // until the atomic commit's `mutations.remove(uuid)`, which runs AFTER the
     // create-gate. For a live WG replica restart (Suppress intent + replica cwd) the
     // gate saw `appeared_session == true` and returned Err("sessionRace"). The gate
@@ -447,10 +447,10 @@ async fn restart_of_live_wg_replica_session_does_not_sessionrace() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// #1535 nested-project sessionRace confinement (S1-S2)
+// Nested-project sessionRace confinement (S1-S2)
 // ──────────────────────────────────────────────────────────────────────
 
-/// #1535 S1/S2 fixture: `strict_target_fixture` PLUS a nested project with
+/// S1/S2 fixture: `strict_target_fixture` PLUS a nested project with
 /// its own full workgroup inside `__agent_dev-one`:
 /// `nested-proj/.ac/{_team_team, _agent_lead2, _agent_inner2,
 /// wg-2-team/{__agent_lead2, __agent_inner2}}` and the #1535 bug-shaped
@@ -495,7 +495,7 @@ fn nested_strict_target_fixture() -> (tempfile::TempDir, String, String, String)
     )
 }
 
-/// #1535 S1: a create in a nested project (origin dir under an ancestor
+/// S1: a create in a nested project (origin dir under an ancestor
 /// workgroup replica, the exact bug shape) must NOT sessionRace against
 /// the ANCESTOR replica's live session (pre-fix: `Err("sessionRace")`).
 #[tokio::test]
@@ -549,7 +549,7 @@ async fn nested_project_create_does_not_sessionrace_against_ancestor_live_sessio
     close_test_coordinator(&app).await;
 }
 
-/// #1535 S2: a nested project with its OWN replica (a) does not race
+/// S2: a nested project with its OWN replica (a) does not race
 /// against the ancestor's live session, and (b) still gates against its
 /// own replica's duplicate.
 #[tokio::test]

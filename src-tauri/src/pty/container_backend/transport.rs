@@ -220,7 +220,7 @@ impl ContainerTransportBackend {
             .map_err(|error| self.queue_failure(session_id, QueueFailure::of(&error)))
     }
 
-    /// #2158 - publish a Resize under a reserved queue slot, running `mark` after the
+    /// Publish a Resize under a reserved queue slot, running `mark` after the
     /// reservation and before the publication, with no await and no sessions lock. A failed
     /// reservation runs neither and keeps the queue's cleanup and errors.
     pub(super) fn send_marked_text_frame(

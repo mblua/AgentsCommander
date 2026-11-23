@@ -7,7 +7,7 @@ use super::{
     spawn_lock, write_settings, Tmp,
 };
 
-/// #1163: watch `config_dir/session-requests/` for the CLI's request file and
+/// Watch `config_dir/session-requests/` for the CLI's request file and
 /// answer it with a `<id>.result.json` sidecar exactly like the running app
 /// would. Runs in a background thread; returns once the result is written.
 /// Result sidecars (`*.result.json`) are never treated as requests.
@@ -77,7 +77,7 @@ fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
         }),
     );
 
-    // #1163: a watcher stands in for the running app and confirms the launch.
+    // A watcher stands in for the running app and confirms the launch.
     let watcher_config_dir = config_dir.clone();
     let watcher = std::thread::spawn(move || {
         watch_and_answer_session_request(&watcher_config_dir, "created", Some("sess-1"), None);
@@ -170,7 +170,7 @@ fn create_agent_matrix_launch_rejection_is_reported() {
         }),
     );
 
-    // #1163: the app answers with a rejection (e.g. the sessionRace gate).
+    // The app answers with a rejection (e.g. the sessionRace gate).
     let watcher_config_dir = config_dir.clone();
     let watcher = std::thread::spawn(move || {
         watch_and_answer_session_request(

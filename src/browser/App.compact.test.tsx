@@ -14,7 +14,7 @@ import {
   sidebarCompact,
 } from "../shared/sidebar-compact";
 
-// #2280 — only BrowserApp's own compact host is under test here; the embedded
+// Only BrowserApp's own compact host is under test here; the embedded
 // sidebar and terminal are inert so the browser pane, divider and animation
 // are what this file pins. No ipc mock: renderWithFakeTransport wires the real
 // ipc module to a FakeTransport instead.

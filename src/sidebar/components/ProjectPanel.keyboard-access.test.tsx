@@ -16,7 +16,7 @@ import { sessionsStore } from "../stores/sessions";
 import { ROW_KEY_PROXY_CLASS } from "./RowKeyProxy";
 import { loopSummaryFixture as loop } from "./loop-summary-fixture";
 
-// #2657 - the 5 collapsible ProjectPanel headers toggle by keyboard through their row key proxy.
+// The 5 collapsible ProjectPanel headers toggle by keyboard through their row key proxy.
 const root = "C:\\Project";
 const room = `${root}\\.ac\\wg-2-dev-team`;
 const agent = "AgentsCommander_ac/__agent_dev-webpage-ui";

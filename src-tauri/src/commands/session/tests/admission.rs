@@ -284,7 +284,7 @@ async fn start_protected_quota_waiter(
     waiter
 }
 
-// Stage E (#1064) selection-intent mapping sentinel (plan section 10.4 item
+// Stage E selection-intent mapping sentinel (plan section 10.4 item
 // 20, acceptance item 42, 10.6): the internal-alert background create keeps
 // `CreateSelectionIntent::Background`, which maps to the Background trusted
 // intent (never downgraded); Suppress finalizes nothing.

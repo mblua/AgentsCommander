@@ -20,7 +20,7 @@ use super::replacement::ReplacementOwner;
 use super::CoordinatorJob;
 
 pub(super) struct CoordinatorEnvelope {
-    // #1580: admission and critical key are declared before `job` so an envelope
+    // Admission and critical key are declared before `job` so an envelope
     // dropped without execution frees both before `job` drops the caller's sender.
     pub(super) _admission: OwnedSemaphorePermit,
     pub(super) _critical_admission: Option<CriticalAdmissionGuard>,
@@ -28,7 +28,7 @@ pub(super) struct CoordinatorEnvelope {
     pub(super) _create_ticket: Option<OwnedSemaphorePermit>,
 }
 
-/// #1580: the guards an executing envelope still owns after its job moved out.
+/// The guards an executing envelope still owns after its job moved out.
 pub(super) struct EnvelopeHold {
     pub(super) admission: Option<OwnedSemaphorePermit>,
     pub(super) critical_admission: Option<CriticalAdmissionGuard>,

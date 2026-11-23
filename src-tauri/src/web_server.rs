@@ -733,7 +733,7 @@ impl ApiServerTask {
 }
 
 impl ApiServerHandle {
-    /// #791 - handle to the running control-plane API server task.
+    /// Handle to the running control-plane API server task.
     pub fn store_if_idle(&self, task: ApiServerTask) -> Result<bool, String> {
         let mut inner = self
             .inner

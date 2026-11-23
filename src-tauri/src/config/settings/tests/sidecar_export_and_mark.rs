@@ -197,7 +197,7 @@ fn the_merge_point_is_between_the_detection_and_the_pre_merge_clone() {
     );
 }
 
-// #2716 (B3) - rows E25 to E31 and E40 of the phase plan.
+// (B3) - rows E25 to E31 and E40 of the phase plan.
 
 fn b3_seed_corrupt_sidecar(dir: &std::path::Path) {
     std::fs::write(b3_sidecar_path(dir), "{ this is not json").unwrap();
@@ -475,7 +475,7 @@ fn the_cli_loaders_also_set_the_mark() {
     }
 }
 
-/// #2716 (B3) E43, r12o: with no agents file on disk, only the export's lock
+/// (B3) E43, r12o: with no agents file on disk, only the export's lock
 /// can stop its write. Held by this thread, the export on another thread
 /// cannot acquire it, writes nothing and strips nothing; the three-agent file
 /// written under the guard is what a later load returns.

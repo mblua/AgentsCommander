@@ -389,7 +389,7 @@ fn execute_inner(
     }
 }
 
-/// #1245: fixed, path-free diagnostic for a local requester-identity failure.
+/// Fixed, path-free diagnostic for a local requester-identity failure.
 /// The stable CLI error stays `requester_unavailable`; this text only reaches
 /// `app.log`, never stdout or stderr. Every reason in this chain is a fixed
 /// literal except the five `config::ac_root::ensure_authoritative_ac_root`

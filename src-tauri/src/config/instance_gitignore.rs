@@ -250,7 +250,7 @@ fn ensure_existing_file(path: &Path, rules: &[RenderedRule]) -> Result<AttemptRe
     Ok(AttemptResult::Done)
 }
 
-/// #2714 - the AC-written pairs of the nine rows B1b renamed, as the generator
+/// The AC-written pairs of the nine rows B1b renamed, as the generator
 /// wrote them before the switch. The retired settings lock keeps a row of its
 /// own under a new comment, so its old pair retires too.
 const RETIRED_PAIRS: [(&str, &str); 9] = [
@@ -301,7 +301,7 @@ fn retire(bytes: &[u8]) -> Option<Vec<u8>> {
     changed.then(|| retired.into_bytes())
 }
 
-/// #2714 - the one non-append path: a body carrying retired pairs is rewritten
+/// The one non-append path: a body carrying retired pairs is rewritten
 /// in place through a read-write handle, under the same lock and the same
 /// validation as the append path, and gains any missing rule in the same write.
 /// An append handle cannot truncate on Windows, hence the separate handle.

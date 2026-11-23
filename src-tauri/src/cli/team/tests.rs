@@ -59,7 +59,7 @@ fn cli_team_list_and_create_results_include_camel_case_alerts() {
     );
 }
 
-// #1063 Stage D-owned exact ignored CHILD HELPER for the CLI team-member
+// Exact ignored CHILD HELPER for the CLI team-member
 // cross-process lock-order inversion. Frozen fully-qualified name (a Stage E
 // parent spawns this verbatim via `current_exe --exact <name> --ignored`):
 //   crate::cli::team::tests::cli_member_lock_order_inversion_child
@@ -112,7 +112,7 @@ fn cli_lock_order_child_context_no_ops_without_tuple() {
     assert!(context_from(MEMBER_ACTION, Some(MEMBER_ACTION), Some("n"), Some(dir)).is_some());
 }
 
-// #1063: prove the driven lock-order path in-process (no `current_exe` parent -
+// Prove the driven lock-order path in-process (no `current_exe` parent -
 // that machinery is Stage E). Sets the child-mode tuple, drives the real
 // `cli_member_lock_order_inversion_child`, releases the barrier from a thread,
 // and asserts the barrier fired (project gate acquired before team) and the

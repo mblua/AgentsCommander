@@ -64,7 +64,7 @@ fn copy_binary_into(tmp: &Path) -> PathBuf {
 }
 
 /// Assert a CLI-emitted path string points to the same directory as `expected`.
-/// #1077: `workgroup add` prints the SELECTED CANONICAL path (§3.4), so a raw
+/// `workgroup add` prints the SELECTED CANONICAL path (§3.4), so a raw
 /// `tmp.path()` expectation breaks on a CI runner whose %TEMP% is an 8.3 short
 /// name (`RUNNER~1` vs the canonical `runneradmin`). Canonicalizing both sides
 /// compares filesystem identity, robust to 8.3 short-name and Windows

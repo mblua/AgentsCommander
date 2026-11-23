@@ -1,6 +1,6 @@
 use super::*;
 
-// #4752 P03: an unleashed replica's context drops the GOLDEN RULE and the two
+// P03: an unleashed replica's context drops the GOLDEN RULE and the two
 // "Filesystem authorization amendment" paragraphs, and keeps everything else.
 const GOLDEN_HEADING: &str = "## GOLDEN RULE";
 const INTEGRITY_HEADING: &str = "## Integrity Rules";

@@ -15,7 +15,7 @@ vi.mock("../shared/shortcuts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../shared/shortcuts")>();
   return { ...actual, registerShortcuts: vi.fn(actual.registerShortcuts) };
 });
-// #4786 - the panel reads settings itself; this test watches only SidebarApp's mount phases.
+// The panel reads settings itself; this test watches only SidebarApp's mount phases.
 vi.mock("./components/TemporaryRoomsPanel", () => ({ default: () => null }));
 
 const LATE_LISTENERS = [
@@ -41,7 +41,7 @@ describe("SidebarApp mount disposal", () => {
     vi.restoreAllMocks();
   });
 
-  // #2628 R1 - an unmount while the last listener of a mount phase is still
+  // An unmount while the last listener of a mount phase is still
   // registering must stop the mount: no later phase may run after onCleanup.
   it("registers nothing after an unmount during the loop_event registration", async () => {
     const fake = new FakeTransport();

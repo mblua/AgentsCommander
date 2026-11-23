@@ -29,7 +29,7 @@ import {
 const HOLD_BTN = '[data-ac-testid="statusBar.typingHold"]';
 const HOLD_ICON = '[data-ac-testid="statusBar.typingHoldIcon"]';
 
-// #2379 - the counter never renders a `#`, and the padlock state is asserted
+// The counter never renders a `#`, and the padlock state is asserted
 // through the monochrome SVG (the color-emoji glyph could not be painted).
 function holdIcon(root: HTMLElement): SVGElement {
   return root.querySelector<SVGElement>(HOLD_ICON)!;
@@ -38,7 +38,7 @@ function holdCount(root: HTMLElement): HTMLSpanElement | null {
   return root.querySelector<HTMLSpanElement>(".status-bar-hold-count");
 }
 
-// #2337 — the padlock is a mirror of the backend's per-session typing hold.
+// The padlock is a mirror of the backend's per-session typing hold.
 // These tests pin the states it must show, the session it must target, the
 // 500 ms poll (retry + cleanup), and the web-client absence.
 

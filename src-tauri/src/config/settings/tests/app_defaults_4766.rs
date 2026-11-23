@@ -1,4 +1,4 @@
-//! #4766: pins `AppSettings::default()` so building it from the serde field
+//! Pins `AppSettings::default()` so building it from the serde field
 //! defaults keeps every value the hand-written literal had.
 
 use super::*;
@@ -60,7 +60,7 @@ fn app_settings_default_ports_match_profile() {
     );
 }
 
-/// #4766: prints the filtered default so the fixture can be checked or
+/// Prints the filtered default so the fixture can be checked or
 /// captured. Ignored by default; it asserts nothing.
 #[test]
 #[ignore = "capture helper: run with --ignored to print the fixture"]
