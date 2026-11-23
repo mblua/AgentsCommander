@@ -21,14 +21,67 @@ type Call = { cmd: string; loc: string; present: string[]; optional: string[]; o
 
 const EXACT_ATTR = /^[ \t]*#\[tauri::command\][ \t]*\r?$/gm;
 const ANY_ATTR = /^[ \t]*#\[\s*tauri::command\b/;
-const FN_HEAD = /\bfn\s+(\w+)\s*(<[^(]*>)?\s*\(/;
-const PARAM = /^(mut\s+)?([A-Za-z_]\w*)\s*:\s*([\s\S]+)$/;
 const INJECTED = new RegExp(
   "^(tauri::)?(ipc::|webview::|window::)?" +
     String.raw`(AppHandle|WebviewWindow|Window|Webview|State|Request|Invoke)\b`,
 );
 const WS_ARM_BEFORE = /"([a-z0-9_]+)"\s*(?==>|\|)/g;
 const WS_ARM_AFTER = /\|\s*"([a-z0-9_]+)"/g;
+
+type CommandHead = { start: number; name: string; open: number };
+
+function whitespaceEnd(text: string, index: number): number {
+  while (/\s/.test(text.charAt(index))) index++;
+  return index;
+}
+
+function wordEnd(text: string, index: number): number {
+  while (/\w/.test(text.charAt(index))) index++;
+  return index;
+}
+
+function* commandHeads(text: string): Generator<CommandHead, void> {
+  let nextOpen = -1;
+  let beforeOpen = -1;
+  for (let start = text.indexOf("fn"); start >= 0; start = text.indexOf("fn", start + 2)) {
+    if (/\w/.test(text.charAt(start - 1)) || !/\s/.test(text.charAt(start + 2))) continue;
+    const nameStart = whitespaceEnd(text, start + 2);
+    const nameEnd = wordEnd(text, nameStart);
+    if (nameStart === nameEnd) continue;
+
+    const next = whitespaceEnd(text, nameEnd);
+    if (text[next] === "(") {
+      yield { start, name: text.slice(nameStart, nameEnd), open: next };
+    } else if (text[next] === "<") {
+      // Candidates in the same span share the first parenthesis and its preceding token.
+      if (nextOpen < next) {
+        nextOpen = text.indexOf("(", next + 1);
+        if (nextOpen < 0) return;
+        beforeOpen = nextOpen - 1;
+        while (beforeOpen > next && /\s/.test(text.charAt(beforeOpen))) beforeOpen--;
+      }
+      if (beforeOpen > next && text[beforeOpen] === ">") {
+        yield { start, name: text.slice(nameStart, nameEnd), open: nextOpen };
+      }
+    }
+  }
+}
+
+function parameterAt(param: string, start: number): { ident: string; type: string } | null {
+  if (!/[A-Za-z_]/.test(param.charAt(start))) return null;
+  const end = wordEnd(param, start + 1);
+  const colon = whitespaceEnd(param, end);
+  if (param[colon] !== ":" || colon + 1 === param.length) return null;
+  return { ident: param.slice(start, end), type: param.slice(colon + 1) };
+}
+
+function splitParameter(param: string): { ident: string; type: string } | null {
+  if (param.startsWith("mut") && /\s/.test(param.charAt(3))) {
+    const modified = parameterAt(param, whitespaceEnd(param, 3));
+    if (modified) return modified;
+  }
+  return parameterAt(param, 0);
+}
 
 function matchClose(text: string, start: number, open: string, close: string): number {
   let depth = 0;
@@ -66,15 +119,15 @@ function camelKey(ident: string): string {
 
 function parseParams(name: string, file: string, raw: string, failures: string[]): RustKey[] {
   const keys: RustKey[] = [];
-  for (const param of splitTop(raw.replace(/\/\/.*$/gm, ""))) {
-    const m = PARAM.exec(param);
-    if (!m) {
+  for (const param of splitTop(raw.replace(/\/\/[^\r\n\u2028\u2029]*/g, ""))) {
+    const parsed = splitParameter(param);
+    if (!parsed) {
       failures.push(`unparsed parameter "${param}" in ${name} at ${file}`);
       continue;
     }
-    const type = m[3]!.trim(); // PARAM groups 2 and 3 are not optional
+    const type = parsed.type.trim();
     if (INJECTED.test(type.replace(/^&\s*/, ""))) continue;
-    keys.push({ key: camelKey(m[2]!), required: !/^Option\s*</.test(type) });
+    keys.push({ key: camelKey(parsed.ident), required: !/^Option\s*</.test(type) });
   }
   return keys;
 }
@@ -88,13 +141,14 @@ function scanAttributes(file: string, text: string, failures: string[]): void {
 }
 
 function scanCommands(file: string, text: string, scan: RustScan, failures: string[]): void {
+  const heads = commandHeads(text);
+  let head: IteratorResult<CommandHead, void> | undefined;
   for (const m of text.matchAll(EXACT_ATTR)) {
-    const rest = text.slice(m.index);
-    const fn = FN_HEAD.exec(rest);
-    if (!fn) continue;
-    const open = m.index + fn.index + fn[0].length - 1;
+    head ??= heads.next();
+    while (!head.done && head.value.start < m.index) head = heads.next();
+    if (head.done) break;
+    const { name, open } = head.value;
     const close = matchClose(text, open, "(", ")");
-    const name = fn[1]!; // FN_HEAD group 1 is not optional
     const keys = parseParams(name, file, text.slice(open + 1, close), failures);
     const prior = scan.commands.get(name);
     if (prior) failures.push(`duplicate command fn "${name}" in ${prior.file}, ${file}`);

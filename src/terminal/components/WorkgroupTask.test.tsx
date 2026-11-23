@@ -141,6 +141,16 @@ describe("WorkgroupTask, frontmatter title parsing (#2608)", () => {
   it("shows no title when the frontmatter has no closer", async () => {
     expect(await shownTitle("---\ntitle: a\n")).toBeNull();
   });
+
+  it.each([
+    { task: '\uFEFF---\t\r\nTITLE: "CRLF"\r\n---\u00a0\r\n body\r\n', title: "CRLF" },
+    { task: "--- \t\ntitle: eof\n---\u2028", title: "eof" },
+    { task: " ---\ntitle: leading space\n---\n", title: null },
+    { task: "---\ntitle: bad closer\n----\nraw\n", title: null },
+    { task: "---\u200B\ntitle: lookalike\n---\n", title: null },
+  ])("shows $title for frontmatter with exact delimiters", async ({ task, title }) => {
+    expect(await shownTitle(task)).toBe(title);
+  });
 });
 
 describe("P4 authoritative description and accessible status", () => {
