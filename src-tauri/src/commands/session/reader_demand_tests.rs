@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use uuid::Uuid;
 
-/// Budget for a capture wait (#3420). Locally a record lands in well under
+/// Budget for a capture wait. Locally a record lands in well under
 /// 1 s (500 ms watcher poll), but the watchers share the global Tauri
 /// runtime with the whole lib suite, and the 2-core Windows CI runner
 /// starved 10 s waits; 30 s matches the crate's other load-tolerant
@@ -114,7 +114,7 @@ impl Harness {
         self.app.handle().state::<TelegramBridgeState>()
     }
 
-    /// #2525 set the two global Co-managed inputs in the live settings.
+    /// Set the two global Co-managed inputs in the live settings.
     pub(crate) async fn set_global_co_managed(&self, enabled: bool, key: &str) {
         let settings = self.app.handle().state::<SettingsState>();
         let mut guard = settings.write().await;
@@ -226,8 +226,8 @@ impl RestartHarness {
     }
 
     /// [`Self::live_session`], keeping the created `SessionInfo`: its
-    /// `effective_shell_args` carry the transcript id the spawn minted
-    /// (#2454), which is NOT the session UUID.
+    /// `effective_shell_args` carry the transcript id the spawn minted,
+    /// which is NOT the session UUID.
     async fn live_session_info(&self, cwd: &std::path::Path, kind: CodingAgentKind) -> SessionInfo {
         let (agent_id, label) = match kind {
             CodingAgentKind::Claude => ("claude", "Claude Code"),
@@ -276,7 +276,7 @@ impl RestartHarness {
     }
 
     /// The restart button's default: `skip_auto_resume` unset resolves to
-    /// FRESH, so the replacement mints a new transcript id (#2454).
+    /// FRESH, so the replacement mints a new transcript id.
     async fn restart_fresh(&self, id: Uuid) -> Result<SessionInfo, String> {
         self.restart_with(id, None).await
     }
@@ -314,7 +314,7 @@ impl RestartHarness {
     }
 
     /// Wait until the detached create-time Room raise has installed `id`'s
-    /// reader (#3420): it runs on another runtime and races the test.
+    /// reader: it runs on another runtime and races the test.
     async fn settle_create_time_raise(&self, id: Uuid) {
         let deadline = tokio::time::Instant::now() + CAPTURE_WAIT_BUDGET;
         while self.snapshot(id).await.0.is_none() {
@@ -392,7 +392,7 @@ impl RestartHarness {
     }
 }
 
-/// The transcript id a spawn minted (#2454), read back from its effective
+/// The transcript id a spawn minted, read back from its effective
 /// argv; `None` when no `--session-id` was injected.
 fn minted_transcript_id(info: &SessionInfo) -> Option<String> {
     crate::commands::session::transcript_id_from_args(
@@ -543,7 +543,7 @@ async fn wait_for_message_permits(h: &RestartHarness, at_least: usize) {
     }
 }
 
-// ── #2516: the raise/disable race on the Room demand ─────────────────
+// ── the raise/disable race on the Room demand ─────────────────
 
 /// Spawn the Room raise for `id`, wait until it parks at the armed seam
 /// (`reached`), run `interfere`, resume it (`release`) and return what the

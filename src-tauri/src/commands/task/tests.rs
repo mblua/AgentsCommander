@@ -1,7 +1,7 @@
 //! Covers `cli::task_ops::perform` and `validate_wg_root` through the
 //! local `read_task_fields_at` reader: a single read of TASK.md must
 //! return BOTH the trimmed body and the parsed YAML `title:`. The reader
-//! is test-only (#1177); #301 shipped without a production caller, and the
+//! is test-only: it has no production caller, and the
 //! assertions it backs still cover the live save and clean paths.
 use std::path::Path;
 
@@ -55,7 +55,7 @@ fn read_task_fields_at_parses_frontmatter_title_and_body() {
 
 #[test]
 fn read_task_fields_at_body_only_no_frontmatter_returns_body_and_no_title() {
-    // grinch LOW (PR #304 review): coverage gap — a file with body content
+    // Coverage gap: a file with body content
     // but no YAML frontmatter must return (Some(body), None), not (None, _).
     let dir = tempfile::tempdir().unwrap();
     let content = "Just a body line\nmore body\n";
@@ -83,7 +83,7 @@ fn set_title_via_task_ops_round_trip_returns_title() {
 #[test]
 fn clean_via_task_ops_round_trip_returns_clean_title() {
     // After Clean, the canonical title is "Clean" (see TaskOp::Clean
-    // docs). The important thing for issue #301 is the payload carries
+    // docs). The important thing is the payload carries
     // the title at all (no None → no undefined → no spread-clobber).
     let dir = tempfile::tempdir().unwrap();
     perform(dir.path(), TaskOp::SetTitle("Old Title".to_string())).expect("set initial title");
@@ -92,7 +92,7 @@ fn clean_via_task_ops_round_trip_returns_clean_title() {
     assert_eq!(title.as_deref(), Some("Clean"));
 }
 
-// ---- #545: validate_wg_root + task_clean_at path-based clean ----
+// ---- validate_wg_root + task_clean_at path-based clean ----
 //
 // `validate_wg_root` takes `&[String]`, so it is unit-testable directly with
 // no Tauri harness. Gate 1 canonicalizes, so every fixture dir MUST exist on
@@ -317,7 +317,7 @@ fn validate_wg_root_rejects_wg_dir_not_under_dot_ac() {
     assert!(validate_wg_root(&arg, &paths_of(proj.path())).is_err());
 }
 
-// ---- #1536: task_set_title_at (path-based user title) + validate_user_title ----
+// ---- task_set_title_at (path-based user title) + validate_user_title ----
 //
 // SetUserTitle writes the reserved `USER: ` marker into the file and the
 // readers (parse_task_title / title_value_of) return the raw scalar, so the
@@ -434,7 +434,7 @@ fn read_title_invalid_utf8_preserves_read_error() {
     );
 }
 
-// ---- #4805: gate T (temp-room folders of the config dir) ----
+// ---- gate T (temp-room folders of the config dir) ----
 
 fn temp_room(base: &std::path::Path, name: &str) -> String {
     let dir = base.join(name);

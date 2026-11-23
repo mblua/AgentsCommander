@@ -1,4 +1,4 @@
-//! #3317 recovery and negative controls.
+//! Recovery and negative controls.
 
 use super::super::native_fixture::NativeExitMode;
 use super::closing::{exact, force, logger, owner, owners, records};
