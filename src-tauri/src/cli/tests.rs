@@ -40,7 +40,7 @@ fn cli_after_help_documents_token_validation_model() {
     );
 }
 
-/// #654: internal `role-experiment` + the test/automation verbs and the
+/// Internal `role-experiment` + the test/automation verbs and the
 /// test-only top-level flags must NOT clutter `--help`. `hide = true` is a
 /// display-only attribute, so each must remain a registered subcommand/arg
 /// (the test harness still invokes them by name).
@@ -78,7 +78,7 @@ fn internal_verbs_and_test_flags_are_hidden_from_help() {
         assert!(sub.is_hide_set(), "`{name}` should be marked hidden");
     }
 
-    // #944 - the array above is a manual allowlist. A new ui-* verb that forgets
+    // The array above is a manual allowlist. A new ui-* verb that forgets
     // BOTH `#[command(hide = true)]` and its entry here would ship visible in
     // `--help` with no test failing. Make the invariant structural: every ui-*
     // subcommand is internal, no exceptions, no maintenance.
@@ -163,7 +163,7 @@ fn hidden_test_only_flags_still_parse() {
     assert!(parsed.command.is_none());
 }
 
-/// #1614 AC5 / D21: no retired token in ANY printed CLI help, complete by
+/// AC5 / D21: no retired token in ANY printed CLI help, complete by
 /// construction rather than by enumeration.
 ///
 /// Round 1 enumerated 20 subcommands by hand and the list was missing the
@@ -265,7 +265,7 @@ fn no_clap_printed_help_carries_the_retired_token() {
     );
 }
 
-/// #1614 requirement (F): the deprecated spellings parse to the identical
+/// Requirement (F): the deprecated spellings parse to the identical
 /// value. All four combinations of {purge-wg, purge-room} x {--wg, --room}.
 #[test]
 fn purge_args_accept_both_flag_spellings() {
@@ -298,7 +298,7 @@ fn purge_args_accept_both_flag_spellings() {
     }
 }
 
-/// #1614 requirement (F) for the room subcommand and its deprecated alias.
+/// Requirement (F) for the room subcommand and its deprecated alias.
 #[test]
 fn room_subcommand_accepts_the_workgroup_alias() {
     use clap::Parser;

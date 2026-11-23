@@ -28,7 +28,7 @@ fn expected_adjacent() -> PathBuf {
     }
 }
 
-/// The canonical unsuffixed executable of a packaged install (#1868).
+/// The canonical unsuffixed executable of a packaged install.
 fn unsuffixed_executable() -> PathBuf {
     if cfg!(windows) {
         PathBuf::from(r"C:\bundle\agentscommander.exe")
@@ -59,7 +59,7 @@ fn failed_write(
 
 #[test]
 fn packaged_absolute_executable_yields_portable_config_and_base() {
-    // #1868: portable selection is a suffixed-executable behavior; the
+    // Portable selection is a suffixed-executable behavior; the
     // fixture carries a suffix and its complete stem names the directory.
     let loc = resolve_instance_location(
         None,
@@ -176,7 +176,7 @@ fn blank_debug_override_is_ignored() {
 
 #[test]
 fn relative_executable_keeps_relative_config_but_no_base() {
-    // Suffixed fixture: a relative UNSUFFIXED executable selects HOME (#1868).
+    // Suffixed fixture: a relative UNSUFFIXED executable selects HOME.
     let loc = resolve_instance_location(
         None,
         None,
@@ -355,7 +355,7 @@ fn issue_1577_unmarked_indeterminate_failure_never_relocates() {
         .contains(&PathBuf::from("/home/u").display().to_string()));
 }
 
-/// #2816 (C3) E9a - the three isolation mechanisms a test fixture relies
+/// (C3) E9a - the three isolation mechanisms a test fixture relies
 /// on, as resolver behaviour: public override, debug override, suffixed
 /// executable, and the public override first.
 #[test]

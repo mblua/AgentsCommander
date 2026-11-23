@@ -4,7 +4,7 @@ fn tracker() -> SubstantiveInputTracker {
     SubstantiveInputTracker::default()
 }
 
-/// #1682 - the chunk classes the reviewer proved were refreshing the age of
+/// The chunk classes the reviewer proved were refreshing the age of
 /// an abandoned line. Every one reaches `feed` in production: xterm.js
 /// delivers device replies and mouse reports through the same `onData` as
 /// keystrokes, and `pty_write` classifies that stream unconditionally.
@@ -130,8 +130,8 @@ const MATRIX_ROWS: &[MatrixRow] = &[
         contributed: true,
     },
 ];
-/// #1682 regression guard on #871. `classify_chunk` is #871's classifier and
-/// #1682 is only a consumer of it, so this pins what the classifier does to
+/// Regression guard on #871. `classify_chunk` is #871's classifier and
+/// Is only a consumer of it, so this pins what the classifier does to
 /// `pending_nonspace` and to `submitted` for every chunk class the fix
 /// touches, from BOTH starting states, independently of the new field.
 #[test]
@@ -180,7 +180,7 @@ fn classify_chunk_matrix_pins_871_pending_and_submitted() {
     }
 }
 
-/// #1682 - the property the unconditional refresh made false. Silence-only
+/// The property the unconditional refresh made false. Silence-only
 /// aging already passed and is not the broken case: the line must age out
 /// while the terminal keeps receiving the traffic an agent's own child
 /// produces.
@@ -223,7 +223,7 @@ fn an_abandoned_line_ages_out_under_a_stream_of_non_submit_chunks() {
     assert!(t.pending_within(id, forever));
 }
 
-/// #1682 - the control for the test above: the fix must not pass by never
+/// The control for the test above: the fix must not pass by never
 /// refreshing. A person still typing keeps the line fresh, on every
 /// contributing chunk and not just the one that first set the flag.
 #[test]
@@ -432,7 +432,7 @@ fn pending_within_tracks_unsubmitted_input_and_expires() {
     );
 }
 
-/// #2336 - the exact chunk classes the typing hold accepts and rejects.
+/// The exact chunk classes the typing hold accepts and rejects.
 /// The rejected rows are the same device-reply/mouse/focus classes #1682
 /// proved arrive through the same `onData` stream while a person is NOT
 /// typing.
@@ -468,7 +468,7 @@ fn typing_hold_classifier_accepts_human_keys_only() {
     }
 }
 
-/// #2336 - a qualifying key opens the natural window; the window ages out on
+/// A qualifying key opens the natural window; the window ages out on
 /// its own; a later key refreshes it.
 #[test]
 fn typing_hold_natural_window_arms_refreshes_and_expires() {
@@ -489,7 +489,7 @@ fn typing_hold_natural_window_arms_refreshes_and_expires() {
     assert!(tracker.is_hold_active(id, window));
 }
 
-/// #2336 - per-session isolation: a hold in one session never leaks into
+/// Per-session isolation: a hold in one session never leaks into
 /// another, and a teardown reset drops only its own entry.
 #[test]
 fn typing_hold_is_per_session() {
@@ -510,7 +510,7 @@ fn typing_hold_is_per_session() {
     assert_eq!(tracker.snapshot(b, window).held_count, 0);
 }
 
-/// #2336 - a closed click releases, suppresses only the natural window that
+/// A closed click releases, suppresses only the natural window that
 /// existed then, and a later key re-arms. Manual close/open needs no key.
 #[test]
 fn typing_hold_manual_release_suppresses_then_next_key_rearms() {
@@ -547,7 +547,7 @@ fn typing_hold_manual_release_suppresses_then_next_key_rearms() {
     assert!(!tracker.is_hold_active(id, window));
 }
 
-/// #2379 - a manual close expires at exactly twice the window passed in:
+/// A manual close expires at exactly twice the window passed in:
 /// inside 2x it stays closed (a 1x implementation fails this), past 2x it
 /// opens with no click (a 3x implementation fails this), and the held count
 /// survives the auto-release. Re-taking the hold then clicking before its
@@ -585,7 +585,7 @@ fn typing_hold_manual_close_expires_at_twice_the_window_and_count_survives() {
     assert!(!tracker.is_hold_active(id, window));
 }
 
-/// #2379 - the manual deadline is recomputed from the window passed at
+/// The manual deadline is recomputed from the window passed at
 /// evaluation time, not from a hardcoded 60 and not from a deadline frozen
 /// at close time. The same close after 50s of silence: closed under the 30s
 /// window (2x = 60s), already open under a 20s window (2x = 40s). A
@@ -607,7 +607,7 @@ fn typing_hold_manual_expiry_follows_the_live_window_not_a_hardcoded_sixty() {
     );
 }
 
-/// #2336 - the count is a unique set of message IDs, repeated recordings do
+/// The count is a unique set of message IDs, repeated recordings do
 /// not increase it, reads do not mutate it, and terminal cleanup removes it.
 #[test]
 fn typing_hold_counts_unique_ids_and_snapshot_is_read_only() {
@@ -630,7 +630,7 @@ fn typing_hold_counts_unique_ids_and_snapshot_is_read_only() {
     assert!(!tracker.is_hold_active(id, window));
 }
 
-/// #4778 - only a CR or LF outside an ESC sequence submits a line; a bare
+/// Only a CR or LF outside an ESC sequence submits a line; a bare
 /// Enter counts, wheel/arrow/focus reports and Alt+Enter do not.
 #[test]
 fn chunk_submits_line_only_for_cr_or_lf_outside_escapes() {

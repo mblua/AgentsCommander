@@ -1,4 +1,4 @@
-//! (#1001 PR1) The wake-consumption oracle: pure decision core.
+//! The wake-consumption oracle: pure decision core.
 //!
 //! Two dead oracles (dev-rust's bare `waiting_for_input` flip, §14.1's
 //! post-submit activity gate) both observed the PTY OUTPUT stream, and the echo

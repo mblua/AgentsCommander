@@ -2953,8 +2953,8 @@ P2-fixture	src-tauri/src/session/context_alerts/tests/resolution.rs	let expected
 P2-fixture	src-tauri/src/session/context_alerts/tests/resolution.rs	let real = fixture.workgroup.join("coordinator-real");
 P2-fixture	src-tauri/src/session/context_alerts/tests/resolution.rs	changed_cwd.working_directory = fixture.workgroup.to_string_lossy().to_string();
 P1-comment	src-tauri/src/session/manager/lookup.rs	/// `<project>:<wg>` (the agent FQN minus the trailing `/agent`). Ad-hoc user
-P1-comment	src-tauri/src/session/manager/lookup.rs	/// (#552 auto-closed badge) team key `<project>:<wg>` -> (coordinator FQN,
-P1-comment	src-tauri/src/session/manager/lookup.rs	/// (#589) team key `<project>:<wg>` -> the coordinator session's `Uuid`, over
+P1-comment	src-tauri/src/session/manager/lookup.rs	/// (Auto-closed badge) team key `<project>:<wg>` -> (coordinator FQN,
+P1-comment	src-tauri/src/session/manager/lookup.rs	/// Team key `<project>:<wg>` -> the coordinator session's `Uuid`, over
 P2-fixture	src-tauri/src/session/manager/tests/team.rs	// #552: a WG replica cwd that agent_fqn_from_path resolves to
 P2-fixture	src-tauri/src/session/manager/tests/team.rs	// `<project>:<wg>/<agent>`. team key = `<project>:<wg>`.
 P2-fixture	src-tauri/src/session/manager/tests/team.rs	const COORD_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_lead";

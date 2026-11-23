@@ -714,7 +714,7 @@ fn concurrent_writes_return_correct_post_edit_content() {
     }
 }
 
-// ── #738: user-owned (USER:) title ownership ────────────────────────
+// ── user-owned (USER:) title ownership ────────────────────────
 
 fn bak_count(wg: &Path) -> usize {
     std::fs::read_dir(wg)

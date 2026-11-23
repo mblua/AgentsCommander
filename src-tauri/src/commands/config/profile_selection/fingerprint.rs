@@ -16,7 +16,7 @@ use super::wire::{
 
 use super::target::{canonical_compare_key, target_pair, ProfileTargetEnumeration};
 
-// ── #1941 selection fingerprints ───────────────────────────────────────────
+// ── Selection fingerprints ─────────────────────────────────────────────────
 //
 // Fingerprints are lowercase SHA-256 of a typed serde tuple with a schema tag.
 // The complete candidate list (pair, flag, identity state and the live-session
@@ -262,7 +262,7 @@ pub(crate) fn assignment_fingerprint(
     sha256_hex(&tuple)
 }
 
-/// #1941 - a removal fingerprint binds only the operation, scope, anchor and
+/// A removal fingerprint binds only the operation, scope, anchor and
 /// each candidate's pair/flag/identity state; removal has no session operation.
 pub(crate) fn removal_fingerprint(
     enumeration: &ProfileTargetEnumeration,

@@ -242,11 +242,11 @@ fn log_team_config_read_error(
     config_path: &Path,
     e: &std::io::Error,
 ) {
-    // #280 §3.4: NotFound is an expected state for half-installed
+    // NotFound is an expected state for half-installed
     // team dirs (`_team_foo/` created but no `config.json` yet).
     // Logging WARN at every discovery sweep spams app.log, so both
     // the one-shot per-(project, team_dir) visit record and the
-    // per-drop record below are DEBUG (#612 downgraded the prior
+    // per-drop record below are DEBUG (not the prior
     // one-shot INFO). Unexpected IO errors stay at WARN.
     match e.kind() {
         std::io::ErrorKind::NotFound => {
@@ -314,7 +314,7 @@ pub(crate) struct WgReplicaInfo {
 /// Thin wrapper over the shared walk-up in
 /// `config::ac_root::wg_replica_layout_from_agent_dir` (single source with
 /// `send::project::derive_root_project_dir` and `mailbox::derive_project_from_outbox_path`,
-/// see #726). This caller keeps the project FOLDER NAME (`my_project`), the LHS
+/// see there). This caller keeps the project FOLDER NAME (`my_project`), the LHS
 /// of a WG replica's canonical FQN, rather than the full project path.
 pub(crate) fn detect_wg_replica(root: &str) -> Result<Option<WgReplicaInfo>, String> {
     let canon = match crate::filesystem::directories::canonical_cli_discovery_path(Path::new(root))
@@ -388,7 +388,7 @@ pub(crate) fn build_wg_peer(
     let _ = crate::filesystem::directories::ensure_cli_peer_mailbox(&replica_ac.join("inbox"));
     let _ = crate::filesystem::directories::ensure_cli_peer_mailbox(&replica_ac.join("outbox"));
 
-    // #2786 (C1) - through the shared loader: state file first, key-wise.
+    // Through the shared loader: state file first, key-wise.
     let peer_config = read_agent_local_config(&replica_ac).unwrap_or_default();
 
     let expected_session_name = format!("{wg_name}/{agent_name}");
@@ -423,7 +423,7 @@ pub(crate) fn build_wg_peer(
 /// Pure (filesystem-bound) discovery for WG replicas. Returns the same vector
 /// that the legacy `execute_wg_discovery` would have serialized. Shared by
 /// `execute` and `execute_lean` so the peer set is identical by construction
-/// for both verbs (see issue #252).
+/// for both verbs.
 pub(crate) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> Vec<PeerInfo> {
     let session_index = build_session_index();
     let mut peers: Vec<PeerInfo> = Vec::new();
@@ -465,7 +465,7 @@ pub(crate) fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> 
         append_other_wg_coordinators(&wg, &my_full_name, &discovered, &session_index, &mut peers);
     }
 
-    // #293 — synthetic Root Agent reply peer (identity-verified coordinators
+    // Synthetic Root Agent reply peer (identity-verified coordinators
     // only). Augment the captured runtime project paths with the caller's own project
     // dir so `verified_wg_coordinator_target` sees the replica even when the
     // project isn't in settings. Mirrors the `effective_project_paths` local
@@ -679,7 +679,7 @@ pub(crate) fn append_origin_team_peers(
 /// WG-replica scan across captured registered projects. Returns the same vector
 /// that the legacy `execute` body would have serialized. Shared by `execute`
 /// and `execute_lean` so the peer set is identical by construction for both
-/// verbs (see issue #252).
+/// verbs.
 pub(crate) fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec<PeerInfo> {
     // ── Standard discovery-based peer listing ────────────────────────
     //

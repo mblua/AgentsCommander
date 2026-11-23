@@ -50,7 +50,7 @@ pub struct SessionRepo {
     /// Current branch. `None` until first watcher tick, or when detection fails.
     #[serde(default)]
     pub branch: Option<String>,
-    /// #1028/#1078 - local work not confirmed by cached origin tracking: Git emitted a
+    /// Local work not confirmed by cached origin tracking: Git emitted a
     /// non-ignored worktree/index entry, or the checked-out `HEAD` was not confirmed
     /// reachable from the current branch's configured cached `origin/*` upstream.
     /// `Some(true)` paints the badge letters red. `None` means never successfully
@@ -76,7 +76,7 @@ pub struct SessionRepo {
 pub enum SessionCommunicationKind {
     RaiseHand,
     BlockedMenu,
-    /// #2232 phase 7: the Co-managed feature produced a user-facing communication.
+    /// The Co-managed feature produced a user-facing communication.
     CoManaged,
 }
 
@@ -140,7 +140,7 @@ pub struct Session {
     /// never persisted and never exposed via `SessionInfo`.
     #[serde(skip)]
     pub git_repos_gen: u64,
-    /// #1682 - a message write reached one of this session's arming sites in this process, so its
+    /// A message write reached one of this session's arming sites in this process, so its
     /// busy->idle edges
     /// are agent responses worth stamping. It keys on that write, NOT on a delivered, submitted
     /// message: R7 (an
@@ -163,8 +163,8 @@ pub struct Session {
     pub token: Uuid,
     /// Resolved coding-agent identity, or `None` for a plain shell. Set once
     /// by `create_session_inner` via `CodingAgentKind::detect`. The single
-    /// source of truth that replaced the #258 `is_claude`/`is_codex`/
-    /// `is_gemini` triple (#260). Drives generic idle/resource diagnostics and
+    /// source of truth that replaced the `is_claude`/`is_codex`/
+    /// `is_gemini` triple. Drives generic idle/resource diagnostics and
     /// provider capabilities such as resume injection, context targeting,
     /// auto-self-clear support, and Telegram reader selection.
     #[serde(default)]
@@ -177,12 +177,12 @@ pub struct Session {
     pub profile_fallback_chain: Vec<String>,
     #[serde(default)]
     pub profile_fallback_applied: bool,
-    /// #2434 - how a portable coding-agent reference was matched for this
+    /// How a portable coding-agent reference was matched for this
     /// session. `None` means "not matched by the tiered matcher": a local-id hit,
     /// or a session that never went through it. Wire: `matchTier`.
     #[serde(default)]
     pub match_tier: Option<String>,
-    /// #2434 - the profile letter the stored reference asked for, when it is
+    /// The profile letter the stored reference asked for, when it is
     /// known and differs from the effective one. Wire: `originalProfileLetter`.
     #[serde(default)]
     pub original_profile_letter: Option<String>,
@@ -190,7 +190,7 @@ pub struct Session {
     pub effective_codex_home: Option<String>,
     #[serde(skip)]
     pub resolved_claude_projects_dir: Option<PathBuf>,
-    /// #592 - 16-hex content-hash of the profile cell this session launched
+    /// 16-hex content-hash of the profile cell this session launched
     /// with. In-memory; the durable copy is `tooling.profileContentHash` in the
     /// replica config. `None` for plain-shell sessions (no resolved profile).
     #[serde(skip)]
@@ -222,7 +222,7 @@ pub struct Session {
     /// (including the Phase 3 restore path).
     #[serde(default)]
     pub detached_geometry: Option<WindowGeometry>,
-    /// (#630/#631) Durable per-session resume intent for the next app restart.
+    /// Durable per-session resume intent for the next app restart.
     /// `true` => the user explicitly started this session fresh ("Restart Session")
     /// and that intent must survive the restart, so the restore path passes
     /// `skip_auto_resume = true` and injects no `--continue`. `false` (default)

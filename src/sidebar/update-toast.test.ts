@@ -139,7 +139,7 @@ describe("update toast Copy action (#2135)", () => {
     await vi.waitFor(() => {
       expect(writeText).toHaveBeenCalledTimes(4);
     });
-    // #2135: the success toast carries tag "update-copy", so the repeats patch
+    // The success toast carries tag "update-copy", so the repeats patch
     // it in place instead of pushing past MAX_VISIBLE and evicting the info
     // toast via tier 1 (toasts.ts:169).
     expect(toastStore.items[0].kind).toBe("info");

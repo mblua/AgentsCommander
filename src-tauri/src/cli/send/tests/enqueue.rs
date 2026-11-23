@@ -86,7 +86,7 @@ fn send_help_documents_confirm_timeout_semantics() {
     assert!(help.contains("--get-output response wait"), "{help}");
 }
 
-// ── #1638 --profile: parse, validation, outbox JSON, receipt ──
+// ── --profile: parse, validation, outbox JSON, receipt ──
 
 /// Watch the outbox dir for the queued message file and fabricate the
 /// `delivered/` artifact so `execute`'s confirmation wait resolves fast.
@@ -465,7 +465,7 @@ fn queued_receipt_prints_requested_agent_and_profile_when_flags_present() {
     );
 }
 
-// #2232 phase 7 test 8: the Co-managed provenance queue is not an
+// The Co-managed provenance queue is not an
 // `--outbox` target. The queue is the only tokenless, self-authorized
 // origin; allowing a token-holding caller to write there would let it
 // forge that origin.

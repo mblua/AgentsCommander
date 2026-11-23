@@ -79,7 +79,7 @@ where
     let current_title = title_value_of(&parsed);
     let current_is_user_owned = current_title.as_deref().is_some_and(is_user_owned_title);
 
-    // #738 user-lock: a coordinator SetTitle must never overwrite a human-owned
+    // User lock: a coordinator SetTitle must never overwrite a human-owned
     // (`USER:`) title. This is a successful outcome (exit 0): no write, no backup.
     // Ordered before the reserved-prefix check so a coordinator re-sending the
     // same `USER: X` is rejected here (not treated as invalid input).
@@ -87,7 +87,7 @@ where
         return Ok(EditOutcome::RejectedUserTitle {});
     }
 
-    // #738 reserved-prefix: a coordinator SetTitle whose own input starts with
+    // Reserved prefix: a coordinator SetTitle whose own input starts with
     // `USER:` is invalid input (it would forge a human lock) unless an existing
     // user-owned title already blocked the write above. Hard error, exit 1, no
     // write, no backup. SetUserTitle/creation are unaffected (human-owned paths).
@@ -214,7 +214,7 @@ where
 {
     let backup_path = if file_existed {
         // NOTE: backup filenames sort by wall-clock; an NTP backward correction
-        // can break chronological ordering. Acceptable per spec; see plan #137 LOW-2.
+        // can break chronological ordering. Acceptable per spec.
         let ts = now().format("%Y%m%d-%H%M%S").to_string();
         let mut chosen: Option<PathBuf> = None;
         for n in 0..=99u32 {

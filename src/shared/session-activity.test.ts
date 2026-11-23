@@ -34,7 +34,7 @@ describe("sessionActivity", () => {
   });
 
   it("pins pendingReview above waitingForInput when both flags are true", () => {
-    // #882/#886: sessions.ts currently lowers these flags in separate writes.
+    // sessions.ts currently lowers these flags in separate writes.
     // Reading pendingReview first keeps pending consumers from subscribing to
     // waitingForInput, so this order is behavioral, not visual.
     const both = activitySession("running", {
@@ -46,7 +46,7 @@ describe("sessionActivity", () => {
     expect(sessionDotClass(both)).toBe("pending");
   });
 
-  // #2271 - Co-managed precedence, one test per decision the epic fixes.
+  // Co-managed precedence, one test per decision the epic fixes.
   it("comanaged beats waitingForInput (test 2)", () => {
     const waiting = activitySession("running", { waitingForInput: true });
     expect(sessionActivity(waiting, { comanaged: true })).toBe("comanaged");
@@ -82,7 +82,7 @@ describe("sessionActivity", () => {
     const cases: Record<SessionActivity, { session: ActivitySession | null; inactive?: boolean; comanaged?: boolean; dot: string }> = {
       offline: { session: null, dot: "offline" },
       exited: { session: activitySession({ exited: 0 }), dot: "exited" },
-      // #2271 - totality: the new variant maps 1:1 like every other one.
+      // Totality: the new variant maps 1:1 like every other one.
       comanaged: { session: activitySession("running"), comanaged: true, dot: "comanaged" },
       pendingReview: { session: activitySession("running", { pendingReview: true }), dot: "pending" },
       waitingForInput: { session: activitySession("running", { waitingForInput: true }), dot: "waiting" },

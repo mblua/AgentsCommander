@@ -1,6 +1,6 @@
 use super::*;
 
-// Stage E (#1064) shutdown-decision conformance (plan section 10.4 items
+// Stage E shutdown-decision conformance (plan section 10.4 items
 // 14/15/34). Stage E extends only lib.rs `#[cfg(test)]` coverage; the exit
 // wiring order itself is exercised by the selection/alert/scraper shutdown
 // tests. Persistence is allowed only when BOTH the selection tracker and the
@@ -667,7 +667,7 @@ async fn sample_adapter_is_nonblocking_and_recovers_only_after_quarter_capacity(
     assert!(adapter.closed_logged.load(Ordering::Relaxed));
 }
 
-/// #1032 - the adapter must hand `compile` the string the user wrote, byte for byte.
+/// The adapter must hand `compile` the string the user wrote, byte for byte.
 ///
 /// The pattern is the ONLY defence this feature has: the engine deliberately ships no
 /// anchoring rules of its own, so every rule that makes a reading trustworthy lives in

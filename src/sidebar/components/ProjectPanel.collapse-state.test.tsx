@@ -274,7 +274,7 @@ describe("ProjectPanel collapse state", () => {
     }
   });
 
-  // #1351 - the coordinator strip is now a real section: header, count, collapse.
+  // The coordinator strip is now a real section: header, count, collapse.
   it("renders the Orchestrators header with a count and collapses its rows", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });

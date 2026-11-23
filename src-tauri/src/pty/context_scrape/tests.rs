@@ -154,7 +154,7 @@ impl ContextSampleSink for SamplesFake {
 /// One recorded `commit` call: the changed `(id, percent)` pairs for one tick.
 type CommittedTick = Vec<(Uuid, Option<u8>)>;
 
-/// #1088 - records every `commit(changed)` the scraper hands the persist sink.
+/// Records every `commit(changed)` the scraper hands the persist sink.
 /// Each element is one tick's committed vector; `commits().len()` is the commit
 /// call count (0 when a tick changed nothing).
 #[derive(Default)]
@@ -354,7 +354,7 @@ async fn e2992_p51_unavailable_progress_and_retirement() {
     assert_eq!(h.sink.emitted().len(), 2);
 }
 
-// Stage E (#1064) retirement race sentinel (plan section 10.4 item 21,
+// Stage E retirement race sentinel (plan section 10.4 item 21,
 // acceptance item 35): retiring a session that never emitted a positive
 // reading (last_emitted == None) emits NO final null, and repeated retirement
 // is idempotent. A mutation that emitted a duplicate/unconditional null fails.

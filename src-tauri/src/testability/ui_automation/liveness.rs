@@ -91,7 +91,7 @@ pub fn pid_is_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// #2382: Linux keeps a terminated child as a zombie until its parent waits.
+/// Linux keeps a terminated child as a zombie until its parent waits.
 /// `kill` reports a zombie as existing, but the automation session it names
 /// can no longer answer, so treat it as dead - matching the Windows branch,
 /// which does not report an exited process as alive either.

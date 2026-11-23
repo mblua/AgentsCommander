@@ -14,7 +14,7 @@ import {
   __resetCoordinatorCloseModalHostForTests,
 } from "./coordinator-close";
 
-// #588 — the single by-id helper funnels all three close paths (ProjectPanel
+// The single by-id helper funnels all three close paths (ProjectPanel
 // "X", SessionItem, keyboard shortcut). A non-coordinator is a plain destroy; a
 // coordinator goes through close_coordinator and opens the busy-confirm modal
 // (the module-level pendingCoordinatorClose signal) when the backend refuses.

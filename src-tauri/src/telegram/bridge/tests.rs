@@ -189,7 +189,7 @@ fn network_policy_reset_prevents_stale_recovery() {
     assert_eq!(state.record_success(&policy), PollNetworkLogAction::None);
 }
 
-// ── AgyFilter unit tests (#1549) ────────────────────────────
+// ── AgyFilter unit tests ────────────────────────────
 //
 // Fixtures are the exact rows observed in diag-sent.log (session
 // 19de56d2-…, frames 03:14-03:23 UTC 2026-08-25). DROPPED = chrome,

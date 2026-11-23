@@ -20,7 +20,7 @@ use super::{
     REPORT_CODE_INVALID_DEFINITION,
 };
 
-/// #2736 - a local `installCommands` patch. For the three per-OS keys,
+/// A local `installCommands` patch. For the three per-OS keys,
 /// `None` = absent (inherit), `Some(None)` = explicit `null` (clear).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InstallCommandsPatch {
@@ -232,7 +232,7 @@ pub(crate) fn parse_idle_burst_patch(
     Ok(config)
 }
 
-/// #2736 - the strict local `installCommands` patch: an object whose only
+/// The strict local `installCommands` patch: an object whose only
 /// members are the four platform keys; `default` must be a string, each
 /// per-OS key a string or `null`. Values are checked after composition.
 pub(crate) fn parse_install_commands_patch(
@@ -554,7 +554,7 @@ pub(crate) fn merge_config_seed(
     merged
 }
 
-/// #2124 - merge the local `idleBurst` patch by presence: an absent subfield
+/// Merge the local `idleBurst` patch by presence: an absent subfield
 /// inherits the base value; an object after a missing or `null` base starts from
 /// all-absent, i.e. the launch-time defaults.
 pub(crate) fn merge_idle_burst(
@@ -574,7 +574,7 @@ pub(crate) fn merge_idle_burst(
     merged
 }
 
-/// #2736 - merge the local `installCommands` patch by presence onto the base
+/// Merge the local `installCommands` patch by presence onto the base
 /// object, or onto an empty `default` when there is none. A blank resulting
 /// `default` fails the composed re-validation.
 pub(crate) fn merge_install_commands(

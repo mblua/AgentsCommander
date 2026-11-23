@@ -104,7 +104,7 @@ fn fanout_characterization_preserves_raw_order_and_ui_is_last() {
     assert_eq!(emitted[0].2, Some(1));
 }
 
-/// #2124 T12 - the real wiring through `handle_output`: the fanout's single
+/// T12 - the real wiring through `handle_output`: the fanout's single
 /// detector call reaches the burst filter, so a 64 B status-line chunk after
 /// long silence neither resets the auto-close clock nor fires `on_busy`,
 /// while 1024 B of real output does both.
@@ -465,7 +465,7 @@ fn attach_cuts_the_batch_exactly_at_the_snapshot_boundary() {
     assert_eq!(emitted[1].2, Some(2));
 }
 
-/// #1439. A parser grid that diverged from the grid the `ConPTY` last took must never seed
+/// A parser grid that diverged from the grid the `ConPTY` last took must never seed
 /// an attach: the attach returns no snapshot, converges the parser onto the RECORDED
 /// grid, and the next attach seeds cleanly at that grid with the current sequence.
 ///

@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-// #3029: a single startup transaction, owned by the existing Windows reader.
+// A single startup transaction, owned by the existing Windows reader.
 #[cfg(windows)]
 #[derive(Clone, Copy)]
 pub(super) enum CursorQueryState {

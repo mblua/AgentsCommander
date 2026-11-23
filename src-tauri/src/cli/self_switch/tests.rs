@@ -136,7 +136,7 @@ fn self_switch_help_documents_forgotten_summary_behavior() {
     assert!(help.contains("240"), "{help}");
     assert!(help.contains("closed background"), "{help}");
     assert!(help.contains("SELF-HANDOFF.md"), "{help}");
-    // #749 - the help documents the pre-inject handoff archive and its exact destination.
+    // The help documents the pre-inject handoff archive and its exact destination.
     assert!(
         help.contains("self-clear/<timestamp>_SELF-HANDOFF.md"),
         "{help}"
@@ -259,7 +259,7 @@ fn discovery_shell_quotes_copy_ids_with_spaces_and_metacharacters() {
     ));
 }
 
-/// #2716 (B3, option C) E37: an unreadable agents layer is reported as such,
+/// E37: an unreadable agents layer is reported as such,
 /// naming the path; a genuinely empty list still reads "none configured".
 #[test]
 fn an_unreadable_layer_is_not_an_empty_list() {

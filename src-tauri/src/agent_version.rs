@@ -44,7 +44,7 @@ where
         .await
 }
 
-/// #1551 - fixed probe argv per known program stem (lowercase, extension stripped).
+/// Fixed probe argv per known program stem (lowercase, extension stripped).
 /// No catalog/user/project string ever reaches argv. Cursor (`agent`) is absent on
 /// purpose: it has no update command and its bare name collides with other vendors.
 pub fn version_probe_args(program_stem: &str) -> Option<&'static [&'static str]> {
@@ -82,7 +82,7 @@ pub struct InstallState {
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// #1551 - commit counter of the install cache that stored this state; 0 until
+    /// Commit counter of the install cache that stored this state; 0 until
     /// `ProbeTicket::complete` commits it (so `checking` and un-committed probe results
     /// are 0). Clients keep the highest `seq` per command (plan section 5.11).
     #[serde(default)]
@@ -141,7 +141,7 @@ impl InstallState {
     }
 }
 
-/// #1551 - process-lifetime install-state cache, keyed by the catalog `command`
+/// Process-lifetime install-state cache, keyed by the catalog `command`
 /// string (the update unit, like `agentAutoUpdateByCommand`).
 #[derive(Default)]
 pub struct AgentInstallCache {
@@ -169,7 +169,7 @@ pub enum CacheLookup {
     Absent,
 }
 
-/// #1551 - result of the single-lock scheduling operation.
+/// Result of the single-lock scheduling operation.
 pub enum Scheduling {
     Fresh(InstallState),
     InFlight,
@@ -185,7 +185,7 @@ pub struct ProbeTicket {
     live: bool,
 }
 
-/// #1551 - result of closing a ticket: the state is committed to the current generation,
+/// Result of closing a ticket: the state is committed to the current generation,
 /// or the cache was invalidated meanwhile and the SAME ticket continues (renewed) for a retry.
 pub enum Completion {
     Committed(InstallState),
@@ -222,7 +222,7 @@ impl AgentInstallCache {
         CacheLookup::Absent
     }
 
-    /// #1551 - the ONLY production scheduling primitive: ONE critical section decides between
+    /// The ONLY production scheduling primitive: ONE critical section decides between
     /// serving a fresh entry, reporting an open ticket, opening the ticket (iff `may_begin`;
     /// `in_flight` insert + generation capture in the same lock take), or deferring. Two concurrent
     /// callers can never both receive `Began` for the same command, and a commit that lands before
@@ -263,7 +263,7 @@ impl AgentInstallCache {
         })
     }
 
-    /// #1551 - after a startup pass every entry is stale: `generation += 1`, `entries.clear()`.
+    /// After a startup pass every entry is stale: `generation += 1`, `entries.clear()`.
     /// Tickets stay open (their next `complete` returns `Stale`) and `seq` is NOT reset, so every
     /// post-invalidation commit outranks every pre-invalidation state on the clients.
     pub fn invalidate_all(&self) {

@@ -14,7 +14,7 @@ import {
 import { settingsStore } from "../../shared/stores/settings";
 import { setSidebarCompactMode, sidebarCompact } from "../../shared/sidebar-compact";
 
-// #2236 phase 6 — compact composition. D11 makes a mode change a no-op without
+// Compact composition. D11 makes a mode change a no-op without
 // a registered host, so every compact arm installs one through the phase-2
 // harness first. No prop is passed to ActionBar: the component reads the
 // module-level signal directly, and a test that passed a prop would not
@@ -37,7 +37,7 @@ function setup(overrides: Partial<AppSettings> = {}): FakeTransport {
   const fake = new FakeTransport();
   fake.resolve(
     "get_settings",
-    // #4049 CTX is default-off; keep the original toolbar composition here.
+    // CTX is default-off; keep the original toolbar composition here.
     baseSettings({ contextHistoryEnabled: true, ...overrides }),
   );
   fake.resolve("get_resource_snapshot", null);

@@ -1,6 +1,6 @@
 use super::*;
 
-/// #2336 - `get_typing_hold` / `toggle_typing_hold`: UUID validation, absent
+/// `get_typing_hold` / `toggle_typing_hold`: UUID validation, absent
 /// session error, per-session isolation, and the flip/snapshot contract.
 #[tokio::test]
 async fn typing_hold_commands_report_and_reject_sessions() {
@@ -76,7 +76,7 @@ async fn typing_hold_commands_report_and_reject_sessions() {
     assert!(!released.closed);
 }
 
-/// #2336 - the desktop `pty_write` path is the only recorder for the typing
+/// The desktop `pty_write` path is the only recorder for the typing
 /// hold, and only qualifying human chunks arm it.
 #[test]
 fn typing_hold_recorder_arms_on_human_keys_and_ignores_terminal_sequences() {
@@ -97,7 +97,7 @@ fn typing_hold_recorder_arms_on_human_keys_and_ignores_terminal_sequences() {
     assert!(state.lock().unwrap().is_hold_active(id, window));
 }
 
-/// #2336 - the user-message bookkeeping is not the recording choke point:
+/// The user-message bookkeeping is not the recording choke point:
 /// the web transport's `UserInputSource::Web` never arms the hold.
 #[tokio::test]
 async fn typing_hold_user_message_sources_do_not_arm_hold() {
@@ -136,7 +136,7 @@ async fn typing_hold_user_message_sources_do_not_arm_hold() {
     assert!(!hold.lock().unwrap().is_hold_active(id, window));
 }
 
-/// #2336 - the destroy/restart side-state purge clears the typing hold with
+/// The destroy/restart side-state purge clears the typing hold with
 /// the substantive tracker it already reset, so no manual padlock or counted
 /// ID survives a session teardown.
 #[test]
@@ -161,7 +161,7 @@ fn typing_hold_is_cleared_by_session_side_state_purge() {
     assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
 }
 
-/// #2336 - deterministic boundary race: a qualifying desktop key lands while
+/// Deterministic boundary race: a qualifying desktop key lands while
 /// a logical-clear writer permit is in flight (before the stamp, the order
 /// the plan specifies), then the shared fresh-boundary stamp runs. The stamp
 /// resets ONLY the substantive tracker, so the hold stays armed, counted held

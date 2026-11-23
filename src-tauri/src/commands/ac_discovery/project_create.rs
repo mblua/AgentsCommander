@@ -38,7 +38,7 @@ pub async fn create_ac_project(path: String) -> Result<(), String> {
                 on_publication,
             )
         })?;
-        // #1318 - a fresh `.ac` root seeds the catalog + masters immediately
+        // A fresh `.ac` root seeds the catalog + masters immediately
         // (no restart needed). INSIDE this blocking closure, so the gate acquire
         // runs on the blocking thread. Fail-soft: any error is logged and the
         // boot loop covers the project at the next boot.
@@ -148,7 +148,7 @@ where
     })?;
     if created {
         ensure_ac_root_gitignore(&ac_root)?;
-        // #1065 Stage F: record each freshly created project context template under
+        // Record each freshly created project context template under
         // the held gate at its commit-point time. A pre-existing `.ac` is not
         // backfilled (the `else` branch creates no templates), preserving the bare
         // create's no-backfill contract (acceptance item 38).

@@ -331,7 +331,7 @@ fn serialized_info_has_unleashed_field() {
     assert_eq!(value["unleashed"], json!(false));
 }
 
-// ---- #4805: group store, IPC routing and TASK titles ----
+// ---- group store, IPC routing and TASK titles ----
 
 #[test]
 fn group_commands_are_handled_without_the_fallback() {

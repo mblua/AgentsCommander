@@ -1,4 +1,4 @@
-//! #1273 layering guard: `crate::config::instance_gitignore` may not name
+//! Layering guard: `crate::config::instance_gitignore` may not name
 //! `crate::config::root_agent`, nor anything else that can reach the crate's
 //! cyclic SCC, and the module that now holds `ROOT_AGENT_DIR_NAME`,
 //! `crate::config`, may not name anything at all. #1446 added a third scanned
