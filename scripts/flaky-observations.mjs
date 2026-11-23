@@ -97,30 +97,41 @@ function headerFor(identity, source, collapsed, rejected) {
   };
 }
 
+function vitestAssertionEntry(fileId, assertion) {
+  const test_id = `${fileId}::${testName(assertion ?? {})}`;
+  if (!safeId(test_id)) return null;
+  const status = assertion?.status;
+  const outcome = Object.hasOwn(VITEST_STATUS, status) ? VITEST_STATUS[status] : 'not_run';
+  return { test_id, outcome };
+}
+
+function collectVitestEntries(reportResults, root) {
+  const entries = [];
+  let count = 0;
+  let rejected = 0;
+  for (const suite of reportResults) {
+    const fileId = relativeFile(root, suite?.name);
+    const assertions = Array.isArray(suite?.assertionResults) ? suite.assertionResults : [];
+    for (const assertion of assertions) {
+      count += 1;
+      const entry = vitestAssertionEntry(fileId, assertion);
+      if (entry === null) {
+        rejected += 1;
+        continue;
+      }
+      entries.push(entry);
+    }
+  }
+  return { entries, count, rejected };
+}
+
 export function vitestRecord(report, { root, identity, file = 'npm-test-results.json' }) {
   const results = report && Array.isArray(report.testResults) ? report.testResults : null;
   if (results === null) {
     const source = { file, present: true, complete: false, tests: 0 };
     return { header: headerFor(identity, source, 0, 0), tests: [] };
   }
-  const entries = [];
-  let count = 0;
-  let rejected = 0;
-  for (const suite of results) {
-    const fileId = relativeFile(root, suite?.name);
-    const assertions = Array.isArray(suite?.assertionResults) ? suite.assertionResults : [];
-    for (const assertion of assertions) {
-      count += 1;
-      const test_id = `${fileId}::${testName(assertion ?? {})}`;
-      if (!safeId(test_id)) {
-        rejected += 1;
-        continue;
-      }
-      const status = assertion?.status;
-      const outcome = Object.hasOwn(VITEST_STATUS, status) ? VITEST_STATUS[status] : 'not_run';
-      entries.push({ test_id, outcome });
-    }
-  }
+  const { entries, count, rejected } = collectVitestEntries(results, root);
   const complete = isComplete(report, count);
   const { tests, collapsed } = collapseOutcomes(entries);
   if (!complete) for (const test of tests) test.outcome = 'not_run';
@@ -223,48 +234,59 @@ function nextNonEmpty(lines, index) {
   return '';
 }
 
+function consumeCargoFailureName(section, cursor, line) {
+  const name = LIST_NAME.exec(line);
+  if (name) {
+    section.failedNames.add(name[1]);
+    return true;
+  }
+  if (line !== '' || section.failedNames.size > 0) cursor.inList = false;
+  return line === '';
+}
+
+function recordCargoRunning(section, countText) {
+  if (section.expected === null) section.expected = Number(countText);
+  else section.children += 1;
+}
+
+function parseCargoSectionLine(section, cursor, lines, i) {
+  const line = lines[i];
+  if (cursor.inDocTests) return;
+  if (DOC_TESTS.test(line)) {
+    cursor.inDocTests = true;
+    return;
+  }
+  if (cursor.inList && consumeCargoFailureName(section, cursor, line)) return;
+  if (line === 'failures:') {
+    const next = nextNonEmpty(lines, i);
+    cursor.inList = next.startsWith('    ') && !next.trimStart().startsWith('----');
+    return;
+  }
+  const running = RUNNING.exec(line);
+  if (running) {
+    recordCargoRunning(section, running[1]);
+    return;
+  }
+  if (!testOrResult(section, line) && GLUE.test(line)) section.glue += 1;
+}
+
 export function parseCargoLog(text) {
   const lines = text.replace(ANSI, '').split(/\r?\n/);
   const sections = [];
   let section = null;
-  let inList = false;
-  let inDocTests = false;
+  const cursor = { inList: false, inDocTests: false };
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     const header = HEADER.exec(line);
     if (header) {
       section = newSection(targetName(header[1]));
       sections.push(section);
-      inList = false;
-      inDocTests = false;
+      cursor.inList = false;
+      cursor.inDocTests = false;
       continue;
     }
-    if (section === null || inDocTests) continue;
-    if (DOC_TESTS.test(line)) {
-      inDocTests = true;
-      continue;
-    }
-    if (inList) {
-      const name = LIST_NAME.exec(line);
-      if (name) {
-        section.failedNames.add(name[1]);
-        continue;
-      }
-      if (line !== '' || section.failedNames.size > 0) inList = false;
-      if (line === '') continue;
-    }
-    if (line === 'failures:') {
-      const next = nextNonEmpty(lines, i);
-      inList = next.startsWith('    ') && !next.trimStart().startsWith('----');
-      continue;
-    }
-    const running = RUNNING.exec(line);
-    if (running) {
-      if (section.expected === null) section.expected = Number(running[1]);
-      else section.children += 1;
-      continue;
-    }
-    if (!testOrResult(section, line) && GLUE.test(line)) section.glue += 1;
+    if (section === null) continue;
+    parseCargoSectionLine(section, cursor, lines, i);
   }
   return sections;
 }

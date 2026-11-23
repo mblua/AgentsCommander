@@ -105,6 +105,103 @@ test('1: a cancelled attempt is excluded even with an artifact', () => {
   assert.equal(result.report.coverage.complete, true);
 });
 
+test('4920 collector sorts eligible runs by creation time and then numeric ID', () => {
+  const earlier = '2026-11-20T10:00:00Z';
+  const tied = '2026-11-20T10:01:00Z';
+  const gh = fakeGh({
+    runs: [
+      run(12, { created_at: tied }), run(19, { created_at: earlier }), run(4, { created_at: tied }),
+    ],
+    artifacts: {
+      4: [artifact('flaky-obs-j-1', recordText(4, 1, 's4', { t: 'pass' }), { id: 104 })],
+      12: [artifact('flaky-obs-j-1', recordText(12, 1, 's12', { t: 'pass' }), { id: 112 })],
+      19: [artifact('flaky-obs-j-1', recordText(19, 1, 's19', { t: 'pass' }), { id: 119 })],
+    },
+  });
+  const { report, markdown } = go(gh);
+  assert.deepEqual(gh.artifactPages, ['19/1', '4/1', '12/1']);
+  assert.deepEqual(gh.downloads, [119, 104, 112]);
+
+  const expected = {
+    schema: 2,
+    generated: '2026-11-30',
+    window: { start: '2026-11-01', end: '2026-11-30' },
+    thresholds: { window_days: 30, min_executed: 20, quarantine_shas: 2, release_passes: 50 },
+    coverage: {
+      runs_listed: 3,
+      attempts_ingested: 3,
+      excluded: {
+        cancelled: 0, other_conclusion: 0, fork: 0, invalid: 0,
+        oversize: 0, duplicate: 0, corrupt: 0,
+      },
+      records_ingested: 3,
+      incomplete_sources: 0,
+      dropped_lines: 0,
+      backfill_open: 0,
+      history_reset: true,
+      budget_exhausted: false,
+      api_error: null,
+      calls: 37,
+      runs_pending: 0,
+      list_truncated_days: [],
+      complete: true,
+      generated_at: '2026-11-30T05:17:00Z',
+    },
+    tests: [{
+      key: 'cargo|Linux|t', suite: 'cargo', platform: 'Linux', test_id: 't', executed: 3,
+      fails: 0, other: 0, failure_rate: null, flaky_shas: 0, open_backfill: 0,
+      class: 'insufficient-data',
+    }],
+    quarantine_candidates: [],
+    candidates: {},
+    release_ready: [],
+  };
+  assert.equal(`${JSON.stringify(report, null, 2)}\n`, `${JSON.stringify(expected, null, 2)}\n`);
+  assert.equal(markdown, [
+    'Report complete: all listed runs ingested.',
+    '',
+    '# Flaky test report 2026-11-01 .. 2026-11-30',
+    '',
+    '## Coverage',
+    '',
+    '| field | value |',
+    '| --- | --- |',
+    '| runs_listed | 3 |',
+    '| attempts_ingested | 3 |',
+    '| excluded | {"cancelled":0,"other_conclusion":0,"fork":0,"invalid":0,' +
+      '"oversize":0,"duplicate":0,"corrupt":0} |',
+    '| records_ingested | 3 |',
+    '| incomplete_sources | 0 |',
+    '| dropped_lines | 0 |',
+    '| backfill_open | 0 |',
+    '| history_reset | true |',
+    '| budget_exhausted | false |',
+    '| api_error | null |',
+    '| calls | 37 |',
+    '| runs_pending | 0 |',
+    '| list_truncated_days | [] |',
+    '| complete | true |',
+    '| generated_at | 2026-11-30T05:17:00Z |',
+    '',
+    '## Classes',
+    '',
+    '| class | tests |',
+    '| --- | --- |',
+    '| flaky-evidence | 0 |',
+    '| suspect | 0 |',
+    '| failing | 0 |',
+    '| insufficient-data | 1 |',
+    '| stable | 0 |',
+    '',
+    '## Tests',
+    '',
+    '| class | test | suite | platform | executed | fails | flaky SHAs |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
+    '| insufficient-data | `t` | cargo | Linux | 3 | 0 | 0 |',
+    '',
+  ].join('\n'));
+});
+
 test('2: failure then success attempts are both ingested with distinct keys', () => {
   const gh = fakeGh({
     runs: [run(3, { run_attempt: 2 })],
@@ -390,4 +487,35 @@ test('17: an ApiError while listing stops collection and main returns 1', () => 
       now: new Date(`${TODAY}T05:17:00Z`),
     }));
   assert.equal(code, 1);
+});
+
+test('4920 rate main preserves value consumption, last options and usage', () => {
+  const dir = tempDir();
+  const final = path.join(dir, 'final');
+  const deps = { gh: fakeGh(), now: new Date('2026-11-30T05:17:00Z') };
+
+  const stderr = process.stderr.write;
+  let output = '';
+  process.stderr.write = (chunk) => {
+    output += String(chunk);
+    return true;
+  };
+  try {
+    assert.equal(withQuietStdout(() => main([
+      '--out', path.join(dir, 'first'), '--ignored', 'unused', '--repo', '',
+      '--out', final, '--repo', '--out',
+    ], {}, deps)), 0);
+    assert.equal(output, '');
+    assert.deepEqual(fs.readdirSync(dir), ['final']);
+    assert.deepEqual(fs.readdirSync(final).sort(), ['history.json', 'report.json', 'report.md']);
+
+    const valid = ['--repo', 'o/r', '--out', final];
+    for (const flag of ['--repo', '--out']) {
+      output = '';
+      assert.equal(main([...valid, flag], {}, deps), 2, flag);
+      assert.equal(output, 'usage: flaky-rate.mjs --repo <owner/repo> --out <dir>\n');
+    }
+  } finally {
+    process.stderr.write = stderr;
+  }
 });
