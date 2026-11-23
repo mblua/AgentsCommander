@@ -53,20 +53,38 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")]
     let display_env = crate::screenshot::display_env_snapshot();
 
-    let l = prepare_launch(&owners, test_window_placement, ui_automation_enabled)?;
+    let (l, for_exit) = prepare_launch(&owners, test_window_placement, ui_automation_enabled)?;
     let exit_ctx = exit::ExitCtx {
         detached_set: l.rs.detached_sessions.clone(),
         spec_board_state: l.rs.spec_board_state.clone(),
         activity_for_exit: Arc::clone(&owners.activity),
         session_mgr_for_exit: Arc::clone(&l.session_mgr),
-        coordinator_clocks_for_exit: l.for_exit.coordinator_clocks_for_exit,
-        shutdown_for_exit: l.for_exit.shutdown_for_exit,
-        selection_coordinator_for_exit: l.for_exit.selection_coordinator_for_exit,
-        tg_mgr_for_exit: l.for_exit.tg_mgr_for_exit,
-        resource_monitor_for_exit: l.for_exit.resource_monitor_for_exit,
-        ui_automation_state_for_exit: l.for_exit.ui_automation_state_for_exit,
+        coordinator_clocks_for_exit: for_exit.coordinator_clocks_for_exit,
+        shutdown_for_exit: for_exit.shutdown_for_exit,
+        selection_coordinator_for_exit: for_exit.selection_coordinator_for_exit,
+        tg_mgr_for_exit: for_exit.tg_mgr_for_exit,
+        resource_monitor_for_exit: for_exit.resource_monitor_for_exit,
+        ui_automation_state_for_exit: for_exit.ui_automation_state_for_exit,
     };
 
+    let builder = plugin_builder(
+        #[cfg(target_os = "linux")]
+        display_env,
+    );
+    manage_launch(builder, &owners, l)
+        .build(tauri::generate_context!())
+        .expect("error while building application")
+        .run(crate::exit_callback(
+            exit_ctx,
+            commands::spec_board::spec_board_close_all,
+        ));
+    Ok(())
+}
+
+/// Shared plugins plus the platform-gated ones, in the original order.
+fn plugin_builder(
+    #[cfg(target_os = "linux")] display_env: crate::screenshot::DisplayEnvSnapshot,
+) -> tauri::Builder<tauri::Wry> {
     // #714/#1842/#2079 clipboard + global-shortcut plugins are referenced ONLY
     // on Windows, Linux and macOS; every other target never links them. The
     // rest of the builder chain is shared. This predicate must match
@@ -89,8 +107,19 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")]
     let builder = builder.manage(display_env);
 
-    let builder = crate::commands::session::selection_executor::install(builder);
+    crate::commands::session::selection_executor::install(builder)
+}
 
+/// Managed state, `.setup` and the invoke handler, in the original order.
+#[allow(
+    clippy::expect_used,
+    reason = "startup aborts by design if the shared network clients cannot be built"
+)]
+fn manage_launch(
+    builder: tauri::Builder<tauri::Wry>,
+    owners: &crate::AppOwners,
+    l: Launch,
+) -> tauri::Builder<tauri::Wry> {
     builder
         .manage(owners.clone())
         .manage(l.boot.master_token)
@@ -163,13 +192,6 @@ pub(crate) fn run(
         // entered" signal is produced. The `[ipc-blackbox] coverage:` line repeats
         // this in every record block.
         .invoke_handler(crate::invoke_handler(l.rs.ipc_observer_for_handler))
-        .build(tauri::generate_context!())
-        .expect("error while building application")
-        .run(crate::exit_callback(
-            exit_ctx,
-            commands::spec_board::spec_board_close_all,
-        ));
-    Ok(())
 }
 
 /// Session, idle and runtime state prepared before the Tauri builder chain.
@@ -185,7 +207,6 @@ struct Launch {
     shutdown_signal: ShutdownSignal,
     response_close: crate::pty::manager::ResponseCloseState,
     rs: ManagedRuntime,
-    for_exit: RuntimeExitParts,
     setup_ctx: setup::SetupCtx,
 }
 
@@ -193,7 +214,7 @@ fn prepare_launch(
     owners: &crate::AppOwners,
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
     ui_automation_enabled: bool,
-) -> Result<Launch, StartupError> {
+) -> Result<(Launch, RuntimeExitParts), StartupError> {
     let boot = prepare_boot(owners, ui_automation_enabled)?;
 
     // Create WS broadcaster (shared between Tauri commands and web server)
@@ -289,7 +310,7 @@ fn prepare_launch(
         resource_monitor_for_setup: for_setup.resource_monitor_for_setup,
         ui_automation_state_for_setup: for_setup.ui_automation_state_for_setup,
     };
-    Ok(Launch {
+    let launch = Launch {
         boot,
         session_mgr,
         selection_coordinator,
@@ -301,9 +322,9 @@ fn prepare_launch(
         shutdown_signal,
         response_close,
         rs,
-        for_exit,
         setup_ctx,
-    })
+    };
+    Ok((launch, for_exit))
 }
 
 struct BootPreamble {
