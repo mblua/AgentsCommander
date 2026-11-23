@@ -272,7 +272,7 @@ pub(crate) fn replace_existing_file_windows(
     })
 }
 
-/// #664: shared atomic replace-existing primitive. Delegates to the vetted
+/// Shared atomic replace-existing primitive. Delegates to the vetted
 /// role-file replace path (plain rename on Unix; rename-if-absent else
 /// `ReplaceFileW(REPLACEFILE_WRITE_THROUGH)` on Windows). The CALLER is
 /// responsible for creating, writing, fsyncing, dropping the temp handle, and
@@ -290,7 +290,7 @@ pub(crate) fn merge_root_agent_config(config_path: &Path) -> Result<(), String> 
         obj.entry("tooling".to_string())
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
 
-        // #979: strip every exact global sentinel from the Root `context[]`.
+        // Strip every exact global sentinel from the Root `context[]`.
         // Compute the replacement from the immutable borrow FIRST so it ends
         // before `obj.insert`. Exact-default recognition runs before the generic
         // filter, so the oldest `[token, Role.md]` form gains the Root supplement
@@ -345,7 +345,7 @@ pub(crate) fn context_array_matches(arr: &[Value], expected: &[&str]) -> bool {
 }
 
 pub fn read_last_coding_agent(root_dir: &str) -> Option<String> {
-    // #2786 (C1) - the raw loader with field-level extraction, as before C1:
+    // (C1) - the raw loader with field-level extraction, as before C1:
     // an unrelated malformed field must not hide `lastCodingAgent`.
     crate::config::agent_config::read_agent_local_config_json(Path::new(root_dir))
         .ok()??

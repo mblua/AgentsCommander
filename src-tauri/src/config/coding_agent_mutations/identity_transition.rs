@@ -1,6 +1,20 @@
 mod packets;
 
-use crate::config::settings::AppSettings;
+use crate::config::settings::{
+    prepare_source_candidate_with_original_links, read_own_source_journal, read_source_snapshot,
+    source_original_mappings, source_transition_digest, update_own_source_journal_with_validation,
+    AppSettings, IdentityWriteLease, LegacyCompatibilityOrigin, OriginInputs, SourceInventoryProof,
+    SourceLocalProgress, SourceWriteContext,
+};
+
+#[cfg(not(test))]
+type SourceTransitionReload<'a> =
+    &'a dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>;
+#[cfg(test)]
+type SourceTransitionReload<'a> = (
+    &'a dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+    &'a IdentityTransitionTestControls,
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IdentityTransitionReadState {
@@ -175,17 +189,10 @@ pub(crate) fn commit_source_candidate(
     request_id: &str,
     expected: &crate::config::settings::SourceRevision,
     candidate: &serde_json::Value,
-    #[cfg(not(test))] reload: &dyn Fn() -> Result<
-        (),
-        crate::config::settings::SourceCoordinationError,
-    >,
-    #[cfg(test)] reload_and_controls: (
-        &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
-        &IdentityTransitionTestControls,
-    ),
+    reload: SourceTransitionReload<'_>,
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
     #[cfg(test)]
-    let (reload, controls) = reload_and_controls;
+    let (reload, controls) = reload;
     if !crate::config::settings::source_protocol_active() {
         return Err(SourceTransitionError::ActivationRequired);
     }
@@ -203,6 +210,7 @@ pub(crate) fn commit_source_candidate(
     )
 }
 
+/// settings alone constructs original authorization, mapping and binding.
 pub(super) fn commit_source_candidate_internal(
     settings: &AppSettings,
     context: &crate::config::settings::SourceReadContext,
@@ -210,23 +218,10 @@ pub(super) fn commit_source_candidate_internal(
     request_id: &str,
     expected: &crate::config::settings::SourceRevision,
     candidate: &serde_json::Value,
-    #[cfg(not(test))] reload: &dyn Fn() -> Result<
-        (),
-        crate::config::settings::SourceCoordinationError,
-    >,
-    #[cfg(test)] reload_and_controls: (
-        &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
-        &IdentityTransitionTestControls,
-    ),
+    reload: SourceTransitionReload<'_>,
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
     #[cfg(test)]
-    let (reload, controls) = reload_and_controls;
-    use crate::config::settings::{
-        prepare_source_candidate_with_original_links, read_own_source_journal,
-        read_source_snapshot, source_original_mappings, source_transition_digest,
-        update_own_source_journal_with_validation, IdentityWriteLease, LegacyCompatibilityOrigin,
-        OriginInputs, SourceInventoryProof, SourceLocalProgress, SourceWriteContext,
-    };
+    let (reload, controls) = reload;
     let identity = IdentityWriteLease::acquire(context, std::time::Duration::ZERO)?;
     let lease = SourceWriteContext::acquire(context, source, &identity)?;
     let payload_digest = source_transition_digest(&(source, expected, candidate))?;
@@ -259,7 +254,6 @@ pub(super) fn commit_source_candidate_internal(
         #[cfg(test)]
         controls,
     );
-    // settings alone constructs original authorization, mapping and binding.
     let authority = SourceInventoryProof::for_candidate(
         crate::config::settings::SourceInventoryInputs {
             settings,
@@ -576,17 +570,10 @@ pub(super) fn drive_identity_transition(
     operation_id: &str,
     authority: &crate::config::settings::SourceInventoryProof,
     rediscover: &dyn Fn() -> Result<(), SourceTransitionError>,
-    #[cfg(not(test))] reload: &dyn Fn() -> Result<
-        (),
-        crate::config::settings::SourceCoordinationError,
-    >,
-    #[cfg(test)] reload_and_controls: (
-        &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
-        &IdentityTransitionTestControls,
-    ),
+    reload: SourceTransitionReload<'_>,
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
     #[cfg(test)]
-    let (reload, controls) = reload_and_controls;
+    let (reload, controls) = reload;
     use crate::config::settings::{
         publish_source_intent_with_validation, read_own_source_journal,
         source_transition_digest_bytes, SourceCoordinationError, SourceLocalProgress,

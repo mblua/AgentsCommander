@@ -1,4 +1,4 @@
-// #4248 feasibility experiment: snapshot the isolated renderer fixture through the
+// Feasibility experiment: snapshot the isolated renderer fixture through the
 // locked Tauri/WebKitGTK WebView on Linux. This file owns the CLI, composition and
 // the portable validators; native.rs owns the GTK/WebKit harness. Example only: it
 // is not an app module and changes no production behavior.

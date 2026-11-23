@@ -103,7 +103,7 @@ fn the_sweep_finds_the_ac_root_for_every_path_shape() {
     assert_eq!(nearest_ac_root(Path::new("agent/config.json")), None);
 }
 
-// -- #2816 (C3): the writers reach the pair -------------------------------
+// -- (C3): the writers reach the pair -------------------------------
 
 /// E1.
 #[test]
@@ -438,7 +438,7 @@ fn the_require_existing_wrapper_refuses_an_absent_file_and_creates_nothing() {
     );
 }
 
-/// C4 (#2470): the seeded state file of every row that seeds one. All four
+/// C4: the seeded state file of every row that seeds one. All four
 /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
 #[rustfmt::skip]
 const C4_SEEDED_STATE: &str = concat!(
@@ -448,12 +448,12 @@ const C4_SEEDED_STATE: &str = concat!(
     r#""profileContentHash"]}}"#
 );
 
-/// C4 (#2470): the state file beside a tracked `config.json`.
+/// C4: the state file beside a tracked `config.json`.
 fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {
     tracked.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
 }
 
-/// C4 (#2470): after one writer, the tracked file carries none of the four
+/// C4: after one writer, the tracked file carries none of the four
 /// state keys. This says nothing at all about the state file: `c4_state_is`
 /// is the only helper that reads it, and the row calls them in that order.
 fn c4_tracked_is_clean(tracked: &std::path::Path, site: &str) {
@@ -473,7 +473,7 @@ fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_j
     );
 }
 
-/// C4 (#2470): the state file EXISTS and is exactly `expected`, compared
+/// C4: the state file EXISTS and is exactly `expected`, compared
 /// as parsed JSON so the pretty-printing of `publish_pair_side` is never
 /// the subject. `expected` is always a literal written in the row. Absence
 /// is NOT admitted here and no longer reads as JSON `null`:
@@ -502,7 +502,7 @@ const C4_STATE_AFTER_SITE_2: &str = concat!(
     r#""profileContentHash"]}}"#
 );
 
-/// C4 (#2470) E11, sites 1 and 2: each writes the state file and leaves the
+/// C4 E11, sites 1 and 2: each writes the state file and leaves the
 /// tracked file without a state key.
 #[test]
 fn c4_sites_1_2_leave_no_state_key_in_the_tracked_file() {

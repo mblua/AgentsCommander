@@ -101,7 +101,7 @@ fn ignore_rows_are_unique_and_byte_sorted_by_name() {
     }
 }
 
-/// #2133 - pins the overlay row between its two neighbours, so a later re-sort cannot
+/// Pins the overlay row between its two neighbours, so a later re-sort cannot
 /// quietly relocate it.
 #[test]
 fn the_local_artifact_name_is_an_ignore_row_in_sorted_position() {
@@ -121,7 +121,7 @@ fn the_local_artifact_name_is_an_ignore_row_in_sorted_position() {
     assert!(local < position("api-audit.log"));
 }
 
-/// #2133 - the shipped row sorts before the local one; a later re-sort must keep that.
+/// The shipped row sorts before the local one; a later re-sort must keep that.
 #[test]
 fn the_shipped_artifact_name_is_an_ignore_row_before_the_local_one() {
     let names: Vec<&str> = ignore_rows().iter().map(|row| row.name).collect();
@@ -141,7 +141,7 @@ fn the_shipped_artifact_name_is_an_ignore_row_before_the_local_one() {
     assert!(hits[0] < index_of("agent-help.local.json"));
 }
 
-/// #2133 - the two remote rows are split around P2's and P3's rows by byte order.
+/// The two remote rows are split around P2's and P3's rows by byte order.
 #[test]
 fn both_remote_artifact_names_are_ignore_rows_in_sorted_position() {
     let names: Vec<&str> = ignore_rows().iter().map(|row| row.name).collect();
@@ -497,7 +497,7 @@ fn exactly_one_any_depth_row_exists() {
     );
 }
 
-/// #2717 (B4a) - two artifacts with independent reasons to be layer 50 are
+/// (B4a) - two artifacts with independent reasons to be layer 50 are
 /// each named from the rule, so the collision is intended, not accidental.
 #[test]
 fn project_settings_and_settings_local_share_the_layer_50_name() {
@@ -508,7 +508,7 @@ fn project_settings_and_settings_local_share_the_layer_50_name() {
     );
 }
 
-/// #2718 (B4b) E5: the Loop state write temporary derives from its name.
+/// (B4b) E5: the Loop state write temporary derives from its name.
 #[test]
 fn loop_state_tmp_glob_derives_from_the_loop_state_name() {
     assert_eq!(
@@ -518,7 +518,7 @@ fn loop_state_tmp_glob_derives_from_the_loop_state_name() {
     assert_eq!(LOOP_STATE_TARGET_NAME, "loop.state.no-git.json");
 }
 
-/// #2994 (P41) - the owner's lifecycle sidecar and endpoint metadata are Ignore
+/// (P41) - the owner's lifecycle sidecar and endpoint metadata are Ignore
 /// rows in sorted position, distinct from the transactional lock, and leave
 /// every existing row in place.
 #[test]

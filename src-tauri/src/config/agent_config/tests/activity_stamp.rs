@@ -27,14 +27,14 @@ pub(super) fn stored(dir: &Path) -> serde_json::Value {
     serde_json::from_str(&raw).expect("stored config is JSON")
 }
 
-/// #2816 (C3) - raw JSON of the state file beside the tracked `config`.
+/// (C3) - raw JSON of the state file beside the tracked `config`.
 pub(super) fn state_beside(config: &Path) -> serde_json::Value {
     let path = state_file_path(config.parent().expect("config dir"));
     let raw = std::fs::read_to_string(path).expect("read state file");
     serde_json::from_str(&raw).expect("state file is JSON")
 }
 
-/// #2816 (C3) - no state key may remain in the tracked `config`; an absent
+/// (C3) - no state key may remain in the tracked `config`; an absent
 /// tracked file holds none.
 pub(super) fn assert_no_state_key_tracked(config: &Path) {
     let Ok(raw) = std::fs::read_to_string(config) else {
@@ -187,7 +187,7 @@ fn read_last_agent_message_at_binds_present_and_absent() {
     seed_instance_config(dir, &serde_json::json!({ "tooling": 5 }));
     assert_eq!(read(dir), None);
 
-    // #2816 (C3) consequence 5: the write on that seed is rejected by the
+    // (C3) consequence 5: the write on that seed is rejected by the
     // pair's cleanup and the tracked file is left byte for byte.
     let tracked = instance_config(dir);
     assert!(

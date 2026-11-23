@@ -27,7 +27,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function entryIn(map: unknown, key: string): AgentHelpEntry | null {
-  if (!isRecord(map) || !Object.prototype.hasOwnProperty.call(map, key)) return null;
+  if (!isRecord(map) || !Object.hasOwn(map, key)) return null;
   const entry = map[key];
   return isRecord(entry) ? (entry as AgentHelpEntry) : null;
 }

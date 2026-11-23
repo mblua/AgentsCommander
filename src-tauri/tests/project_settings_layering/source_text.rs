@@ -51,7 +51,7 @@ pub(crate) fn aliases_a_module_group(body: &str) -> bool {
 /// A leading `r#` is dropped first: `r#commands` is the raw-identifier spelling
 /// of `commands` and names the same module, but reading it literally stops at the
 /// `#` and reports the child as `r`, so the reference would be caught by the
-/// equality assertion instead of by the #1265 message that explains it.
+/// equality assertion instead of by the message that explains it.
 fn leading_segment(item: &str) -> String {
     let item = item.strip_prefix("r#").unwrap_or(item);
     let mut segment: String = item

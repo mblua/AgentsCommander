@@ -1,4 +1,4 @@
-// #4316 - frontend `invoke("<cmd>", args)` calls must match a registered Rust
+// Frontend `invoke("<cmd>", args)` calls must match a registered Rust
 // `#[tauri::command]` by name and by argument keys (Tauri 2 lowerCamelCase keys).
 // Registered commands with no caller are printed, never failed.
 //

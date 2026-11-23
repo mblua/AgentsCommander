@@ -1,4 +1,4 @@
-//! Non-spinning, observable retry pacing for persist recapture loops (#4929).
+//! Non-spinning, observable retry pacing for persist recapture loops.
 use std::time::Duration;
 
 /// Retries that only yield before the first sleep.
@@ -45,7 +45,7 @@ impl RecaptureBackoff {
     }
 }
 
-/// Parks forever after logging: publication state cannot be read (#4929).
+/// Parks forever after logging: publication state cannot be read.
 pub(super) async fn park_unreadable<T>(site: &'static str) -> T {
     log::error!(
         "[persist] publication state unreadable (registry or slot lock poisoned); \

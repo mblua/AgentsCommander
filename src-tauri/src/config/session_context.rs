@@ -536,7 +536,7 @@ const WORKGROUP_GIT_SCOPE: &str =
     "`room-*/` and `wg-*/` are gitignored; origin Agent Matrices are \
     not and can be tracked. Git discovery above replica and Matrix roots is blocked. \
     State-changing Git belongs in `repo-*`; read-only Git is allowed within scope.";
-/// #1614 D8b: the exact `WORKGROUP_GIT_SCOPE` bytes shipped at d7008b34.
+/// The exact legacy `WORKGROUP_GIT_SCOPE` bytes shipped at d7008b34.
 /// Read only by `legacy_rendered_default_context_for_generation`, which
 /// reconstructs an older `Context.AgentsCommander.md` for byte
 /// comparison. Never used for current runtime output. 220 bytes, sha256

@@ -150,7 +150,7 @@ describe('trailing separator trim (#4456 S8786)', () => {
 });
 
 describe('matchPathRoot', () => {
-  // Oracle: the regexes normalizePath used before #4476.
+  // Oracle: the regexes normalizePath used before the rewrite.
   const DRIVE_ORACLE = /^([A-Za-z]:)[\\/]+(.*)$/;
   const UNC_ORACLE = /^[\\/]{2}([^\\/]+)[\\/]([^\\/]+)[\\/]?(.*)$/;
 

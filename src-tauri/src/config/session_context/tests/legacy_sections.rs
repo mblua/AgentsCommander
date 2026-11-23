@@ -595,7 +595,7 @@ fn default_context_for_a_room_replica_says_room() {
     );
 }
 
-/// #1614 AC7.4, the frozen half of the D8b split. `WORKGROUP_GIT_SCOPE` is
+/// The frozen half of the live/legacy split. `WORKGROUP_GIT_SCOPE` is
 /// read by the LIVE renderer and by the FROZEN legacy recognizer. Rule R
 /// forces the first to change; Rule P3 forces the second not to. The live
 /// half's assertions live in `workgroup_git_scope_split_is_correct`.

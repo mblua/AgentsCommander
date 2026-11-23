@@ -212,7 +212,7 @@ fn messaging_access_grants(messaging_mode: &MessagingContextMode) -> (String, St
         // Workgroup messaging renders in the standard entry-4 block and Root
         // messaging remains in its Narrow exception; neither uses this fine bullet.
         MessagingContextMode::Workgroup(_) | MessagingContextMode::Root(_) => String::new(),
-        // #923 D3: this session has no messaging directory of its own (no `wg-<N>-*`
+        // This session has no messaging directory of its own (no `wg-<N>-*`
         // ancestor, not the Root Agent), so `send --send` rejects it outright
         // (cli/send.rs:406). It can still be a delivery target, and the Inter-Agent
         // Messaging block tells it to read the notified path. Grant exactly that read,
@@ -359,7 +359,7 @@ fn send_message_instructions(messaging_mode: &MessagingContextMode) -> String {
              ```\n\n\
              `--send` takes the filename ONLY, never a path.\n"
             .to_string(),
-        // #923 D3: no `wg-<N>-*` ancestor and not the Root Agent, so `send --send`
+        // No `wg-<N>-*` ancestor and not the Root Agent, so `send --send`
         // refuses this root (cli/send.rs:406-414). Telling it to walk up to a workgroup
         // root it does not have would order an operation the Golden Rule forbids and the
         // CLI rejects. State the truth instead.

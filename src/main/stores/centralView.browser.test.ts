@@ -13,7 +13,7 @@ import { SettingsAPI } from "../../shared/ipc";
 const setAttached = () =>
   SettingsAPI.setMainResourceMonitorAttached as ReturnType<typeof vi.fn>;
 
-// #3367 — the web browser is a third central view that is never persisted.
+// The web browser is a third central view that is never persisted.
 describe("centralViewStore browser view", () => {
   beforeEach(() => {
     vi.clearAllMocks();

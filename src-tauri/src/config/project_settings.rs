@@ -330,7 +330,7 @@ pub fn load_workgroup_groups(project_path: &Path) -> Result<WorkgroupGroupsConfi
     load_workgroup_groups_in(project_path, crate::config::config_dir().as_deref())
 }
 
-/// #2717 (B4a) - `load_workgroup_groups` with an explicit journal directory.
+/// `load_workgroup_groups` with an explicit journal directory.
 fn load_workgroup_groups_in(
     project_path: &Path,
     journal_dir: Option<&Path>,
@@ -372,7 +372,7 @@ pub fn save_workgroup_groups(
     save_workgroup_groups_in(project_path, config, crate::config::config_dir().as_deref())
 }
 
-/// #2717 (B4a) - `save_workgroup_groups` with an explicit journal directory.
+/// `save_workgroup_groups` with an explicit journal directory.
 fn save_workgroup_groups_in(
     project_path: &Path,
     config: WorkgroupGroupsConfig,

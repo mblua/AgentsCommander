@@ -453,7 +453,7 @@ async fn restart_of_live_wg_replica_session_does_not_sessionrace() {
 /// S1/S2 fixture: `strict_target_fixture` PLUS a nested project with
 /// its own full workgroup inside `__agent_dev-one`:
 /// `nested-proj/.ac/{_team_team, _agent_lead2, _agent_inner2,
-/// wg-2-team/{__agent_lead2, __agent_inner2}}` and the #1535 bug-shaped
+/// wg-2-team/{__agent_lead2, __agent_inner2}}` and the bug-shaped
 /// origin dir `nested-proj/.ac/_agent_phase0`. The nested replica
 /// `config.json` identity is `../../_agent_inner2`; the nested team config
 /// names the nested origin matrices.

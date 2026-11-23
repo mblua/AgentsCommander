@@ -61,7 +61,7 @@ function ref(command: string): AgentUpdateCommandRef {
   return { command, label: label(command) };
 }
 
-/** The canonical succeeded result of a #1691 backend. */
+/** The canonical succeeded result of a current backend. */
 function ok(command: string): AgentUpdateResult {
   return {
     command,
@@ -83,7 +83,7 @@ function cancelled(command: string): AgentUpdateResult {
   return { ...ok(command), ok: false, outcome: "cancelled" };
 }
 
-/** The pre-#1691 wire shape: no `outcome`, no probes, no `change`. */
+/** The older wire shape: no `outcome`, no probes, no `change`. */
 function legacyOk(command: string): AgentUpdateResultWire {
   return { command, label: label(command), ok: true };
 }

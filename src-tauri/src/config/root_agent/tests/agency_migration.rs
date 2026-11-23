@@ -493,7 +493,7 @@ fn destination_changed_under_us_is_not_written() {
     assert!(stray_temp_files(&fixture.path).is_empty());
 }
 
-/// #2786 (C1) - no state file: an unrelated malformed field must not hide
+/// (C1) - no state file: an unrelated malformed field must not hide
 /// `lastCodingAgent`, exactly as before the loader.
 #[test]
 fn read_last_coding_agent_ignores_an_unrelated_malformed_field() {

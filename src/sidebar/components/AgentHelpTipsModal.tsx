@@ -67,13 +67,13 @@ const AgentHelpTipsModal: Component<AgentHelpTipsModalProps> = (props) => {
         const index = focusables.indexOf(document.activeElement as HTMLElement);
         if (index === -1) {
           event.preventDefault();
-          (event.shiftKey ? focusables[focusables.length - 1] : focusables[0])?.focus();
+          (event.shiftKey ? focusables.at(-1) : focusables[0])?.focus();
           return;
         }
         if (event.shiftKey) {
           if (index <= 0) {
             event.preventDefault();
-            focusables[focusables.length - 1]?.focus();
+            focusables.at(-1)?.focus();
           }
         } else if (index === focusables.length - 1) {
           event.preventDefault();

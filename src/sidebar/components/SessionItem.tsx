@@ -93,7 +93,7 @@ export function sessionDisplayName(
       const projectFolder = originProject() || pathProject;
       const normalized = trimTrailingSlashes(wd.replaceAll("\\", "/"));
       const parts = normalized.split("/");
-      const agentDir = (parts[parts.length - 1] ?? "").replace(/^__?agent_/, "");
+      const agentDir = (parts.at(-1) ?? "").replace(/^__?agent_/, "");
       return `${agentDir}@${projectFolder}`;
     }
     const normalized = trimTrailingSlashes(wd.replaceAll("\\", "/"));
@@ -101,7 +101,7 @@ export function sessionDisplayName(
     if (parts.length >= 2) {
       return parts.slice(-2).join("/");
     }
-    return parts[parts.length - 1] || session.name;
+    return parts.at(-1) || session.name;
   }
   return session.name;
 }
