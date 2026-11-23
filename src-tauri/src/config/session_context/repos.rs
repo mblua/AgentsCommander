@@ -1,3 +1,6 @@
+//! Writes the combined context file and holds path checks for repos,
+//! Agent Matrix folders and the .ac root. It does not render templates.
+
 use super::detect_git_branch;
 use super::{
     canonical_or_original, display_path, find_ac_root, is_replica_agent_dir,

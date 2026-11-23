@@ -1,3 +1,7 @@
+//! Resource monitor registry: tracks agent process groups, samples their
+//! memory and terminates or quarantines groups over their limits.
+//! It holds runtime state only; the OS process calls live in the backend.
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

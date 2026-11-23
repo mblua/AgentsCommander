@@ -1,4 +1,4 @@
-//! `coding-agent` CLI verb (#786) - scriptable create/inspect/update/remove of
+//! `coding-agent` CLI verb - scriptable create/inspect/update/remove of
 //! Coding Agent configs (`settings.agents[]`) without the GUI.
 //!
 //! No `--token`: this mutates the user-local `settings.json`, which any local
@@ -40,7 +40,7 @@ use crate::config::settings::{
 use crate::pty::backend::SessionBackendKind;
 
 const DEFAULT_CONFIRM_TIMEOUT_SECS: u64 = 30;
-/// #786 R3: grace window (one poller interval + margin) after an ENOENT cancel.
+/// Grace window (one poller interval + margin) after an ENOENT cancel.
 const GRACE_WAIT: Duration = Duration::from_secs(4);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -242,7 +242,7 @@ fn cmd_show(a: ShowArgs) -> Result<(), String> {
     print_json(agent)
 }
 
-/// #2716 (B3, option C) - an unreadable agents layer is reported as such, never
+/// An unreadable agents layer is reported as such, never
 /// as an empty list or an unknown id.
 fn refuse_unreadable_agents_layer(settings: &AppSettings) -> Result<(), String> {
     match settings.agents_layer.unreadable_path() {
@@ -251,7 +251,7 @@ fn refuse_unreadable_agents_layer(settings: &AppSettings) -> Result<(), String> 
     }
 }
 
-/// #1967 P4 - resolve the persisted catalog for a CLI verb. The shared logger
+/// Resolve the persisted catalog for a CLI verb. The shared logger
 /// suppresses stderr while `AC_MACHINE_OUTPUT` is set (main.rs sets it for every
 /// `coding-agent` invocation), so warnings are echoed to stderr explicitly here,
 /// mirroring the report IPC payload; stdout stays the JSON document. An
@@ -271,7 +271,7 @@ fn resolve_catalog_for_cli(settings: &AppSettings) -> Result<Vec<CodingAgentDefi
 }
 
 fn cmd_catalog() -> Result<(), String> {
-    // #1967 P4 - the persisted catalog is the only source: with no readable
+    // The persisted catalog is the only source: with no readable
     // persisted file the verb exits nonzero instead of serving the embedded
     // default.
     let settings = load_settings_for_cli();
@@ -309,7 +309,7 @@ fn cmd_add_with_io(
 
     // Seed from the catalog (Rust port of definitionToSeed) or start blank.
     let mut agent = if let Some(key) = &a.from_catalog {
-        // #1967 P4 - resolve the persisted catalog like `cmd_catalog`. An
+        // Resolve the persisted catalog like `cmd_catalog`. An
         // unavailable catalog aborts here, before any settings mutation; an
         // unknown key keeps the existing not-found error.
         let catalog = catalog()?;
@@ -580,7 +580,7 @@ fn blank_agent() -> AgentConfig {
         label: String::new(),
         command: String::new(),
         color: DEFAULT_CUSTOM_COLOR.to_string(),
-        // #2306 P1 - the position is assigned by the op layer on Add.
+        // The position is assigned by the op layer on Add.
         order: None,
         envs: Vec::new(),
         isolated_home: false,
@@ -605,13 +605,13 @@ fn definition_to_agent_seed(def: &CodingAgentDefinition) -> AgentConfig {
         label: def.label.clone(),
         command: def.command.clone(),
         color: def.color.clone(),
-        // #2306 P1 - the position is assigned by the op layer on Add.
+        // The position is assigned by the op layer on Add.
         order: None,
         envs: def.envs.clone(),
         isolated_home: def.isolated_home,
         instructions_filename: def.instructions_filename.clone(),
         config_seed: def.config_seed.clone(),
-        // #1032 - presets carry no context regex: it is per-agent user config with no
+        // Presets carry no context regex: it is per-agent user config with no
         // counterpart in a definition, so a seeded agent starts with the feature off.
         context_regex: None,
         blocking_menus: None,

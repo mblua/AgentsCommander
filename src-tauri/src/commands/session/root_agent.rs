@@ -1,3 +1,6 @@
+//! Creates or reuses the Root Agent session through selection transactions.
+//! Owns no long-lived state. Does not handle non-root sessions.
+
 pub(crate) use super::restart::context::ensure_owned_root_directory;
 use super::restart::context::{ensure_lifecycle_root_directory, LifecycleExecutionContext};
 use crate::commands::session::attach_local_config_telegram_if_any;

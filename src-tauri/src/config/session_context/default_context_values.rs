@@ -1,3 +1,6 @@
+//! Dynamic values placed into the default context (paths, guidance text).
+//! It computes strings only; it does not write files.
+
 use super::{
     display_path, render_project_shared_entry, render_room_shared_entry, render_room_task_rules,
     replica_shared_roots, DefaultContextDynamicValues, DIRECT_MATRIX_GIT_SCOPE,

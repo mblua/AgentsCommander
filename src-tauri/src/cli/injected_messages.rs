@@ -1,4 +1,4 @@
-//! #1157 - `injected-messages` CLI verb. Resets operator-editable injected PTY
+//! `injected-messages` CLI verb. Resets operator-editable injected PTY
 //! message templates to the defaults this binary ships.
 //!
 //! No `--token`: this touches the user-local config directory next to the

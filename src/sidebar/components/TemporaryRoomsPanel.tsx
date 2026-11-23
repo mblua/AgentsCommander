@@ -413,13 +413,14 @@ const TemporaryRoomsPanel: Component = () => {
       const valid = !!compileGroupRegex(g);
       const checked = groupMatchesWorkgroup(compiled(), g.id, wg);
       const custom = checked && removeExactGroupToken(g.regex, room.name) === null;
-      const title = !valid
-        ? "Fix this group's regex before adding a room"
-        : custom
-          ? "Membership comes from a custom regex. Use Edit groups to change it."
-          : checked
-            ? "Remove this room from the group"
-            : g.regex;
+      let title = g.regex;
+      if (!valid) {
+        title = "Fix this group's regex before adding a room";
+      } else if (custom) {
+        title = "Membership comes from a custom regex. Use Edit groups to change it.";
+      } else if (checked) {
+        title = "Remove this room from the group";
+      }
       return { id: g.id, name: g.name, checked, disabled: !valid || custom, title };
     });
     const choices = [
@@ -661,7 +662,6 @@ const TemporaryRoomsPanel: Component = () => {
                     {(text) => (
                       <span
                         class="ac-wg-task sidebar-task-label"
-                        tabIndex={0}
                         title={text()}
                         data-ac-testid={`tempRoom.${room.name}.taskTitle`}
                         data-ac-role="text"
@@ -674,6 +674,7 @@ const TemporaryRoomsPanel: Component = () => {
                 </div>
                 <div
                   class="replica-item"
+                  role="presentation"
                   classList={{
                     active: !!session() && session()?.id === sessionsStore.activeId,
                     unleashed: unleashed(room),

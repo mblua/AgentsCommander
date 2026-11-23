@@ -1,3 +1,7 @@
+//! Tauri commands to list agents and create teams and rooms (workgroups),
+//! including repo clones. Owns no long-lived state. Does not update existing
+//! teams.
+
 use super::creation_trace::{CreationTrace, Origin, Outcome, Reason, Stage};
 use super::matrix_copy::MatrixCopyHooks;
 use super::matrix_layout::{

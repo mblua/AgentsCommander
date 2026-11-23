@@ -92,7 +92,7 @@ pub(crate) fn write_session_request(request: &SessionRequest) -> Result<(), Stri
     Ok(())
 }
 
-/// #1163 - the outcome the running app recorded for a session request.
+/// The outcome the running app recorded for a session request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionRequestResultStatus {
@@ -100,7 +100,7 @@ pub enum SessionRequestResultStatus {
     Rejected,
 }
 
-/// #1163 - the running app answers each session request with a result sidecar
+/// The running app answers each session request with a result sidecar
 /// (`<id>.result.json` in the session-requests dir) so the CLI can report a
 /// truthful launch outcome.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,13 +163,13 @@ pub(crate) fn read_session_request_result(id: &str) -> Option<SessionRequestResu
     }
 }
 
-/// #1163 - how long the CLI waits for the running app's result sidecar before
+/// How long the CLI waits for the running app's result sidecar before
 /// reporting `pending`. The app polls every 3 s, so a running app answers in
 /// ~3-6 s plus spawn time; 30 s covers slow spawns without hanging scripts.
 pub(crate) const SESSION_REQUEST_RESULT_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30);
 
-/// #1163 - the CLI's truthful launch verdict.
+/// The CLI's truthful launch verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LaunchOutcome {
     Pending,

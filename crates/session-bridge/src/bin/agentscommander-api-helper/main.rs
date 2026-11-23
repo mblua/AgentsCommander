@@ -1,3 +1,7 @@
+//! Entry point of the container API helper: parses its CLI commands and sends
+//! them to the AgentsCommander host API over HTTP.
+//! It holds no session state; it does not spawn PTYs or render snapshots itself.
+
 use crate::config::{api_url, authorization_value, next_utf8, HelperResult};
 use crate::pty_result::{
     canonical_uuid_v4, http_error_code, parse_api_error_code, parse_result, read_capped_response,

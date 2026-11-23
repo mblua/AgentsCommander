@@ -128,7 +128,7 @@ fn single_quote_arg_for_copy(arg: &str) -> String {
 }
 
 fn render_coding_agent_discovery(settings: &crate::config::settings::AppSettings) -> String {
-    // #2716 (B3, option C): an unreadable agents layer is not "none configured".
+    // An unreadable agents layer is not "none configured".
     if let Some(path) = settings.agents_layer.unreadable_path() {
         return crate::config::settings::agents_unreadable_cli_error(path);
     }

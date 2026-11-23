@@ -1,3 +1,6 @@
+//! Session manager communication state: context percent, raised hands and
+//! clearing them. It does not send messages between agents.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::super::session::{SessionCommunication, SessionCommunicationKind, SessionStatus};

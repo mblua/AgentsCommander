@@ -1,3 +1,6 @@
+//! Session manager prompts: the last prompt and retained prompt domains.
+//! It stores prompt text only; it does not write to the PTY.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::binding::binding_matches;

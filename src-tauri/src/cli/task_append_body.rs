@@ -159,7 +159,7 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
             0
         }
         Ok(EditOutcome::RejectedUserTitle { .. }) => {
-            // Unreachable for AppendBody (the #738 user-lock guard only fires on
+            // Unreachable for AppendBody (the user-lock guard only fires on
             // TaskOp::SetTitle); defensive arm so the match stays exhaustive.
             crate::cli_println!("TASK.md unchanged");
             0

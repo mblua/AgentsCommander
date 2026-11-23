@@ -1,4 +1,4 @@
-//! Typed API errors and their HTTP mapping (#791).
+//! Typed API errors and their HTTP mapping.
 //!
 //! Error bodies never leak host absolute paths: `scrub_host_paths` redacts any
 //! Windows drive-letter path (e.g. an outbox / messaging dir that an internal

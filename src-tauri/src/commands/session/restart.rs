@@ -1,3 +1,7 @@
+//! Session restart commands: replace a running session with a new one through
+//! the selection transaction, then retire the old session.
+//! It owns no persistent data; it does not create sessions from scratch.
+
 pub(crate) mod context;
 pub(crate) mod execution;
 mod settlement;

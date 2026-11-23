@@ -1,4 +1,4 @@
-//! Pre-egress secret detector for Co-managed (#2232 phase 6, plan section 7).
+//! Pre-egress secret detector for Co-managed.
 //!
 //! `telegram::redact` is the wrong tool for this job and is deliberately not
 //! widened: its policy covers `/bot<token>` URL shapes and `[?&]key=<value>`

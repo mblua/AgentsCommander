@@ -1,3 +1,6 @@
+//! Session manager turn state: idle and busy marks and armed agent turns.
+//! It does not read PTY output.
+
 #[cfg(test)]
 use super::super::session::Session;
 use super::carrier::{acquire_carrier_mutation_permit, CarrierMutationPermit};

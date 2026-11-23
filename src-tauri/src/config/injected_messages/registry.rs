@@ -1,3 +1,6 @@
+//! Registry of injected messages: file names, schema and coverage versions,
+//! and the known message ids with their defaults. It does not send messages.
+
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};

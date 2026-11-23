@@ -121,7 +121,7 @@ pub(super) fn create_main_window(
         &default_main,
     );
 
-    // #2348: resolve the startup display state once. A test placement's
+    // Resolve the startup display state once. A test placement's
     // `maximized` boolean overrides the saved state entirely; otherwise the
     // saved state applies (and a saved maximize is only a request, never a
     // fatal failure: `apply_main_display_state` logs and keeps the window

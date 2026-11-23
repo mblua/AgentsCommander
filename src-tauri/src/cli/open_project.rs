@@ -40,7 +40,7 @@ pub struct OpenProjectArgs {
 }
 
 pub fn execute(args: OpenProjectArgs) -> i32 {
-    // #786/#1077: strict CLI loader (Round-1 G5): unlike `load_settings`, this
+    // Strict CLI loader (Round-1 G5): unlike `load_settings`, this
     // does NOT auto-generate or persist a `root_token`, and it refuses to touch a
     // present-but-unparseable settings.json rather than silently rewriting it.
     let mut settings = match load_settings_for_cli_strict() {
@@ -84,7 +84,7 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
         }
     };
     if result.registered {
-        // #1077: rebuild the hidden pair state from the mutated runtime lists so
+        // Rebuild the hidden pair state from the mutated runtime lists so
         // the paired reconcile serializer records both the absolute path and its
         // instance-relative companion (retaining any preserved conflict/missing
         // records) instead of dropping the append.
@@ -94,7 +94,7 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
             return 1;
         }
         drop(transaction);
-        // #1318 - a CLI open of an unseeded project seeds the catalog + masters
+        // A CLI open of an unseeded project seeds the catalog + masters
         // immediately (no restart needed). Fail-soft: any error is logged and
         // the boot loop covers the project at the next boot.
         crate::config::coding_agents_catalog::ensure_seeded_for_project(Path::new(&result.path));

@@ -1,3 +1,6 @@
+//! Detects and reconstructs legacy generated default contexts so they can
+//! be replaced. It reads text only; it does not write files.
+
 use super::{
     discover_skill_index, legacy_rendered_default_context_for_compat,
     pre_1072_legacy_rendered_default_context_for_compat, render_skills_section,

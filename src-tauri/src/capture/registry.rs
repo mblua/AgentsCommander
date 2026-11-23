@@ -1,4 +1,4 @@
-//! The per-session owner of the `(Sender, CaptureSlot)` pair (#2232 phase 3).
+//! The per-session owner of the `(Sender, CaptureSlot)` pair.
 //!
 //! Round 1 left the sender unowned across all nine phases, so every phase could
 //! merge green while production emitted nothing. The chain, named end to end:

@@ -1,4 +1,4 @@
-//! The user's category catalog (#2232 phase 6, plan section 5).
+//! The user's category catalog.
 //!
 //! The system knows **four destinations and nothing else**:
 //! `user | orchestrator | root | default_reply`. The catalog file maps each
