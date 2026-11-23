@@ -1,4 +1,4 @@
-//! #3843 source guards for the production settings facade.
+//! Source guards for the production settings facade.
 //! These inspect explicit declarations; gate 04 owns runtime token proof.
 //! Test-only seams and serde transport projections remain permitted.
 
