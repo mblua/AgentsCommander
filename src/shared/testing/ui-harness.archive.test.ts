@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { autoUnarchiveStore } from "../../sidebar/stores/auto-unarchive";
 import { resetUiStoresForTests } from "./ui-harness";
 
-describe("resetUiStoresForTests archive state (#881)", () => {
+describe("resetUiStoresForTests archive state", () => {
   afterEach(() => {
     resetUiStoresForTests();
   });
