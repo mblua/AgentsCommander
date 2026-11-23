@@ -23,7 +23,7 @@ function ruleFor(selector: string): string {
 
 const SCROLLERS = [".workgroup-group-rail-scroll", ".workgroup-group-rail-favorites-scroll"];
 
-describe("#2578 rail scrollbars", () => {
+describe("rail scrollbars", () => {
   it("T1 Favorites container has no horizontal padding", () => {
     expect(declValue(ruleFor(".workgroup-group-rail-favorites"), "padding")).toBe("6px 0 4px");
   });

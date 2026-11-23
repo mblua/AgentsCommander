@@ -69,7 +69,7 @@ function storedCommunication(id: string): SessionCommunication | null | undefine
   return sessionsStore.sessions.find((r) => r.id === id)?.communication;
 }
 
-describe("SidebarApp communication reconcile from the polled listing (#1856)", () => {
+describe("SidebarApp communication reconcile from the polled listing", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
   // Every call BUILDS a fresh session AND a fresh communication object. Solid's

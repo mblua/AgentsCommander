@@ -50,7 +50,7 @@ function target<T extends HTMLElement = HTMLElement>(testId: string): T | null {
   return document.querySelector<T>(`[data-ac-testid="${testId}"]`);
 }
 
-describe("SidebarApp context-template update flow (#695)", () => {
+describe("SidebarApp context-template update flow", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
