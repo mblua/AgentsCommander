@@ -1,3 +1,6 @@
+//! The code-owned default context, including the Root agent prologue.
+//! It owns that fixed text; it does not read global templates.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::{

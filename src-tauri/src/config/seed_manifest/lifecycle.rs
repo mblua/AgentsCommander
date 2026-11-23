@@ -1,3 +1,6 @@
+//! Seed manifest lifecycle: the soft project gate and recording for the
+//! automatic context and config publishers. It does not render content.
+
 #[cfg(test)]
 use super::{parse_config_scope, ManifestSource, MAX_MANIFEST_ROWS};
 use super::{

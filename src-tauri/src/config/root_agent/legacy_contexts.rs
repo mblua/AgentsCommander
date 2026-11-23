@@ -1,3 +1,6 @@
+//! Frozen copies of older generated Root agent contexts and paragraphs, used
+//! to recognize and migrate them. Never edited; it writes no files.
+
 pub(crate) const OLD_DEFERRED_MESSAGING_PARAGRAPH: &str =
     "Direct file-based workgroup messaging is not \
     available from the root-agent directory yet: `send --send` currently requires a workgroup \

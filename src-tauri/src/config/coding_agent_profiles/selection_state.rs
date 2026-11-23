@@ -1,3 +1,6 @@
+//! Replica selection state: the coding agent id and profile pair, and the
+//! checks that read and validate it. It does not write the selection.
+
 #[cfg(test)]
 use super::replica_profile::ReplicaProfileRead;
 use crate::filesystem::coding_agent_profiles::read_selection_default_bytes;
