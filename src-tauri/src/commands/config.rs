@@ -154,6 +154,24 @@ use self::web_server::{
 use crate::web::broadcast::WsBroadcaster;
 #[cfg(test)]
 use agent_file_source::finish_remember_agent_file_report;
+pub(crate) use agent_file_source::{
+    __cmd__get_scoped_coding_agents, __cmd__list_coding_agent_config_files,
+    __cmd__load_coding_agent_config_file, __cmd__read_coding_agent_config_file,
+    __cmd__save_as_coding_agent_config_file, __cmd__save_coding_agent_config_file,
+    __cmd__set_active_coding_agent_config_file, __tauri_command_name_get_scoped_coding_agents,
+    __tauri_command_name_list_coding_agent_config_files,
+    __tauri_command_name_load_coding_agent_config_file,
+    __tauri_command_name_read_coding_agent_config_file,
+    __tauri_command_name_save_as_coding_agent_config_file,
+    __tauri_command_name_save_coding_agent_config_file,
+    __tauri_command_name_set_active_coding_agent_config_file, emit_coding_agent_settings_events,
+    get_scoped_coding_agents, get_scoped_coding_agents_inner, list_coding_agent_config_files,
+    list_coding_agent_config_files_inner, load_coding_agent_config_file,
+    read_coding_agent_config_file, read_coding_agent_config_file_inner,
+    save_as_coding_agent_config_file, save_as_coding_agent_config_file_inner,
+    save_coding_agent_config_file, save_coding_agent_config_file_inner,
+    set_active_coding_agent_config_file, set_active_coding_agent_config_file_inner,
+};
 pub use agent_file_source::{
     __cmd__list_agent_file_sources, __cmd__read_agent_file_source,
     __cmd__remember_agent_file_source, __cmd__save_agent_file_source,

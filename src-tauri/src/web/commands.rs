@@ -41,6 +41,8 @@ mod coding_agent_dispatch;
 mod protocol;
 mod session_dispatch;
 mod settings_dispatch;
+#[cfg(test)]
+pub(crate) use settings_dispatch::config_file_command;
 
 use agent_update_dispatch::dispatch_agent_update_command;
 #[cfg(test)]
@@ -111,6 +113,8 @@ pub(crate) trait WebOperations: AgentUpdateOperations + Send + Sync {
         None
     }
     fn emit_agent_file_save_events(&self, reply: &crate::config::settings::AgentFileSaveReply);
+    /// #4845 P02: `coding_agent_settings_updated` + `coding_agent_profiles_updated`.
+    fn emit_coding_agent_settings_events(&self);
     fn create_session<'a>(
         &'a self,
         session_mgr: &'a Arc<tokio::sync::RwLock<SessionManager>>,
@@ -349,6 +353,12 @@ async fn dispatch_configuration_command(
         | "list_agent_file_sources"
         | "read_agent_file_source"
         | "save_agent_file_source"
+        | "list_coding_agent_config_files"
+        | "read_coding_agent_config_file"
+        | "save_coding_agent_config_file"
+        | "save_as_coding_agent_config_file"
+        | "set_active_coding_agent_config_file"
+        | "get_scoped_coding_agents"
         | "remember_agent_file_source"
         | "get_settings"
         | "update_settings"

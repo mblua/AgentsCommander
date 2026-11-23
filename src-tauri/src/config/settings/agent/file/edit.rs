@@ -436,6 +436,46 @@ pub(crate) fn remember_agent_file_locked(
     Ok(preferences)
 }
 
+/// #4845 P02 decision 1: publish the config-file selection under the held settings lock.
+/// The raw disk object is the base, as in `remember_agent_file_locked`. Bare error codes.
+pub(crate) fn publish_config_selection_locked(
+    guard: &mut SettingsOperationGuard<'_>,
+    selection: &CodingAgentConfigFiles,
+) -> Result<(), String> {
+    let receipt = capture_registered_profile_gate(guard.settings_path())?;
+    let mut raw = captured_registered_profile_object(&receipt, guard.settings_path())?
+        .ok_or("sourceContextUnavailable")?;
+    let bytes = receipt
+        .iter()
+        .find(|(path, _)| path == guard.settings_path())
+        .and_then(|(_, bytes)| bytes.as_ref())
+        .ok_or("sourceContextUnavailable")?;
+    if agent_file_read(guard.settings_path())? != *bytes {
+        return Err("staleSettingsRevision".into());
+    }
+    raw.insert(
+        "codingAgentConfigFiles".into(),
+        serde_json::to_value(selection).map_err(|_| "configSelectionInvalid")?,
+    );
+    let raw = Value::Object(raw);
+    if serde_json::to_vec_pretty(&raw)
+        .map_err(|_| "configSelectionInvalid")?
+        .len()
+        > SETTINGS_CAPTURE_LIMIT
+    {
+        return Err("sourceTooLarge".into());
+    }
+    recheck_registered_profile_gate(&receipt)?;
+    if agent_file_read(guard.settings_path())? != *bytes {
+        return Err("staleSettingsRevision".into());
+    }
+    guard.publish(SettingsPublisher::SettingsSave, |path| {
+        write_value_atomic_labeled(&raw, path, path)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+}
+
 pub(crate) async fn persist_agent_file_edits(
     owner: &SettingsState,
     source: SourceRef,
@@ -624,7 +664,7 @@ pub(crate) fn create_config_file(
         .map(|name| name.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     let exists = settings_sources::list_file_names(dir)
-        .unwrap_or_default()
+        .map_err(config_save_failed)?
         .iter()
         .any(|known| known.to_lowercase() == file_name);
     if exists {

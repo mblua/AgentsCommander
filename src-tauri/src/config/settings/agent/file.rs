@@ -43,7 +43,8 @@ pub(crate) use edit::{
     create_config_file, register_loaded, save_config_file, set_active_config_file,
 };
 pub(crate) use edit::{
-    persist_agent_file_edits, prepare_agent_file_edits, remember_agent_file_locked,
+    persist_agent_file_edits, prepare_agent_file_edits, publish_config_selection_locked,
+    remember_agent_file_locked,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -116,6 +116,8 @@ impl WebOperations for TestOperations {
         panic!("unexpected emit_agent_file_save_events")
     }
 
+    fn emit_coding_agent_settings_events(&self) {}
+
     fn create_session<'a>(
         &'a self,
         session_mgr: &'a Arc<tokio::sync::RwLock<SessionManager>>,

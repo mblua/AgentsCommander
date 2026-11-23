@@ -9,8 +9,22 @@
 use std::collections::BTreeMap;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::config::coding_agent_files::locator::context_for_root;
+use crate::config::coding_agent_files::{
+    ConfigContext, ConfigFileError, ConfigFileLocator, ConfigScope, EntryGroup,
+};
+use crate::config::settings::agent::file::{
+    agents_of, create_config_file, list_config_files, publish_config_selection_locked,
+    read_config_file, register_loaded, save_config_file, set_active_config_file,
+    ConfigFileSnapshot,
+};
 use crate::config::settings::SettingsState;
+use crate::config::settings::{
+    AgentConfig, AppSettings, CodingAgentProfilesConfig, SourceAvailability, SourceRevision,
+};
 use crate::web::broadcast::WsBroadcaster;
+use serde::Serialize;
+use std::path::{Path, PathBuf};
 
 // E2432 P02: profile orchestration stays above settings' physical primitives.
 pub(crate) fn prepare_agent_file_tickets(
@@ -268,4 +282,541 @@ pub async fn remember_agent_file_source(
     source: crate::config::settings::SourceRef,
 ) -> Result<crate::config::settings::AgentFileSourcePreferences, String> {
     remember_agent_file_source_inner(settings.inner(), menu, source).await
+}
+
+// #4845 P02: coding-agent config-file commands. Writes run in one settings operation.
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConfigContextOption {
+    pub root: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConfigFileEntry {
+    pub locator: ConfigFileLocator,
+    pub group: &'static str,
+    pub file_name: String,
+    pub path: String,
+    pub availability: SourceAvailability,
+    pub read_only: bool,
+    pub activatable: bool,
+    pub agent_count: Option<usize>,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConfigFileList {
+    pub context: Option<String>,
+    pub contexts: Vec<ConfigContextOption>,
+    pub active: ConfigFileLocator,
+    pub active_notice: Option<String>,
+    pub entries: Vec<ConfigFileEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConfigFileSnapshotReply {
+    pub locator: ConfigFileLocator,
+    pub path: String,
+    pub revision: SourceRevision,
+    pub availability: SourceAvailability,
+    pub agents: Vec<AgentConfig>,
+    pub coding_agent_profiles: CodingAgentProfilesConfig,
+    pub read_only: bool,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ScopedCodingAgents {
+    pub agents: Vec<AgentConfig>,
+    pub coding_agent_profiles: CodingAgentProfilesConfig,
+    pub locator: ConfigFileLocator,
+    pub file_name: String,
+    pub notice: Option<String>,
+}
+
+fn snapshot_reply(snapshot: ConfigFileSnapshot) -> ConfigFileSnapshotReply {
+    ConfigFileSnapshotReply {
+        locator: snapshot.locator,
+        path: snapshot.path.to_string_lossy().into_owned(),
+        revision: snapshot.revision,
+        availability: snapshot.availability,
+        agents: snapshot.agents,
+        coding_agent_profiles: snapshot.coding_agent_profiles,
+        read_only: snapshot.read_only,
+        diagnostic: snapshot.diagnostic,
+    }
+}
+
+fn file_name_of(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn root_name(root: &str) -> String {
+    let trimmed = root.trim_end_matches(['/', '\\']);
+    trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(trimmed)
+        .to_owned()
+}
+
+fn context_of(settings: &AppSettings, context: Option<&str>) -> Result<ConfigContext, String> {
+    context_for_root(&settings.project_paths, context).map_err(|e| e.to_string())
+}
+
+/// Decision 7: the settings path of the read wrappers (same value as the owner's path).
+fn settings_file_path() -> Result<PathBuf, String> {
+    crate::config::config_dir()
+        .map(|dir| dir.join(crate::config::instance_artifacts::SETTINGS_FILE_NAME))
+        .ok_or_else(|| {
+            ConfigFileError::new(
+                "configFileUnavailable",
+                "The settings folder is not available.",
+            )
+            .to_string()
+        })
+}
+
+fn config_list(
+    settings: &AppSettings,
+    settings_path: &Path,
+    ctx: &ConfigContext,
+) -> ConfigFileList {
+    let listing = list_config_files(settings, settings_path, ctx);
+    let mut contexts = vec![ConfigContextOption {
+        root: None,
+        name: "Outside projects".into(),
+    }];
+    contexts.extend(
+        settings
+            .project_paths
+            .iter()
+            .map(|root| ConfigContextOption {
+                root: Some(root.clone()),
+                name: root_name(root),
+            }),
+    );
+    let entries = listing
+        .entries
+        .into_iter()
+        .map(
+            |(entry, availability, read_only, agent_count)| ConfigFileEntry {
+                group: match entry.group {
+                    EntryGroup::Instance => "instance",
+                    EntryGroup::Project => "project",
+                    EntryGroup::Loaded => "loaded",
+                    EntryGroup::Other => "other",
+                },
+                locator: entry.locator,
+                file_name: entry.file_name,
+                path: entry.path.to_string_lossy().into_owned(),
+                activatable: availability == SourceAvailability::Available,
+                availability,
+                read_only,
+                agent_count,
+                diagnostic: None,
+            },
+        )
+        .collect();
+    ConfigFileList {
+        context: match &listing.context {
+            ConfigContext::Instance => None,
+            ConfigContext::Project(key) => Some(key.clone()),
+        },
+        contexts,
+        active: listing.active,
+        active_notice: listing.active_notice,
+        entries,
+    }
+}
+
+fn publish_error(error: &str, sentence: &str) -> String {
+    let code = error.split(':').next().unwrap_or(error);
+    format!("{code}: {sentence}")
+}
+
+const OWNER_UNAVAILABLE: &str =
+    "settingsOwnerUnavailable: The settings are not available. Nothing was changed.";
+
+const PUBLISH_FAILED: &str = "The settings file could not be updated. Nothing was changed.";
+
+/// Decision 1: the `finish_remember_agent_file_report` mapping for config-file writes.
+fn finish_config_report<T>(
+    report: crate::config::settings::SettingsOperationReport<T>,
+) -> Result<T, String> {
+    use crate::config::settings::{OperationOutcome, SettingsAvailability};
+    if report.outcome == OperationOutcome::PartialOrUnknown
+        || (report.outcome == OperationOutcome::Committed
+            && report.availability != SettingsAvailability::Ready)
+    {
+        return Err(
+            "partialOrUnknown: The change may have been saved. Reload the settings.".into(),
+        );
+    }
+    match (report.outcome, report.value) {
+        (OperationOutcome::Committed, Some(value)) => Ok(value),
+        _ => Err(report.error.unwrap_or_default()),
+    }
+}
+
+async fn run_config_write<T, F>(
+    settings: &SettingsState,
+    name: &'static str,
+    builder: F,
+) -> Result<(T, AppSettings), String>
+where
+    T: Send + 'static,
+    F: FnOnce(
+            &AppSettings,
+            &mut crate::config::settings::SettingsOperationGuard<'_>,
+        ) -> Result<T, String>
+        + Send
+        + 'static,
+{
+    let report = settings.with_operation(name, builder).await.map_err(|_| {
+        "settingsOwnerUnavailable: The settings are not available. Nothing was changed.".to_owned()
+    })?;
+    let value = finish_config_report(report)?;
+    let adopted = settings.current_snapshot().await.map_err(|_| {
+        "partialOrUnknown: The change was saved but the settings are unavailable.".to_owned()
+    })?;
+    Ok((value, adopted))
+}
+
+pub(crate) async fn list_coding_agent_config_files_inner(
+    settings: &SettingsState,
+    settings_path: &Path,
+    context: Option<String>,
+) -> Result<ConfigFileList, String> {
+    let current = settings
+        .current_snapshot()
+        .await
+        .map_err(|_| OWNER_UNAVAILABLE.to_owned())?;
+    let ctx = context_of(&current, context.as_deref())?;
+    Ok(config_list(&current, settings_path, &ctx))
+}
+
+pub(crate) async fn read_coding_agent_config_file_inner(
+    settings: &SettingsState,
+    settings_path: &Path,
+    context: Option<String>,
+    locator: ConfigFileLocator,
+) -> Result<ConfigFileSnapshotReply, String> {
+    let current = settings
+        .current_snapshot()
+        .await
+        .map_err(|_| OWNER_UNAVAILABLE.to_owned())?;
+    let ctx = context_of(&current, context.as_deref())?;
+    read_config_file(&current, settings_path, &ctx, &locator)
+        .map(snapshot_reply)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) async fn get_scoped_coding_agents_inner(
+    settings: &SettingsState,
+    settings_path: &Path,
+    context: Option<String>,
+    locator: Option<ConfigFileLocator>,
+) -> Result<ScopedCodingAgents, String> {
+    let current = settings
+        .current_snapshot()
+        .await
+        .map_err(|_| OWNER_UNAVAILABLE.to_owned())?;
+    let ctx = context_of(&current, context.as_deref())?;
+    let requested = locator.is_some();
+    let locator = locator.unwrap_or_else(|| {
+        crate::config::coding_agent_files::active_locator(
+            current.coding_agent_config_files.as_ref(),
+            &ctx,
+        )
+    });
+    let read = agents_of(&current, settings_path, &ctx, &locator);
+    if let Ok((agents, coding_agent_profiles)) = read {
+        let file_name = read_config_file(&current, settings_path, &ctx, &locator)
+            .map(|snapshot| file_name_of(&snapshot.path))
+            .unwrap_or_default();
+        return Ok(ScopedCodingAgents {
+            agents,
+            coding_agent_profiles,
+            locator,
+            file_name,
+            notice: None,
+        });
+    }
+    if let Err(error) = read.as_ref() {
+        // A bad requested locator is an error; a stored one is only unavailable (D6).
+        if requested && error.code != "configFileUnavailable" {
+            return Err(error.to_string());
+        }
+    }
+    let registered = ConfigFileLocator::RegisteredInstance {};
+    let path = read_config_file(&current, settings_path, &ctx, &registered)
+        .map(|snapshot| snapshot.path)
+        .unwrap_or_default();
+    Ok(ScopedCodingAgents {
+        agents: current.agents.clone(),
+        coding_agent_profiles: current.coding_agent_profiles.clone(),
+        locator: registered,
+        file_name: file_name_of(&path),
+        notice: Some("activeConfigFileUnavailable".into()),
+    })
+}
+
+pub(crate) async fn save_coding_agent_config_file_inner(
+    settings: &SettingsState,
+    settings_path: &Path,
+    context: Option<String>,
+    locator: ConfigFileLocator,
+    expected_revision: SourceRevision,
+    agents: Vec<AgentConfig>,
+    coding_agent_profiles: CodingAgentProfilesConfig,
+) -> Result<ConfigFileSnapshotReply, String> {
+    let loc = locator.clone();
+    let (ctx, adopted) = run_config_write(
+        settings,
+        "save_coding_agent_config_file",
+        move |current, guard| {
+            let ctx = context_of(current, context.as_deref())?;
+            let path = guard.settings_path().to_path_buf();
+            let profiles = coding_agent_profiles;
+            save_config_file(
+                current,
+                &path,
+                &ctx,
+                &loc,
+                &expected_revision,
+                agents,
+                profiles,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(ctx)
+        },
+    )
+    .await?;
+    read_config_file(&adopted, settings_path, &ctx, &locator)
+        .map(snapshot_reply)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) async fn save_as_coding_agent_config_file_inner(
+    settings: &SettingsState,
+    settings_path: &Path,
+    context: Option<String>,
+    scope: ConfigScope,
+    name: String,
+    agents: Vec<AgentConfig>,
+    coding_agent_profiles: CodingAgentProfilesConfig,
+) -> Result<ConfigFileSnapshotReply, String> {
+    let ((ctx, locator), adopted) = run_config_write(
+        settings,
+        "save_as_coding_agent_config_file",
+        move |current, guard| {
+            let ctx = context_of(current, context.as_deref())?;
+            let path = guard.settings_path().to_path_buf();
+            let profiles = coding_agent_profiles;
+            let created = create_config_file(current, &path, &ctx, scope, &name, agents, profiles)
+                .map_err(|e| e.to_string())?;
+            let sel = set_active_config_file(current, &path, &ctx, &created.locator)
+                .map_err(|e| e.to_string())?;
+            publish_config_selection_locked(guard, &sel).map_err(|e| {
+                publish_error(&e, "The file was created but could not be made active.")
+            })?;
+            Ok((ctx, created.locator))
+        },
+    )
+    .await?;
+    read_config_file(&adopted, settings_path, &ctx, &locator)
+        .map(snapshot_reply)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) async fn set_active_coding_agent_config_file_inner(
+    settings: &SettingsState,
+    settings_path: &Path,
+    context: Option<String>,
+    locator: ConfigFileLocator,
+) -> Result<ConfigFileList, String> {
+    let (ctx, adopted) = run_config_write(
+        settings,
+        "set_active_coding_agent_config_file",
+        move |current, guard| {
+            let ctx = context_of(current, context.as_deref())?;
+            let path = guard.settings_path().to_path_buf();
+            let sel = set_active_config_file(current, &path, &ctx, &locator)
+                .map_err(|e| e.to_string())?;
+            publish_config_selection_locked(guard, &sel)
+                .map_err(|e| publish_error(&e, PUBLISH_FAILED))?;
+            Ok(ctx)
+        },
+    )
+    .await?;
+    Ok(config_list(&adopted, settings_path, &ctx))
+}
+
+pub(crate) async fn load_coding_agent_config_file_inner(
+    settings: &SettingsState,
+    settings_path: &Path,
+    context: Option<String>,
+    path: String,
+) -> Result<ConfigFileList, String> {
+    let (ctx, adopted) = run_config_write(
+        settings,
+        "load_coding_agent_config_file",
+        move |current, guard| {
+            let ctx = context_of(current, context.as_deref())?;
+            let settings_path = guard.settings_path().to_path_buf();
+            // Decision 2, steps 1-5: `set_active` runs on `next`, never on `current`.
+            let sel = register_loaded(current, &path).map_err(|e| e.to_string())?;
+            let canonical = crate::filesystem::settings_sources::canonical(Path::new(&path))
+                .map_err(|_| {
+                    ConfigFileError::new("configFileInvalid", "This is not a valid agents file.")
+                        .to_string()
+                })?
+                .to_string_lossy()
+                .into_owned();
+            let next = AppSettings {
+                coding_agent_config_files: Some(sel),
+                ..current.clone()
+            };
+            let loaded = ConfigFileLocator::Loaded { path: canonical };
+            let sel = set_active_config_file(&next, &settings_path, &ctx, &loaded)
+                .map_err(|e| e.to_string())?;
+            publish_config_selection_locked(guard, &sel)
+                .map_err(|e| publish_error(&e, PUBLISH_FAILED))?;
+            Ok(ctx)
+        },
+    )
+    .await?;
+    Ok(config_list(&adopted, settings_path, &ctx))
+}
+
+/// Decision 5: the change events after a committed config-file write.
+pub(crate) fn emit_coding_agent_settings_events(app: &AppHandle) {
+    let payload = serde_json::json!({});
+    for event in [
+        "coding_agent_settings_updated",
+        "coding_agent_profiles_updated",
+    ] {
+        let _ = app.emit(event, &payload);
+        if let Some(broadcaster) = app.try_state::<WsBroadcaster>() {
+            broadcaster.broadcast_event(event, &payload);
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn list_coding_agent_config_files(
+    settings: State<'_, SettingsState>,
+    context: Option<String>,
+) -> Result<ConfigFileList, String> {
+    let path = settings_file_path()?;
+    list_coding_agent_config_files_inner(settings.inner(), &path, context).await
+}
+
+#[tauri::command]
+pub(crate) async fn read_coding_agent_config_file(
+    settings: State<'_, SettingsState>,
+    context: Option<String>,
+    locator: ConfigFileLocator,
+) -> Result<ConfigFileSnapshotReply, String> {
+    let path = settings_file_path()?;
+    read_coding_agent_config_file_inner(settings.inner(), &path, context, locator).await
+}
+
+#[tauri::command]
+pub(crate) async fn get_scoped_coding_agents(
+    settings: State<'_, SettingsState>,
+    context: Option<String>,
+    locator: Option<ConfigFileLocator>,
+) -> Result<ScopedCodingAgents, String> {
+    let path = settings_file_path()?;
+    get_scoped_coding_agents_inner(settings.inner(), &path, context, locator).await
+}
+
+#[tauri::command]
+pub(crate) async fn save_coding_agent_config_file(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+    context: Option<String>,
+    locator: ConfigFileLocator,
+    expected_revision: SourceRevision,
+    agents: Vec<AgentConfig>,
+    coding_agent_profiles: CodingAgentProfilesConfig,
+) -> Result<ConfigFileSnapshotReply, String> {
+    let path = settings_file_path()?;
+    let reply = save_coding_agent_config_file_inner(
+        settings.inner(),
+        &path,
+        context,
+        locator,
+        expected_revision,
+        agents,
+        coding_agent_profiles,
+    )
+    .await?;
+    emit_coding_agent_settings_events(&app);
+    Ok(reply)
+}
+
+#[tauri::command]
+pub(crate) async fn save_as_coding_agent_config_file(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+    context: Option<String>,
+    scope: ConfigScope,
+    name: String,
+    agents: Vec<AgentConfig>,
+    coding_agent_profiles: CodingAgentProfilesConfig,
+) -> Result<ConfigFileSnapshotReply, String> {
+    let path = settings_file_path()?;
+    let reply = save_as_coding_agent_config_file_inner(
+        settings.inner(),
+        &path,
+        context,
+        scope,
+        name,
+        agents,
+        coding_agent_profiles,
+    )
+    .await?;
+    emit_coding_agent_settings_events(&app);
+    Ok(reply)
+}
+
+#[tauri::command]
+pub(crate) async fn set_active_coding_agent_config_file(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+    context: Option<String>,
+    locator: ConfigFileLocator,
+) -> Result<ConfigFileList, String> {
+    let path = settings_file_path()?;
+    let reply =
+        set_active_coding_agent_config_file_inner(settings.inner(), &path, context, locator)
+            .await?;
+    emit_coding_agent_settings_events(&app);
+    Ok(reply)
+}
+
+#[tauri::command]
+pub(crate) async fn load_coding_agent_config_file(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+    context: Option<String>,
+    path: String,
+) -> Result<ConfigFileList, String> {
+    let settings_path = settings_file_path()?;
+    let reply =
+        load_coding_agent_config_file_inner(settings.inner(), &settings_path, context, path)
+            .await?;
+    emit_coding_agent_settings_events(&app);
+    Ok(reply)
 }

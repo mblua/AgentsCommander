@@ -38,6 +38,15 @@ pub(super) async fn dispatch_settings_command(
 
         "save_agent_file_source" => save_agent_file_source_command(state, args).await,
 
+        "list_coding_agent_config_files"
+        | "read_coding_agent_config_file"
+        | "save_coding_agent_config_file"
+        | "save_as_coding_agent_config_file"
+        | "set_active_coding_agent_config_file"
+        | "get_scoped_coding_agents" => {
+            config_file_command(state, &settings_path_arg()?, cmd, args).await
+        }
+
         "remember_agent_file_source" => {
             let menu = serde_json::from_value(args.get("menu").cloned().ok_or("missing menu")?)
                 .map_err(|e| e.to_string())?;
@@ -223,4 +232,107 @@ async fn save_agent_file_source_command(state: &WsState, args: &Value) -> Result
     .await?;
     operations.emit_agent_file_save_events(&reply);
     serde_json::to_value(reply).map_err(|e| e.to_string())
+}
+
+fn context_arg(args: &Value) -> Option<String> {
+    args.get("context")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+fn settings_path_arg() -> Result<std::path::PathBuf, String> {
+    crate::config::config_dir()
+        .map(|dir| dir.join(crate::config::instance_artifacts::SETTINGS_FILE_NAME))
+        .ok_or_else(|| {
+            "configFileUnavailable: The settings folder is not available. Nothing was changed."
+                .to_owned()
+        })
+}
+
+/// #4845 P02: the six web-allowed config-file commands (`load` is desktop-only, D6).
+/// `path` is the settings file (test seam, decision 7).
+pub(crate) async fn config_file_command(
+    state: &WsState,
+    path: &std::path::Path,
+    cmd: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    use crate::commands::config;
+    let settings = &state.settings;
+    let context = context_arg(args);
+    let reply = match cmd {
+        "list_coding_agent_config_files" => serde_json::to_value(
+            config::list_coding_agent_config_files_inner(settings, path, context).await?,
+        ),
+        "read_coding_agent_config_file" => {
+            let locator = require_json(args, "locator")?;
+            serde_json::to_value(
+                config::read_coding_agent_config_file_inner(settings, path, context, locator)
+                    .await?,
+            )
+        }
+        "get_scoped_coding_agents" => {
+            let locator = match args.get("locator") {
+                None | Some(Value::Null) => None,
+                Some(_) => Some(require_json(args, "locator")?),
+            };
+            serde_json::to_value(
+                config::get_scoped_coding_agents_inner(settings, path, context, locator).await?,
+            )
+        }
+        _ => return config_file_write_command(state, path, cmd, args).await,
+    };
+    reply.map_err(|e| e.to_string())
+}
+
+async fn config_file_write_command(
+    state: &WsState,
+    path: &std::path::Path,
+    cmd: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    use crate::commands::config;
+    let settings = &state.settings;
+    let context = context_arg(args);
+    let reply = match cmd {
+        "save_coding_agent_config_file" => serde_json::to_value(
+            config::save_coding_agent_config_file_inner(
+                settings,
+                path,
+                context,
+                require_json(args, "locator")?,
+                require_json(args, "expectedRevision")?,
+                require_json(args, "agents")?,
+                require_json(args, "codingAgentProfiles")?,
+            )
+            .await?,
+        ),
+        "save_as_coding_agent_config_file" => serde_json::to_value(
+            config::save_as_coding_agent_config_file_inner(
+                settings,
+                path,
+                context,
+                require_json(args, "scope")?,
+                require_json(args, "name")?,
+                require_json(args, "agents")?,
+                require_json(args, "codingAgentProfiles")?,
+            )
+            .await?,
+        ),
+        "set_active_coding_agent_config_file" => serde_json::to_value(
+            config::set_active_coding_agent_config_file_inner(
+                settings,
+                path,
+                context,
+                require_json(args, "locator")?,
+            )
+            .await?,
+        ),
+        _ => return Err(format!("Unknown command: {cmd}")),
+    };
+    state
+        .operations
+        .as_ref()
+        .emit_coding_agent_settings_events();
+    reply.map_err(|e| e.to_string())
 }

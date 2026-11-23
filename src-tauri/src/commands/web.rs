@@ -140,6 +140,10 @@ impl WebOperations for tauri::AppHandle {
         crate::commands::config::emit_agent_file_save_events(self, reply);
     }
 
+    fn emit_coding_agent_settings_events(&self) {
+        crate::commands::config::emit_coding_agent_settings_events(self);
+    }
+
     fn create_session<'a>(
         &'a self,
         session_mgr: &'a Arc<tokio::sync::RwLock<SessionManager>>,
