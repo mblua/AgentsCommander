@@ -325,7 +325,7 @@ describe("projectStore", () => {
     expect(projectStore.initState).toEqual({ attempted: false, pathCount: 0 });
   });
 
-  // #1077 — the get_settings resolution report drives conflict toasts, fail-
+  // The get_settings resolution report drives conflict toasts, fail-
   // closed handling of a malformed report, and actionable active-load status.
   describe("initFromSettings resolution report (#1077)", () => {
     const CONFLICT_ID_A = "a".repeat(64);
@@ -525,7 +525,7 @@ describe("projectStore", () => {
     });
   });
 
-  // #748 — identity preservation. Object references drive ProjectPanel's
+  // Identity preservation. Object references drive ProjectPanel's
   // reference-keyed <For>s: every reference these methods preserve is a DOM row
   // NOT disposed/re-created (and a click over it NOT lost). The #552 event
   // patch semantics (normalized-path match, set/clear) moved to
@@ -720,7 +720,7 @@ describe("projectStore", () => {
     });
   });
 
-  // #778 — project removal routes through the dedicated disk-authoritative
+  // Project removal routes through the dedicated disk-authoritative
   // remove_project command, NOT a whole-object settings save (which under
   // Design S preserves the on-disk list and would no longer remove anything).
   describe("removeProject (#778)", () => {

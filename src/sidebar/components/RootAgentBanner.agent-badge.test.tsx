@@ -28,7 +28,7 @@ import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import type { SessionStatus } from "../../shared/types";
 
-// #1167 - the ROOT AGENT badge must look exactly like a Coordinator row's badge:
+// The ROOT AGENT badge must look exactly like a Coordinator row's badge:
 // the same class pair, plus root-agent-badge for inline placement only. jsdom does
 // not apply sidebar.css, so the pin is on the emitted classes and attributes.
 describe("RootAgentBanner coding-agent badge is style-invariant (#1167)", () => {
@@ -81,7 +81,7 @@ describe("RootAgentBanner coding-agent badge is style-invariant (#1167)", () => 
   }
 });
 
-// #3532 P11 - the Root chip never carries a context history: no scope, no card.
+// The Root chip never carries a context history: no scope, no card.
 describe("RootAgentBanner CTX badge stays without history (#3532 P11)", () => {
   let cleanupDom: (() => void) | null = null;
 

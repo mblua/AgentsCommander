@@ -86,7 +86,7 @@ fn compute_peer_status_returns_blocked_menu_of_the_chosen_session() {
 #[test]
 fn compute_peer_status_suppresses_blocked_menu_for_an_exited_session() {
     // D4: `snapshot_sessions` preserves `communication` for exited rows
-    // (#747), so a crash between the block and the exit leaves a stale
+    // so a crash between the block and the exit leaves a stale
     // BlockedMenu whose terminal is gone. Suppress the pair.
     let mut row = ps_row(
         "Session 1",
@@ -125,7 +125,7 @@ fn compute_peer_status_blocked_without_message_keeps_the_flag() {
 
 #[test]
 fn compute_peer_status_ignores_blocked_menu_of_an_unchosen_lower_priority_session() {
-    // #1774 / D3: the pair must describe the session `max_by_key(priority)`
+    // D3: the pair must describe the session `max_by_key(priority)`
     // chose, not `filtered[0]`. The blocked row is first in the slice and has
     // the LOWER priority, so reading `filtered[0]` reports the wrong terminal.
     let mut blocked_idle = ps_row("Session 1", r"C:\work", Some(SessionStatus::Idle), true);
@@ -148,7 +148,7 @@ fn compute_peer_status_ignores_blocked_menu_of_an_unchosen_lower_priority_sessio
 
 #[test]
 fn compute_peer_status_reports_blocked_menu_of_the_chosen_higher_priority_session() {
-    // #1774 / D3, the inverse fixture: the unblocked row is first in the
+    // D3, the inverse fixture: the unblocked row is first in the
     // slice and the blocked row is the one priority chooses, so reading
     // `filtered[0]` drops a real block and its message.
     let mut idle = ps_row("Session 1", r"C:\work", Some(SessionStatus::Idle), true);
@@ -174,7 +174,7 @@ fn compute_peer_status_reports_blocked_menu_of_the_chosen_higher_priority_sessio
 
 #[test]
 fn compute_peer_status_reads_the_chosen_session_that_is_neither_first_nor_last() {
-    // #1774 / D3: `chosen` is the MIDDLE row, so it is neither `filtered[0]`
+    // D3: `chosen` is the MIDDLE row, so it is neither `filtered[0]`
     // nor `filtered.last()`. Both neighbours are unblocked and the chosen row
     // is blocked, so a read of either end reports no block and no message,
     // while `session_id` and `session_status` go on naming the chosen blocked
@@ -207,7 +207,7 @@ fn compute_peer_status_reads_the_chosen_session_that_is_neither_first_nor_last()
 
 #[test]
 fn compute_peer_status_reports_the_message_of_the_chosen_blocked_session() {
-    // #1774 / D3, the message half: ALL THREE rows are blocked and each
+    // D3, the message half: ALL THREE rows are blocked and each
     // carries a different visible message, so the flag cannot tell them
     // apart. The chosen row is the MIDDLE blocked row, so it is neither the
     // first blocked row nor the last blocked one; its id is between the
@@ -254,7 +254,7 @@ fn compute_peer_status_reports_the_message_of_the_chosen_blocked_session() {
 
 #[test]
 fn compute_peer_status_follows_priority_not_a_status_lookalike_on_an_active_tie() {
-    // #1822 / D3: BOTH rows are `Active`, so `priority` scores them equally
+    // D3: BOTH rows are `Active`, so `priority` scores them equally
     // and `max_by_key` resolves the tie by taking the LAST maximum, which is
     // the unblocked row. The blocked row is FIRST, so a first-match status
     // predicate, `find(|c| matches!(c.status, SessionStatus::Active))`, lands

@@ -289,7 +289,7 @@ async fn p5_recheck_never_releases_a_demand_it_did_not_raise() {
     );
 }
 
-/// #2525 T-r1 (reproduction, global switch): switching Co-managed off
+/// T-r1 (reproduction, global switch): switching Co-managed off
 /// globally releases a running Room demand within one pass.
 #[tokio::test]
 async fn p2525_switch_off_releases_a_running_room_demand() {
@@ -310,7 +310,7 @@ async fn p2525_switch_off_releases_a_running_room_demand() {
     crate::commands::session::reader_demand_tests::assert_no_room_reader_state_for(&h, id).await;
 }
 
-/// #2525 T-r2, inverted by #2756 U2a: a whitespace-only key is a `Ready`
+/// T-r2, inverted by #2756 U2a: a whitespace-only key is a `Ready`
 /// input, not a capture input, so a running Room demand survives the pass
 /// and the slot stays open. Mutation: sweep on the key again.
 #[tokio::test]
@@ -335,7 +335,7 @@ async fn p2525_cleared_api_key_keeps_a_running_room_demand() {
     );
 }
 
-/// #2525 T-r3 (guard): while available globally the pass keeps running the
+/// T-r3 (guard): while available globally the pass keeps running the
 /// ordinary re-raise. Mutations: an inverted predicate, or a sweep that
 /// answers `true` while available.
 #[tokio::test]
@@ -356,7 +356,7 @@ async fn p2525_available_globally_keeps_re_raising() {
     }
 }
 
-/// #2525 T-r5 (the early return): a swept pass never resolves readiness.
+/// T-r5 (the early return): a swept pass never resolves readiness.
 /// Mutation: drop the `return` in `reader_demand_pass`.
 #[tokio::test]
 async fn p2525_a_swept_pass_does_not_resolve_readiness() {
@@ -375,7 +375,7 @@ async fn p2525_a_swept_pass_does_not_resolve_readiness() {
     assert!(!holds_room_reader_demand(h.app.handle(), id).await);
 }
 
-/// #2525 T-r6 (the unconditional release): the sweep moves the Room epoch
+/// T-r6 (the unconditional release): the sweep moves the Room epoch
 /// of a session that holds nothing. Mutation: guard the release with
 /// `holds_room_reader_demand`.
 #[tokio::test]
@@ -396,7 +396,7 @@ async fn p2525_sweep_moves_the_epoch_of_a_session_with_no_demand() {
     );
 }
 
-/// #2525 T-r7 (the stale-raise interleaving): a raise that resolved Ready
+/// T-r7 (the stale-raise interleaving): a raise that resolved Ready
 /// and parks before the install, overtaken by a globally-off sweep,
 /// installs nothing. Mutation: a holders-only sweep.
 #[tokio::test]

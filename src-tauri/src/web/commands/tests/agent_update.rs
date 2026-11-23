@@ -378,7 +378,7 @@ async fn get_coding_agent_catalog_route_reports_unavailability_with_code_path_an
 }
 
 // ---------------------------------------------------------------------
-// #1963 P1 - persisted-catalog report transport parity
+// P1 - persisted-catalog report transport parity
 // ---------------------------------------------------------------------
 
 #[tokio::test]

@@ -86,7 +86,7 @@ describe("RestartPromptModal (#537)", () => {
     dispose();
   });
 
-  // #573: a swallowed restart failure used to leave the old agent running while
+  // A swallowed restart failure used to leave the old agent running while
   // the UI looked applied. The modal now surfaces the error and exposes a busy
   // state so the caller can keep it open for a retry.
   it("renders no error chip and an idle, enabled confirm button by default", () => {
@@ -125,7 +125,7 @@ describe("RestartPromptModal (#537)", () => {
     dispose();
   });
 
-  // #2655 - Escape on the dialog does exactly what a backdrop click does.
+  // Escape on the dialog does exactly what a backdrop click does.
   it("focuses the dialog on mount and treats Escape like a backdrop click", async () => {
     const { dispose, onRestart, onLater } = renderModal({ busy: true });
     const dialog = target("restartPrompt.modal");

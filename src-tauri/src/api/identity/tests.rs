@@ -75,7 +75,7 @@ fn wg_replica_root_resolves_to_fqn() {
     assert_ne!(from, crate::config::root_agent::ROOT_AGENT_SENDER);
 }
 
-/// #1614 requirement (D), section 9.1 "API and snapshot fixture twins".
+/// Requirement (D), section 9.1 "API and snapshot fixture twins".
 ///
 /// This file takes ZERO production edits: it carries no prefix predicate
 /// and treats the FQN as opaque. That claim is what this twin turns from

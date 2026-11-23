@@ -300,7 +300,7 @@ fn assert_blocking_menus_on_disk_unchanged(path: &Path, seeded: &[Value]) {
     let agents = object["agents"].as_array().expect("agents array");
     assert_eq!(agents.len(), seeded.len());
     for (agent, expected) in agents.iter().zip(seeded) {
-        // #2716 (B3) 6.1: the three legs of (b), not an exact equality.
+        // (B3) 6.1: the three legs of (b), not an exact equality.
         super::b3_assert_blocking_menus_legs(
             expected.get("blockingMenus"),
             agent.get("blockingMenus"),
@@ -676,7 +676,7 @@ fn schema_parity_rejects_what_the_runtime_rejects() {
 
         let settings = load_settings_from_path(&path);
 
-        // #2716 (B3) 6.1: an abort still strips nothing from the agents.
+        // (B3) 6.1: an abort still strips nothing from the agents.
         super::b3_assert_split_matches_seed(&path, &seeded_bytes, &[]);
         assert_eq!(
             std::fs::read(blocking_menus_local_path(&path)).unwrap(),
@@ -754,7 +754,7 @@ fn duplicate_agent_ids_abort_unless_their_arrays_and_commands_are_equal() {
     let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
     let seeded_bytes = std::fs::read(&path).unwrap();
     load_settings_from_path(&path);
-    // #2716 (B3) 6.1: this branch exports, so `blockingMenus` leaves the
+    // (B3) 6.1: this branch exports, so `blockingMenus` leaves the
     // agents file; the line below asserts that, the split asserts the rest.
     super::b3_assert_split_matches_seed(&path, &seeded_bytes, &["blockingMenus"]);
     assert_no_blocking_menus_on_disk(&path);

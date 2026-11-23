@@ -1,7 +1,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------
-// #1551 - events and the emitter
+// Events and the emitter
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -197,7 +197,7 @@ fn agent_update_emits_only_through_emit_all() {
 }
 
 // ---------------------------------------------------------------------
-// #1551 - rows and the probe policy
+// Rows and the probe policy
 // ---------------------------------------------------------------------
 
 #[test]
@@ -235,7 +235,7 @@ fn overview_rows_use_the_first_effective_entry_and_skip_empty_winners() {
     assert_eq!(pi.install, installed);
     assert_eq!(rows[0].install, InstallState::checking());
     assert_eq!(rows[0].install.seq, 0);
-    // #4804 - only the mapped command carries `managedBy`.
+    // Only the mapped command carries `managedBy`.
     for row in &rows {
         let expected = (row.command == "codex").then(|| "mise".to_string());
         assert_eq!(row.managed_by, expected, "{}", row.command);
