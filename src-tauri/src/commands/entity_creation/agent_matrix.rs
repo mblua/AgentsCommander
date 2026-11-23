@@ -31,7 +31,7 @@ use tauri::{AppHandle, Emitter, State};
 /// `Some`, the resolved template's body is inserted as a `## Role Profile`
 /// section and (if the template ships one) its `skills/` are copied into the
 /// new matrix. `None` (or a missing arg from older callers) preserves the
-/// pre-#271 behavior exactly.
+/// previous behavior exactly.
 #[tauri::command]
 pub async fn create_agent_matrix(
     settings: State<'_, SettingsState>,
@@ -71,7 +71,7 @@ pub async fn delete_agent_matrix(
     project_path: String,
     agent_path: String,
 ) -> Result<(), String> {
-    // #1065 Stage F: activated with the sole production token; no lock-order test barrier.
+    // Stage F: activated with the sole production token; no lock-order test barrier.
     delete_agent_matrix_inner(
         &app,
         session_mgr.inner(),
@@ -84,7 +84,7 @@ pub async fn delete_agent_matrix(
     .await
 }
 
-/// GUI Agent Matrix deletion with the #1063 global lock order (plan sections
+/// GUI Agent Matrix deletion with the global lock order (plan sections
 /// 5.4/6.3/11.32/11.43).
 ///
 /// Async preflight collects the delete plan under a short preliminary team guard
@@ -196,7 +196,7 @@ where
     }
 }
 
-/// Outcome of the Agent Matrix delete blocking transaction (#1063). `Send + 'static`
+/// Outcome of the Agent Matrix delete blocking transaction. `Send + 'static`
 /// so it can cross the `run_blocking_owned` boundary; the async caller formats it
 /// after every synchronous guard has been released.
 pub(super) enum AgentDeleteTransactionOutcome {
@@ -218,7 +218,7 @@ pub(super) enum AgentDeleteTransactionOutcome {
     Aborted { error: String },
 }
 
-/// The Agent Matrix delete blocking transaction (#1063). Runs the project →
+/// The Agent Matrix delete blocking transaction. Runs the project →
 /// pending-inclusive manager snapshot → team → settings sequence to completion in
 /// blocking work; production drives it inside `run_blocking_owned`, and tests call
 /// it directly with an injected `save_settings_fn` and lock-order barrier. The
@@ -282,7 +282,7 @@ pub(super) fn run_agent_delete_transaction(
         };
     }
 
-    // Reacquire the #1056 team guard after the project gate and manager reads.
+    // Reacquire the team guard after the project gate and manager reads.
     let team_guard = match TeamConfigMutationGuard::acquire(base) {
         Ok(guard) => guard,
         Err(error) => {
@@ -331,7 +331,7 @@ pub(super) fn workdir_blocks_delete(workdir: &str, target_keys: &[String]) -> bo
     })
 }
 
-/// Generic retryable post-stage delete error (#1063). It never reveals pending
+/// Generic retryable post-stage delete error. It never reveals pending
 /// session ids, names, statuses, or working directories.
 pub(super) fn format_post_stage_live_error(still_staged: &[StagedAgentDeleteTarget]) -> String {
     format!(
@@ -394,7 +394,7 @@ pub(super) fn replica_prefix_for_target(original_path: &Path) -> Option<(String,
 }
 
 /// Prune only the still-staged (logically absent) replica scopes after a pre-commit
-/// rollback (#1063). Dormant in production; the origin `_agent_*` target is skipped.
+/// rollback. Dormant in production; the origin `_agent_*` target is skipped.
 pub(super) fn prune_still_staged_targets(
     mut gate: Option<&mut ProjectSeedManifestGuard>,
     activation: Option<&ManifestActivationToken>,
@@ -407,13 +407,13 @@ pub(super) fn prune_still_staged_targets(
     }
 }
 
-/// Read a team `config.json`'s exact current bytes for the #1063 pre-write precheck.
+/// Read a team `config.json`'s exact current bytes for the pre-write precheck.
 pub(super) fn read_team_config_bytes(config_path: &Path) -> Result<Vec<u8>, String> {
     teams::read_team_config_bytes(config_path)
 }
 
 /// Blocking Agent Matrix metadata commit under the reacquired project→team guards
-/// (#1063, plan sections 5.4/11.39). It runs the exact-byte precheck, writes each
+/// (plan sections 5.4/11.39). It runs the exact-byte precheck, writes each
 /// planned team config while journaling successes, removes only the two live agent
 /// keys under `SettingsState::blocking_write`, and on any failure restores the
 /// journaled entries once in reverse order (byte-checked) before returning.
@@ -442,7 +442,7 @@ pub(super) fn persist_agent_delete_metadata_blocking_with_writer(
     team_guard.require_ac_root(&metadata.ac_root)?;
     metadata.settings_changed.store(false, Ordering::SeqCst);
 
-    // Exact-byte precheck under the reacquired #1056 guard: require the exact
+    // Exact-byte precheck under the reacquired guard: require the exact
     // prepared bytes before any write. The byte check is additional to the guard,
     // never a substitute for it.
     for mutation in &metadata.team_mutations {

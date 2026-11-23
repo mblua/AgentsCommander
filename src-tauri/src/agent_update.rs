@@ -1,4 +1,4 @@
-//! Issue #1327 - startup coding-agent update flow.
+//! Startup coding-agent update flow.
 //!
 //! At GUI startup a detached task (spawned in `lib.rs` setup, BEFORE the restore
 //! task is submitted) plans and runs the per-command `updateCommands` sequences

@@ -1,4 +1,4 @@
-//! Room reader-demand re-raise tick (#2456).
+//! Room reader-demand re-raise tick.
 
 #[cfg(test)]
 use std::collections::HashMap;

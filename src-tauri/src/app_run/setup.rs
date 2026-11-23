@@ -79,7 +79,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // Make AppHandle available to idle detector callbacks
     let _ = ctx.app_handle_lock.set(app.handle().clone());
 
-    // #2232 phase 7: start the Co-managed supervisor once the app
+    // Phase 7: start the Co-managed supervisor once the app
     // handle exists. It owns the slot watchers, the idle-edge handling
     // and the effect, all inside existing SCC members.
     spawn_co_managed_supervisor(
@@ -173,7 +173,7 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // of "restore_in_progress", AND the A.7 cleanup (mailbox.rs:1293-
     // 1311) drops the failed-recoverable ghosts the restore loop was
     // about to retry. This recreates the exact silent-success bug
-    // #224 was filed to fix.
+    // an earlier issue was filed to fix.
     //
     // Hoisting the flag set above mailbox_poller.start() closes the
     // race window. The restore task spawned below (§A.2.5 RAII guard)
@@ -191,10 +191,10 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     // §224 G-IMPL-1 — `persisted` and `restore_flag` are hoisted above
     // mailbox_poller.start() (see comment block there). `persisted` is
     // reused here; the flag is already TRUE when we enter this block.
-    // #1341 - the restore now runs as a spawned runtime task
+    // The restore now runs as a spawned runtime task
     // (spawn_restore_startup), never inside a main-thread block_on; the
     // main thread returns to the event loop so the webview can load
-    // while the #1327 update gate is pending.
+    // while the update gate is pending.
     start_restore(
         app,
         RestoreStart {
@@ -260,21 +260,21 @@ fn mark_restore_in_progress(app: SetupApp<'_>) -> StartupSessions {
 fn start_startup_housekeeping(app: SetupApp<'_>, shutdown: &ShutdownSignal) {
     spawn_screenshot_hotkey_registration(app);
 
-    // #264 — spawn the background task that emits `error_log_event`
+    // Spawn the background task that emits `error_log_event`
     // pings to the UI when ERROR entries are captured. The task runs
     // OUTSIDE the env_logger format closure (see §3.7 / B1). Entries
     // logged before this point stay buffered; the frontend's first
     // `drain_error_logs` call collects them.
-    // Owner: app shutdown (#4579).
+    // Owner: app shutdown.
     let emit_shutdown = shutdown.token().child_token();
     tauri::async_runtime::spawn(crate::logging::spawn_error_emit_task(
         app.handle().clone(),
         emit_shutdown,
     ));
 
-    // #271 — seed `<config_dir>/agent-templates/` + README on startup.
+    // Seed `<config_dir>/agent-templates/` + README on startup.
     crate::commands::role_templates::ensure_default_templates_dir_at_config();
-    // (#621) GC the context-cache: unlink generated *-context-*.md files
+    // GC the context-cache: unlink generated *-context-*.md files
     // older than the retention window. Cleans orphans from removed
     // workgroups AND caps the unbounded-growth secondary finding. Robust +
     // self-healing: live agents re-write their cache every launch.
@@ -295,7 +295,7 @@ fn start_restore(app: SetupApp<'_>, start: RestoreStart) {
     let settings_state_clone = app.state::<SettingsState>().inner().clone();
     let app_handle = app.handle().clone();
 
-    // #248 — read the new setting and always discover teams (the coord check
+    // Read the new setting and always discover teams (the coord check
     // is run for every persisted session, regardless of the setting's value).
     let settings_snapshot = startup_sessions.settings_snapshot.clone();
     let setting_on = settings_snapshot.restore_coordinator_wake_state;
@@ -344,14 +344,14 @@ fn start_restore(app: SetupApp<'_>, start: RestoreStart) {
     );
 }
 
-// #1398 - registered here, at the top of setup, and NOT in the
+// Registered here, at the top of setup, and NOT in the
 // post-restore tail where a308271c parked it by adjacency: the
 // registration depends only on the global-shortcut plugin plus the
 // `SettingsState` and `ScreenshotHotkeyState` managed above, so
 // waiting for the restore left the hotkey dead for the whole
 // restore window, which grows with the number of sessions. Its own
 // short task keeps the async settings read off the main thread; a
-// `block_on` here would reintroduce the #1341 WebView2 starvation.
+// `block_on` here would reintroduce the WebView2 starvation.
 fn spawn_screenshot_hotkey_registration(app: SetupApp<'_>) {
     let app_for_hotkey = app.handle().clone();
     tauri::async_runtime::spawn(async move {
@@ -426,7 +426,7 @@ fn start_git_watchers(
     // Discovery branch watcher: polls git branch for discovered replicas every 15s
     let discovery_branch_watcher = DiscoveryBranchWatcher::with_state(ui, rows, git.clone());
     app.manage(Arc::clone(&discovery_branch_watcher));
-    // #1298 - the single global POLLING producer of per-repo git state. Both watchers read its
+    // The single global POLLING producer of per-repo git state. Both watchers read its
     // published snapshot instead of spawning `git` themselves.
     //
     // Started HERE and not inside `restore_observer_barrier` for exactly one reason: that barrier
@@ -451,7 +451,7 @@ fn start_remote_activity(
     messages: &Arc<crate::config::injected_messages::MessageWarnings>,
 ) {
     use crate::pty::remote_watcher::RemoteSweeper;
-    // #2064 - the remote activity producer: asks GitHub, through `gh`, whether CI runs on each room
+    // The remote activity producer: asks GitHub, through `gh`, whether CI runs on each room
     // repo's exact HEAD and whether the default branch is ahead. Beside `GitSweeper` for the same
     // reason it sits there: it mutates no session metadata, it only publishes into process-local
     // maps. Phase B consumes the transition stream: the notifier started below is its only
@@ -465,7 +465,7 @@ fn start_remote_activity(
         remote,
     );
     let _ = remote_sweeper.start(shutdown_for_setup.clone());
-    // #2064 Phase B - the transition stream's consumer. Started beside the sweeper that produces
+    // Phase B - the transition stream's consumer. Started beside the sweeper that produces
     // it, in this same setup closure, and handed a child of the same shutdown token, so the
     // notifier stops when the app does. It injects only into a room orchestrator, and only when
     // both its feature dial and its notify dial are on. The JoinHandle is dropped on purpose: the
@@ -478,7 +478,7 @@ fn start_remote_activity(
     ));
 }
 
-// #1327 - startup coding-agent update flow. Spawned BEFORE the
+// Startup coding-agent update flow. Spawned BEFORE the
 // restore task is submitted so every session open (restore, GUI,
 // web, phone) blocks inside `create_session_inner_impl` until the
 // updates finish or time out.
@@ -521,7 +521,7 @@ fn start_session_observers(
     shutdown_for_setup: &ShutdownSignal,
     messages: &Arc<crate::config::injected_messages::MessageWarnings>,
 ) {
-    // #1056 context-alert actor. Start it before the scraper so the bounded sender
+    // Context-alert actor. Start it before the scraper so the bounded sender
     // exists before the first sample; manage it for final joined shutdown.
     let context_alert_monitor = crate::session::context_alerts::ContextAlertMonitor::start(
         app.handle().clone(),
@@ -529,7 +529,7 @@ fn start_session_observers(
         messages.clone(),
     );
     app.manage(Arc::clone(&context_alert_monitor));
-    // #3532 context history. Its ingress is an independent fanout of the same
+    // Context history. Its ingress is an independent fanout of the same
     // bounded sample bridge; shutdown cancels the actor, which flushes for at most
     // `SHUTDOWN_FLUSH` and never blocks quit.
     let settings = app.state::<SettingsState>().inner().clone();
@@ -550,7 +550,7 @@ fn start_session_observers(
     if let Err(error) = registered {
         log::error!("[context-history] {error}; keeping the first registration");
     }
-    // #1032 context scrape. Must be after `.manage(settings)` above, since the
+    // Context scrape. Must be after `.manage(settings)` above, since the
     // pattern adapter reads settings back out of managed state. Mirrors GitWatcher.
     let context_scraper = ContextScraper::new(
         Arc::new(ScraperRows {
@@ -574,7 +574,7 @@ fn start_session_observers(
     );
     context_scraper.start(shutdown_for_setup.clone());
     app.manage(Arc::clone(&context_scraper));
-    // #2482 agent quota engine. A sibling of the scraper, same construction shape, and
+    // Agent quota engine. A sibling of the scraper, same construction shape, and
     // like it must come after `.manage(settings)`.
     let agent_quota_engine = AgentQuotaEngine::new(
         Arc::new(QuotaRows {
@@ -599,12 +599,12 @@ fn start_watcher_engine(
     idle_detector_for_setup: &Arc<IdleDetector>,
     shutdown_for_setup: &ShutdownSignal,
 ) {
-    // #1171 watcher engine. A SIBLING of the scraper above, not an extension of it:
+    // Watcher engine. A SIBLING of the scraper above, not an extension of it:
     // different interval, different modes, its own history. Same construction shape,
     // and for the same reason it must come after `.manage(settings)`.
     let watcher_history: crate::pty::watchers::history::WatcherHistoryState =
         Arc::new(crate::pty::watchers::history::WatcherHistory::default());
-    // #2879 - plus the internal Codex activity factory over the idle detector.
+    // Plus the internal Codex activity factory over the idle detector.
     let watcher_engine = WatcherEngine::new_with_activity_factory(
         Arc::new(WatcherBackends {
             pty_mgr: pty_mgr.clone(),
@@ -634,7 +634,7 @@ fn start_menu_guard_and_ipc_observer(
     ipc_observer_for_setup: &Arc<crate::loops::ipc_observer::IpcObserver>,
     shutdown_for_setup: &ShutdownSignal,
 ) {
-    // #1646 / #1647 - proactive detection of terminal blocking menus
+    // / proactive detection of terminal blocking menus
     let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::with_response_close(
         config::settings::BlockingMenusStore::load_from_config_dir(),
         response_close_for_setup.clone(),
@@ -662,11 +662,11 @@ fn start_menu_guard_and_ipc_observer(
     );
     crate::config::settings::refresh_shipped_agent_help_from_config_dir();
     menu_guard.start(app.handle().clone(), shutdown_for_setup.clone());
-    // (#1652) Started at the top of setup and NOT in the post-restore
+    // Started at the top of setup and NOT in the post-restore
     // tail: a freeze detector that waits for the restore is blind for
     // exactly the window that grows with the session count. It depends
     // only on the app handle and the shutdown signal, both available
-    // here. Same reasoning as the #1398 hotkey registration above.
+    // here. Same reasoning as the hotkey registration above.
     crate::loops::ipc_observer::start(
         app.handle().clone(),
         std::sync::Arc::clone(ipc_observer_for_setup),
@@ -681,7 +681,7 @@ fn provision_startup_messages(messages: &crate::config::injected_messages::Messa
         log::error!("[root-agent] Failed to provision root agent directory: {e}");
     }
 
-    // #1157 - seed and reconcile the operator-editable injected-message templates. Best effort,
+    // Seed and reconcile the operator-editable injected-message templates. Best effort,
     // never fatal, matching the block above.
     //
     // The ordering is NOT load-bearing: `render` resolves from the registry or the embedded default
@@ -701,7 +701,7 @@ fn provision_startup_messages(messages: &crate::config::injected_messages::Messa
 fn load_normalized_startup_sessions(
     restore_settings_snapshot: &config::settings::AppSettings,
 ) -> Result<Vec<sessions_persistence::PersistedSession>, String> {
-    // #698 — the orphan purge now takes the async `sessions_save_lock()`
+    // The orphan purge now takes the async `sessions_save_lock()`
     // across its load+filter+save so it cannot clobber a concurrently
     // persisted raise-hand. This sync `setup` body runs on the main
     // thread (outside any runtime worker), so `block_on` is safe here,
@@ -765,7 +765,7 @@ fn log_restore_inventory(
     setting_on: bool,
     persisted_count: usize,
 ) {
-    // #248 Grinch Z10 — diagnostic: empty `teams` after a project-path rename
+    // Grinch Z10 — diagnostic: empty `teams` after a project-path rename
     // is a real failure mode; without this line the user sees coords stay
     // dormant with no log clue. Emits exactly once per launch.
     log::info!(
@@ -806,7 +806,7 @@ fn start_detached_startup_downloads(
     app: SetupApp<'_>,
     update_check_state_for_setup: &UpdateCheckState,
 ) {
-    // Issue #609 - detached "npm update available" check. Fully fail-silent;
+    // Detached "npm update available" check. Fully fail-silent;
     // detached so startup is never blocked or delayed (acceptance criterion).
     {
         let app_handle_for_update = app.handle().clone();
@@ -816,7 +816,7 @@ fn start_detached_startup_downloads(
         });
     }
 
-    // #1925 - detached remote blocking-menu patterns download. Fail-silent; applies at the
+    // Detached remote blocking-menu patterns download. Fail-silent; applies at the
     // next start.
     {
         let app_handle_for_remote_menus = app.handle().clone();
@@ -825,7 +825,7 @@ fn start_detached_startup_downloads(
                 .await;
         });
     }
-    // #2133 - detached remote per-agent help download. Fail-silent; applies at the next
+    // Detached remote per-agent help download. Fail-silent; applies at the next
     // start.
     {
         let app_handle_for_remote_agent_help = app.handle().clone();
@@ -906,7 +906,7 @@ pub(super) fn start_web_server(
     Ok(())
 }
 
-// #791 - start the control-plane API server if enabled in settings.
+// Start the control-plane API server if enabled in settings.
 // Opt-in (default false), mirroring the web server block above. The
 // managed handle is stored only after bind readiness is confirmed.
 pub(super) fn start_api_server(

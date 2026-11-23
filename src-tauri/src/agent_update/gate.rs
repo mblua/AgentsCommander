@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 pub struct AgentUpdateGate {
     pub(crate) state: Mutex<GateState>,
     pub(crate) release: tokio::sync::Notify,
-    /// #1551 - serializes `answer_prompt` (classify -> persist -> settle) per gate.
+    /// Serializes `answer_prompt` (classify -> persist -> settle) per gate.
     /// A tokio mutex because it is held across the persist await; the std `state`
     /// lock is never held across an await.
     pub(crate) answer_serial: tokio::sync::Mutex<()>,

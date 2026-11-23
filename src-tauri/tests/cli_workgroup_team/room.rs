@@ -297,5 +297,5 @@ fn outbox_files(root: &Path) -> Vec<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// #2374 - `room activity` black-box fixtures and tests.
+// `room activity` black-box fixtures and tests.
 // ---------------------------------------------------------------------------
