@@ -177,14 +177,14 @@ fn self_clear_help_documents_forgotten_summary_behavior() {
     assert!(help.contains("240"), "{help}");
     assert!(help.contains("closed background"), "{help}");
     assert!(help.contains("SELF-HANDOFF.md"), "{help}");
-    // #749 - the help documents the pre-inject handoff archive and its exact destination.
+    // The help documents the pre-inject handoff archive and its exact destination.
     assert!(
         help.contains("self-clear/<timestamp>_SELF-HANDOFF.md"),
         "{help}"
     );
 }
 
-// ── #617 HIGH-1: Root self-clear sender derivation (the actual fix) ──
+// ── Root self-clear sender derivation ──
 
 /// The Root Agent's self-clear must send as the reserved `ROOT_AGENT_SENDER`,
 /// NOT the path-derived FQN. This is the discriminating gate for the fix: on the

@@ -181,17 +181,17 @@ fn peer_with_status(name: &str, status: &PeerStatus) -> PeerInfo {
     peer
 }
 
-/// The agent-specific notice a #1646/#1647 menu-guard row carries.
+/// The agent-specific notice a menu-guard row carries.
 const BLOCKED_MENU_MESSAGE: &str =
     "codex is waiting for you to answer the folder-trust menu in this terminal";
 
-/// #1774 - `ps_row` hardcodes one UUID for every row it builds, so a
+/// `ps_row` hardcodes one UUID for every row it builds, so a
 /// multi-row fixture assigns its own ids to keep the two rows distinct.
 const CHOSEN_SESSION_ID: &str = "22222222-2222-2222-2222-222222222222";
 
 const OTHER_SESSION_ID: &str = "33333333-3333-3333-3333-333333333333";
 
-/// #1774 - two more ids, so the three-row fixtures can bracket the chosen
+/// Two more ids, so the three-row fixtures can bracket the chosen
 /// row: `BELOW_CHOSEN_SESSION_ID` sorts under `CHOSEN_SESSION_ID` and
 /// `TRAILING_SESSION_ID` over it, so a lexical minimum-by-id or
 /// maximum-by-id read cannot coincide with `chosen`.
@@ -199,7 +199,7 @@ const BELOW_CHOSEN_SESSION_ID: &str = "00000000-0000-0000-0000-000000000000";
 
 const TRAILING_SESSION_ID: &str = "44444444-4444-4444-4444-444444444444";
 
-/// #1774 - two more notices, distinct from `BLOCKED_MENU_MESSAGE` and from
+/// Two more notices, distinct from `BLOCKED_MENU_MESSAGE` and from
 /// each other, so a fixture can give three blocked rows three different
 /// messages and see which one is reported. They sort
 /// `OTHER_BLOCKED_MENU_MESSAGE` < `BLOCKED_MENU_MESSAGE` <

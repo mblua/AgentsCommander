@@ -1,7 +1,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------
-// #1551 - the pass end
+// The pass end
 // ---------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -269,7 +269,7 @@ async fn dropped_completion_receiver_does_not_abort_panicking_supervisor() {
 }
 
 // ---------------------------------------------------------------------
-// #1551 - end to end
+// End to end
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -439,7 +439,7 @@ async fn run_startup_updates_unavailable_catalog_spawns_nothing_and_finishes_the
 }
 
 // ---------------------------------------------------------------------
-// #4804 - mise-managed agents in the startup pass
+// Mise-managed agents in the startup pass
 // ---------------------------------------------------------------------
 
 #[cfg(unix)]
@@ -464,7 +464,7 @@ fn mise_pass_agent(id: &str, command: &str) -> AgentConfig {
     }
 }
 
-/// #4804 - scripts `<tmp>/<codex_rel>/codex` and `<tmp>/npm/bin/claude` registered by
+/// Scripts `<tmp>/<codex_rel>/codex` and `<tmp>/npm/bin/claude` registered by
 /// absolute path; claude answered yes, codex per `codex_answer`. Runs the pass and
 /// returns ((codex, claude), frames up to and including `agent_updates_finished`).
 #[cfg(unix)]

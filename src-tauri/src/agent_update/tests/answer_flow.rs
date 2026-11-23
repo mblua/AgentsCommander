@@ -1,10 +1,10 @@
 use super::*;
 
 // ---------------------------------------------------------------------
-// #1551 - the answer flow
+// The answer flow
 // ---------------------------------------------------------------------
 
-/// #1551 - waker of the prompt's `oneshot::Receiver` in
+/// Waker of the prompt's `oneshot::Receiver` in
 /// `answer_prompt_enqueues_the_closure_before_releasing_the_loop`. tokio's
 /// `oneshot::Sender::send` runs it INLINE (`Inner::complete` -> `wake_by_ref`), i.e. inside
 /// `ClaimedPrompt::deliver`, before `answer_prompt` executes anything else, so it sees the
