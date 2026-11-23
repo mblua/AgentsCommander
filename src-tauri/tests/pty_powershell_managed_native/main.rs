@@ -1,4 +1,4 @@
-//! #1271 - real-host Windows regressions for the configured default-shell
+//! Real-host Windows regressions for the configured default-shell
 //! adapter: system `powershell.exe` managed native argv + PTY I/O, PowerShell
 //! batch shims, configured cmd to `.cmd`, exit-code propagation, host shutdown,
 //! and missing-host/custom-shell cleanup.
@@ -754,7 +754,7 @@ fn configured_powershell_resolved_but_unstartable_application_fails_nonzero() {
     });
 }
 
-/// #1271 - reporter mode for the managed native argv+PTY-I/O regression
+/// Reporter mode for the managed native argv+PTY-I/O regression
 /// (architect option 1, F8). When `AC_1271_ARGV_REPORTER=1` is set, this test
 /// acts as the repository-owned native child: it prints each argv element
 /// after the fixed `--exact <mode>` harness prefix on its own length-prefixed

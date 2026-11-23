@@ -1,4 +1,4 @@
-//! (#1001 PR1) On-demand measurement harness for the wake-consumption oracle.
+//! On-demand measurement harness for the wake-consumption oracle.
 //!
 //! WHY THIS EXISTS (plan section 16.1): two output-stream oracles have already
 //! died the same way - the echo/repaint of a pasted body IS output, produced
@@ -208,7 +208,7 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
     // purge_readiness, so we do not need to mirror into SessionManager here.
     let idle: Arc<IdleDetector> = IdleDetector::new(|_| {}, |_| {});
     let settings: SettingsState = agentscommander_lib::config::settings::new_settings_state({
-        // #1077: AppSettings has a crate-private hidden field; build from Default.
+        // AppSettings has a crate-private hidden field; build from Default.
         let mut s = AppSettings::default();
         s.default_shell = "powershell.exe".to_string();
         s.default_shell_args = vec!["-NoLogo".to_string()];
@@ -429,13 +429,13 @@ impl SignalTally {
 
 // ─────────────────────────────── the harness ─────────────────────────────
 
-/// (#1001 PR2 P2) Faithfully replicate B's live settle decision, so the post-fix
+/// Faithfully replicate B's live settle decision, so the post-fix
 /// number reflects the SHIPPED gate, not a proxy. Option-a first routes on
 /// `alive_age` (`live_wake_route`): a STARTING candidate takes the sustained-idle
 /// settle; an ESTABLISHED one runs `live_settle_action`'s `activity_age` loop (busy
 /// fast-path, long-idle inject, fresh-idle wait, resize wait, cap).
 async fn settle_like_b(ctx: &HarnessCtx, id: Uuid, max_wait: Duration) {
-    // (#1001 PR2 P2 option-a) Mirror prod: classify starting vs established by
+    // Mirror prod: classify starting vs established by
     // alive_age. Kept in sync with mailbox.rs STARTUP_SETTLE_THRESHOLD (pub(crate),
     // unreachable from this integration-test crate, so hardcoded like FRESH_IDLE_GUARD).
     const STARTUP_THRESHOLD: Duration = Duration::from_secs(20);
@@ -444,9 +444,9 @@ async fn settle_like_b(ctx: &HarnessCtx, id: Uuid, max_wait: Duration) {
         .alive_age(id)
         .is_some_and(|a| a < STARTUP_THRESHOLD)
     {
-        // Starting: route to the sustained-idle settle, mirroring prod's #611 path
+        // Starting: route to the sustained-idle settle, mirroring prod's path
         // (cold-spawn params: 90s cap, 2s hold). FIDELITY CAVEAT (grinch F2, revised
-        // for #1388): the proxy now matches prod's DEFINITION - settle_until_ready
+        // for readiness): the proxy now matches prod's DEFINITION - settle_until_ready
         // gates on idle AND rendered, which is what this arm already did. The residual
         // gap is narrower and different: this proxy's rendered check is
         // `nonblank_lines(strip_ansi(snapshot)) > 0` (see wait_for_settle / screen_text),
@@ -486,7 +486,7 @@ async fn settle_like_b(ctx: &HarnessCtx, id: Uuid, max_wait: Duration) {
     }
 }
 
-/// (#1001 PR2 P2 option-a) DERIVE the "starting" threshold from evidence. Spawns
+/// DERIVE the "starting" threshold from evidence. Spawns
 /// the agent and records `alive_age` at the instant it FIRST holds sustained
 /// paste-ready - `wait_for_settle`'s definition (watcher idle AND rendered
 /// content held for `settle_hold`), the same paste-ready notion B's live settle
@@ -588,7 +588,7 @@ async fn run_startup_probe(cfg: &HarnessConfig, ctx: &HarnessCtx) {
     println!("=== end ===\n");
 }
 
-/// (#1001 PR2 P2, the grinch-P2 gate) Live-path drop baseline. Reuses an
+/// Live-path drop baseline. Reuses an
 /// ALREADY-LIVE session: spawn, run a settled warm-up turn (so it is used, not a
 /// fresh cold-spawn), let it return to fresh-idle after that turn, then wake it
 /// AGAIN in the `[idle_threshold, idle_threshold + guard]` window and measure the

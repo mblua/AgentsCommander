@@ -1,4 +1,4 @@
-//! #2817 coupling gate: the Rust `tauri` crate and the npm `@tauri-apps/api`
+//! Coupling gate: the Rust `tauri` crate and the npm `@tauri-apps/api`
 //! package must share a `major.minor`.
 //!
 //! The Tauri CLI compares the two and aborts the build when they differ, so a
