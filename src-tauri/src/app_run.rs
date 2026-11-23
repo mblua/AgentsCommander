@@ -84,7 +84,7 @@ pub(crate) fn run(
 /// Shared plugins plus the platform-gated ones, in the original order.
 fn plugin_builder(
     #[cfg(target_os = "linux")] display_env: crate::screenshot::DisplayEnvSnapshot,
-) -> tauri::Builder<tauri::Wry> {
+) -> crate::AppBuilder {
     // #714/#1842/#2079 clipboard + global-shortcut plugins are referenced ONLY
     // on Windows, Linux and macOS; every other target never links them. The
     // rest of the builder chain is shared. This predicate must match
@@ -116,10 +116,10 @@ fn plugin_builder(
     reason = "startup aborts by design if the shared network clients cannot be built"
 )]
 fn manage_launch(
-    builder: tauri::Builder<tauri::Wry>,
+    builder: crate::AppBuilder,
     owners: &crate::AppOwners,
     l: Launch,
-) -> tauri::Builder<tauri::Wry> {
+) -> crate::AppBuilder {
     builder
         .manage(owners.clone())
         .manage(l.boot.master_token)
