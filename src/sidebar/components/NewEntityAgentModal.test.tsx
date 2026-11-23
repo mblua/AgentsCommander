@@ -79,6 +79,26 @@ describe("NewEntityAgentModal template picker", () => {
     expect(selected(options())).toEqual(["true", "false"]);
   });
 
+  it("makes the listbox programmatically focusable without adding a Tab stop", async () => {
+    const { list, options } = await mount();
+    const [none, alpha, beta] = options();
+    expect(list.getAttribute("tabindex")).toBe("-1");
+
+    list.focus();
+    expect(document.activeElement).toBe(list);
+    keyDown(list, "ArrowDown");
+    expect(document.activeElement).toBe(none);
+
+    list.focus();
+    expect(document.activeElement).toBe(list);
+    keyDown(list, "ArrowUp");
+    expect(document.activeElement).toBe(beta);
+
+    expect(options()).toEqual([none, alpha, beta]);
+    expect(options().map((option) => option.tabIndex)).toEqual([0, 0, 0]);
+    expect(selected(options())).toEqual(["true", "false", "false"]);
+  });
+
   it("moves focus from Search and wraps through options without selecting", async () => {
     const { options, search, name, description } = await mount();
     const [none, alpha, beta] = options();

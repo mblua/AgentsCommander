@@ -497,6 +497,19 @@ describe("#4779 TemporaryRoomsPanel", () => {
     await waitFor(() => expect(byId("tempRoom.headerMenu.delete")).not.toBeNull());
   });
 
+  it("keeps task title text and hooks outside the Tab order", async () => {
+    const full = "A long temporary room task title that remains available as a tooltip";
+    track(setup({ rooms: [{ ...ROOM_1, taskTitle: `  ${full}  ` }] }));
+    const taskTitleId = "tempRoom.temp-room-tr01.taskTitle";
+    await waitFor(() => expect(byId(taskTitleId)).not.toBeNull());
+    const label = byId(taskTitleId)!;
+    expect(label.hasAttribute("tabindex")).toBe(false);
+    expect(label.textContent).toBe(full);
+    expect(label.getAttribute("title")).toBe(full);
+    expect(label.getAttribute("data-ac-role")).toBe("text");
+    expect(label.getAttribute("data-ac-state")).toBe("task");
+  });
+
   it("8b. #4825 the header collapse button carries tempRooms.header.toggle", async () => {
     track(setup());
     await waitFor(() => expect(byId("tempRooms.header.toggle")).not.toBeNull());

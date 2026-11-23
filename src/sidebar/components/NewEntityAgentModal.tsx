@@ -265,6 +265,7 @@ const NewEntityAgentModal: Component<{
               ref={listRef}
               onKeyDown={handleListKeyDown}
               role="listbox"
+              tabIndex={-1}
               aria-label="Role templates"
             >
               {/* "No template" row is always present, regardless of the filter.
