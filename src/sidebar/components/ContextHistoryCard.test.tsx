@@ -9,7 +9,7 @@ import ContextHistoryCard, {
 } from "./ContextHistoryCard";
 import type { SessionWindowBucket } from "../../shared/context-history";
 
-// #3532 P11 - the card only renders the state it is given.
+// The card only renders the state it is given.
 
 /** recordsPerSession = records / actual sessions; null without sessions. */
 const bucket = (
@@ -272,7 +272,7 @@ describe("ContextHistoryCard placement (#3532 P11)", () => {
   });
 });
 
-// #3532 P18 - native card listeners (Sonar S6847/S1082) and explicit legend spacing (S6772).
+// Native card listeners (Sonar S6847/S1082) and explicit legend spacing (S6772).
 describe("ContextHistoryCard P18 native listeners", () => {
   afterEach(() => {
     document.body.innerHTML = "";
