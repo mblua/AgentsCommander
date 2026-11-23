@@ -349,7 +349,7 @@ describe("session workflow automation hooks", () => {
     }
   });
 
-  it("#592: surfaces the Root Agent drift reload badge and relaunches on click", async () => {
+  it("surfaces the Root Agent drift reload badge and relaunches on click", async () => {
     // The Root Agent can drift too (its loaded profile cell vs current config), and
     // its hash is persisted (a80a1a7). The banner must show the same reload badge as
     // SessionItem / replica rows, wired to the root restart path.
@@ -385,7 +385,7 @@ describe("session workflow automation hooks", () => {
     }
   });
 
-  it("#592: hides the Root Agent drift badge when the profile is current", async () => {
+  it("hides the Root Agent drift badge when the profile is current", async () => {
     const root = session({
       id: "root-1",
       name: "Agent's Commander",
@@ -421,7 +421,7 @@ describe("Telegram indicator after #1730", () => {
     vi.restoreAllMocks();
   });
 
-  it("#1896: shows the button-less Telegram indicator on the root banner while a bridge is attached", async () => {
+  it("shows the button-less Telegram indicator on the root banner while a bridge is attached", async () => {
     sessionsStore.setSessions([session({ id: "root-1", isRootAgent: true, status: "running" })]);
     // A named colour: jsdom rewrites hex in style.color to rgb(), the replica
     // test (ProjectPanel.context-menu.test.tsx) uses "red" for the same reason.
@@ -448,7 +448,7 @@ describe("Telegram indicator after #1730", () => {
     }
   });
 
-  it("#1896: renders neither indicator nor Telegram button on the root banner with no bridge", async () => {
+  it("renders neither indicator nor Telegram button on the root banner with no bridge", async () => {
     sessionsStore.setSessions([session({ id: "root-1", isRootAgent: true, status: "running" })]);
     bridgesStore.setBridges([]);
 
