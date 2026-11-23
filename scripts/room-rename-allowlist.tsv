@@ -2694,14 +2694,14 @@ P2-fixture	src-tauri/src/phone/mailbox/tests/support_commands.rs	/// dir (not a 
 P2-fixture	src-tauri/src/phone/mailbox.rs	"proj:wg-1/devs/alice",
 P2-fixture	src-tauri/src/phone/mailbox/tests/deliver_wake.rs	"proj:wg-1/devs/bob",
 P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	/// Build a purge-wg outbox message file in the sender's outbox.
-P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	/// (#885 E-3) Helper: set up a full WG fixture with a coordinator and a
+P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	/// Helper: set up a full WG fixture with a coordinator and a
 P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	let wg_dir = ac_root.join(format!("wg-1-{}", wg_suffix));
 P2-fixture	src-tauri/src/phone/mailbox.rs	"wg-1-dev-team/dev-rust",
 P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	/// (D-3/F-7) A purge-wg message with no session token must be rejected,
 P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	"must be rejected by the F-7 token guard, not by WG resolution: {reason}"
 P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	/// WG's coordinator must be rejected. The forged WG is fully constructed
 P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	/// guard is the only thing between a master token and a cross-WG purge.
-P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	// (#885 E-1) Construct a SECOND, fully valid workgroup so
+P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	// Construct a SECOND, fully valid workgroup so
 P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	// Without this, the forged WG doesn't exist and the message is
 P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	// rejected by WG resolution, not by the F-7 guard.
 P2-fixture	src-tauri/src/phone/mailbox/tests/test_settle.rs	let other_wg_dir = ac_root.join("wg-1-other-team");

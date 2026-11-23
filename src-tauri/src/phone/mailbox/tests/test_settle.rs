@@ -101,7 +101,7 @@ fn build_purge_wg_message(
     message_path
 }
 
-/// (#885 E-3) Helper: set up a full WG fixture with a coordinator and a
+/// Helper: set up a full WG fixture with a coordinator and a
 /// peer. Returns the sender CWD and peer CWD.
 fn setup_purge_fixture(temp: &tempfile::TempDir, wg_suffix: &str) -> (PathBuf, PathBuf) {
     let project = temp.path().join("proj-a");
@@ -218,7 +218,7 @@ async fn process_message_purge_wg_with_master_token_and_forged_from_is_rejected(
     let temp = tempfile::TempDir::new().unwrap();
     let (sender_cwd, _peer_cwd) = setup_purge_fixture(&temp, "dev-team");
 
-    // (#885 E-1) Construct a SECOND, fully valid workgroup so
+    // Construct a SECOND, fully valid workgroup so
     // `verified_wg_coordinator_target` succeeds for the forged `from`.
     // Without this, the forged WG doesn't exist and the message is
     // rejected by WG resolution, not by the F-7 guard.
