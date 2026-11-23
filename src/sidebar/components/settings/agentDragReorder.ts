@@ -68,7 +68,7 @@ export function createAgentDragReorder(options: AgentDragReorderOptions): AgentD
     const others = all.filter((row) => row !== drag.row);
     drag.slot = insertionSlot(drag.lastY, others.map((row) => row.getBoundingClientRect()));
     const atSlot = others[drag.slot];
-    const last = others[others.length - 1];
+    const last = others.at(-1);
     if (from < 0 || drag.slot === from || !last) {
       setDropIndicatorTop(null);
     } else {
