@@ -203,7 +203,7 @@ const declaresGround = (rule: ScannedRule): boolean => {
 
 const COMPETITOR_RULES = OTHER_SUBGROUP_RULES.filter(declaresGround);
 
-describe("#1755 working-tint CSS bytes (leg 1)", () => {
+describe("working-tint CSS bytes (leg 1)", () => {
   it("1. declares the base .replica-item::after overlay in full", () => {
     const body = ruleBody(OVERLAY_BASE);
     expect(declValue(body, "content")).toBe('""');
@@ -465,7 +465,7 @@ function groundsFor(theme: Theme, room: Rgba): Array<[string, Rgba]> {
   ];
 }
 
-describe("#1755 composite arithmetic and the signal ladder (leg 3)", () => {
+describe("composite arithmetic and the signal ladder (leg 3)", () => {
   it("3a. the row wash is visible on all six grounds in both themes", () => {
     // The loop must prove that it ran. Without the pinned count and
     // expect.hasAssertions(), a reader that returned an empty list instead of

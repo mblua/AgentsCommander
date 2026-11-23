@@ -33,7 +33,7 @@ function tokenValue(body: string, token: string): string | null {
   return match ? match[1].trim() : null;
 }
 
-describe("#1708/#1731 context-menu icon colours", () => {
+describe("context-menu icon colours", () => {
   it.each([
     ["the detach icon", "--sidebar-accent", ".session-context-detach-icon"],
     ["the TASK-title pencil", "--status-pending", ".session-context-task-icon"],
