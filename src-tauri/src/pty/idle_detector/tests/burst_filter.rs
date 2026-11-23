@@ -1,7 +1,7 @@
 use super::*;
 
 // -----------------------------------------------------------------
-// #2124 - the idle-burst filter (T1-T8, T11, T13 of the plan).
+// The idle-burst filter (T1-T8, T11, T13 of the plan).
 // -----------------------------------------------------------------
 
 /// The common fixture: a detector whose `on_busy` counts calls, one session

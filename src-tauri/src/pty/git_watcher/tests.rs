@@ -75,7 +75,7 @@ async fn set_git_repos_if_gen_rejects_stale_gen() {
     assert!(wrote2, "current gen must succeed");
 }
 
-/// #280 §3.3 — `note_timeout` is a monotonic per-path counter so the
+/// §3.3 — `note_timeout` is a monotonic per-path counter so the
 /// caller can throttle WARN emissions to "first + every Nth". Two
 /// independent paths get independent counters.
 #[test]
@@ -93,7 +93,7 @@ fn note_timeout_counts_per_path() {
     assert_eq!(note_timeout(p1, &owner), 4);
 }
 
-/// #1298 T1 - the read-site clamp, and the executable form of INV-2: no floor
+/// T1 - the read-site clamp, and the executable form of INV-2: no floor
 /// may be 0, so a configured 0 becomes the 1s minimum rather than a spin.
 #[test]
 fn sweep_dials_clamps_both_dials() {
@@ -109,7 +109,7 @@ fn sweep_dials_clamps_both_dials() {
     assert_eq!(sweep_dials(&cfg), (4, Duration::from_secs(3600)));
 }
 
-/// #1298 T2 - INV-7 (both halves survive), INV-3 (dedupe by exact string) and
+/// T2 - INV-7 (both halves survive), INV-3 (dedupe by exact string) and
 /// D2 (archived dropped from BOTH halves, not just the discovery one).
 #[test]
 fn build_work_list_unions_dedupes_and_drops_archived() {
@@ -137,7 +137,7 @@ fn build_work_list_unions_dedupes_and_drops_archived() {
     );
 }
 
-/// #1298 T3 - the snapshot contract, including INV-6: a published `None`
+/// T3 - the snapshot contract, including INV-6: a published `None`
 /// overwrites a previous `Some`, so `branch` does not hold across a failure.
 #[test]
 fn published_git_status_round_trips_and_unknown_paths_read_none() {
@@ -158,7 +158,7 @@ fn published_git_status_round_trips_and_unknown_paths_read_none() {
     assert!(read_git_status(path, &owner).is_none());
 }
 
-/// #1298 T4 - the executable form of INV-8. The second half of the assertion is
+/// T4 - the executable form of INV-8. The second half of the assertion is
 /// the whole point: without the `LAST_DIRTY` eviction a dropped path reads
 /// `None` from the snapshot and its last successful bool from `remember_dirty`,
 /// i.e. a confident colour sourced from a detection that will never repeat.
