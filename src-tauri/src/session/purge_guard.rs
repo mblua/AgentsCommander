@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
-/// (#885) Cross-cutting gate for `purge-wg`. Two jobs:
+/// Cross-cutting gate for `purge-wg`. Two jobs:
 ///
 /// J1: no daemon-mediated input reaches a peer between the readiness snapshot
 ///     and that peer's destroy.
@@ -37,7 +37,7 @@ pub struct PurgeLease<'a> {
 }
 
 impl PurgeGuard {
-    /// True while any purge holds a lease. Used by the #791 DB dispatcher,
+    /// True while any purge holds a lease. Used by the DB dispatcher,
     /// which must skip its tick BEFORE leasing a row and therefore does not
     /// yet know the row's target (§5.5e, F-5).
     pub fn is_active(&self) -> bool {
