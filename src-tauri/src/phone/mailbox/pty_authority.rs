@@ -1,3 +1,7 @@
+//! Mailbox PTY spawn authority: decides when the mailbox poller may spawn or
+//! replace a PTY session for a delivery target.
+//! It owns no persistent data; it does not deliver message bodies.
+
 mod target;
 
 use super::poller::{owned_replacement_launch_recipe, read_guarded_agent_state, MailboxPoller};

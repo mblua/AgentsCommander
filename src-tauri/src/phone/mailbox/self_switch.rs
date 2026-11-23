@@ -1,3 +1,7 @@
+//! Mailbox self-switch: handles an agent request to switch its own session,
+//! finding the target replica and restarting the session there.
+//! It owns no persistent data; it does not handle peer-to-peer messages.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod phase;

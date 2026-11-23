@@ -1,3 +1,7 @@
+//! Telegram bridge supervisor: spawns the session reader and the poll loop
+//! that link one session to a Telegram bot, and handles network errors.
+//! It does not format messages or own bot settings.
+
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
