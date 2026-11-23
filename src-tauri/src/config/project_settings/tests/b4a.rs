@@ -1,6 +1,6 @@
 use super::*;
 
-// #2717 (B4a) - rows E6 to E13 of the phase plan. Every name below is a
+// B4a: rows E6 to E13 of the phase plan. Every name below is a
 // literal (4.1): no fixture composes a project-settings name from a constant.
 
 const B4A_LEGACY_BYTES: &str = "{\n  \"groups\": [{\"id\": \"g1\", \"name\": \"Legacy\", \
@@ -624,7 +624,7 @@ fn b4a_git(cwd: &Path, args: &[&str]) -> std::process::Output {
         .expect("git must execute")
 }
 
-/// #2717 (B4a) 4.4 1b: each row pattern is composed from the registry, and
+/// B4a 4.4 1b: each row pattern is composed from the registry, and
 /// is pinned against the constants, never against a typed-out name.
 #[test]
 fn the_ignore_rows_are_composed_from_the_registry() {

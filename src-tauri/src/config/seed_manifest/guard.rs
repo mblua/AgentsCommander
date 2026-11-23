@@ -179,7 +179,7 @@ impl ProjectSeedManifestGuard {
                 return Err(error);
             }
         }
-        // #1318 - one-shot v1 -> v2 coverage upgrade. Runs after the prior-temp
+        // One-shot v1 -> v2 coverage upgrade. Runs after the prior-temp
         // policy evaluated the PRE-migration state, and its own temp (created
         // and renamed inside `write_canonical`, cleaned on failure) never
         // interacts with that inventory. After a successful upgrade the strict
@@ -350,7 +350,7 @@ impl ProjectSeedManifestGuard {
         }
     }
 
-    /// #1318 - one-shot v1 -> v2 coverage upgrade, run under the held lock on
+    /// One-shot v1 -> v2 coverage upgrade, run under the held lock on
     /// the first acquire of an exact-shape v1 manifest. Deterministic and
     /// strict: the v2 state is built by SUBSTITUTION from the parsed v1 wire
     /// (`coverage_version` and the coverage list only), so every existing row
