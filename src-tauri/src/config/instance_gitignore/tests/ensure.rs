@@ -345,7 +345,7 @@ fn locked_partial_file_fails_fast_and_remains_unchanged() {
 
 #[test]
 fn managed_catalog_journal_temp_name_exact() {
-    // #1968: the journal publication temporary for the dot-prefixed journal
+    // The journal publication temporary for the dot-prefixed journal
     // name has TWO leading dots. The rule is derived through the real
     // publication helper, and the SINGLE-dot near miss must not match THAT
     // rule. The near miss is still covered by the pre-existing any-depth

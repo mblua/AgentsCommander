@@ -118,7 +118,7 @@ fn a_recoverable_sidecar_recovers_then_renames_in_one_pass() {
     assert!(deprecated_entries(&catalog).is_empty());
 }
 
-/// E8e: data already at the new names beside a #1968 sidecar, with no
+/// E8e: data already at the new names beside a migration sidecar, with no
 /// journal dir. F1 must not resurrect the old names; without its
 /// `has_old_data` guard the set-aside ordinal grows by one every pass.
 #[test]
@@ -211,7 +211,7 @@ fn a_blocked_recovery_defers_and_renames_nothing() {
         naming_migration::ScopeStatus::Complete
     );
 
-    // Backup only (follow-up #2709): both renames done, every byte kept,
+    // Backup only : both renames done, every byte kept,
     // and the pass ends with the one pre-existing MIGRATION_CONFLICT.
     let only = B2Fixture::new();
     let catalog = only.project_catalog();

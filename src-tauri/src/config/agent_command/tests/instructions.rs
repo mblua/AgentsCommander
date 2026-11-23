@@ -54,7 +54,7 @@ fn default_instructions_filename_maps_by_detected_kind() {
     assert_eq!(default_instructions_filename_for_command(""), "AGENTS.md");
 }
 
-/// #1873 - direct/absolute Muse maps to AGENTS.md through the same detector
+/// Direct/absolute Muse maps to AGENTS.md through the same detector
 /// the launch path uses; a Codex-looking value does not change the target.
 #[test]
 fn muse_default_instructions_filename_is_agents_md() {
@@ -95,7 +95,7 @@ fn muse_default_instructions_filename_is_agents_md() {
     );
 }
 
-/// #1873 - an explicit, safe filename wins over the Muse default.
+/// An explicit, safe filename wins over the Muse default.
 #[test]
 fn muse_explicit_instructions_filename_wins() {
     let mut muse = agent("muse", "/opt/muse/bin/muse");
@@ -269,4 +269,4 @@ fn is_safe_instructions_filename_rejects_unsafe_names() {
     );
 }
 
-// #576 follow-up - auto-create OPENCODE_CONFIG_DIR before spawn.
+// Auto-create OPENCODE_CONFIG_DIR before spawn.

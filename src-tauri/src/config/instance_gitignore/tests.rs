@@ -128,7 +128,7 @@ fn expected_fresh_bytes(agent_local_dir: &str) -> Vec<u8> {
     bytes
 }
 
-/// The byte-exact content of a pre-#1446 complete file: the two dynamic
+/// The byte-exact content of an older complete file: the two dynamic
 /// rules composed from the constant, then the 12 historical rules.
 ///
 /// The dynamic lines are built rather than frozen on purpose. Freezing them

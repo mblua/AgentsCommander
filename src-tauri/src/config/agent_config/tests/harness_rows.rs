@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- #2786 C1 r28: harness child-ownership rows ----
+// ---- C1 r28: harness child-ownership rows ----
 // These are NOT mutant classes of E15. They prove the harness itself never
 // leaves a child behind when supervision fails, and they drive a BLOCKING
 // inner row, so the child is certainly alive when the injected fault fires.
@@ -68,7 +68,7 @@ fn a_timed_out_child_is_terminated_and_reaped() {
     assert!(!r.ok, "a timed-out child is never a green child");
 }
 
-// ---- #2786 C1 r30 item 5: DIRECT controls on the failed-kill branch ----
+// ---- C1 r30 item 5: DIRECT controls on the failed-kill branch ----
 // Each one drives the blocking sleeper, injects its fault, and asserts the
 // OUTCOME, the BOUND, the row's RED verdict and the pid's state before and
 // after cleanup. The report-injection control k1 is kept as it was: it
@@ -349,7 +349,7 @@ fn an_unwind_between_spawn_and_reap_still_reaps_the_child() {
     );
 }
 
-// #2786 C1 E15, third selector: an off-thread load IS counted. One load on
+// C1 E15, third selector: an off-thread load IS counted. One load on
 // a spawned, joined thread and one on the test thread, two directories.
 #[test]
 fn the_load_probe_observes_every_thread() {
@@ -375,7 +375,7 @@ fn inner_the_load_probe_observes_every_thread() {
     assert_eq!(loads, want, "recorded {loads:?}, expected exactly {want:?}");
 }
 
-// #2786 C1 E15, fourth selector: inside the armed process a wrapper load
+// C1 E15, fourth selector: inside the armed process a wrapper load
 // with no open observation panics, naming the directory.
 #[test]
 fn a_load_with_no_open_observation_fails_closed() {
