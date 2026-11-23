@@ -1,6 +1,6 @@
 use super::*;
 
-// #552: a WG replica cwd that agent_fqn_from_path resolves to
+// A WG replica cwd that agent_fqn_from_path resolves to
 // `<project>:<wg>/<agent>`. team key = `<project>:<wg>`.
 const COORD_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_lead";
 const RUST_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_rust";

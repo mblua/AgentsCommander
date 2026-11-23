@@ -131,7 +131,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   // order, so a fast A -> B -> A switch could otherwise land the first
   // detach(A) after the final attach(A) and leave this window rendering a
   // session it is no longer attached to: a silent freeze indistinguishable
-  // from #1363 itself. Every transition therefore runs on one promise chain,
+  // from the fix itself. Every transition therefore runs on one promise chain,
   // re-checks the desired state after each await, and is the ONLY writer of
   // `attachedSessionId`.
   let attachedSessionId: string | null = null;
@@ -149,7 +149,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   // trips the ingest-thread ceiling flush immediately, and that chunk's
   // sequence is ABOVE the seed's, so the watermark never replays it: the hole
   // is silent and permanent. It lands exactly on "attach a busy session",
-  // which is criterion C and #1364's scenario.
+  // which is criterion C and the race scenario.
   //
   // A FAILED registration rejects the gate, which correctly leaves this window
   // unattached: a window with no listener could not render the stream anyway,
@@ -1699,7 +1699,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   };
 
   // One writer for both transports. The visibility filter
-  // is the #1283 fix F keeps: a retained but hidden terminal never receives a
+  // is the fix F keeps: a retained but hidden terminal never receives a
   // write. Browser events carry no `sequence` and never enter a seed, so they
   // are written straight through.
   const handlePtyOutput = (event: PtyOutputEvent): void => {

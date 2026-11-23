@@ -79,7 +79,7 @@ fn lean_output_is_valid_json_array() {
     assert_eq!(parsed.as_array().unwrap().len(), 2);
 }
 
-// ── #1088: contextPercent projection through the peer→session join ──
+// ── contextPercent projection through the peer→session join ──
 
 #[test]
 fn build_session_index_copies_context_percent_from_persisted() {
@@ -166,7 +166,7 @@ fn lean_peer_json_carries_context_percent_and_omits_when_none() {
     );
 }
 
-// ── #1641: agent/profile projection through the peer→session join ──
+// ── agent/profile projection through the peer→session join ──
 
 #[test]
 fn build_session_index_from_copies_agent_and_effective_profile() {
@@ -209,7 +209,7 @@ fn lean_peer_omits_agent_and_profile_for_cold_peer() {
 #[test]
 fn lean_peer_omits_profile_for_plain_shell_session() {
     // Live session with an agent id but no effective profile (plain-shell
-    // or pre-#1641 row): agent is reported, profile is omitted.
+    // or older row): agent is reported, profile is omitted.
     let mut row = ps_row("Session 1", r"C:\work", Some(SessionStatus::Running), true);
     row.agent_id = Some("codex".into());
     let index = build_session_index_from(&[row]);
@@ -241,7 +241,7 @@ fn lean_peer_reports_effective_profile_after_fallback() {
 
 #[test]
 fn old_sessions_json_without_effective_profile_loads_and_omits() {
-    // Pre-#1641 row: no effectiveProfile key (and no agentId) — must
+    // Older row: no effectiveProfile key (and no agentId) — must
     // deserialize and project with both fields omitted; no migration.
     let json = r#"{
         "name": "legacy",
@@ -276,9 +276,9 @@ fn peer_info_carries_agent_and_profile_into_lean_projection() {
     assert_eq!(lean.profile.as_deref(), Some("B"));
 }
 
-// ── #1669: blockedMenu projection through the peer→session join ──
+// ── blockedMenu projection through the peer→session join ──
 
-// #4030 — exact wire bytes, frozen before/after peer-status ownership moves.
+// Exact wire bytes, frozen before/after peer-status ownership moves.
 
 fn wire_alias_peer() -> LeanPeerInfo {
     let mut peer = sample_peer_info("project:wg-1-team/dev");

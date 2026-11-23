@@ -352,7 +352,7 @@ fn repair_accepts_windows_case_variant_persisted_identity_component() {
     assert_eq!(config["identity"], "../../_agent_tech-lead");
 }
 
-/// #2557 - seven replicas, one per fault cause; two share `ConfigUnreadable`.
+/// Seven replicas, one per fault cause; two share `ConfigUnreadable`.
 fn issue_2557_fault_cases(temp: &tempfile::TempDir) -> Vec<(PathBuf, ReplicaConfigFault)> {
     let room = temp
         .path()
@@ -458,7 +458,7 @@ fn issue_2557_classified_reader_records_one_probe_call() {
     assert_eq!(count, 1);
 }
 
-/// #2816 (C3) E3b, site 12.
+/// (C3) E3b, site 12.
 #[test]
 fn an_absent_config_still_refuses_and_creates_nothing() {
     let temp = setup_replica(".ac");
@@ -485,7 +485,7 @@ fn an_absent_config_still_refuses_and_creates_nothing() {
     );
 }
 
-/// #2816 (C3) E3b, consequence 2 of 4.1: an orphan state file with a
+/// (C3) E3b, consequence 2 of 4.1: an orphan state file with a
 /// malformed `tooling` is rejected by the cleanup before the refusal, and
 /// still nothing is created.
 #[test]
@@ -513,16 +513,16 @@ fn an_orphan_malformed_state_file_is_rejected_before_the_refusal() {
     );
 }
 
-/// C4 (#2470): the seeded state file of every row that seeds one. All four
+/// C4: the seeded state file of every row that seeds one. All four
 /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
 const C4_SEEDED_STATE: &str = include_str!("tests/fixtures/c4-seeded-state.json");
 
-/// C4 (#2470): the state file beside a tracked `config.json`.
+/// C4: the state file beside a tracked `config.json`.
 fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {
     tracked.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
 }
 
-/// C4 (#2470): after one writer, the tracked file carries none of the four
+/// C4: after one writer, the tracked file carries none of the four
 /// state keys. This says nothing at all about the state file: `c4_state_is`
 /// is the only helper that reads it, and the row calls them in that order.
 fn c4_tracked_is_clean(tracked: &std::path::Path, site: &str) {
@@ -542,7 +542,7 @@ fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_j
     );
 }
 
-/// C4 (#2470): the state file EXISTS and is exactly `expected`, compared
+/// C4: the state file EXISTS and is exactly `expected`, compared
 /// as parsed JSON so the pretty-printing of `publish_pair_side` is never
 /// the subject. `expected` is always a literal written in the row. Absence
 /// is NOT admitted here and no longer reads as JSON `null`:
@@ -554,7 +554,7 @@ fn c4_state_is(state: &std::path::Path, expected: &str, site: &str) {
     assert_eq!(got, want, "{site} state file");
 }
 
-/// C4 (#2470) E13, site 12: the repair rewrites the tracked file and leaves
+/// C4 E13, site 12: the repair rewrites the tracked file and leaves
 /// the state file alone.
 #[test]
 fn c4_site_12_leaves_no_state_key_in_the_tracked_file() {

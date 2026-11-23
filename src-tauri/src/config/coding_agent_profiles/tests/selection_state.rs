@@ -162,7 +162,7 @@ fn issue_1937_selection_state_lock_timeout_is_not_success() {
         .expectation()
         .unwrap();
 
-    // Hold the #1938 sidecar: the guarded call must time out and propagate,
+    // Hold the sidecar: the guarded call must time out and propagate,
     // never translate into AlreadyUnlocked success.
     let sidecar = std::fs::canonicalize(&fixture.replica)
         .unwrap()
@@ -432,11 +432,11 @@ fn issue_1937_selection_state_content_hash_write_does_not_reset_malformed_toolin
 }
 
 // ------------------------------------------------------------------
-// #2010 KEEP with the same locked pair (unchanged, no publish).
+// KEEP with the same locked pair (unchanged, no publish).
 // ------------------------------------------------------------------
 
 // ------------------------------------------------------------------
-// #2816 (C3) - the split writer and the require-existing sites.
+// (C3) - the split writer and the require-existing sites.
 // ------------------------------------------------------------------
 
 /// E3.
@@ -740,7 +740,7 @@ fn issue_2010_wrapper_locked_same_pair_is_no_write() {
     assert_eq!(config_bytes(&fixture.replica), before);
 }
 
-/// #2786 (C1) E8 - `profileContentHash` has no struct field, so it is the
+/// (C1) E8 - `profileContentHash` has no struct field, so it is the
 /// one state key a typed reader cannot route; it must still go state-first.
 #[test]
 fn the_content_hash_reads_through_the_loader() {

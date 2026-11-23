@@ -98,7 +98,7 @@ function setupMenuGuardTransport(fake: FakeTransport, sessions: Session[]): void
 
 // ALWAYS a fresh object. `sessionsStore.setCommunication` writes through
 // a Solid store, which merges key by key when both the old and the new value are
-// objects, so a reused fixture can leave a stale key behind (issue 1863).
+// objects, so a reused fixture can leave a stale key behind.
 function blockedMenu(message = menuMessage, at = updatedAt): SessionCommunication {
   return {
     kind: "blockedMenu",

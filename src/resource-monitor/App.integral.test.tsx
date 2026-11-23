@@ -1034,7 +1034,7 @@ describe("#2245 Resource Monitor integral view", () => {
         must(rendered.root, "resourceMonitor.summary.processCount").textContent
       ).toContain(String(expected));
 
-      // Pins the tile order that #2246 documents in prose.
+      // Pins the tile order that the plan documents in prose.
       const tiles = Array.from(
         must(rendered.root, "resourceMonitor.summary").querySelectorAll(".rm-status-tile")
       ).map((el) => el.getAttribute("data-ac-testid"));

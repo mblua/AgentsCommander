@@ -1,6 +1,6 @@
 //! Tests for Agent Matrix/replica layout invariants, the preflight-rename
 //! `delete_workgroup` helper added in the #113 follow-up dispatch, plus
-//! the #107 helper `parse_task_title`.
+//! the helper `parse_task_title`.
 
 use super::agent_delete_plan::{
     collect_agent_delete_plan, collect_agent_delete_plan_guarded,
@@ -245,7 +245,7 @@ fn replica_config(replica_dir: &Path) -> serde_json::Value {
     .expect("parse config")
 }
 
-/// #2816 (C3) - the state file beside the replica's `config.json`.
+/// (C3) - the state file beside the replica's `config.json`.
 fn replica_state(replica_dir: &Path) -> serde_json::Value {
     serde_json::from_str(
         &std::fs::read_to_string(
@@ -352,7 +352,7 @@ async fn run_agent_delete_for_test(
     .await
 }
 
-/// Drive the #1063 blocking Agent Matrix delete transaction from an async test:
+/// Drive the blocking Agent Matrix delete transaction from an async test:
 /// async preflight/prepare, then the synchronous transaction on a blocking
 /// thread with an injectable activation token, lock-order barrier, and settings
 /// saver.
@@ -415,7 +415,7 @@ fn touch_dir(root: &Path, name: &str) {
     std::fs::create_dir(root.join(name)).unwrap_or_else(|e| panic!("create_dir {name}: {e}"));
 }
 
-/// C4 (#2470): the seeded state file of every row that seeds one. All four
+/// C4: the seeded state file of every row that seeds one. All four
 /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
 #[rustfmt::skip]
 const C4_SEEDED_STATE: &str = concat!(
@@ -425,12 +425,12 @@ const C4_SEEDED_STATE: &str = concat!(
     r#""lastAgentMessageAt","profileContentHash"]}}"#,
 );
 
-/// C4 (#2470): the state file beside a tracked `config.json`.
+/// C4: the state file beside a tracked `config.json`.
 fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {
     tracked.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
 }
 
-/// C4 (#2470): after one writer, the tracked file carries none of the four
+/// C4: after one writer, the tracked file carries none of the four
 /// state keys. This says nothing at all about the state file: `c4_state_is`
 /// is the only helper that reads it, and the row calls them in that order.
 fn c4_tracked_is_clean(tracked: &std::path::Path, site: &str) {
@@ -450,7 +450,7 @@ fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_j
     );
 }
 
-/// C4 (#2470): the state file EXISTS and is exactly `expected`, compared
+/// C4: the state file EXISTS and is exactly `expected`, compared
 /// as parsed JSON so the pretty-printing of `publish_pair_side` is never
 /// the subject. `expected` is always a literal written in the row. Absence
 /// is NOT admitted here and no longer reads as JSON `null`:

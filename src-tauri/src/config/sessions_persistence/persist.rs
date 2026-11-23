@@ -89,7 +89,7 @@ pub(crate) async fn purge_sessions_outside_project_paths_in_dir(
     Ok(filtered)
 }
 
-/// #698 HIGH fix: the lock-holding core shared by both live purge callers:
+/// HIGH fix: the lock-holding core shared by both live purge callers:
 /// `commands::config::purge_sessions_after_settings_update_in_dir` (settings
 /// update path) and `load_sessions_purging_outside_project_paths` (startup
 /// restore path).
@@ -211,7 +211,7 @@ pub(super) async fn persist_merging_failed_to_dir_for_project_paths_result_core(
     let mut snapshot = snapshot_sessions(mgr).await;
     // §224 — strip stale runtime fields (`id`, `status`, `waiting_for_input`,
     // `created_at`) from failed-recoverable entries (`communication` is kept,
-    // #747, see `sanitize_failed_recoverable`). Without this, the prior
+    // see `sanitize_failed_recoverable`). Without this, the prior
     // run's runtime fields travel into the new snapshot, and `list-sessions`
     // reports a session as alive (its `s.id.is_some()` filter passes) while
     // the in-memory `SessionManager` does not contain it. `close-session`
@@ -797,7 +797,7 @@ pub(super) fn same_protection_set(a: &[CarrierProtection], b: &[CarrierProtectio
 ///
 /// CONTRACT: the caller MUST already hold `sessions_save_lock()`. This is the
 /// lock-free body shared by `persist_current_state_to_dir_for_project_paths_result`
-/// and the #698 atomic mutate-then-persist helpers
+/// and the atomic mutate-then-persist helpers
 /// (`raise_hand_and_persist_*`, `clear_user_input_transitions_and_persist_*`),
 /// which take that lock once and run a `SessionManager` mutation plus this save
 /// under it. Splitting it out keeps those helpers from re-acquiring the tokio
@@ -805,7 +805,7 @@ pub(super) fn same_protection_set(a: &[CarrierProtection], b: &[CarrierProtectio
 ///
 /// §1295: the body is the same prepare + handle + save as the hot path; its
 /// in-lock prepare is the rare, documented bounded stall (S2's allowed branch)
-/// for the #698 atomic helpers.
+/// for the atomic helpers.
 pub(super) async fn snapshot_and_save_locked(
     mgr: &SessionManager,
     dir: &Path,

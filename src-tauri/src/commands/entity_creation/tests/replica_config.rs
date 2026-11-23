@@ -96,7 +96,7 @@ fn issue_1937_creation_existing_config_skips_reading_the_default() {
     assert_eq!(saved["identity"], "../../_agent_tech-lead");
 }
 
-/// #2816 (C3) E3b, site 7.
+/// (C3) E3b, site 7.
 #[test]
 fn an_absent_config_still_refuses_and_creates_nothing() {
     let fixture = replica_creation_fixture();
@@ -119,7 +119,7 @@ fn an_absent_config_still_refuses_and_creates_nothing() {
     );
 }
 
-/// #2816 (C3) E4, site 5, through its nearest reachable caller.
+/// (C3) E4, site 5, through its nearest reachable caller.
 #[test]
 fn matrix_creation_writes_the_decisions_file_and_no_state_file() {
     let tmp = tempfile::tempdir().expect("tempdir");

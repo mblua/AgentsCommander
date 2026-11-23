@@ -1,6 +1,6 @@
 use super::*;
 
-/// #2786 (C1) E7 - seed `config.json` and the state file in a fresh dir.
+/// (C1) E7 - seed `config.json` and the state file in a fresh dir.
 fn loader_fixture(
     decisions: Option<serde_json::Value>,
     state: Option<serde_json::Value>,
@@ -148,7 +148,7 @@ fn the_loader_is_key_wise_and_marker_aware() {
     }
 }
 
-/// #2786 (C1) - a duplicate known field is still a typed rejection, as it
+/// (C1) - a duplicate known field is still a typed rejection, as it
 /// was for the direct typed readers: parsing through `Value` must not
 /// collapse it to the last value. A state file with one is ignored.
 #[test]
@@ -180,7 +180,7 @@ fn the_typed_loader_rejects_duplicate_known_fields() {
     );
 }
 
-/// #2786 C1 E7e: the raw wrapper filters the STATE file through the typed
+/// C1 E7e: the raw wrapper filters the STATE file through the typed
 /// parse and leaves `config.json` on its base `Value` semantics.
 #[test]
 fn the_raw_loader_filters_the_state_file_but_not_the_tracked_file() {

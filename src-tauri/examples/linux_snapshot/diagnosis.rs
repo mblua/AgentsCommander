@@ -1,4 +1,4 @@
-// #4248 AC-4248-008 timeout diagnosis: the page probe and frame scripts, the
+// AC-4248-008 timeout diagnosis: the page probe and frame scripts, the
 // per-view title log, the hypothesis classifier and the link-break reader.
 // Pure: it imports no GTK and no crate module.
 use chrono::Utc;

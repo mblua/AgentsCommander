@@ -874,7 +874,7 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
     try {
       // The flyout is a sibling <Portal>, NOT a descendant of the menu, so the
       // pointer crossing the 4px gap into it fires the MENU's own mouseleave.
-      // #977 arms a menu close there; the flyout's mouseenter must cancel it,
+      // The menu guard arms a menu close there; the flyout's mouseenter must cancel it,
       // or the submenu would be unreachable.
       mouseLeave(repoEntries()[0]);
       mouseLeave(menu()!);

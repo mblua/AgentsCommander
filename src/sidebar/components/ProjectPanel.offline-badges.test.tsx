@@ -157,7 +157,7 @@ describe("ProjectPanel offline Coding Agent + Profile badges (#733)", () => {
   });
 
   it("shows the AUTO-CLOSED pill together with the persisted Coding Agent + Profile badges", async () => {
-    // Auto-closed coordinators are DESTROYED (no live session), so before #733
+    // Auto-closed coordinators are DESTROYED (no live session), so before the fix
     // their agent/profile badges vanished with the session. The pill and the
     // persisted badges must now coexist.
     const rendered = await mount(

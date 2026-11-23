@@ -178,7 +178,7 @@ fn register_dedups_prior_terminated_row_for_same_identity() {
     assert_eq!(snap.groups[0].state, ResourceGroupState::Running);
 }
 
-// (c2) #566 - two different projects running the same wg/role must NOT dedup
+// (c2) Two different projects running the same wg/role must NOT dedup
 // against each other's Terminated row (the dedup predicate gained `project`).
 // Regression guard: reverting the `g.project == project` clause makes this
 // assert len == 1 instead of 2.
