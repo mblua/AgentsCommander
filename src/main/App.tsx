@@ -1679,9 +1679,8 @@ const MainApp: Component = () => {
       </Show>
       <Show when={quitStatus()}>
         {(status) => (
-          <div
+          <output
             class="quit-status"
-            role="status"
             style={{
               position: "fixed",
               left: "50%",
@@ -1699,7 +1698,7 @@ const MainApp: Component = () => {
             }}
           >
             {quitStatusText(status())}
-          </div>
+          </output>
         )}
       </Show>
       <Show when={quitForceOfferVisible()}>

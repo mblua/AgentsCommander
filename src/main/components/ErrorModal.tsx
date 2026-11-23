@@ -13,7 +13,7 @@ function formatEntry(e: ErrorLogEntry): string {
 
 const ErrorModal: Component = () => {
   const [copied, setCopied] = createSignal(false);
-  let messageRef: HTMLDivElement | undefined;
+  let messageRef: HTMLElement | undefined;
   let copyBtnRef: HTMLButtonElement | undefined;
   let dismissBtnRef: HTMLButtonElement | undefined;
   let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -223,16 +223,15 @@ const ErrorModal: Component = () => {
               <span>{currentEntry()?.timestamp}</span>
               <span>{currentEntry()?.target}</span>
             </div>
-            <div
+            <section
               id="error-modal-message"
               class="error-modal-message"
               ref={messageRef}
               tabindex="0"
-              role="region"
               aria-label="Error detail"
             >
               {currentEntry()?.message}
-            </div>
+            </section>
             <div class="error-mute-field">
               <label class="settings-checkbox-field">
                 <input
