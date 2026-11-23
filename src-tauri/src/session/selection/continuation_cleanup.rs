@@ -24,7 +24,8 @@ use super::envelope::FinalizedOwnedCarryCapability;
 use super::replacement::{
     LifecycleEffectGuard, LifecycleEffectSlot, OwnedEffectState, OwnedLaunchReceipt,
     OwnedReplacementContinuation, OwnedReplacementDescriptor, PendingCleanupEvidence,
-    ReplacementCleanupAuthority, ReplacementStage, SourceExecutorObservation,
+    PendingSourceRefusal, ReplacementCleanupAuthority, ReplacementStage, RollbackRow,
+    SourceExecutorObservation,
 };
 use super::SelectionCoordinator;
 
@@ -350,27 +351,95 @@ impl OwnedReplacementContinuation {
         false
     }
 
-    /// The transport supplies only an actually observed submit/terminal or
-    /// conditional source-handoff Result, never byte acquisition or expiry.
+    pub(crate) fn record_pending_source_refusal(&self, binding: PendingCreateBinding, token: Uuid) {
+        #[cfg(test)]
+        if self.fixture_suppresses_pending_receipt() {
+            return;
+        }
+        let Ok(mut state) = self.owner.state.lock() else {
+            return;
+        };
+        if state.executor_nonce != self.executor_nonce
+            || state.stage != ReplacementStage::PendingCreate
+        {
+            return;
+        }
+        if let Some(progress) = state.replacement.as_mut() {
+            if progress.binding == binding
+                && progress.cleanup == ReplacementCleanupAuthority::Executor(self.executor_nonce)
+                && progress.source_executor == SourceExecutorObservation::Active
+                && progress.source_stop.is_some()
+            {
+                progress.pending_source_refusal = Some(PendingSourceRefusal {
+                    token,
+                    returned_to_wake: false,
+                });
+            }
+        }
+    }
+
+    pub(crate) fn relay_pending_source_refusal(&self) {
+        if let Ok(mut state) = self.owner.state.lock() {
+            if state.executor_nonce == self.executor_nonce {
+                if let Some(refusal) = state
+                    .replacement
+                    .as_mut()
+                    .and_then(|progress| progress.pending_source_refusal.as_mut())
+                {
+                    refusal.returned_to_wake = true;
+                }
+            }
+        }
+    }
+
     pub(crate) fn precommit_rollback_completed(&self) -> bool {
         self.owner.state.lock().is_ok_and(|state| {
             state.executor_nonce == self.executor_nonce
-                && matches!(state.completion, Some(Err(_)))
                 && state.replacement.as_ref().is_some_and(|progress| {
-                    progress.create_failed
-                        && progress.rollback_completed
-                        && progress.preparing_released
-                        && progress.committed.is_none()
+                    progress.precommit_rollback_verified(matches!(state.completion, Some(Err(_))))
                 })
         })
     }
 
-    /// Called after the producer receives the real failed create result and
-    /// observes its existing source handoff, with lexical target guards gone.
-    pub(crate) async fn finish_rolled_back_work(
+    pub(crate) async fn settle_wake_precommit(
         &self,
         manager: &SessionManager,
         pty: &Arc<Mutex<PtyManager>>,
+        actual_error: Option<&str>,
+    ) {
+        let released = self.owner.state.lock().is_ok_and(|state| {
+            state.executor_nonce == self.executor_nonce
+                && state.replacement.as_ref().is_some_and(|progress| {
+                    matches!(
+                        progress.source_executor,
+                        SourceExecutorObservation::Stopped
+                            | SourceExecutorObservation::Returned { .. }
+                    )
+                })
+        });
+        if !released {
+            return;
+        }
+        if !self.precommit_rollback_completed() {
+            let evidence = actual_error.map_or(
+                PendingCleanupEvidence::WakeHandoff,
+                PendingCleanupEvidence::ActualSetupFailure,
+            );
+            if !self.progress_pending_rollback(manager, pty, evidence).await {
+                return;
+            }
+        }
+        if let Some(effect) = self.start_effect(LifecycleEffectSlot::WorkTransfer) {
+            effect.complete(Ok(None));
+        }
+        self.finish_rollback_terminal().await;
+    }
+
+    /// The PTY source supplies its existing observed handoff receipt.
+    pub(crate) async fn finish_rolled_back_work(
+        &self,
+        _manager: &SessionManager,
+        _pty: &Arc<Mutex<PtyManager>>,
         effect: LifecycleEffectGuard,
         observed: bool,
     ) -> bool {
@@ -379,76 +448,52 @@ impl OwnedReplacementContinuation {
             return false;
         }
         effect.complete(Ok(None));
-        let released = self.reservation_release_is_observed(pty);
-        if !released {
-            return false;
-        }
-        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let captured = self.owner.state.lock().ok().and_then(|state| {
-            let progress = state.replacement.as_ref()?;
-            if state.executor_nonce != self.executor_nonce
-                || !matches!(
-                    state.stage,
-                    ReplacementStage::Admitted | ReplacementStage::PendingCreate
+        self.finish_rollback_terminal().await
+    }
+
+    async fn finish_rollback_terminal(&self) -> bool {
+        let verified = self.owner.state.lock().is_ok_and(|mut state| {
+            if state.executor_nonce != self.executor_nonce {
+                return false;
+            }
+            if state.replacement_terminal_is_verified() {
+                return state.stage == ReplacementStage::RolledBack;
+            }
+            if !matches!(
+                state.stage,
+                ReplacementStage::Admitted | ReplacementStage::PendingCreate
+            ) || !matches!(
+                state.effects[LifecycleEffectSlot::WorkTransfer as usize],
+                OwnedEffectState::Completed { outcome: Ok(_), .. }
+            ) || !state.effects.iter().all(|effect| {
+                matches!(
+                    effect,
+                    OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }
                 )
-                || !progress.rollback_completed
-                || !progress.preparing_released
+            }) {
+                return false;
+            }
+            let actual_err = matches!(state.completion, Some(Err(_)));
+            let Some(progress) = state.replacement.as_mut() else {
+                return false;
+            };
+            if !progress.precommit_rollback_verified(actual_err)
                 || progress.create_reservation.is_some()
                 || progress.work_reservation.is_some()
                 || !matches!(
                     progress.context_prerequisite,
                     None | Some(OwnedEffectState::Completed { .. })
                 )
-                || !state.effects.iter().all(|effect| {
-                    matches!(
-                        effect,
-                        OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }
-                    )
-                })
             {
-                return None;
-            }
-            Some((progress.previous_carrier.clone(), progress.binding))
-        });
-        let Some((previous, binding)) = captured else {
-            return false;
-        };
-        let current = manager
-            .with_current_carrier_snapshot(&permit, |current| {
-                !current
-                    .rows
-                    .iter()
-                    .any(|row| row.id == binding.session_id())
-                    && crate::config::sessions_persistence::current_protected_carrier(
-                        &permit, &previous, current,
-                    )
-                    .is_some()
-                    && pty.try_lock().is_ok_and(|pty| {
-                        !pty.has_session(binding.session_id())
-                            && pty.backend_kind(binding.session_id()).is_none()
-                            && pty
-                                .response_close_state()
-                                .generation(binding.session_id())
-                                .is_none()
-                    })
-            })
-            .await;
-        if !current {
-            return false;
-        }
-        let verified = self.owner.state.lock().is_ok_and(|mut state| {
-            let Some(progress) = state.replacement.as_mut() else {
                 return false;
-            };
+            }
             progress.work_transferred = true;
-            progress.reservations_released = true;
             progress.terminal_verified = true;
             state.publication_observed = true;
             state.envelope_released = true;
             state.stage = ReplacementStage::RolledBack;
             true
         });
-        drop(permit);
         if verified {
             #[cfg(test)]
             if !self
@@ -581,7 +626,7 @@ impl OwnedReplacementContinuation {
         pty: &Arc<Mutex<PtyManager>>,
         error: &str,
     ) -> bool {
-        self.claim_and_cleanup_pending(
+        self.progress_pending_rollback(
             manager,
             pty,
             PendingCleanupEvidence::ActualSetupFailure(error),
@@ -594,7 +639,7 @@ impl OwnedReplacementContinuation {
         manager: &SessionManager,
         pty: &Arc<Mutex<PtyManager>>,
     ) -> bool {
-        self.claim_and_cleanup_pending(
+        self.progress_pending_rollback(
             manager,
             pty,
             PendingCleanupEvidence::ObservedSourceStoppedOrReturnedFailure,
@@ -636,166 +681,11 @@ impl OwnedReplacementContinuation {
             )
     }
 
-    // The caller holds U; this decision holds only the owner lock and never awaits.
-    pub(super) fn claim_pending_cleanup_state(
-        &self,
-        pending_exists: bool,
-        launch_generation: Option<u64>,
-        cleanup_nonce: Uuid,
-        evidence: PendingCleanupEvidence<'_>,
-    ) -> Option<crate::config::sessions_persistence::PublishedCarrier> {
-        self.owner.state.lock().ok().and_then(|mut state| {
-            if state.executor_nonce != self.executor_nonce
-                || !matches!(
-                    state.stage,
-                    ReplacementStage::Admitted | ReplacementStage::PendingCreate
-                )
-                || state.effects.iter().any(|effect| {
-                    matches!(
-                        effect,
-                        OwnedEffectState::Running(_) | OwnedEffectState::Ambiguous(_)
-                    )
-                })
-            {
-                return None;
-            }
-            let stage = state.stage;
-            let progress = state.replacement.as_mut()?;
-            let stopped = matches!(
-                progress.source_executor,
-                SourceExecutorObservation::Stopped
-                    | SourceExecutorObservation::Returned { failed: true }
-            );
-            if matches!(
-                evidence,
-                PendingCleanupEvidence::ObservedSourceStoppedOrReturnedFailure
-            ) && (!stopped || stage != ReplacementStage::PendingCreate)
-            {
-                return None;
-            }
-            if progress.cleanup != ReplacementCleanupAuthority::Executor(self.executor_nonce)
-                || progress.initial_b.is_some()
-                || progress.committed.is_some()
-                || progress.pending_carrier.is_some()
-                || progress.launch.as_ref().map(|launch| launch.generation) != launch_generation
-                || (stage == ReplacementStage::PendingCreate && !pending_exists)
-            {
-                return None;
-            }
-            progress.create_failed = true;
-            progress.cleanup = ReplacementCleanupAuthority::Claimed(cleanup_nonce);
-            let carrier = progress.previous_carrier.clone();
-            if let PendingCleanupEvidence::ActualSetupFailure(error) = evidence {
-                state.completion = Some(Err(error.to_owned()));
-            }
-            Some(carrier)
-        })
-    }
-
-    pub(super) async fn claim_and_cleanup_pending(
-        &self,
-        manager: &SessionManager,
-        pty: &Arc<Mutex<PtyManager>>,
-        evidence: PendingCleanupEvidence<'_>,
-    ) -> bool {
-        let Some(binding) = self.binding() else {
-            return false;
-        };
-        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let pending = manager.get_pending_session(binding).await;
-        let launch = match self.owner.state.lock() {
-            Ok(state) => state
-                .replacement
-                .as_ref()
-                .and_then(|progress| progress.launch.clone()),
-            Err(_) => return false,
-        };
-        if let Some(launch) = launch.as_ref() {
-            if !pending
-                .as_ref()
-                .is_some_and(|row| row.token == launch.token && row.backend_kind == launch.backend)
-            {
-                return false;
-            }
+    fn exact_rollback_row(row: &crate::session::session::Session) -> RollbackRow {
+        RollbackRow::ExactRemoval {
+            token: row.token,
+            backend: row.backend_kind,
         }
-        let runtime_matches = pty
-            .try_lock()
-            .is_ok_and(|pty| self.pending_cleanup_runtime_matches(binding, launch.as_ref(), &pty));
-        if !runtime_matches {
-            return false;
-        }
-        let cleanup_nonce = Uuid::new_v4();
-        let claim = self.claim_pending_cleanup_state(
-            pending.is_some(),
-            launch.as_ref().map(|launch| launch.generation),
-            cleanup_nonce,
-            evidence,
-        );
-        drop(permit);
-        let Some(carrier) = claim else {
-            return false;
-        };
-        let Some(effect) = self.start_effect(LifecycleEffectSlot::PendingRollback) else {
-            return false;
-        };
-        let killed = self.kill_pending_runtime(binding, pending.as_ref(), launch.as_ref(), pty);
-        if let Err(error) = killed {
-            effect.complete(Err(error));
-            return false;
-        }
-        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-        let claimed = self.pending_cleanup_is_claimed(cleanup_nonce);
-        if !claimed {
-            return false;
-        }
-        let runtime_absent = self.pending_cleanup_runtime_absent(binding, pty);
-        if !runtime_absent {
-            effect.complete(Err(
-                "replacement pending runtime changed after cleanup".into()
-            ));
-            return false;
-        }
-        if let Err(error) = manager
-            .rollback_pending_create_with_carrier_permit(&permit, binding)
-            .await
-        {
-            effect.complete(Err(error));
-            return false;
-        }
-        let released = manager
-            .with_current_carrier_snapshot(&permit, |current| {
-                crate::config::sessions_persistence::abort_owned_carrier_replacement(
-                    &permit,
-                    &carrier,
-                    self.owner.operation,
-                    binding.session_id(),
-                    current,
-                )
-            })
-            .await;
-        if !released {
-            effect.complete(Err(
-                "replacement Preparing rollback requires reconciliation".into(),
-            ));
-            return false;
-        }
-        let reservations = self.owner.state.lock().ok().and_then(|mut state| {
-            let progress = state.replacement.as_mut()?;
-            progress.preparing_released = true;
-            Some((
-                progress.create_reservation.take(),
-                progress.work_reservation.take(),
-            ))
-        });
-        drop(permit);
-        drop(reservations);
-        effect.complete(Ok(None));
-        if let Ok(mut state) = self.owner.state.lock() {
-            if let Some(progress) = state.replacement.as_mut() {
-                progress.rollback_completed = true;
-            }
-        }
-        true
     }
 
     pub(crate) fn start_effect(&self, slot: LifecycleEffectSlot) -> Option<LifecycleEffectGuard> {
@@ -804,8 +694,7 @@ impl OwnedReplacementContinuation {
         let cleanup_allows = match progress.cleanup {
             ReplacementCleanupAuthority::Executor(nonce) => nonce == self.executor_nonce,
             ReplacementCleanupAuthority::Claimed(_) => {
-                (slot == LifecycleEffectSlot::PendingRollback && !progress.rollback_completed)
-                    || (slot == LifecycleEffectSlot::WorkTransfer && progress.rollback_completed)
+                slot == LifecycleEffectSlot::WorkTransfer && progress.rollback_completed
             }
             ReplacementCleanupAuthority::Disarmed => !matches!(
                 slot,
@@ -873,29 +762,6 @@ impl OwnedReplacementContinuation {
         }) {
             Some(ReplacementFixtureAction::PublicationLeaf(kind)) => Some(kind),
             _ => None,
-        }
-    }
-
-    fn kill_pending_runtime(
-        &self,
-        binding: PendingCreateBinding,
-        pending: Option<&crate::session::session::Session>,
-        launch: Option<&OwnedLaunchReceipt>,
-        pty: &Arc<Mutex<PtyManager>>,
-    ) -> Result<(), String> {
-        match pty.try_lock() {
-            Ok(pty) => match pty.backend_kind(binding.session_id()) {
-                Some(kind)
-                    if pending.is_some_and(|row| row.backend_kind == kind)
-                        && self.pending_cleanup_runtime_matches(binding, launch, &pty) =>
-                {
-                    pty.kill_for_kind(binding.session_id(), kind)
-                        .map_err(|error| error.to_string())
-                }
-                None if self.pending_cleanup_runtime_matches(binding, launch, &pty) => Ok(()),
-                _ => Err("replacement pending runtime identity changed".into()),
-            },
-            Err(_) => Err("replacement pending runtime unavailable".into()),
         }
     }
 

@@ -330,8 +330,9 @@ impl SelectionCoordinator {
             retirement_result: None,
             retirement_cleanup_completed: false,
             preparing_released: false,
-            create_failed: false,
             rollback_completed: false,
+            rollback: None,
+            pending_source_refusal: None,
             create_reservation: None,
             work_reservation: None,
             tracker: None,
@@ -476,6 +477,84 @@ impl SelectionCoordinator {
             prepared,
             Some(source),
         )
+    }
+
+    pub(crate) async fn recover_wake_precommit(
+        &self,
+        target: &str,
+        previous: Uuid,
+        cwd: &crate::session::manager::CarrierPhysicalIdentity,
+        replica: &crate::session::manager::CarrierPhysicalIdentity,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) {
+        let matches_path =
+            |expected: &crate::session::manager::CarrierPhysicalIdentity,
+             observed: &crate::session::manager::CarrierPhysicalIdentity| {
+                expected.canonical_path() == observed.canonical_path()
+                    && expected.same_object(observed)
+            };
+        let candidates = {
+            let Ok(root) = self.inner.retained_replacements.lock() else {
+                return;
+            };
+            if root.sealed || root.unavailable {
+                return;
+            }
+            root.entries
+                .values()
+                .filter(|owner| match &owner.descriptor {
+                    OwnedReplacementDescriptor::Replacement(d) => {
+                        d.target == target
+                            && d.previous.id == previous
+                            && matches_path(&d.cwd_identity, cwd)
+                            && d.replica_identity
+                                .as_ref()
+                                .is_some_and(|expected| matches_path(expected, replica))
+                    }
+                    _ => false,
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let mut candidate = None;
+        for owner in candidates {
+            let Ok(state) = owner.state.lock() else {
+                return;
+            };
+            let terminal = state.replacement_terminal_is_verified();
+            let executor_nonce = state.executor_nonce;
+            drop(state);
+            if terminal {
+                self.remove_terminal_entry(&owner);
+                continue;
+            }
+            if candidate.replace((owner, executor_nonce)).is_some() {
+                return;
+            }
+        }
+        if let Some((owner, executor_nonce)) = candidate {
+            OwnedReplacementContinuation {
+                owner,
+                coordinator: Arc::downgrade(&self.inner),
+                executor_nonce,
+                source_validation: None,
+                #[cfg(test)]
+                fixture: None,
+            }
+            .settle_wake_precommit(manager, pty, None)
+            .await;
+        }
+    }
+
+    pub(super) fn owns_rollback_entry(&self, owner: &Arc<ReplacementOwner>) -> bool {
+        self.inner.retained_replacements.lock().is_ok_and(|root| {
+            !root.unavailable
+                && root
+                    .entries
+                    .get(&owner.operation)
+                    .is_some_and(|entry| Arc::ptr_eq(entry, owner))
+        })
     }
 
     #[cfg(test)]

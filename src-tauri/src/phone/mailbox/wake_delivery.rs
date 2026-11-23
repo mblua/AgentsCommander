@@ -147,18 +147,9 @@ async fn owned_peer_completion(
             .fixture_reached(crate::session::selection::ReplacementFixtureCut::SourceRetainedReturn)
             .await;
     }
-    // The existing result channel has returned the real legacy Err to the
-    // source-owning caller. The completed core has released its target
-    // guards; the original full message remains with this caller.
-    if result.is_err() && completion.precommit_rollback_completed() {
-        if let Some(effect) =
-            completion.start_effect(crate::session::selection::LifecycleEffectSlot::WorkTransfer)
-        {
-            completion
-                .finish_rolled_back_work(manager, pty, effect, true)
-                .await;
-        }
-    }
+    completion
+        .settle_wake_precommit(manager, pty, result.as_ref().err().map(String::as_str))
+        .await;
     result
 }
 
@@ -727,6 +718,7 @@ impl MailboxPoller {
             crate::config::config_dir().ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
         let (physical, replica) = owned_replacement_directories(request)?;
         let work = owned_replacement_work(msg)?;
+        let mut probe_rollback = true;
         let mut prepared = None;
         let mut source = SourceExecutorGuard::unbound();
         loop {
@@ -736,6 +728,18 @@ impl MailboxPoller {
                 .await
             {
                 return Err("Wake source authority changed before replacement".into());
+            }
+            if std::mem::take(&mut probe_rollback) {
+                coordinator
+                    .recover_wake_precommit(
+                        &msg.to,
+                        previous_id,
+                        &physical.clone().into(),
+                        &replica.clone().into(),
+                        &manager,
+                        &pty,
+                    )
+                    .await;
             }
             let stripe = gate
                 .acquire_target_lock(&msg.to)

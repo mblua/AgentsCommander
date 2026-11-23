@@ -250,6 +250,8 @@ impl MailboxPoller {
             return retained("fixture_core_entered", None);
         }
         let manager = app.pty_sessions().read().await.clone();
+        #[cfg(test)]
+        let continuation = &continuation.fixture_source_validator(|p| &p.refuse_precreate_source);
         if !continuation.validate_source().await {
             return end_before_publish(continuation, &manager, pty, "source_invalid").await;
         }
@@ -279,6 +281,7 @@ impl MailboxPoller {
         };
 
         if let crate::session::create_contracts::OwnedReplacementCreateStep::Retained = created? {
+            continuation.relay_pending_source_refusal();
             return retained("create_retained", None);
         }
         let Some((info, id, effect)) =

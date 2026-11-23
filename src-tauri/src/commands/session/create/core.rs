@@ -525,7 +525,10 @@ pub(crate) async fn prepare_metadata<R: tauri::Runtime>(
     .await?;
     drop(carrier_u1);
     if let Some(continuation) = ctx.owned_replacement {
+        #[cfg(test)]
+        let continuation = &continuation.fixture_source_validator(|p| &p.refuse_pending_source);
         if !continuation.validate_source().await {
+            continuation.record_pending_source_refusal(pending_binding, session.token);
             release_resource_launch_permit(resource_monitor, resource_permit);
             return Ok(CreateCompletion::Retained);
         }

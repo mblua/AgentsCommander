@@ -262,8 +262,9 @@ pub(super) struct ReplacementProgress {
     pub(super) retirement_result: Option<CommitResult>,
     pub(super) retirement_cleanup_completed: bool,
     pub(super) preparing_released: bool,
-    pub(super) create_failed: bool,
     pub(super) rollback_completed: bool,
+    pub(super) rollback: Option<PendingRollback>,
+    pub(super) pending_source_refusal: Option<PendingSourceRefusal>,
     pub(super) create_reservation: Option<crate::pty::manager::CreateOwnerReservation>,
     pub(super) work_reservation: Option<crate::pty::manager::WorkDeliveryReservation>,
     pub(super) tracker: Option<crate::pty::manager::ResponseCloseState>,
@@ -371,6 +372,66 @@ impl Drop for SourceExecutorGuard {
 pub(super) enum PendingCleanupEvidence<'a> {
     ActualSetupFailure(&'a str),
     ObservedSourceStoppedOrReturnedFailure,
+    WakeHandoff,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RollbackCause {
+    ActualSetupFailure,
+    AdmittedStopped,
+    PendingSourceRefusedBeforeSubmit,
+    ShutdownStopped,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RollbackCursor {
+    ClaimedBeforeSubmit,
+    CloseSubmitted,
+    RuntimeAbsent,
+    RowAbsent,
+    PreparingReleased,
+    Completed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RollbackRow {
+    InitialNoRow,
+    ExactRemoval {
+        token: Uuid,
+        backend: crate::pty::backend::SessionBackendKind,
+    },
+}
+
+pub(super) struct PendingSourceRefusal {
+    pub(super) token: Uuid,
+    pub(super) returned_to_wake: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PendingRollback {
+    pub(super) attempt: Uuid,
+    pub(super) cause: RollbackCause,
+    pub(super) cursor: RollbackCursor,
+    pub(super) row: RollbackRow,
+    pub(super) in_flight: bool,
+}
+
+impl ReplacementProgress {
+    pub(super) fn precommit_rollback_verified(&self, actual_err: bool) -> bool {
+        self.rollback_completed
+            && self.preparing_released
+            && self.reservations_released
+            && self.committed.is_none()
+            && self.rollback.is_some_and(|rollback| {
+                rollback.cursor == RollbackCursor::Completed
+                    && match rollback.cause {
+                        RollbackCause::ActualSetupFailure => actual_err,
+                        RollbackCause::AdmittedStopped
+                        | RollbackCause::PendingSourceRefusedBeforeSubmit => true,
+                        RollbackCause::ShutdownStopped => false,
+                    }
+            })
+    }
 }
 
 /// A transient handle to the same data-only owner retained by `CoordinatorInner`.
@@ -668,9 +729,7 @@ impl ReplacementState {
                 progress.retired && progress.retirement_cleanup_completed
             }
             ReplacementStage::RolledBack => {
-                progress.rollback_completed
-                    && progress.committed.is_none()
-                    && matches!(self.completion, Some(Err(_)))
+                progress.precommit_rollback_verified(matches!(self.completion, Some(Err(_))))
             }
             _ => false,
         }
