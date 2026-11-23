@@ -1,6 +1,6 @@
 use super::*;
 
-// ── #621 workgroup-delete clock + cache cleanup (integration) ──
+// ── workgroup-delete clock + cache cleanup (integration) ──
 
 #[test]
 fn workgroup_removal_clears_clock_key_and_cache_sibling_intact() {
@@ -69,7 +69,7 @@ fn workgroup_removal_clears_clock_key_and_cache_sibling_intact() {
 
 #[test]
 fn team_cascade_clears_each_wg_clock_keeps_others() {
-    // (#621 LOW-3b) delete_team loops its wg-N-<team> dirs; each removal drops that
+    // delete_team loops its wg-N-<team> dirs; each removal drops that
     // wg's keys. A non-team wg and an origin agent survive. Mirrors the §3.3 loop's
     // per-wg `remove_workgroup` over multiple wgs (accumulator semantics).
     use crate::config::coordinator_clocks::CoordinatorClocks;
@@ -109,7 +109,7 @@ fn team_cascade_clears_each_wg_clock_keeps_others() {
 
 #[test]
 fn failed_wg_delete_keeps_clock_key() {
-    // (#621 LOW-3c) the clock cleanup is gated on a SUCCESSFUL dir delete (delete_workgroup
+    // The clock cleanup is gated on a SUCCESSFUL dir delete (delete_workgroup
     // via `?` early-return; delete_team via the `else` success branch). Force a failed
     // remove and assert, applying that exact gate, that the key survives.
     use crate::config::coordinator_clocks::CoordinatorClocks;

@@ -357,7 +357,7 @@ impl CoordinatorClocks {
         std::mem::take(&mut self.dirty)
     }
 
-    /// (#621) Remove every key for one workgroup: all FQNs prefixed
+    /// Remove every key for one workgroup: all FQNs prefixed
     /// `"<project>:<wg>/"`. Returns the number of keys removed; dirties the store
     /// iff any were removed. The prefix is reconstructed exactly from the on-disk
     /// project folder name + workgroup dir name (no hashing), so it is precise and
@@ -477,7 +477,7 @@ pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(),
     Ok(())
 }
 
-/// (#621) GUI-path helper: remove a workgroup's keys from the in-memory store
+/// GUI-path helper: remove a workgroup's keys from the in-memory store
 /// (authoritative for the running app) and persist iff something changed. Returns
 /// keys removed. Used by `delete_workgroup` and `delete_team`.
 pub fn remove_workgroup_in_state(state: &CoordinatorClocksState, project: &str, wg: &str) -> usize {
@@ -513,7 +513,7 @@ pub fn remove_workgroup_on_disk(project: &str, wg: &str) -> Result<usize, String
     Ok(removed)
 }
 
-/// (#621) Conservative startup backstop: drop clock keys whose workgroup dir is
+/// Conservative startup backstop: drop clock keys whose workgroup dir is
 /// CONFIRMED gone on disk, EXCEPT any key that belongs to a persisted session.
 /// Locks `state`, prunes, persists iff anything changed. Never fails startup
 /// (logs on save error). Cleans historical orphans + anything a concurrent/

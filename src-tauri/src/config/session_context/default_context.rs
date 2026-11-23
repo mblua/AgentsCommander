@@ -16,7 +16,7 @@ use std::path::Path;
 /// The fixed heading and intro of the code-owned Root runtime prologue.
 /// Reproduces the preamble of `get_default_agent_template()` for the one agent
 /// that no longer reads any global template.
-/// #979 G4: Root is the agent that creates and coordinates teams and workgroups,
+/// Root is the agent that creates and coordinates teams and workgroups,
 /// so it keeps the Core Concepts prose it receives today through
 /// `get_default_agent_template()`. Byte-identical to that template's section; a
 /// drift test pins the two together. `get_default_agent_template()` is
