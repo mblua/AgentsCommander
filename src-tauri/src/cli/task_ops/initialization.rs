@@ -15,7 +15,7 @@ pub(crate) fn build_task_content(task_title: &str) -> String {
     if task_title.trim().is_empty() {
         return "---\ntitle: 'Clean'\n---\n".to_string();
     }
-    // #738: the workgroup-creation title is a human decision, so store it as
+    // The workgroup-creation title is a human decision, so store it as
     // user-owned (`USER:`). This locks it against coordinator auto-retitle until
     // a Clean resets the task. `user_owned_title` trims and avoids double-prefix.
     let title = super::document::user_owned_title(task_title);

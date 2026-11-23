@@ -1,10 +1,10 @@
-//! Context-history IPC (#3532 P05): the desktop Tauri edge of the report.
+//! Context-history IPC: the desktop Tauri edge of the report.
 //!
 //! Four read-only commands share the report core with the CLI: validate in
 //! memory, check the project against this app's Settings registration and the
 //! live session snapshot, then verify the project and read one retained
 //! snapshot off the async workers. Retention comes from the same Settings
-//! snapshot (#4049), never from a project file. Errors are `{code, message}` without paths.
+//! snapshot, never from a project file. Errors are `{code, message}` without paths.
 //! [`dispatch`] routes the four names so `invoke_handler` does not grow.
 
 use std::path::{Path, PathBuf};
@@ -130,7 +130,7 @@ struct SidebarMeansRequest {
 }
 
 /// One Settings snapshot of a request: the registered spellings of the project,
-/// the app-wide history retention (#4049) and the effective session windows.
+/// the app-wide history retention and the effective session windows.
 struct Registration {
     paths: Vec<PathBuf>,
     retention_days: u32,

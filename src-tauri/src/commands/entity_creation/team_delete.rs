@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
-/// Committed-intent outcome of a team delete's workgroup cascade (#1063).
+/// Committed-intent outcome of a team delete's workgroup cascade.
 pub(super) struct TeamDeleteReport {
     /// Workgroup names whose directory was removed or was already absent at the
     /// explicit delete event: their config scopes are pruned and clocks cleaned.
@@ -30,7 +30,7 @@ pub(super) struct TeamDeleteReport {
 
 /// Scan `base` for the present `room-N-<team>` and legacy `wg-N-<team>`
 /// directories owned by `team_name`. Deleting a team removes both kinds, which
-/// is the only coherent meaning of deleting a team (#1614).
+/// is the only coherent meaning of deleting a team.
 pub(super) fn collect_team_workgroup_dirs(base: &Path, team_name: &str) -> Vec<PathBuf> {
     crate::config::entity_creation::directories::team_room_candidates(base, team_name)
 }
@@ -43,7 +43,7 @@ pub async fn delete_team(
     project_path: String,
     team_name: String,
 ) -> Result<(), String> {
-    // #1065 Stage F: activated with the sole production token; no lock-order test barrier.
+    // Activated with the sole production token; no lock-order test barrier.
     delete_team_inner(
         &app,
         session_mgr.inner(),
@@ -55,10 +55,10 @@ pub async fn delete_team(
     .await
 }
 
-/// GUI team deletion with the #1063 global lock order (plan sections 5.4/6.3).
+/// GUI team deletion with the global lock order (plan sections 5.4/6.3).
 ///
 /// Prompts, dirty checks, and the initial owned workgroup snapshot run outside
-/// both guards. The blocking commit acquires the project gate then the #1056
+/// both guards. The blocking commit acquires the project gate then the
 /// team-config guard, revalidates the team directory under both, deletes it, and
 /// attempts each workgroup while both are held. In the same manifest transaction
 /// it prunes the committed intent (workgroups whose removal succeeded plus those
@@ -100,7 +100,7 @@ where
         ));
     }
 
-    // Blocking commit: project gate then the #1056 team-config guard. Neither
+    // Blocking commit: project gate then the team-config guard. Neither
     // synchronous guard crosses an await.
     let project_root = Path::new(project_path).to_path_buf();
     let team = team_name.to_string();
