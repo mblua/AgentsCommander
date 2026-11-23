@@ -478,7 +478,7 @@ async fn issue_2051_selection_api_replica_lock_missing_fingerprint_is_not_stale(
     .await
     .expect_err("a lock apply without a fingerprint must be refused");
 
-    // #2051 - nothing was sent is a client contract failure, never a
+    // Nothing was sent is a client contract failure, never a
     // target change: the message must not blame a stale preview.
     assert!(error.contains("confirmationMissing"), "{error}");
     assert!(!error.contains("Target selection changed"), "{error}");

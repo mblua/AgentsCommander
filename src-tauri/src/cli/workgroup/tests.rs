@@ -169,7 +169,7 @@ fn activity_ci_index_collapses_conflicting_duplicates_to_unknown() {
     assert_eq!(state_of(&["a:/repo".to_string()], &entries), "unknown");
 }
 
-// --- #2473 filters and CI detail ---
+// --- filters and CI detail ---
 
 fn filter_args() -> WorkgroupActivityArgs {
     WorkgroupActivityArgs {
@@ -816,7 +816,7 @@ fn cli_workgroup_lock_order_inversion_child() {
     );
 }
 
-// #1063: prove the driven project-only lock-order path in-process (no
+// Prove the driven project-only lock-order path in-process (no
 // `current_exe` parent - that machinery is Stage E). Env-guarded and `#[ignore]`
 // so the parallel `--lib` regression is untouched. Like the member driver it
 // no-ops unless `DRIVE_VAR` is set, so a bare `cargo test --lib -- --ignored` run
@@ -881,7 +881,7 @@ fn cli_workgroup_lock_order_inversion_driver() {
     );
 }
 
-/// #1795 `T12`. Drives the real production call site, `create_workgroup_on_disk`,
+/// `T12`. Drives the real production call site, `create_workgroup_on_disk`,
 /// end to end. A test that called `create_room_shared_dir` directly would stay
 /// green with the production call deleted, which is exactly the hole control `C6`
 /// probes.

@@ -683,7 +683,7 @@ fn scrub_with(needle: &str, line: &str) -> String {
 
 #[test]
 fn a_needle_that_starts_with_a_masked_credential_leaves_no_tail_in_clear() {
-    // #4319 D2: masking the redactor shape first split the exact needle, so its tail
+    // D2: masking the redactor shape first split the exact needle, so its tail
     // walked out (`Bearer ***.s3cretSig`).
     let u = "3f1c9d2e-7a4b-4c8d-9e1f-2b3c4d5e6f70";
     let u2 = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
@@ -717,7 +717,7 @@ fn a_needle_that_starts_with_a_masked_credential_leaves_no_tail_in_clear() {
 
 #[test]
 fn a_needle_inside_a_credential_shape_does_not_unmask_the_rest_of_it() {
-    // #4319 D1: masking the needle first broke the redactor's shape match, so the part
+    // D1: masking the needle first broke the redactor's shape match, so the part
     // of the credential that was not the needle walked out.
     let u = "3f1c9d2e-7a4b-4c8d-9e1f-2b3c4d5e6f70";
     let u2 = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
@@ -736,7 +736,7 @@ fn a_needle_inside_a_credential_shape_does_not_unmask_the_rest_of_it() {
 
 #[test]
 fn a_needle_that_is_a_context_word_or_a_whole_credential_still_masks_the_secret() {
-    // #4319 D1 (Grinch): the needle is the context word itself, or the credential with
+    // D1 (Grinch): the needle is the context word itself, or the credential with
     // a tail; neither may hide the secret from the shape pass.
     let u = "3f1c9d2e-7a4b-4c8d-9e1f-2b3c4d5e6f70";
     let out = scrub_with("Bearer", &format!("Authorization: Bearer {u}"));

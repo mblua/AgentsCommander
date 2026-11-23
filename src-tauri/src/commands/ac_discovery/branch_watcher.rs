@@ -83,7 +83,7 @@ impl DiscoveryBranchWatcher {
         })
     }
 
-    /// #1298 - the ONLY way to mutate `replicas`. Owns the lock scope and republishes
+    /// The ONLY way to mutate `replicas`. Owns the lock scope and republishes
     /// the flattened watched repo-path list to the global git sweeper on the way out,
     /// so the map cannot be changed without the sweeper learning about it. The
     /// sweeper is push-fed rather than holding a handle to this watcher so that
@@ -115,7 +115,7 @@ impl DiscoveryBranchWatcher {
                 .flat_map(|e| e.repos.iter().map(|(_, path)| path.clone()))
                 .collect()
         };
-        // #2064 - the room half of the same map, pushed in the same
+        // The room half of the same map, pushed in the same
         // guard-released window: `remote_watcher` needs (repo path, room dir) to
         // route a transition to the room that owns the repo. `room_dir` is the
         // parent of the replica path, so no new filesystem discovery happens.
@@ -299,7 +299,7 @@ impl DiscoveryBranchWatcher {
     }
 
     fn refreshed_repos(&self, entry: &ReplicaBranchEntry) -> Vec<SessionRepo> {
-        // #1298 - pure map reads. This loop no longer spawns `git`: the global
+        // Pure map reads. This loop no longer spawns `git`: the global
         // `GitSweeper` is the only polling producer, and this poll consumes its
         // published snapshot. An unpublished path reads `None`, which is the
         // same "unknown" a failed detection produced before.
@@ -316,10 +316,10 @@ impl DiscoveryBranchWatcher {
             .map(|((label, path), status)| SessionRepo {
                 label: label.clone(),
                 source_path: path.clone(),
-                // #1028 - `branch` keeps its old behaviour exactly: a failed
+                // `branch` keeps its old behaviour exactly: a failed
                 // detection reports `None`, with no hold.
                 branch: status.as_ref().and_then(|s| s.branch.clone()),
-                // #1028 - identical shape to GitWatcher::poll, over the SAME
+                // Identical shape to GitWatcher::poll, over the SAME
                 // shared map. Both badge writers must compute `dirty` the same
                 // way: they take turns writing this vec, and if only one of them
                 // computed it the other would write `None` every 15s and flicker
@@ -351,7 +351,7 @@ impl DiscoveryBranchWatcher {
             for entry in &entries {
                 // Capture the session's git_repos_gen (if a session exists) BEFORE running
                 // detections.
-                // Used for CAS on set_git_repos_if_gen (Grinch #14).
+                // Used for CAS on set_git_repos_if_gen.
                 let (session_id_opt, gen_snapshot) = {
                     let mgr = self.session_manager.read().await;
                     match mgr.find_by_name(&entry.session_name).await {
@@ -366,7 +366,7 @@ impl DiscoveryBranchWatcher {
                 let refreshed = self.refreshed_repos(entry);
 
                 // Gate A: emit ac_discovery_branch_updated (AcDiscoveryPanel's branch
-                // chip, plus #943 B2's per-repo branches for cold replicas).
+                // chip, plus the per-repo branches for cold replicas).
                 //
                 // `branch` keeps its exact old semantics (single-repo only, None for
                 // multi-repo, so the panel chip still hides there). `repo_branches` is

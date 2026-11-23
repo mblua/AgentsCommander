@@ -37,7 +37,7 @@ pub(crate) async fn release_all_reader_demands<R: tauri::Runtime>(
     }
 }
 
-/// #3317 - `Ok(None)`: no reader entry under the lock (no tasks). `Err(())`: no
+/// `Ok(None)`: no reader entry under the lock (no tasks). `Err(())`: no
 /// bridge state (`try_state` is `None`), so the stop is unobserved.
 pub(crate) async fn release_all_reader_demands_observed<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -60,7 +60,7 @@ impl BridgeShutdown {
         });
     }
 
-    /// #3317 - the stop proof of `wait_until_stopped`, running in the background.
+    /// The stop proof of `wait_until_stopped`, running in the background.
     pub(crate) fn spawn_stop_observation(self) -> tokio::task::JoinHandle<bool> {
         tokio::spawn(self.wait_until_stopped())
     }
@@ -158,10 +158,10 @@ impl<R: tauri::Runtime> bridge::TelegramRuntime for AppHandle<R> {
 /// Container sessions require spawn-time memos. They never fall back to host
 /// config resolvers, because the host defaults are not the container filesystem.
 ///
-/// #260: agent selection is `Option<CodingAgentKind>`. Mutual exclusion is now
-/// structural (an enum is one variant or none), so the pre-#260
+/// Agent selection is `Option<CodingAgentKind>`. Mutual exclusion is now
+/// structural (an enum is one variant or none), so the old
 /// `debug_assert!(kinds_set <= 1, …)` guard was removed.
-// Eight parameters since #2454 split the identity slice from `shell_args` (D3-g).
+// Eight parameters: the identity slice is split from `shell_args`.
 #[allow(
     clippy::too_many_arguments,
     reason = "reader choice depends on shell, args, cwd, backend and agent homes"
@@ -177,7 +177,7 @@ pub(crate) fn derive_reader(
     effective_codex_home: Option<&str>,
 ) -> Result<Option<SessionReaderKind>, String> {
     let attach_time = chrono::Utc::now();
-    // #2454: the EFFECTIVE argv names the transcript id AC minted; the
+    // The EFFECTIVE argv names the transcript id AC minted; the
     // CONFIGURED `shell_args` alone still decide the projects directory.
     let transcript_id = crate::commands::session::transcript_id_from_args(identity_args);
 
@@ -234,7 +234,7 @@ pub(crate) fn derive_reader(
         }
         Some(CodingAgentKind::Antigravity) => Ok(None),
         Some(CodingAgentKind::Pi) => Ok(None),
-        // #1873 - Muse has no reader and no PTY fallback contract; every caller
+        // Muse has no reader and no PTY fallback contract; every caller
         // returns before any bridge or filter is created.
         Some(CodingAgentKind::Muse) => {
             Err("Telegram bridge does not support Muse sessions".to_string())
@@ -283,7 +283,7 @@ async fn session_is_live<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Uuid
     mgr.get_session(session_id).await.is_some()
 }
 
-/// True while `session_id` already holds a **Room** demand (#2456).
+/// True while `session_id` already holds a **Room** demand.
 ///
 /// An in-memory lookup under the bridge lock, the same query as the fast path
 /// in [`raise_reader_demand`], so the re-raise tick can skip a satisfied
@@ -300,7 +300,7 @@ pub(crate) async fn holds_room_reader_demand<R: tauri::Runtime>(
         .contains(&ReaderConsumer::Room)
 }
 
-/// The Room demand's release epoch for `session_id` (#2516), read under the
+/// The Room demand's release epoch for `session_id`, read under the
 /// bridge lock; [`DemandEpoch::ZERO`] when the bridge state is unmanaged.
 pub(crate) async fn room_demand_epoch<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -323,8 +323,7 @@ pub(crate) async fn raise_reader_demand<R: tauri::Runtime>(
     raise_reader_demand_guarded(app, session_id, consumer, dest, None).await
 }
 
-/// Raise `consumer`'s demand on `session_id`'s transcript reader (#2232 phase 4
-/// section 5).
+/// Raise `consumer`'s demand on `session_id`'s transcript reader.
 ///
 /// Idempotent, and **adding a demand never restarts a running reader**: the new
 /// consumer joins it and a cut is recorded at the reader's frontier. When no
@@ -334,7 +333,7 @@ pub(crate) async fn raise_reader_demand<R: tauri::Runtime>(
 ///
 /// Returns `true` when a reader is running for the session afterwards.
 ///
-/// With `expected` set (#2516), the raise aborts and returns `false`, adding
+/// With `expected` set, the raise aborts and returns `false`, adding
 /// no demand, opening no capture slot and spawning no reader, when a release
 /// of this `(session_id, consumer)` demand has happened since the caller
 /// sampled `expected`. The check is the first statement under each bridge

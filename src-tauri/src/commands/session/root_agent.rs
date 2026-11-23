@@ -180,7 +180,7 @@ async fn resolve_root_agent_launch(
         )?
     };
     let (resolved_spawn, resolved_agent_host_shell) = if let Some(agent_id) = agent_id.as_deref() {
-        // #1271 - build the spawn and copy the configured default host shell
+        // Build the spawn and copy the configured default host shell
         // from the SAME single guard, before any await, so the pair can never
         // mix across a configuration change (Phase 1 items 1-2; mirrors the
         // restart pattern).

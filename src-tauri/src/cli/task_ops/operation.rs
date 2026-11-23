@@ -45,12 +45,11 @@ pub enum EditOutcome {
 }
 
 /// Errors emitted by [`crate::cli::task_ops::perform`].
-/// `Display` impls match the §3 error matrix
-/// of plan #137 verbatim.
+/// `Display` impls match the spec error matrix verbatim.
 #[derive(Debug, thiserror::Error)]
 pub enum TaskOpError {
     /// Coordinator `--title` input itself started with the reserved `USER:`
-    /// prefix while the current title was not already user-owned (#738). Invalid
+    /// prefix while the current title was not already user-owned. Invalid
     /// input: exit 1, no stdout, TASK.md unchanged, no backup.
     #[error("--title cannot start with reserved USER: prefix")]
     ReservedUserTitlePrefix,

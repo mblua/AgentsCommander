@@ -1,4 +1,4 @@
-//! Role-template picker backend (#271).
+//! Role-template picker backend.
 //!
 //! Exposes cached Agency and local role templates used by the New Agent dialog,
 //! plus the resolution helpers `create_agent_matrix` calls to seed a new Agent

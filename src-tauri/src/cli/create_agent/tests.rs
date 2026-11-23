@@ -167,7 +167,7 @@ fn write_session_request_is_still_json_camel_case() {
     assert!(!json.contains("agent_id"));
 }
 
-// #1163: the result sidecar must stay camelCase JSON so the CLI/app
+// The result sidecar must stay camelCase JSON so the CLI/app
 // contract is stable.
 #[test]
 fn write_session_request_result_is_still_json_camel_case() {

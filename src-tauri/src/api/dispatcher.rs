@@ -185,7 +185,7 @@ pub(crate) async fn run_dispatcher<H: DispatcherDelivery>(
             }
             _ = interval.tick() => {
                 reap_pty_workers(&mut pty_workers);
-                // (#885 F-5) Skip DISPATCH (not the reaper) while a purge
+                // Skip DISPATCH (not the reaper) while a purge
                 // holds a lease. Leasing a row we cannot deliver burns an
                 // attempt against max_attempts (5) and can poison the
                 // message permanently. A purge is bounded; the next tick
@@ -325,7 +325,7 @@ where
                     || crate::pty::menu_guard::is_typing_hold_deferred_error(&reason)
                     || crate::api::message_store::is_response_closing_deferred(&reason) =>
             {
-                // #2336 - the typing hold shares the menu guard's recoverable
+                // The typing hold shares the menu guard's recoverable
                 // "not yet" contract: release the lease without incrementing the
                 // attempt and leave status queued with its due time. The audit
                 // word distinguishes the two causes.

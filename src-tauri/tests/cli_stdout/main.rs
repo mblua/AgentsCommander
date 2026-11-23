@@ -1,4 +1,4 @@
-//! #4016: exact stdout bytes of the exported `cli_println!` macro.
+//! Exact stdout bytes of the exported `cli_println!` macro.
 //!
 //! No `std::io::Write` import: the macro must not need one at the call site.
 

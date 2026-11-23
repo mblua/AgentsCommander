@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #777 Non-stop watchdog client. Tests the pure detection (buildSnapshot) against
+// Non-stop watchdog client. Tests the pure detection (buildSnapshot) against
 // seeded stores: the disparity signal is computed with the exact rail code
 // (roomIsWorking + projectStore.projects), so this proves counter parity and
 // the onset/clear flip. The #2180 alarm listener wiring in
@@ -38,7 +38,7 @@ const projectPath = "C:\\Project";
 const wgPath = (name: string) => `${projectPath}\\.ac\\${name}`;
 const agentPath = (name: string) => `${wgPath(name)}\\__agent_dev-webpage-ui`;
 
-// #2202 - every room carries a CI-capable repo so a CI-only room can be seeded.
+// Every room carries a CI-capable repo so a CI-only room can be seeded.
 // The path is the EXACT string the remote-activity map is keyed by.
 const ciRepoPath = (name: string) => `${wgPath(name)}\\repo-AgentsCommander`;
 
@@ -351,7 +351,7 @@ describe("confirmed activity report effect", () => {
   });
 });
 
-// #4805 P03 - the Temporary Rooms group set feeds the watchdog like a project.
+// The Temporary Rooms group set feeds the watchdog like a project.
 describe("#4805 buildSnapshot - temp rooms", () => {
   const TEMP_PATH = "agentscommander://temp-rooms";
   const ROOM = { name: "temp-room-tr01", path: "/cfg/temp-room-tr01", unleashed: false };
