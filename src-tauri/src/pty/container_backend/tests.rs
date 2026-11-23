@@ -319,7 +319,7 @@ fn api_enabled_settings() -> crate::config::settings::AppSettings {
     }
 }
 
-/// #2158 - the bridge's repaint, delivered as soon as the Resize is published, finds the
+/// The bridge's repaint, delivered as soon as the Resize is published, finds the
 /// resize mark already taken: it touches silence but keeps the team stamp. A failed queue
 /// reservation takes no mark and keeps its original error.
 async fn attached_with_idle(

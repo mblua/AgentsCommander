@@ -63,7 +63,7 @@ fn live_settle_action_caps_in_fresh_idle_window() {
     );
 }
 
-// ── (#1001 PR2 P2 / option-a) live_wake_route: starting vs established ──
+// ── live_wake_route: starting vs established ──
 
 const LWR_THRESHOLD: Duration = Duration::from_secs(20);
 
@@ -167,7 +167,7 @@ fn established_fresh_idle_settles_the_remainder_via_activity_gate() {
     );
 }
 
-// ── next_sustained_idle_state tests (#611 sustained-idle gate) ──
+// ── next_sustained_idle_state tests ──
 
 #[test]
 fn sustained_idle_busy_resets_clock_and_never_injects() {
@@ -290,7 +290,7 @@ fn sustained_idle_backwards_clock_is_not_treated_as_settled() {
 
 #[test]
 fn sustained_idle_30s_window_documents_self_clear_settle() {
-    // #617 documentation scenario: the self-clear gate uses settle=30s.
+    // Documentation scenario: the self-clear gate uses settle=30s.
     let base = std::time::Instant::now();
     let settle = std::time::Duration::from_secs(SELF_CLEAR_SETTLE_SECS);
     // 29.9s of idle -> not yet settled.
@@ -315,7 +315,7 @@ fn sustained_idle_30s_window_documents_self_clear_settle() {
     assert!(!i3);
 }
 
-// ── #626 self_clear_gate_advance two-stage decider tests (no timers / locks / PTY) ──
+// ── self_clear_gate_advance two-stage decider tests (no timers / locks / PTY) ──
 
 #[test]
 fn gate_advance_session_destroyed_abandons_even_when_idle() {
@@ -540,7 +540,7 @@ fn gate_advance_clear_idle_busy_idle_restarts_the_window() {
 
 #[test]
 fn self_clear_handoff_prompt_is_single_line_self_contained() {
-    // #749 - both forms: the exact archived path (normal) and the root-name fallback.
+    // Both forms: the exact archived path (normal) and the root-name fallback.
     for path in [
         "SELF-HANDOFF.md",
         "self-clear/20260702_181530_SELF-HANDOFF.md",
@@ -579,7 +579,7 @@ fn raise_hand_action_const_pins_wire_value() {
 
 #[test]
 fn self_switch_handoff_prompt_is_single_line_self_contained() {
-    // #749 - both forms: the exact archived path (normal) and the root-name fallback.
+    // Both forms: the exact archived path (normal) and the root-name fallback.
     for path in [
         "SELF-HANDOFF.md",
         "self-clear/20260702_181530_SELF-HANDOFF.md",

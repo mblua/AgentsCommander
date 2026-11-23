@@ -650,7 +650,7 @@ fn format_pty_wrap_matches_pty_wrap_fixed() {
     assert_eq!(PTY_WRAP_FIXED, 19);
 }
 
-/// #2232 phase 7: the composed sender is the display-only attribution for a
+/// Phase 7: the composed sender is the display-only attribution for a
 /// Co-managed-origin wake. The exact FQN stays the authorization input and
 /// is never merged with this string.
 #[test]

@@ -677,7 +677,7 @@ async fn final_pty_boundary_rejects_identity_mutation_and_stamps_busy() {
     assert!(matches!(second, Err(PtyInputBoundaryFailure::Busy)));
 }
 
-/// #1149 - the inter-agent injection path sets `waiting_for_input = false`
+/// The inter-agent injection path sets `waiting_for_input = false`
 /// and promotes `Idle` to `Running` directly, before `notify_pty_input_busy`
 /// reaches `mark_busy`. Hooking only `mark_idle`/`mark_busy` would lose every
 /// injection edge, so the boundary emits its own record and the `mark_busy`

@@ -416,7 +416,7 @@ async fn self_switch_pi_source_omitted_target_hard_resets_to_pi() {
     }
     seed_self_handoff(&fixture.replica);
     // Both --coding-agent and --profile omitted: the target resolves from the
-    // source agent_id fallback back to `pi` (the #1081 hard-reset headline).
+    // source agent_id fallback back to `pi` (the hard-reset headline).
     let (path, message) = build_self_switch_message(
         &fixture.replica,
         "msg-ss-pi-hard-reset",

@@ -9,7 +9,7 @@ use super::*;
 #[allow(clippy::await_holding_lock, reason = "test-only serial lock")]
 #[tokio::test]
 async fn session_request_result_sidecar_written_on_success() {
-    // #1163: `config_dir()` is process-wide — one shared session-requests
+    // `config_dir()` is process-wide — one shared session-requests
     // dir for every C/M artifact test. Serialize so a poll never consumes
     // another test's request file mid-test.
     let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
@@ -356,7 +356,7 @@ async fn deliver_wake_respawns_exited_deferred_session_preserving_telegram_inten
     assert_inject_results_consumed(&hooks);
 }
 
-/// (#747) A dormant coordinator restored with a raised hand (Exited(0) +
+/// A dormant coordinator restored with a raised hand (Exited(0) +
 /// visible communication, exactly what the startup defer arm produces)
 /// receives a peer wake: the `RespawnExited` destroy+spawn must carry the
 /// hand onto the NEW session (the wake injection is not user input) and
@@ -707,7 +707,7 @@ fn gate_rejects_when_mirror_disagrees() {
     assert!(!decision.passed, "mirror disagreement must reject");
 }
 
-/// (#885 F-1) The acceptance test: a peer inside resize settlement must
+/// The acceptance test: a peer inside resize settlement must
 /// be rejected even if `activity_age`, `watcher_idle`, and `mirror_idle` all
 /// agree "idle".
 #[test]

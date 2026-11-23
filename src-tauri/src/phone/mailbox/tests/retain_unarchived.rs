@@ -42,7 +42,7 @@ fn is_permanent_delivery_error_classifies_only_terminal_shapes() {
     assert!(is_permanent_delivery_error(
         "Could not resolve inbox for agent 'missing'"
     ));
-    // #1635-2 D6: the invalid-dispatch-profile marker is terminal.
+    // D6: the invalid-dispatch-profile marker is terminal.
     assert!(is_permanent_delivery_error(ERR_INVALID_DISPATCH_PROFILE));
     assert!(is_permanent_delivery_error(
         "send: requestedProfile must be a single letter A through Z (hand-written outbox)"

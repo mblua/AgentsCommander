@@ -239,7 +239,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
     );
 }
 
-/// #1632 - mutual exclusion over the shared, NON-msg-id-scoped names in the process-global
+/// Mutual exclusion over the shared, NON-msg-id-scoped names in the process-global
 /// Root Agent directory. `root_agent_dir()` is `OnceLock`-cached (`config/root_agent.rs`), so
 /// every Root e2e in this test binary works against the SAME directory, and libtest runs them
 /// on parallel threads. A `TempDir` cannot stand in, which is why a lock is needed at all.
@@ -251,7 +251,7 @@ async fn self_restart_driver_app_backed_prompt_reaches_pty_with_enter() {
 /// seed-to-remove window. The second name matters even though it is inert today: nothing
 /// seeds a Root-cwd `SELF-FORGET.md`, so `clear_root_self_clear_artifacts`'s trailing glob is
 /// a no-op, and that helper has two deliberately UNLOCKED callers (the landed negative e2e
-/// and the #1632 negative e2e, both of which reject at anti-spoof and are correctly barred
+/// and the restart negative e2e, both of which reject at anti-spoof and are correctly barred
 /// from taking the lock). Add a Root e2e with a forgotten summary and that glob starts
 /// deleting another test's archive mid-flight, which is this bug's class exactly.
 ///
@@ -276,7 +276,7 @@ fn root_self_handoff_lock() -> &'static tokio::sync::Mutex<()> {
 /// otherwise skew assertions. Each of the four Root e2es uses a unique msg-id, so this is
 /// safe even when they run in parallel.
 ///
-/// #626/#1632 NOTE: this helper deliberately does NOT touch `SELF-HANDOFF.md`. That file is a
+/// NOTE: this helper deliberately does NOT touch `SELF-HANDOFF.md`. That file is a
 /// single SHARED (non-msg-id-scoped) name; if this start-of-test cleanup removed it, a negative
 /// e2e (which rejects at anti-spoof and never seeds it) could delete a positive e2e's
 /// freshly-seeded handoff file mid-flight when they run in parallel - a flaky failure.
@@ -317,7 +317,7 @@ fn clear_root_self_clear_artifacts(cwd: &Path, msg_id: &str, request_id: &str) {
     }
 }
 
-/// #617 HIGH-1 e2e (production-faithful): a token-authorized Root self-clear
+/// HIGH-1 e2e (production-faithful): a token-authorized Root self-clear
 /// travels the FULL `process_message` agent-outbox path (NOT `handle_self_clear`
 /// directly) and ENQUEUES.
 ///
@@ -342,7 +342,7 @@ fn clear_root_self_clear_artifacts(cwd: &Path, msg_id: &str, request_id: &str) {
 ///   yields the path FQN, the daemon rejects it, and the enqueue assertion fails.
 #[tokio::test]
 async fn process_message_root_self_clear_with_canonical_sender_queues() {
-    // (#1632) This test is NO LONGER the sole owner of SELF-HANDOFF.md in the shared
+    // This test is NO LONGER the sole owner of SELF-HANDOFF.md in the shared
     // root_agent_dir: `process_message_root_self_restart_with_canonical_sender_queues` seeds
     // and removes the same single name. A single-owner convention cannot absorb a second
     // owner, so the convention became an enforced invariant: both seeders hold
@@ -357,7 +357,7 @@ async fn process_message_root_self_clear_with_canonical_sender_queues() {
         "msg-sc-root-e2e-pos",
         "33180001-0000-4000-8000-000000000001",
     );
-    // #626 existence gate: seed SELF-HANDOFF.md so the positive path still queues. The guard
+    // Existence gate: seed SELF-HANDOFF.md so the positive path still queues. The guard
     // taken above, not an ownership convention, is what makes the seed-to-remove window
     // exclusive against the other Root seeder. NOTE: deliberately do NOT seed SELF-FORGET.md
     // here (keep the archive a no-op so no timestamped litter in the shared dir).
@@ -422,14 +422,14 @@ async fn process_message_root_self_clear_with_canonical_sender_queues() {
         "message must be consumed (moved to delivered/)"
     );
 
-    // (#1632) Remove the shared name inside the guard's scope. This test no longer OWNS
-    // SELF-HANDOFF.md: the #1632 Root restart e2e seeds and removes the same single name, and
+    // Remove the shared name inside the guard's scope. This test no longer OWNS
+    // SELF-HANDOFF.md: the Root restart e2e seeds and removes the same single name, and
     // `root_self_handoff_lock()`, taken at the top of this body, is what makes the
     // seed-to-remove window exclusive.
     let _ = std::fs::remove_file(root_cwd.join("SELF-HANDOFF.md"));
 }
 
-/// #617 HIGH-1 e2e negative (production-faithful): the EXACT buggy sender the old
+/// HIGH-1 e2e negative (production-faithful): the EXACT buggy sender the old
 /// CLI produced - `agent_name_from_root(<Root cwd>)`, a path-derived FQN, not
 /// `ROOT_AGENT_SENDER` - is REJECTED on the same full `process_message` agent-outbox
 /// path, so nothing queues. This is why the capability was dead in production
@@ -498,7 +498,7 @@ async fn process_message_root_self_clear_with_buggy_sender_is_rejected() {
     );
 }
 
-/// T23 - #1632 Root e2e (production-faithful): a token-authorized Root
+/// T23 - Root restart e2e (production-faithful): a token-authorized Root
 /// self-handoff-and-restart travels the FULL `process_message` agent-outbox path, NOT
 /// `handle_self_restart` directly, and ENQUEUES.
 ///
@@ -506,7 +506,7 @@ async fn process_message_root_self_clear_with_buggy_sender_is_rejected() {
 /// therefore skips BOTH anti-spoof gates; this repository already documents why that is not
 /// production-faithful (see the landed self-clear pair above and the warning on
 /// `resolve_self_clear_sender`, which states that a wrong sender means the capability is
-/// dead in production). #617 shipped exactly that regression once.
+/// dead in production). That regression shipped once.
 ///
 /// The seeding call is `seed_self_switch_session`, deliberately NOT the landed self-clear
 /// e2e's own: `seed_self_clear_session` hardcodes `agent_id: None`, the landed test survives
@@ -522,7 +522,7 @@ async fn process_message_root_self_clear_with_buggy_sender_is_rejected() {
 /// tripwire below pins the fixture fact that buys it.
 #[tokio::test]
 async fn process_message_root_self_restart_with_canonical_sender_queues() {
-    // (#1632 section 9.0) NON-NEGOTIABLE first line: this test is the second seeder of
+    // NON-NEGOTIABLE first line: this test is the second seeder of
     // SELF-HANDOFF.md in the process-global Root dir, and the landed positive self-clear
     // e2e is the first. Both hold this guard across their whole seed-to-remove window.
     let _root_handoff_guard = root_self_handoff_lock().lock().await;
@@ -685,7 +685,7 @@ async fn process_message_root_self_restart_with_buggy_sender_is_rejected() {
     );
 }
 
-// ── err_is_pty_session_missing tests (issue #223) ──
+// ── err_is_pty_session_missing tests ──
 
 #[test]
 fn err_is_pty_session_missing_matches_inject_wrap() {
@@ -730,7 +730,7 @@ fn err_is_pty_session_missing_matches_actual_apperror_format() {
     );
 }
 
-/// #1883 — the classifier is the single severity decision for both
+/// The classifier is the single severity decision for both
 /// injection sites: only the canonical deferral prefix downgrades to
 /// debug; everything else stays ERROR so real failures keep feeding the
 /// Application Error sink.
@@ -760,7 +760,7 @@ fn classify_injection_error_defers_menu_guard_and_fails_everything_else() {
 
 // ── Anti-spoof / canonicalization pure-logic tests (AR2-tests 22, 23 + DR2-5) ──
 
-/// §DR7 / AR2-tests #22: legacy-unqualified msg.from is accepted when its
+/// §DR7 / AR2-tests 22: legacy-unqualified msg.from is accepted when its
 /// local part matches the anti-spoof `expected_from` (local-only fallback).
 #[test]
 fn anti_spoof_legacy_msg_from_accepted_by_local_match() {
@@ -771,7 +771,7 @@ fn anti_spoof_legacy_msg_from_accepted_by_local_match() {
     assert!(anti_spoof_accept(msg_from, expected));
 }
 
-/// §DR7 / AR2-tests #23: qualified-but-wrong-project msg.from is rejected.
+/// §DR7 / AR2-tests 23: qualified-but-wrong-project msg.from is rejected.
 /// A naïve suffix match would accept this — the LOCAL-only fallback rejects.
 #[test]
 fn anti_spoof_cross_project_qualified_msg_from_rejected() {
@@ -787,7 +787,7 @@ fn anti_spoof_exact_fqn_match_accepted() {
     assert!(anti_spoof_accept(expected, expected));
 }
 
-/// §DR2-5 / AR2-tests #25: §AR2-norm step (1) upgrades a legacy-unqualified
+/// §DR2-5 / AR2-tests 25: §AR2-norm step (1) upgrades a legacy-unqualified
 /// msg.from to the anti-spoof `expected_from` FQN. Without this upgrade,
 /// grinch §G5's `resolve_repo_path(&msg.from)` response-dir lookup could
 /// receive an ambiguous-local-part input.
