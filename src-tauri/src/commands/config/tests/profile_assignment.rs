@@ -19,7 +19,7 @@ fn profile_assignment_request(
     }
 }
 
-/// #1941 - a synthetic enumeration lets the fingerprint unit tests exercise
+/// A synthetic enumeration lets the fingerprint unit tests exercise
 /// the typed tuple without a filesystem fixture.
 fn fingerprint_enumeration(paths: &[&str]) -> super::ProfileTargetEnumeration {
     super::ProfileTargetEnumeration {
@@ -192,7 +192,7 @@ fn broad_assignment_rejects_missing_or_stale_fingerprint() {
             "current-fp",
         )
         .unwrap_err();
-        // #2051 - a missing fingerprint is a contract failure, not a change.
+        // A missing fingerprint is a contract failure, not a change.
         assert!(err.contains("confirmationMissing"), "{err}");
         assert!(!err.contains("Target selection changed"), "{err}");
 

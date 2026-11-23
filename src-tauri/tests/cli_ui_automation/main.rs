@@ -105,7 +105,7 @@ fn run_with_env(
     )
 }
 
-/// #1773: `std::process::Child` does not kill on drop, so a panic between spawn and
+/// `std::process::Child` does not kill on drop, so a panic between spawn and
 /// wait leaks the child. This guard kills and reaps it on every exit path. After a
 /// normal exit both calls are no-ops: `kill` errors on an exited child and `wait`
 /// returns the cached status.

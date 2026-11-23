@@ -709,7 +709,7 @@ fn into_undecodable_preserves_drops_and_a_default_overlay_carries_one_record() {
     ));
 }
 
-/// #2470 - the overlay name is typed twice, here and in the registry. The
+/// The overlay name is typed twice, here and in the registry. The
 /// tie is test-only because this module has no outgoing arc to spend.
 #[test]
 fn overlay_file_name_matches_the_registry() {

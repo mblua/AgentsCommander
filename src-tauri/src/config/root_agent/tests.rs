@@ -29,7 +29,7 @@ fn try_symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------------------
-// #909: the frozen snapshot, and the two pins that keep it honest.
+// The frozen snapshot, and the two pins that keep it honest.
 // ---------------------------------------------------------------------------------------
 
 /// Look a default up by `dir_name`. Never index `DEFAULT_ROOT_SKILLS` positionally: the four
@@ -42,7 +42,7 @@ fn default_root_skill(dir_name: &str) -> &'static DefaultRootSkill {
 }
 
 // ---------------------------------------------------------------------------------------
-// #909: the migration. Every enum assertion is paired with a content assertion. The enum
+// The migration. Every enum assertion is paired with a content assertion. The enum
 // proves which branch ran; it does not prove no bytes were written. The pair is the proof.
 // ---------------------------------------------------------------------------------------
 

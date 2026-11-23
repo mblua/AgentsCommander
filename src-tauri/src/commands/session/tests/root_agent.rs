@@ -59,7 +59,7 @@ fn write_current_coding_agent(dir: &std::path::Path, agent_id: &str) {
     .unwrap();
 }
 
-// #537 read-side: a freshly assigned currentCodingAgent must win over the
+// Read-side: a freshly assigned currentCodingAgent must win over the
 // agent the live session was launched with (stored_agent_id) when the restart
 // carries no explicit agent (the plain restart button passes None).
 #[test]
@@ -157,7 +157,7 @@ fn build_configured_agent_spawn_for_cwd_honors_requested_profile() {
                 preflight: None,
                 preflight_timeout_seconds: None,
                 enabled: true,
-                // #597 - the cell holds params only; they append to the agent
+                // The cell holds params only; they append to the agent
                 // base command (`codex`) to launch `codex --profile-c`.
                 command: "--profile-c".to_string(),
                 env: BTreeMap::new(),
@@ -176,7 +176,7 @@ fn build_configured_agent_spawn_for_cwd_honors_requested_profile() {
     assert_eq!(spawn.shell_args, vec!["--profile-c".to_string()]);
 }
 
-// #592 - compute_profile_outdated integration: loaded hash vs current config.
+// `compute_profile_outdated` integration: loaded hash vs current config.
 pub(super) fn make_info(
     cwd: &str,
     agent_id: Option<&str>,
@@ -248,7 +248,7 @@ fn compute_profile_outdated_flips_when_effective_cell_changes() {
             },
         );
 
-    // #597 - the hash the session launched with: agent base + cell A params,
+    // The hash the session launched with: agent base + cell A params,
     // composed via the SAME helpers the spawn path uses. The codex borrow ends
     // with this block, before the get_mut mutation below.
     let loaded = {
@@ -304,7 +304,7 @@ fn compute_profile_outdated_flips_on_agent_base_command_edit() {
             },
         );
 
-    // #597 - stamp loaded from agent base `codex` + cell `--v1`.
+    // Stamp loaded from agent base `codex` + cell `--v1`.
     let loaded = {
         let codex = settings.agents.iter().find(|a| a.id == "codex").unwrap();
         crate::config::agent_command::profile_content_hash(

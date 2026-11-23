@@ -687,7 +687,7 @@ fn failure_interval_never_drops_below_base() {
         "the cap holds"
     );
 }
-/// #2129 - T6: the three cases of the rendering rule, plus an empty label,
+/// T6: the three cases of the rendering rule, plus an empty label,
 /// which takes case 3 and is unreachable for stale notices because
 /// `for_remote_activity` rejects an empty stale base.
 #[test]

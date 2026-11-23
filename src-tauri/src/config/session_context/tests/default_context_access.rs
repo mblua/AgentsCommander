@@ -143,7 +143,7 @@ fn default_context_room_authorizes_only_instructed_cross_workspace_canonical_mes
             "missing `{required}` in:\n{policy}"
         );
     }
-    // #1795: this fixture's room has no `.ac` grandparent, so
+    // This fixture's room has no `.ac` grandparent, so
     // `replica_shared_roots` fails closed at check 3 and the block keeps its
     // four-entry text verbatim. Fail-closed evidence, not a renumbering.
     assert!(
@@ -195,7 +195,7 @@ fn default_context_non_workgroup_omits_messaging_exception() {
     assert!(out.contains(
         "Read an inter-agent message file when AgentsCommander hands you its absolute path"
     ));
-    // #923 D8: the grant above sits outside the numbered entries, so the read bullet
+    // D8: the grant above sits outside the numbered entries, so the read bullet
     // must carve it out by name. Without this the agent must REFUSE to read its own
     // inbound message, and it cannot `--send` a blocker either: silently unreachable.
     assert!(out.contains(
@@ -270,7 +270,7 @@ fn default_context_root_agent_does_not_render_workgroup_walkup_text() {
     assert!(!out.contains("<workgroup-root>/messaging/"));
 }
 
-/// #923 D1: entry #2's peer-replica caution binds non-root agents only. The Root
+/// D1: entry #2's peer-replica caution binds non-root agents only. The Root
 /// Agent's entry #3 grants read AND write across every `.ac` tree, so the caution
 /// must not be rendered for it, and entry #3 must not quote a sentence that is
 /// no longer in the document.
@@ -298,7 +298,7 @@ fn root_context_omits_peer_replica_prohibition_and_stale_quote() {
     assert!(replica.contains("Do NOT read or write into other agents' replica directories"));
 }
 
-/// #923 D2: the Root Agent's read scope is defined by `project-paths.json`, which sits in
+/// D2: the Root Agent's read scope is defined by `project-paths.json`, which sits in
 /// the app config directory, OUTSIDE every registered project in a normal install.
 /// Forbidding that read would make the grant self-referentially unreadable.
 #[test]
@@ -313,7 +313,7 @@ fn root_read_scope_grants_settings_json_and_agency_cache() {
     assert!(out.contains("these reads are grants, while direct writes to them stay CLI-managed"));
 }
 
-// T10 (#1172, acceptance criterion 6): another agent's memory is private
+// T10 (acceptance criterion 6): another agent's memory is private
 // whether it is live or rotated, so the peer-privacy clause covers the whole
 // `memory*` glob rather than the live directory alone.
 #[test]
@@ -341,9 +341,9 @@ fn default_context_marks_every_memory_directory_private() {
     );
 }
 
-// T11 (#1172): locks the invariant documented above `DefaultContextDynamicValues`
+// T11: locks the invariant documented above `DefaultContextDynamicValues`
 // - the Root Agent holds a project-wide read grant and must never receive the
-// peer-privacy clause. The #1172 copy edit must not leak into that branch.
+// peer-privacy clause. The peer-privacy copy edit must not leak into that branch.
 #[test]
 fn root_context_still_omits_the_peer_memory_privacy_clause() {
     let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
@@ -354,10 +354,10 @@ fn root_context_still_omits_the_peer_memory_privacy_clause() {
     );
 }
 
-// T15 (#1172 D4, O1): the own-archive grant is READ-ONLY and lives INSIDE
+// T15: the own-archive grant is READ-ONLY and lives INSIDE
 // numbered entry 3, which is `String::new()` when the agent has no origin
 // matrix. An agent must never be promised a grant its own document does not
-// print, which is the failure #923 D8 exists to prevent.
+// print, which is the failure D8 exists to prevent.
 #[test]
 fn own_archive_read_grant_renders_only_with_an_origin_matrix() {
     const GRANT: &str =
@@ -436,7 +436,7 @@ fn read_bullet_matches_messaging_mode_access_model() {
         "You may also READ message files inside this directory, and list your room root \
             (`room-<N>-*`) to resolve that directory's path."
     ));
-    // #1795: this fixture's room has no `.ac` grandparent, so
+    // This fixture's room has no `.ac` grandparent, so
     // `replica_shared_roots` fails closed at check 3 and the block keeps its
     // four-entry text verbatim. Fail-closed evidence, not a renumbering.
     assert!(
@@ -481,7 +481,7 @@ fn read_bullet_matches_messaging_mode_access_model() {
     }
 }
 
-/// #923 D6: entry #1 grants `repo-*` by name pattern; discovery needs a listing.
+/// D6: entry #1 grants `repo-*` by name pattern; discovery needs a listing.
 #[test]
 fn entry_one_grants_ac_root_listing_for_repo_discovery() {
     let out = default_context(
@@ -553,7 +553,7 @@ fn root_authority_section_present_and_user_only() {
 
 #[test]
 fn root_raw_template_no_longer_carries_inline_self_maintenance() {
-    // #640: the Root's self-maintenance directive moved OUT of the raw
+    // The Root's self-maintenance directive moved OUT of the raw
     // ROOT_AUTHORITY_SECTION into the gated SELF_MAINTENANCE_AUTO_SECTION
     // appended by resolve_session_context_content. The raw root render (which
     // bypasses the gated append) must therefore no longer carry it; this is
@@ -583,7 +583,7 @@ fn non_root_agent_has_no_root_grant_or_authority() {
         &no_skill_section(),
     );
     assert!(!out.contains("Every registered AgentsCommander project folder"));
-    // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
+    // S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
     assert!(
         !out.contains("you may create, modify, and delete files anywhere under ANY project folder")
     );
@@ -598,7 +598,7 @@ fn root_grant_is_gated_on_path_not_dir_name_anti_spoof() {
     // appear for a name-only (spoofed) match...
     let out = default_context("C:/fake/ac-root-agent", None, &no_skill_section());
     assert!(!out.contains("Every registered AgentsCommander project folder"));
-    // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
+    // S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
     assert!(
         !out.contains("you may create, modify, and delete files anywhere under ANY project folder")
     );

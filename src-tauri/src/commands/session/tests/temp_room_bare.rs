@@ -1,4 +1,4 @@
-//! #4779 P01 / #4780 P01: a temp-room session gets its limited context and credentials.
+//! A temp-room session gets its limited context and credentials.
 use super::*;
 use crate::config::sessions_persistence::{enforce_creation_gate, CreationGateEnforcement};
 use crate::config::temp_rooms::temp_room_dir_name;
@@ -108,7 +108,7 @@ fn entries_in(cwd: &str) -> usize {
     std::fs::read_dir(cwd).expect("read temp room").count()
 }
 
-/// #4780: all five credentials, with `AGENTSCOMMANDER_ROOT` = cwd.
+/// All five credentials, with `AGENTSCOMMANDER_ROOT` = cwd.
 fn assert_room_credentials(spec: &crate::pty::backend::BackendSpawnSpec, cwd: &str) {
     let mut keys = credential_keys_in(spec);
     keys.sort();
@@ -123,7 +123,7 @@ fn assert_room_credentials(spec: &crate::pty::backend::BackendSpawnSpec, cwd: &s
     assert_eq!(root, Some(cwd));
 }
 
-/// #4780: the cwd holds exactly one entry, the managed limited context file.
+/// The cwd holds exactly one entry, the managed limited context file.
 fn assert_only_room_context(cwd: &str) {
     assert_eq!(
         entries_in(cwd),
@@ -273,7 +273,7 @@ async fn temp_room_creation_gate_requires_existing_folder() {
     close_test_coordinator(&app).await;
 }
 
-/// #4786: `build_configured_agent_spawn_for_cwd` for a temp room with `command`.
+/// `build_configured_agent_spawn_for_cwd` for a temp room with `command`.
 fn spawn_in_temp_room(cwd: &str, command: &str) -> Result<Vec<String>, String> {
     let mut settings = test_settings();
     settings.agents[0].command = command.to_string();

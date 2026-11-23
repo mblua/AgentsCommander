@@ -257,7 +257,7 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R>, Str
                 record_page_load(&load_app, payload.url(), payload.event());
             })
             .on_document_title_changed(move |_, title| record_title(&title_app, title))
-            // #4289: never load the app's own origin, whatever the page does.
+            // Never load the app's own origin, whatever the page does.
             .on_navigation(move |url| !is_app_origin(url, nav_dev.as_ref()))
             // Links that open a new window load in place: one browser, one page.
             .on_new_window(move |url, _| {

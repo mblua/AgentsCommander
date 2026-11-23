@@ -113,7 +113,7 @@ pub(super) fn make_coordinator_fixture(
     (tmp, paths)
 }
 
-/// #1245: the team-config shape the application's writer actually produces,
+/// The team-config shape the application's writer actually produces,
 /// with the coordinator listed inside `agents`. A third member exists so the
 /// surviving member order can be pinned once the coordinator entry is
 /// consumed; `make_coordinator_fixture` has only one ordinary member.
@@ -650,7 +650,7 @@ fn resolve_wg_coordinator_replica_repairs_stale_absolute_refs() {
     assert_eq!(repaired_config["identity"], "../../_agent_test-alpha");
 }
 
-/// #299: even when refs are stale, spoofing must still be rejected — a
+/// Even when refs are stale, spoofing must still be rejected — a
 /// replica that declares a stale identity ref naming a DIFFERENT matrix
 /// (e.g. `_agent_test-beta`) must not be accepted as coordinator.
 #[test]

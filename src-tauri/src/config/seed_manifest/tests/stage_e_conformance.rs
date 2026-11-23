@@ -1,4 +1,4 @@
-//! Stage E (#1064) adversarial-memory harness.
+//! Stage E adversarial-memory harness.
 //!
 //! The retained adversarial parser-memory case is `#[ignore]` (registered in
 //! `test-debt.allowlist.json`) and runs in an isolated release-mode child. Its

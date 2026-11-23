@@ -172,7 +172,7 @@ fn run_command_terminates_options_before_image() {
 
 #[test]
 fn run_command_appends_read_write_repo_mounts_before_image() {
-    // #935 - each repo renders as its own --mount, AFTER the replica mount
+    // Each repo renders as its own --mount, AFTER the replica mount
     // and BEFORE the -- / image / entrypoint tail. If the loop were appended
     // after the tail, image_idx + 1 would be --mount and this test fails.
     use crate::pty::container_repos::ContainerRepoMount;
@@ -232,7 +232,7 @@ fn run_command_appends_read_write_repo_mounts_before_image() {
     assert!(repo2 < image_idx, "repo mounts must precede the image");
     assert_eq!(spec.args[image_idx - 1], "--");
     assert_eq!(spec.args[image_idx + 1], DEFAULT_BRIDGE_ENTRYPOINT);
-    // #993 - the resolver strips the Windows verbatim prefix, so the
+    // The resolver strips the Windows verbatim prefix, so the
     // rendered --mount args never carry \\?\ (dockerd rejects such a source).
     assert!(!joined.contains(r"\\?\"), "{joined}");
     // S7 free regression guard, now exercised WITH repo mounts.

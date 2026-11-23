@@ -238,7 +238,7 @@ const SETTLE_BUDGET: Duration = Duration::from_millis(2500);
 /// Re-poll interval while a concurrent kill owns the `Terminating` state.
 const SETTLE_POLL: Duration = Duration::from_millis(75);
 
-/// #647 (Step 7): re-run `kill_group` until the group leaves `Terminating` or the
+/// Step 7: re-run `kill_group` until the group leaves `Terminating` or the
 /// budget elapses. `kill_group` is idempotent under concurrency: while another call
 /// owns `Terminating` it early-returns that state with no side effects; once the owner
 /// settles to `Terminated` it early-returns `Terminated`; a settled `Quarantined`
@@ -283,7 +283,7 @@ async fn verify_kill_settled_diagnostic(
     }
 }
 
-/// #647 A (grinch HIGH-1 invariant): finalize the kill (full PTY teardown + flip the
+/// Grinch HIGH-1 invariant: finalize the kill (full PTY teardown + flip the
 /// tile to `Exited`) ONLY on a result whose state is the verified `Terminated`. This is
 /// STRICTER than `!quarantined`: `kill_group`'s early return for an already-`Terminating`
 /// group (a concurrent kill, e.g. a watchdog tick still mid observe/verify) also reports

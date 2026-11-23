@@ -88,7 +88,7 @@ pub(crate) enum ContextTemplateSkipReason {
     IgnoredByUser,
     AcRootUnavailable,
     TargetMissing,
-    /// #1748: a distribution-owned template differs from the current default on a
+    /// A distribution-owned template differs from the current default on a
     /// path that cannot report the replacement; the repair is left to the scan.
     DistributionRepairDeferred,
 }
@@ -163,7 +163,7 @@ pub struct ContextTemplateOverwriteResult {
     pub current_default_sha256: String,
 }
 
-/// #1748: everything a caller needs to tell the user that `AgentsCommander` replaced
+/// Everything a caller needs to tell the user that `AgentsCommander` replaced
 /// the bytes they had on disk. Produced ONLY when the replaced bytes were not ours.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -203,7 +203,7 @@ fn ensure_project_context_templates_with_clock(
         )
     })?;
     validate_existing_dir(ac_root, "Context template directory")?;
-    // #1795: the four project-level shared directories are created when a
+    // The four project-level shared directories are created when a
     // project's `.ac` root is bootstrapped. Hard error, like the
     // `create_dir_all(ac_root)` two lines above and on the same root: an `.ac`
     // root that cannot take a subdirectory is already a broken bootstrap.
@@ -236,7 +236,7 @@ fn ensure_project_context_templates_with_clock(
     Ok(())
 }
 
-/// #1625: absent-only seed of the three per-execution-platform rule files at
+/// Absent-only seed of the three per-execution-platform rule files at
 /// render time for an already-known project. Mirrors
 /// `ensure_project_context_templates_with_clock` but ONLY for `platform_specs()`
 /// (global/coordinator are never touched here; their read-sync stays the
@@ -314,7 +314,7 @@ fn scan_project_context_template_updates_with_clock(
         .map(|(updates, _replacements)| updates)
 }
 
-/// #1748: the scan is the only sync path whose return value reaches the UI, so it
+/// The scan is the only sync path whose return value reaches the UI, so it
 /// is the only one that repairs a distribution-owned template (D2). Phase 02 turns
 /// the returned replacements into a surfaced value; here they are logged.
 fn scan_project_context_templates_with_clock(

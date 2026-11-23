@@ -32,7 +32,7 @@ fn assert_custom_bytes_preserved(config_dir: &Path, original: &[u8]) {
 
 #[test]
 fn frozen_standalone_global_snapshot_is_pinned() {
-    // #979 4.3.A: the 307-byte snapshot must never drift. If this fails, do NOT
+    // 4.3.A: the 307-byte snapshot must never drift. If this fails, do NOT
     // "fix" the expectation: a changed literal silently widens or narrows what
     // retirement is willing to DELETE.
     assert_eq!(
@@ -148,7 +148,7 @@ fn retire_backs_up_a_one_byte_edit_of_a_generated_default() {
 
 #[test]
 fn retire_treats_normalized_variants_of_a_generated_default_as_custom() {
-    // #979 4.3.A: NO normalization. A CRLF copy, a BOM, trailing whitespace, and a
+    // 4.3.A: NO normalization. A CRLF copy, a BOM, trailing whitespace, and a
     // zero-byte file are each UNKNOWN and must be preserved, never deleted.
     let frozen = STANDALONE_GLOBAL_CONTEXT_BEFORE_CORE_CONCEPTS;
     let crlf = frozen.replace('\n', "\r\n").into_bytes();
@@ -223,7 +223,7 @@ fn retire_ignores_forged_state_claiming_a_custom_file_is_seeded() {
 
 #[test]
 fn retire_removes_only_the_global_state_entry() {
-    // #979 G3: `coordinator`, `rootAgent`, and unrelated keys must all survive.
+    // G3: `coordinator`, `rootAgent`, and unrelated keys must all survive.
     let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
         live_global(temp.path()),
@@ -252,7 +252,7 @@ fn retire_removes_only_the_global_state_entry() {
 
 #[test]
 fn retire_leaves_malformed_state_untouched_and_still_retires_the_file() {
-    // #979 G3 / 4.3.C. This is the case that `persist_state_strict` would destroy:
+    // G3 / 4.3.C. This is the case that `persist_state_strict` would destroy:
     // `load_state` returns an EMPTY map with `dirty: true` on malformed JSON, and
     // the strict wrapper writes whenever `dirty` is set, so the "safe" idiom would
     // overwrite this file with `{"templates":{}}` and wipe `coordinator` and
@@ -423,7 +423,7 @@ fn retire_preserves_the_destination_when_the_source_disappeared() {
 
 #[test]
 fn retire_leaves_a_project_global_and_its_state_untouched() {
-    // The whole point of #979: retiring the APP CONFIG directory must not touch the
+    // The whole point of the retirement: retiring the APP CONFIG directory must not touch the
     // project's `.ac` global or its project state.
     let temp = tempfile::tempdir().expect("tempdir");
     let config_dir = temp.path().join("portable-config");
@@ -471,7 +471,7 @@ fn try_symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_file(target, link)
 }
 
-/// #1748 new test 1 and its control in one harness: the SAME pristine fixture
+/// New test 1 and its control in one harness: the SAME pristine fixture
 /// is silent when the state says we wrote those bytes and notifies when it does
 /// not. The flipped input is `lastSeededSha256` and nothing else; the file is
 /// replaced and backed up identically in both arms.
@@ -542,7 +542,7 @@ fn pristine_older_generation_is_replaced_silently_when_the_state_says_we_wrote_i
     }
 }
 
-/// #1748 new test 2: no state file at all is the population that must be told.
+/// New test 2: no state file at all is the population that must be told.
 #[test]
 fn an_installation_with_no_state_entry_is_notified() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -592,7 +592,7 @@ fn an_installation_with_no_state_entry_is_notified() {
     );
 }
 
-/// #1748 new test 3: the repair never touches a file that already holds the
+/// New test 3: the repair never touches a file that already holds the
 /// current default.
 #[test]
 fn a_file_already_equal_to_the_current_default_is_never_rewritten() {
@@ -636,7 +636,7 @@ fn a_file_already_equal_to_the_current_default_is_never_rewritten() {
     assert_eq!(backup_files(&ac_root).len(), 1);
 }
 
-/// #1748 new test 4: `create_backup` never opens, truncates or replaces an
+/// New test 4: `create_backup` never opens, truncates or replaces an
 /// existing backup, so every earlier one survives every later replacement.
 #[test]
 fn every_replacement_keeps_every_earlier_backup() {
@@ -697,7 +697,7 @@ fn every_replacement_keeps_every_earlier_backup() {
     }
 }
 
-/// #1748 new test 5: `global` has left the actionable surface entirely.
+/// New test 5: `global` has left the actionable surface entirely.
 #[test]
 fn the_global_template_can_no_longer_be_dismissed_or_overwritten_by_hand() {
     let temp = tempfile::tempdir().expect("tempdir");

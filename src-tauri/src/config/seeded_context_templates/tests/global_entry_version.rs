@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1748 new test 6. The other half of this contract lives in
+/// New test 6. The other half of this contract lives in
 /// `config::local_overlay`, whose PRIVATE markdown local suffix must stay
 /// `.local.md`. This pins the VALUE only; it cannot detect the forbidden
 /// module arc, because it never calls into the overlay. AC-01-8 detects that.
@@ -15,7 +15,7 @@ fn local_override_filename_is_the_overlay_sibling() {
     assert_eq!(local_override_filename("a.md.md"), "a.md.local.md");
 }
 
-/// #1748 new test 7: the whole content of D2, and the replacement carrier for
+/// New test 7: the whole content of D2, and the replacement carrier for
 /// the read-path tests that would otherwise have survived vacuously. One
 /// fixture, driven through FOUR entry points; the flipped input is the entry
 /// point throughout. Arms (a), (b) and (c) share one tree, and (c)'s
@@ -125,7 +125,7 @@ fn the_read_path_no_longer_repairs_the_global_but_the_scan_does() {
     assert_scan_repairs_pristine_global();
 }
 
-/// #1748 new test 8: distribution ownership and the recognizer slot are one
+/// New test 8: distribution ownership and the recognizer slot are one
 /// decision, across every spec. Written as ONE loop with a single assertion so
 /// the field-access census stays derivable.
 #[test]
@@ -144,7 +144,7 @@ fn distribution_ownership_and_the_recognizer_slot_never_drift() {
     assert_eq!(owned, 1, "exactly one spec is distribution-owned");
 }
 
-/// #1748 phase 01b: the raw slice of one template entry in the persisted state
+/// Phase 01b: the raw slice of one template entry in the persisted state
 /// file. The assertions below read the serialized BYTES rather than a parsed
 /// round trip, because a round trip reads `Null` both when a key holds null and
 /// when the field was dropped from every entry (D4). No entry field is itself an
@@ -161,7 +161,7 @@ fn raw_entry_slice<'a>(raw: &'a str, id: &str) -> &'a str {
     &rest[..end]
 }
 
-/// #1748 phase 01b test 1: only the `global` entry loses its recorded version.
+/// Phase 01b test 1: only the `global` entry loses its recorded version.
 /// The `coordinator` and `unrelated` assertions ARE the control, and they are the
 /// ones a DELETION of the field breaks: `SeededContextTemplateState.templates` is
 /// a `BTreeMap` and `persist_state` re-serializes the whole map, so dropping the
@@ -238,7 +238,7 @@ fn only_the_global_entry_loses_its_recorded_version() {
     );
 }
 
-/// #1748 phase 01b test 2: the equal-default path, which D2 exists for. On an
+/// Phase 01b test 2: the equal-default path, which D2 exists for. On an
 /// installation whose base file already matches the shipped default the scan takes
 /// the early return in `sync_one_template`, every downstream guard compares hashes
 /// and finds them equal, and without D2 nothing would ever mark the state dirty,

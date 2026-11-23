@@ -237,7 +237,7 @@ pub async fn create_workgroup(
         }
 
         // Create __agent_*/ replica dirs through the same guarded, lossless
-        // initialization the CLI/on-disk path uses (#1939): a replica's tooling,
+        // initialization the CLI/on-disk path uses: a replica's tooling,
         // custom context and unknown keys survive re-creation.
         initialize_workgroup_replicas_on_disk_traced(
             &base,

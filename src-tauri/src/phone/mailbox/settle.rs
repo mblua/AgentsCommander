@@ -845,7 +845,7 @@ pub(crate) fn session_has_current_pty_submission_provenance(
     let Some(agent_id) = session.agent_id.as_deref() else {
         return false;
     };
-    // #2716 (B3, option C) row 12: a read-only comparison, not a spawn, so it is
+    // (B3, option C) row 12: a read-only comparison, not a spawn, so it is
     // exempt from the builders' refusal. Membership is read from `settings.agents`
     // directly, as `compute_profile_outdated` does.
     if !settings.agents.iter().any(|agent| agent.id == agent_id) {
