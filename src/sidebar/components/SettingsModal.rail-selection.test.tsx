@@ -90,7 +90,7 @@ function railCountAttr(root: HTMLElement): string | null {
   return byTestId(root, "settings.profiles.section")?.getAttribute("data-ac-rail-count") ?? null;
 }
 
-describe("SettingsModal coding-agent rail selection (#895)", () => {
+describe("SettingsModal coding-agent rail selection", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

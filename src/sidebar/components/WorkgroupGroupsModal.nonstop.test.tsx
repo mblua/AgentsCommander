@@ -40,7 +40,7 @@ function mountModal() {
   };
 }
 
-describe("#777 WorkgroupGroupsModal Non-stop section", () => {
+describe("WorkgroupGroupsModal Non-stop section", () => {
   let restoreTransport: (() => void) | null = null;
 
   beforeEach(() => {
@@ -113,7 +113,7 @@ describe("#777 WorkgroupGroupsModal Non-stop section", () => {
   });
 });
 
-describe("#2182 WorkgroupGroupsModal Non-stop sound is platform-independent", () => {
+describe("WorkgroupGroupsModal Non-stop sound is platform-independent", () => {
   let restoreTransport: (() => void) | null = null;
 
   beforeEach(() => {
@@ -177,7 +177,7 @@ describe("#2182 WorkgroupGroupsModal Non-stop sound is platform-independent", ()
   });
 });
 
-describe("#4580 WorkgroupGroupsModal reads Telegram bots from settingsStore", () => {
+describe("WorkgroupGroupsModal reads Telegram bots from settingsStore", () => {
   let restoreTransport: (() => void) | null = null;
 
   beforeEach(() => {

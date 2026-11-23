@@ -15,7 +15,7 @@ import {
 // directory separator. The check is a pure shape heuristic: no filesystem
 // access, no platform sniffing, and it never blocks saving.
 
-describe("isPlausibleCompleteExecutablePath (#1313)", () => {
+describe("isPlausibleCompleteExecutablePath", () => {
   it.each([
     // Bare names: no directory separator -> not a complete path.
     ["powershell.exe", false],

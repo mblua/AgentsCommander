@@ -34,7 +34,7 @@ import { newWatcherConfig } from "./settings-watchers";
  * an entry in `TABS`, the Resource Monitor asks for it by name, and it resolves to
  * `"general"` all the same. That is the broken precedent this test exists to not repeat.
  */
-describe("resolveSettingsSection (#1171)", () => {
+describe("resolveSettingsSection", () => {
   it('maps "watchers" to the Watchers tab and not to General', () => {
     expect(resolveSettingsSection("watchers")).toBe("watchers");
   });
@@ -59,7 +59,7 @@ describe("resolveSettingsSection (#1171)", () => {
  * so a save round-trips the user's bytes. That guarantee only survives if the frontend's
  * save path carries the entry through untouched, which is what this pins.
  */
-describe("saving a settings draft that holds an unreadable watcher (#1171)", () => {
+describe("saving a settings draft that holds an unreadable watcher", () => {
   const unreadable = { mode: "State", commands: "claude" };
 
   it("carries the unreadable entry and the valid one through the save merge", () => {
@@ -95,7 +95,7 @@ describe("saving a settings draft that holds an unreadable watcher (#1171)", () 
  * express both, which is why the selector is a mode. The other tests pin the pure
  * functions; this one pins the payload that actually leaves the modal.
  */
-describe("the watcher commands selector, through a real save (#1171)", () => {
+describe("the watcher commands selector, through a real save", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -271,7 +271,7 @@ function deferred<T>(): {
  * keystroke clears the answer and issues no call to replace it, leaving the row pending
  * forever. That case is the last assertion here and it must fail against the old pair.
  */
-describe("the reach preview, keyed on the request fingerprint (#1171 test 58h)", () => {
+describe("the reach preview, keyed on the request fingerprint (test 58h)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -734,7 +734,7 @@ describe("the reach preview, keyed on the request fingerprint (#1171 test 58h)",
  * would otherwise activate a watcher that matches everything on every agent, fill the caps,
  * turn the ring over and displace a useful watcher out of an agent's budget.
  */
-describe("the birth state of a watcher row and how it reads (#1171)", () => {
+describe("the birth state of a watcher row and how it reads", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
