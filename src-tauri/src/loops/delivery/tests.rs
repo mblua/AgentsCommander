@@ -81,7 +81,7 @@ fn loop_command_for(
     }
 }
 
-/// #1873 - cold Muse is fresh, known-state Muse resumes, and every prior
+/// Cold Muse is fresh, known-state Muse resumes, and every prior
 /// provider (plus ad-hoc, argument-bearing and recipe-mismatched Muse) keeps
 /// the historical `false` on both branches.
 #[test]
@@ -284,7 +284,7 @@ fn final_revalidation_blocks_policy_change_and_deleted_config_before_inject() {
     assert!(!dir.exists());
 }
 
-// ── #2176 - Loop wake agent resolution ──
+// ── Loop wake agent resolution ──
 
 fn loop_test_agent(id: &str, command: &str) -> AgentConfig {
     AgentConfig {

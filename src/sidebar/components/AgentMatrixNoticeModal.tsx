@@ -2,7 +2,7 @@ import { Component, onCleanup } from "solid-js";
 import { automationAttrs } from "../../shared/automation-hooks";
 
 /**
- * #2046 - left click on an Agent Matrix row. The row is not launchable: this
+ * Left click on an Agent Matrix row. The row is not launchable: this
  * notice says what the matrix is, what a replica is, and where the matrix
  * folder lives. Informational only; it closes on Got it, the overlay click, or
  * Escape, and never starts anything.

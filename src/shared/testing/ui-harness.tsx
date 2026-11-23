@@ -38,7 +38,7 @@ import {
   type CompactHostHooks,
 } from "../sidebar-compact";
 
-// #2236 phase 7 — the pulse seam override is module-level state like the
+// Phase 7 — the pulse seam override is module-level state like the
 // compact signals, so tests install and clear it only through the harness.
 export { setPulseSeamOverridesForTests };
 export { baseSettings };
@@ -111,7 +111,7 @@ export async function waitFor(
   throw new Error(`Timed out after ${timeoutMs}ms`);
 }
 
-// #1077: baseSettings() stays legacy-shaped (no report) so existing suites keep
+// BaseSettings() stays legacy-shaped (no report) so existing suites keep
 // exercising the absent-report legacy fallback. These focused factories build
 // the new snapshot/report shape only where a test needs it.
 export function projectPathResolution(
@@ -194,7 +194,7 @@ export function bridge(overrides: Partial<BridgeInfo> = {}): BridgeInfo {
   };
 }
 
-// #2236 — the compact signal, the nudge and the restore snapshot are
+// The compact signal, the nudge and the restore snapshot are
 // module-level signals that outlive a render exactly like the stores below, so
 // a leaked compact mode would silently disable a later file's expanded-mode
 // controls. The registrations are tracked here so a leaked host is released
@@ -223,18 +223,18 @@ export function resetSidebarCompactForTests(): void {
 export function resetUiStoresForTests(): void {
   resetSidebarCompactForTests();
   projectStore.clear();
-  // #943 B2 - the volatile layer outlives a render, so without this a test that
+  // B2 - the volatile layer outlives a render, so without this a test that
   // lands a branch event leaks its repoBranch/repoBranchByPath into the next test
   // in the same file (order-dependent, and silently wrong rather than red).
   replicaVolatileStore.clearAll();
-  // #4752 - the unleash overrides are module-level too; reset them the same way.
+  // The unleash overrides are module-level too; reset them the same way.
   unleashedReplicasStore.resetForTests();
-  // #4785 - the one sidebar regex filter is module-level state too.
+  // The one sidebar regex filter is module-level state too.
   sidebarFilter.resetForTests();
-  // #2064 - same hazard, same reason: the remote-activity map is event-fed and out
+  // Same hazard, same reason: the remote-activity map is event-fed and out
   // of setSessions' reach, so it would survive into the next test in the same file.
   remoteActivityStore.clearAll();
-  // #1033 - same hazard, same reason: the context reading map is event-fed and is
+  // Same hazard, same reason: the context reading map is event-fed and is
   // deliberately out of setSessions' reach, so it survives into the next test.
   sessionsStore.resetContextReadingsForTests();
   sessionsStore.setSessions([]);
@@ -245,7 +245,7 @@ export function resetUiStoresForTests(): void {
   sessionsStore.setCoordSortByActivity(false);
   sessionsStore.setSidebarPointerInside(false);
   sessionsStore.setSidebarMenuOpen(false);
-  // #1624 - the activity stamps are module-level store state fed by markActivity
+  // The activity stamps are module-level store state fed by markActivity
   // (performance.now) and are deliberately out of setSessions' reach, so without
   // this a test's markActivity stamps leak into the next test in the same file
   // and the menu-open order snapshot starts from the previous test's newest row.
@@ -253,11 +253,11 @@ export function resetUiStoresForTests(): void {
   sessionsStore.clearDetached();
   workgroupGroupsStore.resetForTests();
   projectCollapseStore.resetForTests();
-  // #965 - the rail's own collapse state is a module-level signal, so it outlives a
+  // The rail's own collapse state is a module-level signal, so it outlives a
   // render exactly like the stores above. Without this, a test that collapses a
   // header leaks a folded rail into the next test in the same file.
   railCollapseStore.resetForTests();
-  // #2202 - same hazard, same reason as #1624/#965: the CI falling-edge watcher's
+  // Same hazard, same reason as the re-render hazard: the CI falling-edge watcher's
   // previous-state map is module-level and out of setSessions' reach, so a second
   // App render in one file would inherit a stale `true` (spurious stamp) or a
   // cleared map (missed stamp).
@@ -271,7 +271,7 @@ export function resetUiStoresForTests(): void {
   __resetHomeStoreForTests();
 }
 
-// #3027 - jsdom has no layout, so every element measures 0x0. The replica menu
+// Jsdom has no layout, so every element measures 0x0. The replica menu
 // closes when its origin row measures empty, which would shut it in every test
 // that does not model layout. Rows and the ancestors that contain them get
 // synthetic visible bounds instead; every other element keeps its own rect.

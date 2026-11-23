@@ -116,7 +116,7 @@ async fn assert_fresh_probe_releases_key(
         .expect("fresh same-kind submission succeeds"),
         CriticalAdmissionOutcome::Completed(())
     );
-    // #1580 releases the key before Completed; this bounded wait is kept unchanged.
+    // The fix releases the key before Completed; this bounded wait is kept unchanged.
     await_state_eq(
         "fresh probe releases its critical admission key",
         Duration::from_secs(1),
@@ -128,7 +128,7 @@ async fn assert_fresh_probe_releases_key(
     assert!(!coordinator.critical_key_registered_for_test(session_id, kind));
 }
 
-// #1580 deterministic ordering detector. The worker needs `critical_keys` to free
+// Deterministic ordering detector. The worker needs `critical_keys` to free
 // the key; the test holds it. "All admission permits returned" happens after the
 // send before the fix, and before the (blocked) send after it.
 async fn assert_critical_completion_observed_after_release(shutdown_first: bool) {

@@ -7,7 +7,7 @@ import { normalizeProjectPathForCompare } from "./project-refresh";
 
 /** Previous CI state per room, module-level because the watcher must see
  *  the edge across effect runs. Cleared by `resetCiActivityStampForTests` (the
- *  `#1624`/`#965` hazard: it is out of `setSessions`' reach, so a second render in
+ *  re-render hazard: it is out of `setSessions`' reach, so a second render in
  *  one test file would inherit a stale `true` or a cleared map). */
 const previous = new Map<string, boolean>();
 

@@ -1,5 +1,5 @@
-// ESLint first slice (#4460): Solid-specific rules only.
-// Each rule has no SonarCloud equivalent; see issue #4460 plan.
+// ESLint first slice: Solid-specific rules only.
+// Each rule has no SonarCloud equivalent.
 import tseslint from "typescript-eslint";
 import solid from "eslint-plugin-solid";
 
