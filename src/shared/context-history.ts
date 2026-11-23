@@ -256,7 +256,7 @@ export function selectSessionWindow(
   preferred: number | null | undefined,
   buckets: readonly SessionWindowBucket[] | null | undefined,
 ): { requestedSessions: number; bucket: SessionWindowBucket | null } | null {
-  const last = counts[counts.length - 1];
+  const last = counts.at(-1);
   if (last === undefined) return null;
   const isMember = preferred !== undefined && preferred !== null && counts.includes(preferred);
   const requestedSessions = isMember ? preferred : last;

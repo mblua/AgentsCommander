@@ -138,7 +138,7 @@ function currentGesture(
   const gesture = gestures.get(key);
   if (gesture || pointerId !== undefined) return gesture;
   const values = [...gestures.values()];
-  return values[values.length - 1];
+  return values.at(-1);
 }
 
 function startsPress(event: Event, gesture: Gesture | undefined): boolean {

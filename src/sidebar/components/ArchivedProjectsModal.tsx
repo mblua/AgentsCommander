@@ -58,7 +58,7 @@ const ArchivedProjectsModal: Component<ArchivedProjectsModalProps> = (props) => 
       if (focusables.length === 0) return;
 
       const first = focusables[0];
-      const last = focusables[focusables.length - 1];
+      const last = focusables.at(-1);
       if (!first || !last) return; // unreachable: length > 0 above
       const active = document.activeElement as HTMLElement | null;
       if (!active || !modalRef?.contains(active)) {
