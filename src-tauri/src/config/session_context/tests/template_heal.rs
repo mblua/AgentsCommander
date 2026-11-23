@@ -629,7 +629,7 @@ fn edited_legacy_rendered_default_preserves_custom_template_content() {
     assert_contains_canonical_path(&content, &new_matrix);
     assert!(content.contains("## GOLDEN RULE"));
     assert!(content.contains("## Inter-Agent Messaging"));
-    // #664: this template is NotLegacy (unknown `## Project Rules` heading),
+    // This template is NotLegacy (unknown `## Project Rules` heading),
     // so the heal must NOT touch it. The on-disk bytes are unchanged.
     let on_disk = std::fs::read_to_string(&template_path).expect("read template");
     assert_eq!(on_disk, edited);
@@ -680,7 +680,7 @@ fn inline_edited_legacy_rendered_default_preserves_custom_template_content() {
     assert_contains_canonical_path(&content, &new_matrix);
     assert!(content.contains("## GOLDEN RULE"));
     assert!(content.contains("## Inter-Agent Messaging"));
-    // #664: this template is NotLegacy via reconstruction inequality (no
+    // This template is NotLegacy via reconstruction inequality (no
     // unknown heading), the stronger preserve guard. The heal must NOT touch
     // it: the on-disk bytes are unchanged.
     let on_disk = std::fs::read_to_string(&template_path).expect("read template");
@@ -848,7 +848,7 @@ fn stale_global_self_heal_returns_commit_point_publication() {
     );
 }
 
-// #1065 Stage F activation coverage: a stale-generated global self-heal records
+// Activation coverage: a stale-generated global self-heal records
 // its commit-point publication into the seed manifest under the gate. Removing the
 // `record_project_context_publication` call from `heal_stale_global_recorded` (the
 // adapter) would leave no manifest and fail this test (plan acceptance item 22).

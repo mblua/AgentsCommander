@@ -308,7 +308,7 @@ fn broad_read_tokens(clause: &str) -> Vec<&str> {
         .collect()
 }
 
-// ---- #658 presence-aware append-fallback tests ----------------------------
+// ---- presence-aware append-fallback tests ----------------------------
 
 /// Compact mirror of the real stale-hybrid `Context.AgentsCommander.md`: the
 /// governance sections written INLINE with fine-grained tokens, but WITHOUT
@@ -531,7 +531,7 @@ fn assert_global_context_before_one_role(content: &str, role_marker: &str) {
     );
 }
 
-// #664 self-heal tests --------------------------------------------------
+// Self-heal tests --------------------------------------------------
 
 /// Assert no `.Context.AgentsCommander.md.<pid>.<n>.tmp` scratch file was
 /// left behind by an atomic replace in `dir`.

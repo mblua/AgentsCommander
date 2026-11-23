@@ -411,7 +411,7 @@ async fn purge_sessions_outside_project_paths_keeps_archived_session_when_retent
     assert_eq!(saved_names, vec!["active", "archived"]);
 }
 
-/// #698 grinch HIGH regression — the orphan purge must take
+/// Grinch HIGH regression — the orphan purge must take
 /// `sessions_save_lock()` and re-read `sessions.json` INSIDE that lock, so it
 /// can never overwrite a raise-hand that another locked writer persisted
 /// after the purge began. We drive the exact interleaving deterministically:

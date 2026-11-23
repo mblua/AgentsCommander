@@ -1,6 +1,6 @@
 use super::*;
 
-// #4752 P01: the D5 integrity rules render in their own block after the GOLDEN RULE.
+// P01: the D5 integrity rules render in their own block after the GOLDEN RULE.
 const GOLDEN_HEADING: &str = "## GOLDEN RULE";
 const INTEGRITY_HEADING: &str = "## Integrity Rules";
 const MOVED_SENTENCES: [&str; 5] = [
