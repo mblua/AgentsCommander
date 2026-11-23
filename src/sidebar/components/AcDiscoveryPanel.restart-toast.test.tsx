@@ -16,7 +16,7 @@ function restartButton(): HTMLButtonElement | undefined {
   );
 }
 
-describe("AcDiscoveryPanel Restart Session toast (#2573)", () => {
+describe("AcDiscoveryPanel Restart Session toast", () => {
   describeRestartToast({
     failName: "restart_session_from_the_discovery_menu_shows_the_plain_error_toast",
     okName: "a_successful_discovery_restart_shows_no_toast",
