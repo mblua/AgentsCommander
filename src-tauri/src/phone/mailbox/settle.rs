@@ -412,7 +412,7 @@ pub(crate) fn restore_handoff_after_failed_inject(
 /// prompt naming the exact archived path, and rename the file back if the inject fails. Archiving
 /// before the prompt exists makes the promised location final, so a late read still succeeds (the
 /// old post-inject 180s timer raced slow, queued, or unsubmitted prompts); it also keeps a
-/// consumed handoff from false-triggering the NEXT cycle's existence gate (the old timer's concern).
+/// consumed handoff from false-triggering the NEXT cycle's existence gate (the timer's concern).
 /// `build_prompt` is the flow's prompt builder (`build_self_clear_handoff_prompt` /
 /// `build_self_switch_handoff_prompt`); `action` labels the log lines.
 pub(crate) async fn inject_handoff_prompt_with_archive<Inject, InjectFut>(
