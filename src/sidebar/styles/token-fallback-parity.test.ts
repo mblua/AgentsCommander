@@ -1,4 +1,4 @@
-// #2744 phase C - dark non-regression guard for the tokens defined in
+// Dark non-regression guard for the tokens defined in
 // variables.css. Each of DEFINED used to be read as var(--x, <dark literal>)
 // with no definition anywhere; its :root value is that same literal, which is
 // only safe while every consumer passes it. A new consumer with a different or

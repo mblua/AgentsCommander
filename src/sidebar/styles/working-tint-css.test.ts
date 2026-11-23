@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { declProps, declValue, escapeRe, scanRules, type ScannedRule } from "./css-test-helpers";
 
-// #1755 — the passive "someone is working here" wash. jsdom never applies this
+// The passive "someone is working here" wash. jsdom never applies this
 // stylesheet, and it resolves the cascade by document order rather than by
 // specificity (measured with a control, see ProjectPanel.working-tint.test.tsx),
 // so the bytes on disk are the only place the declarations, the token values and

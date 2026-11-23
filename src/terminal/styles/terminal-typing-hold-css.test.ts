@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// #2379 - jsdom never applies terminal.css, so the bytes on disk are the only
+// Jsdom never applies terminal.css, so the bytes on disk are the only
 // place the padlock state colors can be pinned. The padlock is a monochrome
 // SVG, so `color` paints it: dimmed status-bar foreground while inactive,
 // accent while the hold is closed.
