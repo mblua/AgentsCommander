@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// #2180 — the non-stop alarm must have exactly one importer.
+// The non-stop alarm must have exactly one importer.
 //
 // `app.emit` from the backend is a broadcast to every window, so a second module
 // that imports the alarm would double the tone in a second webview while every

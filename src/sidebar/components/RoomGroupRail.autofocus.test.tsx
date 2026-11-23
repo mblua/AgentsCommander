@@ -25,7 +25,7 @@ import {
 import RoomGroupRail from "./RoomGroupRail";
 import ProjectPanel from "./ProjectPanel";
 
-// #810 - Two backslash Windows paths (grinch F4). Forward-slash or simplified
+// Two backslash Windows paths (grinch F4). Forward-slash or simplified
 // paths would hide the F1 regression (CSS selector happened to parse cleanly).
 // With the ref-Map fix, backslash paths exercise the real production code path.
 const projectPathA = "C:\\ProjectA";
@@ -92,7 +92,7 @@ function createProjectFake(allowedPaths: readonly string[]): FakeTransport {
 }
 
 // Find the header by its raw title ATTRIBUTE value, not a CSS attribute
-// selector: Windows backslashes are CSS string escapes (#810).
+// selector: Windows backslashes are CSS string escapes.
 function findProjectHeader(root: ParentNode, projectPath: string): HTMLElement {
   const headers = Array.from(root.querySelectorAll<HTMLElement>(".project-header"));
   const header = headers.find((h) => h.getAttribute("title") === projectPath);

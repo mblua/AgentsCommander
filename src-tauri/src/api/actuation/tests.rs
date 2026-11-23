@@ -64,7 +64,7 @@ fn build_send_body_resolves_existing_message_and_formats_pointer() {
     assert!(!body.contains("/workspace/"));
 }
 
-/// #1614 requirement (D), section 9.1 "API and snapshot fixture twins".
+/// Requirement (D), section 9.1 "API and snapshot fixture twins".
 /// The `wg-` fixture above is deliberately NOT converted (Rule P2); the
 /// Room case is added beside it, carrying the `room1-` short token that
 /// section 5.9's `parse_wg_prefix` now produces for a Room replica.

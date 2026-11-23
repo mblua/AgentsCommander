@@ -58,7 +58,7 @@ fn first_text_line_skips_blank_and_ansi_only_lines() {
     assert_eq!(first_text_line(""), None);
 }
 
-/// #1551 - an OSC sequence ends ONLY at BEL or at the exact pair `ESC \` (ST).
+/// An OSC sequence ends ONLY at BEL or at the exact pair `ESC \` (ST).
 /// An `ESC` followed by anything else is OSC content: the parser stays inside
 /// the sequence and keeps discarding, so malformed or adversarial CLI output
 /// cannot leak sequence bytes into the version token or the diagnostic.

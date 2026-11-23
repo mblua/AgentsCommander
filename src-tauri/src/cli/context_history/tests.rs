@@ -8,7 +8,7 @@ use crate::context_history::{
 };
 
 const NOW: i64 = 1_800_000_000_000;
-/// The default Settings retention the report reads (#4049).
+/// The default Settings retention the report reads.
 const RETENTION: u32 = 30;
 const FROM: &str = "2026-11-01T00:00:00Z";
 const TO: &str = "2026-11-08T00:00:00Z";
@@ -412,7 +412,7 @@ fn project_errors_match_the_shared_helper() {
     assert_eq!(local, shared);
 }
 
-/// #4049: a CLI Settings file in a temp profile with the given history keys.
+/// A CLI Settings file in a temp profile with the given history keys.
 fn settings_file(dir: &Path, enabled: bool, retention: u32) -> (PathBuf, Vec<u8>) {
     let mut raw = serde_json::to_value(crate::config::settings::AppSettings::default())
         .expect("settings json");

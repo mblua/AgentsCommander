@@ -57,7 +57,7 @@ const formatBytes = (value?: number | null): string => {
   return `${next.toFixed(digits)} ${units[index]}`;
 };
 
-/** #2581 - "<agent> · <workgroup> (<name>)" plus size and limit. Missing
+/** "<agent> · <workgroup> (<name>)" plus size and limit. Missing
  *  parts are dropped; with no agent the CLI name stands alone. */
 export const groupWarningText = (
   warning: ResourceGroupWarning,
@@ -159,7 +159,7 @@ const toggleFilter = (
   set(next);
 };
 
-// #2245 - sort, matching and debouncing for the integral view.
+// Sort, matching and debouncing for the integral view.
 
 type RmSortField = "default" | "cpu" | "private" | "processes" | "name";
 type RmSortDirection = "asc" | "desc";
@@ -474,7 +474,7 @@ interface ResourceMonitorAppProps {
 }
 
 const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
-  // #2245 - several groups can be open at once, so this is a Set rather than a
+  // Several groups can be open at once, so this is a Set rather than a
   // single id. Every write produces a NEW Set so Solid sees the change.
   const [expandedGroupIds, setExpandedGroupIds] = createSignal<Set<string>>(
     new Set()
@@ -589,7 +589,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
   );
   const [roleFilter, setRoleFilter] = createSignal<Set<string>>(new Set());
 
-  // #2245 - the typed text is visible immediately; only the applied value is
+  // The typed text is visible immediately; only the applied value is
   // delayed, and only the applied value participates in filtering.
   const [pidText, setPidText] = createSignal("");
   const [appliedPidText, setAppliedPidText] = createSignal("");
@@ -755,7 +755,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     searchDebounce.flush("");
   };
 
-  // #2581 - a per-agent warning jumps to its row. A filter may hide the row,
+  // A per-agent warning jumps to its row. A filter may hide the row,
   // so clear the filters first and focus once the list has re-rendered.
   const focusGroupRow = (sessionId: string) => {
     if (!groups().some((g) => g.sessionId === sessionId)) return;
@@ -1164,7 +1164,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
           </div>
         </Show>
 
-        {/* #2581 - above the Agents list, so it is seen first and never
+        {/* Above the Agents list, so it is seen first and never
             shares space with the rows. */}
         <Show when={groupWarnings().length > 0 || (snapshot()?.warnings ?? []).length > 0}>
           <section class="rm-warnings">
@@ -1588,7 +1588,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
             }
           >
             <>
-              {/* #2582 - captions only, so aria-hidden: the row button already
+              {/* Captions only, so aria-hidden: the row button already
                   reads every value, and associating a caption outside the button
                   with a cell inside it would need table roles on markup that is
                   not a table. Hidden below 860px by CSS; the cells' title
@@ -1699,7 +1699,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                       >
                         {formatBytes(group.privateBytes)}
                       </span>
-                      {/* #2245: this metric used to be visually hidden at every
+                      {/* This metric used to be visually hidden at every
                           width, so "no metric disappears" was false before the
                           change started. It now takes the eighth grid track. */}
                       <span
@@ -1834,7 +1834,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                             {group.lastError}
                           </div>
                         </Show>
-                        {/* #647 D: ADD the security guidance below the per-PID
+                        {/* D: ADD the security guidance below the per-PID
                             detail (never replacing it) when the last kill on this
                             still-quarantined group was blocked by a security
                             product. */}
@@ -1916,7 +1916,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                 Session {target.sessionId} and its entire process tree will be
                 force-terminated via its Job Object.
               </p>
-              {/* #647 (Step 7): a non-finalized result keeps the modal open. A
+              {/* (Step 7): a non-finalized result keeps the modal open. A
                   `terminating` result means a concurrent kill is still settling
                   (show "Verifying...", offer Retry); otherwise it is blocked
                   (`quarantined`) — show the per-PID detail, with the AV-exclusion

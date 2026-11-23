@@ -1,4 +1,4 @@
-// #2746 (epic #2744) - generic guard: no CSS rule may be readable in dark mode
+// Generic guard: no CSS rule may be readable in dark mode
 // and unreadable in light mode.
 // Origin defect: #2744 (light-theme text resolved to dark-theme colors, e.g. a
 // `rgba(255, 255, 255, 0.5)` fallback on the #f5f5f7 light surface).

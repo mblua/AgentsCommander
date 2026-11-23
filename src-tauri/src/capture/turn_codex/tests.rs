@@ -327,7 +327,7 @@ fn an_unparseable_closure_is_counted_and_skipped() {
     assert_eq!(turns.open_turns(), 0);
 }
 
-// #2356 item 1: `turn_complete` is an alias of `task_complete`.
+// `turn_complete` is an alias of `task_complete`.
 #[test]
 fn parse_accepts_the_turn_complete_alias() {
     assert_eq!(
@@ -379,7 +379,7 @@ fn an_alias_closure_emits_the_turn_through_on_line() {
     assert_eq!(turns.counters().emitted, 1);
 }
 
-// #2356 item 2, the section 5.1 fixture of #2268: a superseded turn is
+// A superseded turn is
 // never recreated by a late fragment and its closure.
 #[test]
 fn a_superseded_turn_is_not_recreated_by_a_late_fragment() {

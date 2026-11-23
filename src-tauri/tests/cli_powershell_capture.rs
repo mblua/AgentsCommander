@@ -1,5 +1,5 @@
 #![cfg(target_os = "windows")]
-//! Integration test for issue #129. Reproduces the PS-NonInteractive `&` direct-
+//! Integration test. Reproduces the PS-NonInteractive `&` direct-
 //! call failure mode and asserts that the fix (conditional `AttachConsole`) lets
 //! stdout flow through the inherited pipe.
 //!
@@ -246,7 +246,7 @@ fn list_peers_outputs_valid_json_under_powershell_noninteractive_via_git_bash() 
     debug_guard();
     let guard = TempConfigRoot::new();
 
-    // #1596: Git Bash is the required carrier on Windows — bash.exe is
+    // Git Bash is the required carrier on Windows — bash.exe is
     // console-subsystem, so PowerShell captures its stdout AND propagates the
     // AC binary's exit code through it (`; exit $LASTEXITCODE`). Skip (not a
     // failure) when bash.exe is not on PATH, e.g. a non-Git-Bash dev machine.

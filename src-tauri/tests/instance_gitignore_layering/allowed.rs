@@ -407,7 +407,7 @@ pub(crate) const ALLOWED_HOST_SUPER_REFERENCES: [(&str, &str); 0] = [];
 /// `x` name the same item, so this anchor is a second spelling of every path
 /// that begins at the module itself, and this module has no such path today.
 ///
-/// #1273 review, entry 17: before this table existed, `self::` was scanned under
+/// Review, entry 17: before this table existed, `self::` was scanned under
 /// no anchor anywhere in this file, so it was a free spelling for reaching
 /// anything in scope. An empty equality refuses the whole class rather than the
 /// one name `root_agent`.
@@ -506,7 +506,7 @@ pub(crate) const CONSTANT_HOME: &str = "src/config.rs";
 /// is this, taken **before** the observed set is deduplicated. See entry 9 of the
 /// uncovered list for why the count exists at all.
 ///
-/// #1273 review, entries 14 and 15: this count used to be the number of
+/// Review, entries 14 and 15: this count used to be the number of
 /// occurrences of the literal text `use super::*;`. Neither
 /// `use super::super::*;` nor `use super::{*};` contains that text, so both were
 /// measured slipping past a count whose whole purpose was to be exactly 1, while

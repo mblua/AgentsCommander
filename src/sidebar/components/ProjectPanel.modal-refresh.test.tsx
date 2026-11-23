@@ -33,12 +33,12 @@ import { executeAutomationRequest, resetAutomationBridgeForTests } from "../../s
 import type { UiAutomationAction } from "../../shared/types";
 import { stubAutomationGeometry } from "../../shared/testing/automation-geometry";
 
-// #710: modal-open state used to live on the per-project <For> row. A background
+// Modal-open state used to live on the per-project <For> row. A background
 // discovery refresh replaces each project object reference, so SolidJS disposes
 // and re-creates the row — tearing down any modal whose open-flag lived there.
 // These tests drive the three reported flows to a modal and assert it survives a
 // reloadProject (and, for the workgroup modal, that its live data re-resolves by
-// stable identity). They mirror the restart-prompt (#537) / edit-team (#669)
+// stable identity). They mirror the restart-prompt / edit-team
 // survival tests, the precedents for the same bug class.
 
 
@@ -129,7 +129,7 @@ function discoveryResult(extraTeams: string[] = [], loops: AcLoopSummary[] = [])
             path: replicaPath,
             repoPaths: [],
             isCoordinator: true,
-            // #1943 - full persisted lock payload: unprotected, so the lock row
+            // Full persisted lock payload: unprotected, so the lock row
             // is actionable and no lock chip is drawn.
             savedPair: null,
             selectionState: "unlocked",
@@ -175,7 +175,7 @@ function setupTransport(fake: FakeTransport): void {
     baseSettings({ agents: [codexAgent(), claudeAgent()] }) satisfies AppSettings,
   );
   fake.resolve("resolve_coding_agent_profile", resolution());
-  // #1943 - every command the lock bar drives, with fully populated payloads.
+  // Every command the lock bar drives, with fully populated payloads.
   fake.resolve("preview_coding_agent_profile_selection", {
     scope: "replica",
     targetCount: 1,
@@ -521,7 +521,7 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
 
     // The loop is re-resolved by stable id (editingLoopResolved). Before #710 the
     // refresh disposed the row's editingLoop signal and the modal vanished.
-    // #748: the snapshot carries a changed loop so the reload still re-creates
+    // The snapshot carries a changed loop so the reload still re-creates
     // the project row (an identical snapshot is a no-op now).
     fake.resolve(
       "discover_project",

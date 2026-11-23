@@ -1,7 +1,7 @@
 use super::*;
 use std::sync::PoisonError;
 
-/// #2141: a branch with no commits of its own has nothing that a stale base
+/// A branch with no commits of its own has nothing that a stale base
 /// could invalidate, so the notice is suppressed while the chip still turns.
 #[tokio::test]
 async fn stale_without_own_commits_sends_no_notice_but_keeps_the_chip() {
@@ -457,7 +457,7 @@ async fn stale_with_an_unresolved_default_branch_still_sends_the_notice() {
     assert_eq!(transitions[0].behind_by, Some(4));
 }
 
-/// #2329: two rooms sharing one repo and one commit on the resolved default
+/// Two rooms sharing one repo and one commit on the resolved default
 /// branch behave identically - both stay idle, neither gets a CI notice -
 /// while the shared key still costs exactly one CI query per round.
 #[tokio::test]

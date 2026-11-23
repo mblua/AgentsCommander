@@ -60,7 +60,7 @@ pub(crate) const DEFAULT_CI_FINISHED_TEMPLATE: &str = "[AgentsCommander] CI fini
     --branch %BRANCH%' before acting on this.";
 
 /// sha256 `3c03dc790a9d3b36edbf1174dc3e661572ad0f93e70e1b200daff8945ff6e468`. The second sentence
-/// is conditional on purpose: #2141
+/// is conditional on purpose: AC
 /// suppresses the notice for a branch with no commits of its own, but a branch
 /// WITH its own commits and no runs still receives it, so the old wording
 /// asserted a premise that need not hold.
@@ -168,7 +168,7 @@ pub(super) const KNOWN_MESSAGES: [MessageSpec; 5] = [
     MessageSpec {
         id: BRANCH_STALE_MESSAGE_ID,
         default_template: DEFAULT_BRANCH_STALE_TEMPLATE,
-        // Two digests, newest last: #2141 is the first change to move a shipped
+        // Two digests, newest last: this is the first change to move a shipped
         // default's bytes. The v1 hash stays so a pristine entry whose sidecar is
         // gone is still recognized and refreshed, instead of freezing forever as
         // a false "user edit".

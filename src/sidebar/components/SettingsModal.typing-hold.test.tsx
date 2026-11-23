@@ -11,7 +11,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { AppSettings } from "../../shared/types";
 
-// #2337 — the typing-hold window is a backend-validated setting (1..3600 whole
+// The typing-hold window is a backend-validated setting (1..3600 whole
 // seconds). The draft keeps the user's text so an invalid entry is refused
 // visibly instead of being coerced, and Save is blocked while it is invalid.
 

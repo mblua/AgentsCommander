@@ -15,7 +15,7 @@ fn upsert_syncs_legacy_project_path_field() {
     assert_eq!(s.project_paths, vec![r1.path.clone(), r2.path.clone()]);
 }
 
-// ── #778 remove_project_path (inverse of upsert) ──────────────────────
+// ── remove_project_path (inverse of upsert) ──────────────────────
 
 #[test]
 fn remove_project_path_removes_matching_entry_and_rederives_head() {
@@ -81,7 +81,7 @@ fn remove_project_path_also_drops_archived_entry() {
     assert_eq!(s.archived_project_paths, vec!["C:/b".to_string()]);
 }
 
-// ── #881 archive_project_path ───────────────────────────────────────
+// ── archive_project_path ───────────────────────────────────────
 
 #[test]
 fn archive_project_path_moves_entry_and_rederives_head() {

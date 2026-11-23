@@ -1,4 +1,4 @@
-// #4825 - every interactive control in the three sidebar menu files carries a
+// Every interactive control in the three sidebar menu files carries a
 // non-empty data-ac-testid. Parser-backed (TSX), so comments and strings are
 // never counted; the minimum scanned counts fail a wrong path or parse mode.
 import { readFileSync } from "node:fs";

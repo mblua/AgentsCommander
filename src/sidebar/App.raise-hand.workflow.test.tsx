@@ -191,7 +191,7 @@ describe("SidebarApp raise-hand communication workflow (#676)", () => {
 
       // Reopen destroys the dormant record, recreates it (session_created
       // carries communication: null), then the carry lands as a follow-up
-      // session_communication_changed (#747 change 4c). The order is
+      // session_communication_changed. The order is
       // load-bearing: emitted before session_created, the communication
       // event would hit a store without the new id and setCommunication
       // would silently no-op, losing the hand.

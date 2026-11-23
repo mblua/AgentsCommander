@@ -185,7 +185,7 @@ impl DockerRuntime {
             ),
         ];
 
-        // #935 - one read-write --mount per admissible repo, appended BEFORE the
+        // One read-write --mount per admissible repo, appended BEFORE the
         // workdir/image/entrypoint tail. Pushing after the tail would place them
         // after the image and turn them into container arguments (the image_idx
         // assertions below guard exactly this).
@@ -693,7 +693,7 @@ impl ContainerRuntime for DockerRuntime {
             };
             match self.stop(&handle, timeout, &control) {
                 Ok(()) => report.stopped.push(session_id),
-                // #992 - no warn! here on purpose. The same `session_id: err` string is
+                // No warn! here on purpose. The same `session_id: err` string is
                 // returned in the aggregate Err below, which the backend logs at the
                 // severity its sweep posture calls for. Warning here as well would fire
                 // on every opportunistic pass, which is the noise #992 is about.

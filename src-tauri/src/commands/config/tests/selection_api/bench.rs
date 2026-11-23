@@ -1,7 +1,7 @@
 use super::*;
 use crate::commands::session::selection_executor::run_owned_selection_operation_timed;
 
-// ── #2475 synthetic selection-lock bench ─────────────────────────
+// ── synthetic selection-lock bench ─────────────────────────
 //
 // Synthetic numbers from a temporary directory: they are NOT the numbers
 // of the real app. Latency is only reported under AC_SELECTION_BENCH=1

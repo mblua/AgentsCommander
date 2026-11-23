@@ -13,6 +13,8 @@ use crate::session::manager::SessionManager;
 use crate::shutdown::ShutdownSignal;
 use crate::telegram::manager::TelegramBridgeState;
 
+mod final_persist;
+
 pub(crate) enum RunExitEvent {
     WindowDestroyed(String),
     Exit,
@@ -493,11 +495,14 @@ pub(crate) fn on_run_event<H, S, F, FF>(
             ) {
                 log::info!("[shutdown] Persisting session state...");
                 let mgr_clone = session_mgr_for_exit.clone();
-                host.block_on(async move {
-                    let mgr = mgr_clone.read().await;
-                    sessions_persistence::persist_current_state(&mgr).await;
-                });
-                log::info!("[shutdown] Session state persisted, process exiting");
+                final_persist::run_final_persist(
+                    host,
+                    async move {
+                        let mgr = mgr_clone.read().await;
+                        sessions_persistence::persist_current_state(&mgr).await;
+                    },
+                    final_persist::FINAL_PERSIST_BUDGET,
+                );
             } else {
                 let retained = (policy.retained_diagnostics)(
                     scanner_shutdown.retained,

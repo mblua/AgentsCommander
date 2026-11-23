@@ -31,7 +31,7 @@ Coordinators may reply by sending to `agentscommander://root-agent`; their repli
     r#"this session as standard file notifications."#
 );
 
-/// #1614 D8c: `ROOT_COORDINATION_MESSAGING_PARAGRAPH` exactly as it shipped
+/// `ROOT_COORDINATION_MESSAGING_PARAGRAPH` exactly as it shipped
 /// through base commit d7008b34. The live constant is DUAL-USE: it is the
 /// paragraph the deferred-messaging migration writes into the user's live
 /// Role.md. The recognizer embeds an independent literal copy in

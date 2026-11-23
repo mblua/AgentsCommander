@@ -14,7 +14,7 @@ import {
 import { sessionsStore } from "../stores/sessions";
 import type { AgentConfig, Session } from "../../shared/types";
 
-// #2482 p7 - the weekly-quota fill on the ROOM-REPLICA agent chip. Every case
+// The weekly-quota fill on the ROOM-REPLICA agent chip. Every case
 // resolves the chip through its row and asserts the NodeList length first: a
 // missing chip must fail, never pass a "no quota-fill" check.
 const projectPath = "C:\\Project";

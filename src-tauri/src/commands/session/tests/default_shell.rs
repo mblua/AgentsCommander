@@ -4,7 +4,7 @@ use crate::commands::session::preflight::{
     CONTAINER_REFUSAL,
 };
 
-// --- #1271 configured default-shell propagation --------------------------
+// --- configured default-shell propagation --------------------------
 
 /// Captures every `BackendSpawnSpec` the PTY manager hands to the backend,
 /// so tests can assert the resolved-agent host-shell snapshot propagated
@@ -15,15 +15,15 @@ use crate::commands::session::preflight::{
 pub(super) struct CapturingSpawnBackend {
     pub(super) specs: Mutex<Vec<crate::pty::backend::BackendSpawnSpec>>,
     pub(super) live: Mutex<HashSet<Uuid>>,
-    /// #1873 - every id the manager asked this backend to tear down.
+    /// Every id the manager asked this backend to tear down.
     pub(super) killed: Mutex<Vec<Uuid>>,
-    /// #3516 - when true, preflight requests run as given with the inherited env.
+    /// When true, preflight requests run as given with the inherited env.
     pub(super) preflight_runs: bool,
     pub(super) preflight_requests: Mutex<Vec<crate::pty::backend::PreflightLaunchRequest>>,
-    /// #3516 - the hold state and cwd whose launch count `spawn` records.
+    /// The hold state and cwd whose launch count `spawn` records.
     pub(super) share_probe: Mutex<Option<(Arc<PreflightState>, String)>>,
     pub(super) share_counts: Mutex<Vec<usize>>,
-    /// #3516 - `try_test` on the probed folder, taken inside `spawn`.
+    /// `try_test` on the probed folder, taken inside `spawn`.
     pub(super) test_probes: Mutex<Vec<Result<(), HoldRefusal>>>,
 }
 
@@ -191,7 +191,7 @@ async fn configured_default_shell_snapshot_reaches_backend_for_resolved_agent() 
     close_test_coordinator(&app).await;
 }
 
-/// #1271 - the observable session metadata seam (`set_pending_effective_shell_args`,
+/// The observable session metadata seam (`set_pending_effective_shell_args`,
 /// surfaced as `effective_shell_args`) keeps the LOGICAL agent argv; the
 /// configured host-shell arguments travel only in the backend spec's
 /// `resolved_agent_host_shell`. The two must remain distinct: host-shell args
@@ -290,7 +290,7 @@ async fn configured_default_shell_metadata_keeps_logical_agent_argv_distinct() {
     close_test_coordinator(&app).await;
 }
 
-/// #1271 - native twin of the web invalid-input postcondition test: the
+/// Native twin of the web invalid-input postcondition test: the
 /// adapter rejection happens at the TOP of the REAL `spawn_sync`, before
 /// any spawn accounting or PTY acquisition, so a rejected configured host
 /// leaves no session, no pending/metadata record, no spawn record, no PTY
@@ -482,7 +482,7 @@ async fn test_resolve_blocking_menu_command() {
     close_test_coordinator(&app).await;
 }
 
-// --- #3516 launch gate on the create path ---------------------------------
+// --- launch gate on the create path ---------------------------------
 
 fn preflight_text(code: u8) -> String {
     if cfg!(windows) {

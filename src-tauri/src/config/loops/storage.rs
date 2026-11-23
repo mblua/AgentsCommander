@@ -124,13 +124,13 @@ pub fn read_loop_state_with_raw(loop_dir: &Path) -> Result<(LoopState, Option<St
     Ok((state, Some(content)))
 }
 
-/// #2718 (B4b) - the pre-migration state name, moved to `LOOP_STATE_FILE`.
+/// B4b: the pre-migration state name, moved to `LOOP_STATE_FILE`.
 pub(super) const LEGACY_LOOP_STATE_RENAME: naming_migration::Rename = naming_migration::Rename {
     from: "state.json",
     to: LOOP_STATE_FILE,
 };
 
-/// #2718 (B4b) - the state file an unlocked reader should read: the new name
+/// B4b: the state file an unlocked reader should read: the new name
 /// when it exists, else the old name when that exists, else the new name. A
 /// read fallback for a Loop whose lock has not been taken since the upgrade;
 /// writers never use it, and the compare-and-swap does not either.
@@ -161,7 +161,7 @@ pub fn write_loop_state_if_unchanged(
     state: &LoopState,
     expected_raw: Option<&str>,
 ) -> Result<LoopStateWrite, String> {
-    // #2718 4.5 point 5: resolved once; the compare and the write share it.
+    // 4.5 point 5: resolved once; the compare and the write share it.
     let state_path = resolved_loop_state_path(loop_dir);
     let current_raw = match loop_files::read_loop_document(&state_path) {
         Ok(content) => Some(content),
@@ -176,7 +176,7 @@ pub fn write_loop_state_if_unchanged(
     Ok(LoopStateWrite::Written)
 }
 
-/// #2718 4.5 point 4: resolves, so an unmigrated Loop keeps writing its old
+/// 4.5 point 4: resolves, so an unmigrated Loop keeps writing its old
 /// name until a sweep and a rename have both succeeded.
 pub fn write_loop_state_atomic(loop_dir: &Path, state: &LoopState) -> Result<(), String> {
     write_loop_state_atomic_at(loop_dir, &resolved_loop_state_path(loop_dir), state)

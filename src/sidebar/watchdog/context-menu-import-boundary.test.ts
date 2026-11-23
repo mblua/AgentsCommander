@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-// #1871 section 10.4 - the catalogue imports no store, no ipc, no presentation
+// The catalogue imports no store, no ipc, no presentation
 // module and no other component: two EXACT ALLOWLISTS over raw source, on the
 // model of no-presentation-import.test.ts. Raw source is what makes this immune
 // to import elision; `toEqual` against a written-out literal is what makes an

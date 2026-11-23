@@ -649,7 +649,7 @@ async fn issue_2475_concurrent_read_bodies_occupy_the_turn_simultaneously() {
 }
 
 async fn run_bench_drain_abort_child() {
-    // #4928: keep the intended abort below from leaving an OS core dump.
+    // Keep the intended abort below from leaving an OS core dump.
     #[cfg(target_os = "linux")]
     {
         let zero: libc::c_ulong = 0;

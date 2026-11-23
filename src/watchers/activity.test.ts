@@ -82,7 +82,7 @@ describe("freezing a row (#1171)", () => {
 });
 
 /**
- * #1171 test 77. The window subscribes before it fetches, so a match arriving during the
+ * Test 77. The window subscribes before it fetches, so a match arriving during the
  * fetch is in BOTH the stream and the snapshot. It must be shown exactly once.
  */
 describe("merging the snapshot with the stream (#1171)", () => {
@@ -134,7 +134,7 @@ describe("merging the snapshot with the stream (#1171)", () => {
 });
 
 /**
- * #1171 - the 500/100 limits are not only fetch parameters.
+ * The 500/100 limits are not only fetch parameters.
  *
  * The ring caps what a SNAPSHOT returns; the event stream keeps appending for as long as the
  * window is open, so without a structural bound after every merge the frontend grows without
@@ -335,7 +335,7 @@ describe("ordering rows for display (#1171)", () => {
 });
 
 /**
- * #1171 - Solid's `<For>` keys on object identity, not on the logical key, so a poll that
+ * Solid's `<For>` keys on object identity, not on the logical key, so a poll that
  * rebuilds the whole ring would rebuild and re-animate every row on screen every ten seconds.
  */
 describe("row identity across merges (#1171)", () => {
@@ -422,7 +422,7 @@ describe("filtering (#1171)", () => {
 });
 
 /**
- * #1171 test 81. The empty states, told apart from snapshot VALUES with no nullability --
+ * Test 81. The empty states, told apart from snapshot VALUES with no nullability --
  * and `warming` is its own state so the day-one message never flickers before the first tick.
  */
 describe("resolving which state the window shows (#1171)", () => {

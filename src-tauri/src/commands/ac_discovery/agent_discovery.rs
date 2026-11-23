@@ -34,7 +34,7 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tauri::{AppHandle, State};
 
-/// #1065 Stage F: run the project context-template scan under the seed-manifest
+/// Run the project context-template scan under the seed-manifest
 /// gate, recording each recognized create/update at its commit-point time.
 ///
 /// A pre-contention gate degradation runs the scan untracked (writes proceed,
@@ -101,7 +101,7 @@ pub async fn discover_ac_agents(
     coordinator_clocks: State<'_, crate::config::coordinator_clocks::CoordinatorClocksState>,
 ) -> Result<AcDiscoveryResult, String> {
     let cfg = settings.read().await.clone();
-    // #552 snapshot the persisted badge/auto-closed store once so the per-replica
+    // Snapshot the persisted badge/auto-closed store once so the per-replica
     // scan below never locks inside the loop.
     let clocks_snapshot: std::collections::HashMap<
         String,
@@ -129,7 +129,7 @@ pub async fn discover_ac_agents(
     teams::associate_teams(&mut workgroups, &teams);
 
     // Update the branch watcher per-project. Each Project AC Root-containing dir gets its own
-    // slot so multi-project setups don't overwrite each other (Grinch #1 + #12).
+    // slot so multi-project setups don't overwrite each other.
     let mut by_project: HashMap<String, Vec<AcWorkgroup>> = HashMap::new();
     for wg in &workgroups {
         if let Some(proj) = wg_project_map.get(&wg.name) {
@@ -204,7 +204,7 @@ async fn scan_agents(
     // `wg.name` values (unique within a discovery run; workgroup dir names include
     // the team name which collides only intentionally across projects). Populated as
     // we push to `workgroups` so we can later call `update_replicas_for_project` once
-    // per project rather than once globally (Grinch #1 + #12).
+    // per project rather than once globally.
 
     for base_path in &cfg.project_paths {
         let base = Path::new(base_path);
@@ -386,7 +386,7 @@ async fn scan_context_templates(
         let repo_dir = repo_dir.to_path_buf();
         let ac_root = ac_root.to_path_buf();
         move || {
-            // #1065 Stage F: production records recognized context updates
+            // Production records recognized context updates
             // under the gate; a `#[cfg(test)]` lib build stays non-emitting.
             #[cfg(not(test))]
             let activation =

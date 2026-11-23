@@ -65,7 +65,7 @@ fn normal_sibling_repo_resolves_to_repos_container_path() {
 
 #[test]
 fn mounted_host_path_has_no_windows_verbatim_prefix() {
-    // #993 - std::fs::canonicalize yields \\?\C:\... on Windows and dockerd
+    // Std::fs::canonicalize yields \\?\C:\... on Windows and dockerd
     // rejects that as a --mount source. make_workgroup canonicalizes the
     // tempdir, so on Windows this fails without the normalize at the store.
     let (_tmp, wg_root, replica) = make_workgroup("__agent_self");

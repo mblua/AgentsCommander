@@ -558,7 +558,7 @@ fn collect_files_to_probe_includes_wg_root_and_top_level_dirs() {
     );
 }
 
-/// #113 follow-up: the dir entries must come BEFORE files in the output
+/// Follow-up: the dir entries must come BEFORE files in the output
 /// so that, under the `MAX_FILES_TO_PROBE` cap, dirs are preferred. The
 /// plan calls this out explicitly: dir handles are the new signal, file
 /// handles were already covered.

@@ -325,7 +325,7 @@ impl MailboxPoller {
             #[cfg(not(test))]
             {
                 let app_clone = app.clone();
-                // #749 - the root travels with the task (same queue-time snapshot the
+                // The root travels with the task (same queue-time snapshot the
                 // SELF-FORGET archive above used) so Phase 2 can archive the handoff
                 // without a mid-flight session-manager lookup. A session's working
                 // directory never changes while its id stays alive.
@@ -460,7 +460,7 @@ impl MailboxPoller {
         Ok((newly_inserted, status))
     }
 
-    /// #626 existence gate - REFUSE if the agent did not write its handoff notes. Clearing with
+    /// Existence gate - REFUSE if the agent did not write its handoff notes. Clearing with
     /// no SELF-HANDOFF.md would wipe context with no way to resume (the agent would post-clear
     /// read a nonexistent file = blank). Queue-time intent guard (not transactional): the real
     /// read-time safety net is the handoff prompt's "if missing or empty, wait" clause
@@ -492,7 +492,7 @@ impl MailboxPoller {
         )
     }
 
-    /// #626 - archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure
+    /// Archive SELF-FORGET.md so the next cycle starts fresh. Best-effort: a failure
     /// must not block the clear/handoff. The agent already wrote SELF-HANDOFF.md
     /// (existence-gated above), so SELF-FORGET.md is present iff the agent kept one. FOLD-3:
     /// runs in ALL cfgs (NOT inside the cfg(not(test)) spawn) so the harness archive
@@ -593,7 +593,7 @@ impl MailboxPoller {
                 .await;
         }
 
-        // #698 - raise the hand and persist its snapshot atomically with respect
+        // Raise the hand and persist its snapshot atomically with respect
         // to all session persistence (see `raise_hand_and_persist_result`). The
         // mutation, snapshot, and save happen under one global save lock, so no
         // concurrent persist can durably write the raised state before this

@@ -15,7 +15,7 @@ import {
 import { sessionsStore } from "./stores/sessions";
 import { liveSelection, SESSION_A, SESSION_B } from "../shared/testing/session-selection";
 
-// #1624 end-to-end: the full SidebarApp keeps the coordinator tile order frozen
+// End-to-end: the full SidebarApp keeps the coordinator tile order frozen
 // while a context menu is open even after the pointer leaves the sidebar, and
 // releases on Escape / outside click.
 
