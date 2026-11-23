@@ -1,4 +1,4 @@
-/* #3532 P11 - CTX badge tint from the saved context mean, and its card.
+/* CTX badge tint from the saved context mean, and its card.
    Only the badge background/border change; the live text keeps the theme fg. */
 .ctx-badge.ctx-history {
   cursor: default;
