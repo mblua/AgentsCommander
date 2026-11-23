@@ -1,6 +1,6 @@
 import { createSignal } from "solid-js";
 
-// #552 coarse "now" tick for live-updating elapsed-time badges (the coordinator
+// Coarse "now" tick for live-updating elapsed-time badges (the coordinator
 // idle badge). A single app-lifetime module singleton — NOT a per-row timer —
 // so every badge memo that reads `clockStore.nowMs` re-runs together once per
 // cadence. 30s keeps the minutes-granular badge within ~30s of accurate without

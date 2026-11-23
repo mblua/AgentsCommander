@@ -5,7 +5,7 @@ import { projectStore, type ProjectState } from "./project";
 import { sessionsStore } from "./sessions";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 
-/** #2202 - previous CI state per room, module-level because the watcher must see
+/** Previous CI state per room, module-level because the watcher must see
  *  the edge across effect runs. Cleared by `resetCiActivityStampForTests` (the
  *  `#1624`/`#965` hazard: it is out of `setSessions`' reach, so a second render in
  *  one test file would inherit a stale `true` or a cleared map). */
@@ -28,7 +28,7 @@ function pruneGone(seen: Set<string>): void {
   for (const key of previous.keys()) if (!seen.has(key)) previous.delete(key);
 }
 
-/** #2202 - stamps `lastActivityBySessionId` on a room's CI falling edge, so a room
+/** Stamps `lastActivityBySessionId` on a room's CI falling edge, so a room
  *  whose CI just finished floats under sort-by-activity exactly as a session that
  *  just stopped working does. Reads `roomCiRunning`, the same predicate the
  *  rail counter, dot, tooltip, row tint and watchdog read, so the stamp cannot

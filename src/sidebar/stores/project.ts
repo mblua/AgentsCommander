@@ -21,7 +21,7 @@ import {
   normalizeProjectPathForCompare,
 } from "./project-refresh";
 import { deepEqual, mergeDiscoveryResult } from "./project-merge";
-// #1283 baseline cycle break (2026-08-12 plan amendment): the ProjectState
+// Baseline cycle break (2026-08-12 plan amendment): the ProjectState
 // interface moved to ./project-merge; the type-only import below creates the
 // local binding used at createSignal<ProjectState[]> and the re-export keeps
 // every existing consumer compiling.
@@ -60,7 +60,7 @@ const inFlightLoads = new Map<string, Promise<void>>();
 const inFlightReloads = new Map<string, Promise<void>>();
 const archiveChangeTails = new Map<string, Promise<void>>();
 const queuedReloads = new Set<string>();
-// #1077: conflict IDs already surfaced as a sticky toast. Retained across
+// Conflict IDs already surfaced as a sticky toast. Retained across
 // repeated initFromSettings runs (reconnects, remounts) so one conflict yields
 // exactly one toast; cleared by the store's reset lifecycle (clear()).
 const seenConflictIds = new Set<string>();
@@ -237,7 +237,7 @@ function formatLoadError(e: unknown): string {
   }
 }
 
-// ── #1077 resolution report: runtime validation + conflict presentation ──────
+// ── Resolution report: runtime validation + conflict presentation ──────
 
 const INVALID_REPORT_MESSAGE =
   "The project list could not be read from settings (unexpected response). " +
@@ -528,7 +528,7 @@ export const projectStore = {
     projectPaths: string[],
     legacyPath: string | null,
     archivedProjectPaths: string[] = [],
-    // #1077: the transport-untrusted resolution report. Absent/undefined is the
+    // The transport-untrusted resolution report. Absent/undefined is the
     // sole legacy fallback; a present-but-malformed report fails closed.
     report?: unknown
   ) {

@@ -29,14 +29,14 @@ interface Props {
 const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
-/** #1171 - how long the pattern and reach previews wait before asking the backend. */
+/** How long the pattern and reach previews wait before asking the backend. */
 export const WATCHER_PREVIEW_DEBOUNCE_MS = 300;
 
-/** #1171 - the sentinel of the "no session" option, which exercises the compile-only path. */
+/** The sentinel of the "no session" option, which exercises the compile-only path. */
 const WATCHER_NO_SESSION = "";
 
 /**
- * #1171 - one row of the Watchers tab.
+ * One row of the Watchers tab.
  *
  * A component rather than a `render*` helper because each row owns a debounced pattern
  * preview and its timer; inside `<For>` every row gets its own reactive scope, so the cleanup

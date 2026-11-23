@@ -1,4 +1,4 @@
-// #2704 - static search index for Settings > General. One entry per user-visible
+// Static search index for Settings > General. One entry per user-visible
 // control, in display order (category, then section, then field). Each `key` matches a
 // `data-ac-setting` attribute on the control's wrapper in SettingsModal.tsx; the
 // general-nav test fails if the two drift apart.
