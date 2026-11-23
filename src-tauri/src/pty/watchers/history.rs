@@ -1,4 +1,4 @@
-//! #1171 - the per-session in-RAM ring the activity window reads, and the per-session status
+//! The per-session in-RAM ring the activity window reads, and the per-session status
 //! the engine publishes beside it.
 //!
 //! Mould: `SessionWarningBuffer` (`session/warnings.rs:39-51`), with four deliberate

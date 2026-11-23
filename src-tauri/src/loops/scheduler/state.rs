@@ -150,7 +150,7 @@ pub(super) fn loop_is_current_for_delivery(
     }
 }
 
-/// #881 A5: candidate discovery also yields immediate `.ac`-bearing children
+/// A5: candidate discovery also yields immediate `.ac`-bearing children
 /// of registered paths. Subtract archived roots so nested archived projects do
 /// not keep firing loops from a registered parent.
 pub(super) fn retain_unarchived_candidates(

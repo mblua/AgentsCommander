@@ -1,4 +1,4 @@
-//! #1652 Backend IPC observer: the process-side view of the frontend -> backend
+//! Backend IPC observer: the process-side view of the frontend -> backend
 //! IPC stream, plus the intake for the renderer black boxes phase 2 writes.
 //!
 //! Every `invoke()` that reaches the app handler is stamped by `note_invoke`,

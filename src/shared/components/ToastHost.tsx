@@ -50,8 +50,8 @@ const ToastHost: Component = () => {
                     data-ac-testid="toast.item.action.secondary"
                     onClick={() => {
                       action().onClick();
-                      // #1669: `dismissOnClick === false` keeps the toast up (the blocked
-                      // menu is still unanswered). Omitted/true preserves #574 behavior.
+                      // `dismissOnClick === false` keeps the toast up (the blocked
+                      // menu is still unanswered). Omitted/true dismisses on click.
                       if (action().dismissOnClick !== false) toastStore.dismiss(toast.id);
                     }}
                   >

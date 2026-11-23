@@ -26,7 +26,7 @@ export function sessionActivity(
   if (!session || options.inactive) return "offline";
   const runtime = sessionRuntimeState(session.status);
   if (runtime === "exited") return "exited";
-  // #2271 - comanaged beats pendingReview/waitingForInput on purpose: the idle
+  // Comanaged beats pendingReview/waitingForInput on purpose: the idle
   // edge is exactly where those would otherwise light up, and a Co-managed
   // session must never paint idle. `exited` still wins above.
   if (options.comanaged) return "comanaged";

@@ -4,7 +4,7 @@ import { centralViewStore } from "./stores/centralView";
 import { webBrowserStore } from "./stores/webBrowser";
 
 /**
- * Wires the #3367 embedded web browser events for the main window.
+ * Wires the embedded web browser events for the main window.
  *
  * - `web_browser_state`: mirrors URL, title and loading into the store, also
  *   while the browser view is hidden, so the URL bar is current on reopen.

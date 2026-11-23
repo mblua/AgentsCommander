@@ -12,7 +12,7 @@ import {
 import { WebBrowserAPI, type WebBrowserBounds } from "../../shared/ipc";
 import { webBrowserStore } from "../stores/webBrowser";
 
-// #3367 — the page itself is a native window the backend lays over
+// The page itself is a native window the backend lays over
 // `.web-browser-viewport`; this component draws the toolbar and reports the
 // viewport rectangle. A native window always paints above the DOM, so it is
 // hidden while any app overlay or menu overlaps the viewport.

@@ -23,7 +23,7 @@ const ErrorModal: Component = () => {
   const unlisteners: UnlistenFn[] = [];
   let disposed = false;
 
-  // #3037 - popup mute. The backend owns the muted set; this instance only
+  // Popup mute. The backend owns the muted set; this instance only
   // mirrors the last confirmed snapshot. `synced` is false until a snapshot
   // succeeds and after a failed reconciliation; `syncFailed` drives the status.
   const [mutedIds, setMutedIds] = createSignal<readonly string[]>([]);

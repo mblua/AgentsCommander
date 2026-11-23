@@ -27,7 +27,7 @@ where
     let info = match spawn_result {
         Ok(info) => info,
         Err(error) => {
-            // #2413 A failed create restores its cleared close markers itself
+            // A failed create restores its cleared close markers itself
             // (commands::session::CoordinatorCreateTicket), for every caller.
             return Err(format!(
                 "Failed to spawn supported orchestrator session for '{target_fqn}': {error}"

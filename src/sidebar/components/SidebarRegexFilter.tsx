@@ -1,4 +1,4 @@
-// #4785 - the one sidebar regex filter control, rendered in the Temporary
+// The one sidebar regex filter control, rendered in the Temporary
 // Rooms header. Markup moved from ProjectPanel's per-project filter row.
 import { Show, type Component } from "solid-js";
 import { focusOnMount } from "../../shared/focus-on-mount";

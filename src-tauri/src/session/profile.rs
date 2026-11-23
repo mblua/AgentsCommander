@@ -1,8 +1,8 @@
 //! Per-coding-agent profile — the single source of truth for behavior that
 //! varies by coding agent (Claude Code, Codex CLI, Antigravity CLI, Pi Coding Agent).
 //!
-//! Before #260 this knowledge was scattered: three `is_claude`/`is_codex`/
-//! `is_gemini` bools on `Session`/`SessionInfo` (#258), a duplicated
+//! Without a profile this knowledge would be scattered: three `is_claude`/`is_codex`/
+//! `is_gemini` bools on `Session`/`SessionInfo`, a duplicated
 //! `starts_with` detector in `create_session_inner` and
 //! `strip_auto_injected_args`, the `derive_reader` bool triple, and
 //! hard-coded idle-detector thresholds. `CodingAgentProfile` consolidates it.

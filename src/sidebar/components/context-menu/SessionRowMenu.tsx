@@ -1,4 +1,4 @@
-// #1871 phase 1 - the session-row context-menu CATALOGUE. This component owns
+// The session-row context-menu CATALOGUE. This component owns
 // the complete item set, its order, its labels, its icons, its markup and
 // where the separators fall. A host turns items on by handing in a per-item
 // capability record (SessionRowMenuCaps) built from *Spec helpers; it cannot
@@ -45,7 +45,7 @@ const UNBRIDGED_TELEGRAM_TINT = "#0088cc";
 const FOLDER_ICON_PATH =
   "M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h3.1c.46 0 .9.18 1.22.5l.9.9h3.78A1.75 1.75 0 0 1 14.25 5.65v5.1a1.75 1.75 0 0 1-1.75 1.75h-9A1.75 1.75 0 0 1 1.75 10.75v-6.5Z";
 
-// #1871 phase 1 - the copies at ProjectPanel.tsx:297-310/1842-1851 and
+// The copies at ProjectPanel.tsx:297-310/1842-1851 and
 // SessionItem.tsx:554-563 are deleted when those hosts migrate (phases 2 and 3).
 const RepoFolderIcon: Component = () => (
   <svg class="session-context-repo-icon" viewBox="0 0 16 16" aria-hidden="true">
@@ -53,7 +53,7 @@ const RepoFolderIcon: Component = () => (
   </svg>
 );
 
-// #1871 phase 1 - the copies at ProjectPanel.tsx:297-310/1842-1851 and
+// The copies at ProjectPanel.tsx:297-310/1842-1851 and
 // SessionItem.tsx:554-563 are deleted when those hosts migrate (phases 2 and 3).
 const MatrixFolderIcon: Component = () => (
   <svg class="session-context-matrix-icon" viewBox="0 0 16 16" aria-hidden="true">
@@ -103,13 +103,13 @@ const ActionItem: Component<{
   </button>
 );
 
-/** #4779 - the dimmed, inert form of a flyout or editor item. */
+/** The dimmed, inert form of a flyout or editor item. */
 const isDisabledItem = (
   spec: AddToGroupSpec | EditTaskTitleSpec | DisabledItemSpec,
 ): spec is DisabledItemSpec =>
   "disabled" in spec && !("choices" in spec) && !("draft" in spec);
 
-/** #4779 - one dimmed row with the item's label and icon; no flyout, no editor. */
+/** One dimmed row with the item's label and icon; no flyout, no editor. */
 const DisabledItem: Component<{
   spec: DisabledItemSpec;
   testId: string;
@@ -168,7 +168,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
     const telegram = props.caps.telegram;
     return !!(telegram && telegram.bots);
   });
-  // #4779 - addToGroup / editTaskTitle split into their live and dimmed forms.
+  // addToGroup / editTaskTitle split into their live and dimmed forms.
   const liveGroup = createMemo(() => {
     const spec = props.caps.addToGroup;
     return spec && !isDisabledItem(spec) ? spec : false;

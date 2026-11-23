@@ -1,5 +1,5 @@
 /**
- * #746 — focus (and optionally select) an element right after it mounts.
+ * Focus (and optionally select) an element right after it mounts.
  *
  * Solid `ref` callbacks run while the element is being created, before it is
  * connected to the document, where `.focus()` is a silent no-op — so the focus

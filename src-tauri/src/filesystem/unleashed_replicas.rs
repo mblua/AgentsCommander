@@ -1,4 +1,4 @@
-//! Physical IO for the per-replica Unleash flag store (#4752).
+//! Physical IO for the per-replica Unleash flag store.
 
 use std::io;
 use std::path::Path;
