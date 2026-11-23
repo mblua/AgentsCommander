@@ -460,7 +460,7 @@ pub(crate) fn save_settings_with_project_paths_to_path(
     reconcile_project_state_to_path(settings, path, true, true).map(|_| ())
 }
 
-/// + The preserve-disk wrapper behind the default
+/// The preserve-disk wrapper behind the default
 /// `save_settings`. Preserves all six on-disk project fields (materializing a
 /// group only when disk has no truth), then hands off to the hardened
 /// atomic writer and returns the fresh-decoded settings.
