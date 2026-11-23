@@ -61,7 +61,7 @@ function renderCard(
   return { card, dispose };
 }
 
-describe("ContextHistoryCard (#3532 P11)", () => {
+describe("ContextHistoryCard", () => {
   afterEach(() => {
     document.body.innerHTML = "";
   });
@@ -164,7 +164,7 @@ describe("ContextHistoryCard (#3532 P11)", () => {
 });
 
 // AC-3532-030 - viewport placement with stubbed measures (jsdom has no layout).
-describe("ContextHistoryCard placement (#3532 P11)", () => {
+describe("ContextHistoryCard placement", () => {
   let cardH = 100;
   const CARD_W = 260;
   const restore: (() => void)[] = [];

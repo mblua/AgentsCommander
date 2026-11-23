@@ -54,7 +54,7 @@ function renderModal(
   return { dispose, onKeep, onOverwrite };
 }
 
-describe("ContextTemplateUpdateModal (#695)", () => {
+describe("ContextTemplateUpdateModal", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     vi.clearAllMocks();

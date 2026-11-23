@@ -26,7 +26,7 @@ function byTestId<T extends HTMLElement = HTMLElement>(testId: string): T {
   return element;
 }
 
-describe("AutoUnarchiveModal (#881)", () => {
+describe("AutoUnarchiveModal", () => {
   let dispose: (() => void) | null = null;
 
   beforeEach(() => {
