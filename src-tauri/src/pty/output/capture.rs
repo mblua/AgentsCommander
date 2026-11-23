@@ -3,7 +3,7 @@
 //! screen into the `terminal_snapshot_renderer` model.
 //! It does NOT feed bytes to the parser or answer screen queries; `delivery` and `screen` do.
 
-use super::{ParserAvailability, ReaderOperationGate, RegisteredPtyOutputTarget};
+use super::target::{ParserAvailability, ReaderOperationGate, RegisteredPtyOutputTarget};
 use crate::pty::backend_kind::SessionBackendKind;
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
