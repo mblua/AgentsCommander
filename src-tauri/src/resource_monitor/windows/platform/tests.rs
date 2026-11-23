@@ -80,9 +80,9 @@ fn mismatched_root_creation_time_drops_subtree() {
 
 #[test]
 fn unreadable_root_drops_subtree_and_protects_readable_child() {
-    // #543 (follow-up to #516) - pid 1000 was registered with creation time
+    // Pid 1000 was registered with creation time
     // 111, but the live process now occupying the pid is UNREADABLE: its
-    // identity resolves to None (creation_time 0). The #516 mismatch check
+    // identity resolves to None (creation_time 0). The mismatch check
     // alone skipped the guard for this case, so a foreign but READABLE child
     // hanging off the unreadable root was still walked and marked
     // kill_allowed = true. The widened guard must drop the whole subtree
@@ -141,7 +141,7 @@ fn missing_root_reports_not_in_snapshot() {
 fn resolves_identity_only_for_subtree_pids() {
     // Two unrelated processes (2000/2001) live in the snapshot but are not in
     // the root's subtree. The identity resolver must never be invoked for them;
-    // that is exactly the ~498-PID cost #564 removes.
+    // that is exactly the ~498-PID cost the cache removes.
     let entries = HashMap::from([
         (1000, entry(1000, 4, "agent.exe")),
         (1001, entry(1001, 1000, "child.exe")),
@@ -178,7 +178,7 @@ fn resolves_identity_only_for_subtree_pids() {
     );
 }
 
-/// #2443 bounded fixture: panics on the first `memory_for` call beyond the
+/// Bounded fixture: panics on the first `memory_for` call beyond the
 /// snapshot size, so a looping walk fails fast instead of growing without limit.
 fn bounded_memory(limit: usize) -> impl FnMut(u32) -> ProcessMemory {
     let mut calls: u32 = 0;
@@ -327,7 +327,7 @@ fn long_cycle_emits_each_pid_at_most_once() {
     assert_eq!(depths, vec![0, 1, 2, 3, 4, 5]);
 }
 
-/// #1438 - real-process guard for the corpse-aware probe, following the
+/// Real-process guard for the corpse-aware probe, following the
 /// `pty/job.rs` real-process precedent. The `Child` is deliberately kept in
 /// scope and un-waited: its open process handle keeps the terminated process
 /// queryable, which is the exact production condition (the PTY layer holds the

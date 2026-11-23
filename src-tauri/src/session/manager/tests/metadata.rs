@@ -114,7 +114,7 @@ async fn set_effective_shell_args_writes_field() {
     assert_eq!(stored.effective_shell_args, Some(effective));
 }
 
-// #1063: the deletion-only snapshot is pending-inclusive (unlike every public
+// The deletion-only snapshot is pending-inclusive (unlike every public
 // read), excludes `Exited` rows, and returns working directories only.
 #[tokio::test]
 async fn deletion_snapshot_is_pending_inclusive_and_excludes_exited() {
@@ -198,7 +198,7 @@ async fn deletion_snapshot_is_pending_inclusive_and_excludes_exited() {
     );
 }
 
-// Stage E (#1064) deletion-snapshot mutation sentinel (plan section 10.3,
+// Stage E deletion-snapshot mutation sentinel (plan section 10.3,
 // 10.6, acceptance item 32): the pending-inclusive workdir snapshot must
 // include EVERY pending create (not just one) and stays workdir-only while
 // public listing keeps every pending hidden. A mutation that mirrored
@@ -284,7 +284,7 @@ async fn set_effective_shell_args_no_op_on_missing_session() {
     assert!(mgr.get_session(missing).await.is_none());
 }
 
-// (#630/#631) Re-arm on first user message: a fresh session clears its intent
+// Re-arm on first user message: a fresh session clears its intent
 // exactly once (true -> false), and a second call is a no-op (one-shot gate).
 #[tokio::test]
 async fn clear_start_fresh_on_restore_is_one_shot() {
@@ -341,7 +341,7 @@ async fn clear_start_fresh_on_restore_no_op_on_missing_session() {
     );
 }
 
-// (#756) Stamp on an AC-driven clear boundary: transitions exactly once
+// Stamp on an AC-driven clear boundary: transitions exactly once
 // (false -> true), a second call is a no-op, and a missing id reports false.
 #[tokio::test]
 async fn set_start_fresh_on_restore_if_unset_is_one_shot() {

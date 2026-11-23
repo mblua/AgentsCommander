@@ -257,7 +257,7 @@ fn quarantine_recleanup_frees_slot() {
     assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
 }
 
-// #1151 (R1) - the fix itself at registry level: once the blocker is verifiably gone,
+// The fix itself at registry level: once the blocker is verifiably gone,
 // the registry-only retry releases the permit and the next launch is admitted.
 #[test]
 fn orphan_quarantine_retry_reclaims_slot() {
@@ -278,7 +278,7 @@ fn orphan_quarantine_retry_reclaims_slot() {
     assert!(state.try_reserve_agent_slot(limits(1)).is_ok());
 }
 
-// #1151 (R2) - the safety half of R1: an owned descendant that is still unverifiable
+// The safety half of R1: an owned descendant that is still unverifiable
 // keeps blocking capacity. The retry decides only WHETHER kill_group runs.
 #[test]
 fn orphan_retry_keeps_live_descendant_quarantined() {
@@ -297,7 +297,7 @@ fn orphan_retry_keeps_live_descendant_quarantined() {
     assert!(state.try_reserve_agent_slot(limits(1)).is_err());
 }
 
-// #1151 (R3) - a stale sample bound to a different root identity cannot act.
+// A stale sample bound to a different root identity cannot act.
 #[test]
 fn orphan_retry_rejects_root_mismatch() {
     let (state, backend) = state_with_fake();
@@ -316,8 +316,8 @@ fn orphan_retry_rejects_root_mismatch() {
     assert_eq!(backend.call_counts(), before);
 }
 
-// #1151 (R4) - a Running group is never taken by the orphan path. That case belongs
-// to the missing-root strike reaper (#1040), not to this fix.
+// A Running group is never taken by the orphan path. That case belongs
+// to the missing-root strike reaper, not to this fix.
 #[test]
 fn orphan_retry_rejects_non_quarantined_state() {
     let (state, backend) = state_with_fake();
@@ -350,7 +350,7 @@ fn orphan_retry_rejects_non_quarantined_state() {
     assert_eq!(backend.call_counts(), before);
 }
 
-// #1151 (R5) - defensive arm only. A Quarantined row can never be removed from the
+// Defensive arm only. A Quarantined row can never be removed from the
 // group map, so this is unreachable through real sampling and must be driven with a
 // fabricated UUID.
 #[test]
@@ -371,7 +371,7 @@ fn orphan_retry_rejects_unregistered() {
     assert_eq!(backend.call_counts(), before);
 }
 
-// #1151 (R6) - deterministic stand-in for the concurrent-kill case: another caller
+// Deterministic stand-in for the concurrent-kill case: another caller
 // already owns the transition, so the orphan retry must not touch it.
 #[test]
 fn orphan_retry_rejects_terminating_state() {
@@ -392,7 +392,7 @@ fn orphan_retry_rejects_terminating_state() {
     assert_eq!(backend.call_counts(), before);
 }
 
-// #1151 (R7) - a second retry after a successful one is a no-op. The watchdog
+// A second retry after a successful one is a no-op. The watchdog
 // re-samples every tick, so this runs in production whenever a tick overlaps a
 // just-completed reclaim.
 #[test]
@@ -420,7 +420,7 @@ fn orphan_retry_is_idempotent_after_success() {
     assert_eq!(backend.call_counts(), before);
 }
 
-// #1151 (R8) - defense in depth. The watchdog is already gated on capability, so this
+// Defense in depth. The watchdog is already gated on capability, so this
 // check is unreachable on Windows; it must still cost nothing where it is reachable.
 #[test]
 fn unsupported_backend_orphan_retry_is_noop() {
