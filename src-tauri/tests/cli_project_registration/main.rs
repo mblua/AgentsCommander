@@ -208,7 +208,7 @@ fn run_success(bin: &Path, args: &[&str]) {
     );
 }
 
-/// Success capture that also exposes stderr: #1967 asserts the CLI diagnostics
+/// Success capture that also exposes stderr: tests assert the CLI diagnostics
 /// (stdout JSON plus stderr warnings) while keeping this file's frozen route
 /// set (the `issue_1867` isolation contract counts `command_for_binary` routes).
 fn run_json(bin: &Path, args: &[&str]) -> (serde_json::Value, String) {
@@ -237,7 +237,7 @@ fn run_json(bin: &Path, args: &[&str]) -> (serde_json::Value, String) {
 }
 
 /// Failure capture returning the raw output so the caller can assert the exact
-/// exit status, stdout and stderr (the #1967 unavailable diagnostic).
+/// exit status, stdout and stderr (the unavailable diagnostic).
 fn run_failure(bin: &Path, args: &[&str]) -> std::process::Output {
     let mut command = command_for_binary(bin);
     command

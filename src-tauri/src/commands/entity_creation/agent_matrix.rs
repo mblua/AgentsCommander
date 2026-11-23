@@ -721,7 +721,7 @@ pub(super) fn remove_staged_agent_delete_targets(
 ) -> Result<(), String> {
     let mut errors = Vec::new();
     for target in staged {
-        // #4752: a committed agent delete keeps no Unleash flag, even if cleanup fails.
+        // A committed agent delete keeps no Unleash flag, even if cleanup fails.
         crate::config::unleashed_replicas::forget_under(&target.original_path);
         if let Err(e) = directories::remove_staged_agent_target(&target.staged_path) {
             errors.push(format!(
