@@ -276,7 +276,7 @@ describe("ProjectPanel blocked-menu communication slot (#1649)", () => {
 
 
 // The collapse-proof rollup. Three collapses and one regex filter can
-// each hide the row that carries the #1858 chip, so every level that can hide a
+// each hide the row that carries the chip, so every level that can hide a
 // row now summarises what it hides. These drive the real UI (clicking the real
 // headers, typing in the real filter input) rather than poking the collapse
 // stores, so they fail if a badge is placed under something a collapse removes.

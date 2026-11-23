@@ -96,7 +96,7 @@ describe("ContextBadge (#1033)", () => {
     expect(badge.getAttribute("data-ac-state")).toBe("unavailable");
   });
 
-  // #1031's one hard rule, pinned at the DOM: the badge is a signal, never a control.
+  // The one hard rule, pinned at the DOM: the badge is a signal, never a control.
   it("is not a control in either state (the_badge_is_not_a_control)", () => {
     for (const percent of [42, null]) {
       document.body.innerHTML = "";

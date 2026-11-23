@@ -730,10 +730,10 @@ describe("ProjectPanel regex filter", () => {
     );
 
     sessionsStore.setSessions([
-      // No agent label resolves, not a coordinator and no repos. Before #1730
+      // No agent label resolves, not a coordinator and no repos. Before the change
       // SessionItem gated the whole meta block on
       // `sessionAgentLabel() || (isCoordinator && ... && gitRepos.length > 0)`, so this
-      // row's profile badge was NOT rendered. #1730 deleted that gate: the badge is
+      // row's profile badge was NOT rendered. The change deleted that gate: the badge is
       // rendered on this row now, and the filter must therefore match it.
       session({
         id: "nolabel-session",
@@ -748,7 +748,7 @@ describe("ProjectPanel regex filter", () => {
         effectiveProfile: "B",
         profileFallbackApplied: true,
       }),
-      // Coordinator with repos: this row rendered its badge before #1730 as well.
+      // Coordinator with repos: this row rendered its badge before the change as well.
       session({
         id: "coordrepo-session",
         name: "AgentsCommander_ac/__agent_coordrepo",
@@ -1011,8 +1011,8 @@ describe("ProjectPanel regex filter", () => {
   });
 
   it("matches a shut-down replica by its persisted Coding Agent label and Profile letter (#733/#515)", async () => {
-    // #733 makes a gray replica show its persisted Coding Agent + Profile badges;
-    // #515 requires the filter to match what is visible. Both rows are dormant
+    // One change makes a gray replica show its persisted Coding Agent + Profile badges;
+    // another requires the filter to match what is visible. Both rows are dormant
     // members (no session): dev-webpage-ui carries a persisted codex/Z, dev-rust
     // carries nothing. Neither "codex" nor "z" appears anywhere in dev-webpage-ui's
     // row text except its badges, so a match proves the persisted label + letter

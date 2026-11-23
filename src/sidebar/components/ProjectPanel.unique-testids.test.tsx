@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4827 - two projects with equal room and replica names: the replica menu,
+// Two projects with equal room and replica names: the replica menu,
 // Add to Group flyout, Co-managed item and row ids stay unique in the window.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectPanel from "./ProjectPanel";
@@ -239,7 +239,7 @@ describe("#4827 sidebar replica ids are unique per window", () => {
   });
 });
 
-// #4841 - row decorations and header blockedMenu badges, same two-project setup.
+// Row decorations and header blockedMenu badges, same two-project setup.
 const DECORATION = new RegExp(
   "^(replica\\.(badges|repoBadge|tierBadge|lockChip|orphanNotice|outdated|contextBadge"
     + "|micCancel)\\.|"

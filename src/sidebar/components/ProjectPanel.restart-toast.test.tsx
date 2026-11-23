@@ -97,7 +97,7 @@ function seedLiveSession(): void {
   ]);
 }
 
-/** #977: replica-menu items now lead with an icon (Restart Session and Coding
+/** Replica-menu items now lead with an icon (Restart Session and Coding
  *  Agent joined the folder/broom items), so match on the label with any leading
  *  icon stripped - the same normalization menuButtonLabels uses in
  *  ProjectPanel.context-menu.test.tsx. */
@@ -151,7 +151,7 @@ describe("ProjectPanel restart-failure toast (#574)", () => {
     setupTransport(fake);
     // The Resource Monitor cap is the most likely relaunch failure; the toast
     // must show the launchErrorMessage-normalized copy, proving the catch funnels
-    // through the same normalization #573 uses.
+    // through the same normalization the restart uses.
     fake.reject("restart_session", "Resource Monitor cap reached: 16/16 agent groups are active");
 
     const rendered = renderWithFakeTransport(
@@ -217,7 +217,7 @@ describe("ProjectPanel restart-failure toast (#574)", () => {
   // §15.1 REQUIRED regression guard: a wedged desktop backend (restart_session
   // never settles) must still toast after RESTART_TIMEOUT_MS. Without the
   // Promise.race timeout the Tauri IPC await would hang forever, the catch would
-  // never run, and no toast would fire - the exact #574 silent-failure class.
+  // never run, and no toast would fire - the exact silent-failure class.
   it("toasts a timeout error when a desktop restart never settles (§15.1)", async () => {
     const fake = new FakeTransport();
     setupTransport(fake);
