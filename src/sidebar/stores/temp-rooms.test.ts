@@ -1,4 +1,4 @@
-// #4805 - the temp-room list store and its one-project rail projection.
+// The temp-room list store and its one-project rail projection.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __setTransportForTests } from "../../shared/ipc";
 import { FakeTransport } from "../../shared/testing/fake-transport";

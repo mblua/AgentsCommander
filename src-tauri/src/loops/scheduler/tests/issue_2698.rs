@@ -488,4 +488,4 @@ async fn issue_2698_cancelled_replay_keeps_the_record() {
     assert!(!has_record(&scheduler, &dir));
 }
 
-// #2733 - unresolved-target transitions.
+// Unresolved-target transitions.

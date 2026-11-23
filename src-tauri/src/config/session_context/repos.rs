@@ -21,7 +21,7 @@ pub(crate) fn write_combined_context_file(
     let mut first = true;
 
     for (label, path) in resolved_paths {
-        // #1737 (D2): the base read still runs and still surfaces its error even when
+        // The base read still runs and still surfaces its error even when
         // an override exists, so an unreadable, non-UTF-8 or directory-shaped base is
         // reported exactly as it is today.
         let base_content = documents::read_configured_context(path)
@@ -90,7 +90,7 @@ pub(crate) fn path_parent_is_ac_root(path: &Path) -> bool {
 /// True only for an ORIGIN Agent Matrix: a real (non-symlink) `_agent_*`
 /// directory whose canonical parent is a workspace directory.
 ///
-/// #1172's memory rotation (`config::agent_memory`) is the second consumer and
+/// The memory rotation (`config::agent_memory`) is the second consumer and
 /// depends on both halves of that contract. It relies on the `_agent_` prefix to
 /// reject every `__agent_*` replica, including the `role_experiment` replicas
 /// that do carry a `memory/` of their own (`cli/role_experiment.rs:2259-2267`),
@@ -177,7 +177,7 @@ pub fn git_ceiling_directories_for_session_root(cwd: &str) -> Option<String> {
         })
 }
 
-/// #979 G5: the Root prologue is Root-specific, so its empty case and its intro
+/// The Root prologue is Root-specific, so its empty case and its intro
 /// sentence name the Root Agent instead of a workgroup replica. `is_root_agent`
 /// is `is_root_agent_path`, which no matrix or WG root satisfies, so every
 /// non-root rendering stays byte-identical to before.
@@ -210,7 +210,7 @@ pub(crate) fn render_agent_repos_string(
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     is_root_agent: bool,
 ) -> String {
-    // #935 - a containerized session renders CONTAINER paths from the ONE
+    // A containerized session renders CONTAINER paths from the ONE
     // resolution session.rs already built (plan Sec 5), so the injected context
     // and the Docker mounts cannot disagree. A local session (repo_mounts = None)
     // keeps today's host-path rendering, byte-for-byte.
@@ -263,7 +263,7 @@ pub(crate) fn render_agent_repos_string(
     md
 }
 
-/// #935 - render the injected "Agent Repos" block for a CONTAINER session
+/// Render the injected "Agent Repos" block for a CONTAINER session
 /// from the resolved mounts. Container paths (/repos/repo-X) are shown, never the
 /// Windows host path, which does not resolve inside the container (defect D2). The
 /// branch is still detected host-side from the canonical host path.

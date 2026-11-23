@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #955 — a new terminal rendered NOTHING until the `get_screen_snapshot` IPC
+// A new terminal rendered NOTHING until the `get_screen_snapshot` IPC
 // round-trip settled. A Trace capture proved the agent painted at 418 ms and
 // kept painting for the entire 5.4 s the user stared at a black tile: every
 // byte reached the backend, and the frontend buffered them in an array instead

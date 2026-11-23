@@ -70,7 +70,7 @@ pub(crate) use routes::SnapshotDiscoverySkips;
 #[cfg(test)]
 pub(crate) use routes::{build_root_agent_synthetic_peer, temp_room_peers_in};
 
-/// #280 §3.4 — record whether the missing-config one-shot INFO has already
+/// §3.4 — record whether the missing-config one-shot INFO has already
 /// fired for a given `(project, team_dir)` pair this process. Returns
 /// `true` on the first call for that pair, `false` thereafter. Resets on
 /// process restart. Process-local because the dedup is per-instance.
@@ -163,7 +163,7 @@ pub fn agent_fqn_from_path(path: &str) -> String {
 }
 
 /// Derive the `(workgroup, agent)` identity from a CWD for the Resource
-/// Monitor's human-readable agent-group label (#516).
+/// Monitor's human-readable agent-group label.
 ///
 /// - WG replica CWD `<...>/<project>/.ac/wg-N-team/__agent_alice[/...]`
 ///   becomes `(Some("wg-N-team"), Some("alice"))`.
@@ -198,7 +198,7 @@ pub fn workgroup_and_agent_from_path(path: &str) -> (Option<String>, Option<Stri
 
 /// Derive the project folder name from a CWD: the directory immediately
 /// preceding the `.ac` workspace segment. Mirrors the project anchor used by
-/// `agent_fqn_from_path` (#566). Returns `None` when there is no workspace
+/// `agent_fqn_from_path`. Returns `None` when there is no workspace
 /// segment (origin agents, ad-hoc shells) or `.ac` is the first segment.
 ///
 /// Deliberately more permissive than `workgroup_and_agent_from_path`: it
@@ -376,7 +376,7 @@ fn enumerate_project_dirs_strict(
             &base,
             &mut scanned_entries,
             |name, child| {
-                // #2228: a scanned neighbour that fails identity verification is
+                // A scanned neighbour that fails identity verification is
                 // irrelevant to the caller's request and can never be emitted as a
                 // target, so it is skipped and counted instead of aborting the
                 // whole scan. The caller-supplied path at the top of this loop
@@ -523,7 +523,7 @@ pub(crate) struct PeerInfo {
     pub(crate) session_id: Option<String>,
     /// True if the matched session has `waiting_for_input`.
     pub(crate) waiting_for_input: bool,
-    /// #1669 - true when the matched session is parked on a blocking terminal
+    /// True when the matched session is parked on a blocking terminal
     /// menu (a folder-trust prompt detected by the #1646/#1647 menu guard).
     /// OMITTED entirely when the session is not blocked, so existing consumers
     /// are unaffected. `working`, `sessionStatus` and `waitingForInput` keep
@@ -531,7 +531,7 @@ pub(crate) struct PeerInfo {
     /// ONLY through this field and `blockedMenuMessage`.
     #[serde(skip_serializing_if = "is_false")]
     pub(crate) blocked_menu: bool,
-    /// #1669 - the agent-specific notice for that menu, e.g. "codex is waiting
+    /// The agent-specific notice for that menu, e.g. "codex is waiting
     /// for you to answer the folder-trust menu in this terminal". Omitted when
     /// the session is not blocked or the row carries no message.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -539,7 +539,7 @@ pub(crate) struct PeerInfo {
     /// Exit code, present iff `session_status` == "exited".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) exit_code: Option<i32>,
-    /// #1088 - the peer's live context-usage percent (0-100), the same figure
+    /// The peer's live context-usage percent (0-100), the same figure
     /// the Sidebar badge shows, read from the matched session's persisted row.
     /// Omitted when there is no reading (agent has no `context_regex`, the
     /// session was not sampled yet, or no session matches this peer).
@@ -613,7 +613,7 @@ fn read_role(repo_path: &str) -> String {
     }
 }
 
-/// #791 §8.2 - public in-process `list-peers-lean` for the in-daemon API.
+/// §8.2 - public in-process `list-peers-lean` for the in-daemon API.
 ///
 /// Runs the SAME discovery as `execute_lean` (WG-replica / origin / root
 /// dispatch) and the SAME `reachable` computation (via `can_communicate`),

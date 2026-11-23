@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// #2277 (epic #2236) — the V3 halo on the selected Root Agent banner, and the
+// The V3 halo on the selected Root Agent banner, and the
 // rail width token. jsdom never applies this stylesheet, so the bytes on disk
 // are the only place the declarations can be pinned. Both stylesheets are CRLF
 // on disk: line-based reads below split on /\r?\n/ and never on a bare \n.
@@ -209,7 +209,7 @@ describe("#2277 root agent halo CSS bytes", () => {
       expect(declaredLines(CSS, token), `${token} in sidebar.css`).toHaveLength(0);
     }
     expect(declaredLines(VARS, "--ac-selected-rail-width")).toHaveLength(1);
-    // #2751 - the colour token is declared twice on purpose: white in :root and
+    // The colour token is declared twice on purpose: white in :root and
     // #1A1A2E in html.light-theme, so the factory default follows the theme.
     expect(declaredLines(VARS, "--ac-selected-rail-color")).toHaveLength(2);
     expect(valueOf(one(VARS, ":root").body, "--ac-selected-rail-color")).toBe("#FFFFFF");

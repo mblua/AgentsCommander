@@ -2,7 +2,7 @@ use super::*;
 use crate::config::settings::{load_settings_from_path, AppSettings};
 use serde_json::json;
 
-/// #4091 P08: the retired colour-days key; historical files may still carry it.
+/// P08: the retired colour-days key; historical files may still carry it.
 const KEY: &str = "contextHistoryColorDays";
 
 fn settings_json(value: Option<Value>) -> Value {
@@ -52,7 +52,7 @@ fn retired_colour_days_key_is_ignored_and_never_written() {
 const ENABLED: &str = "contextHistoryEnabled";
 const RETENTION: &str = "contextHistoryRetentionDays";
 
-/// #4049: fixture with one field replaced (or removed when `None`).
+/// Fixture with one field replaced (or removed when `None`).
 fn load_with(key: &str, value: Option<Value>) -> AppSettings {
     let mut raw = settings_json(Some(json!(7)));
     let object = raw.as_object_mut().unwrap();
@@ -190,7 +190,7 @@ fn new_fields_survive_save_reload_and_unrelated_updates() {
 const WINDOWS: &str = "contextHistorySessionWindows";
 const COLOUR: &str = "contextHistoryColorSessions";
 
-/// #4091: fixture with nondefault #4049 fields plus the given windows/colour
+/// Fixture with nondefault #4049 fields plus the given windows/colour
 /// (each removed when `None`).
 fn sessions_json(windows: Option<Value>, colour: Option<Value>) -> Value {
     let mut raw = settings_json(Some(json!(7)));
@@ -395,7 +395,7 @@ fn cas(
     .unwrap()
 }
 
-/// #4091 AC-4091-001: a seeded custom-window file whose colour is replaced
+/// AC-4091-001: a seeded custom-window file whose colour is replaced
 /// (or removed when `None`) after startup migrations settled.
 fn seed_cas_file(path: &std::path::Path, colour: Option<Value>) -> Vec<u8> {
     let mut raw = sessions_json(Some(json!([25, 100, 300, 1000])), None);

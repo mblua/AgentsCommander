@@ -210,7 +210,7 @@ function setupTerminalTransport(fake: FakeTransport, sessions = [session()]): vo
   fake.resolve("pty_resize", undefined);
   fake.resolve("set_last_prompt", undefined);
 
-  // #1363: the selection path attaches and seeds from the snapshot the attach
+  // The selection path attaches and seeds from the snapshot the attach
   // resolves to. The default payload is an empty snapshot at the terminal's
   // own size; the legacy getScreenSnapshot surface is never consulted.
   fake.onInvoke("activate_terminal_output", (args) => {
@@ -756,7 +756,7 @@ describe("TerminalApp workflow", () => {
     }
   });
 
-  // #771 — the TASK panel must be hidden entirely for the Root Agent
+  // The TASK panel must be hidden entirely for the Root Agent
   // (Agent's Commander); LAST PROMPT stays for every agent.
   it("hides the TASK panel for the Root Agent but keeps LAST PROMPT", async () => {
     const fake = new FakeTransport();

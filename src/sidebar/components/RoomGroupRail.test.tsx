@@ -345,7 +345,7 @@ function replicaSession(roomName: string, overrides: Partial<Session> = {}): Ses
   });
 }
 
-// #2202 - the CI half of the rail. The replica's configured `repoPaths` carries
+// The CI half of the rail. The replica's configured `repoPaths` carries
 // the EXACT string the remote-activity payload is keyed by (the map normalizes
 // nothing), and the store replaces the WHOLE map per update, so every repo of
 // interest is published in ONE call.

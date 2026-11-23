@@ -12,7 +12,7 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 
-// #2716 (B3, option C) - an unreadable agents file reaches the UI only through
+// An unreadable agents file reaches the UI only through
 // the snapshot's two read-only fields, and both surfaces reuse the
 // `overlayOwnsAgents` disable-plus-explain pattern with notice 2.
 

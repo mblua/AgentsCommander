@@ -1,4 +1,4 @@
-//! In-daemon control-plane API (#791). A sibling of `web/`: same axum stack and
+//! In-daemon control-plane API. A sibling of `web/`: same axum stack and
 //! lifecycle, but a distinct trust model (per-client scoped tokens, not the
 //! single web token) and its own router. It exposes locally-bound send,
 //! list-peers, and container session-transport endpoints, funnelling sends
@@ -264,7 +264,7 @@ enum ApiBindSource {
     Address { bind: String, port: u16 },
     /// Adopt a socket the caller already bound and still holds. Test-only: it exists so the
     /// terminal-snapshot acceptance tests can hand over a reserved loopback socket with no
-    /// window in which another process can take the port (#1768).
+    /// window in which another process can take the port.
     #[cfg(test)]
     Prebound(std::net::TcpListener),
 }

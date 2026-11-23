@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4779 P04 - the "Temporary Rooms" sidebar category, driven over FakeTransport.
+// The "Temporary Rooms" sidebar category, driven over FakeTransport.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TemporaryRoomsPanel from "./TemporaryRoomsPanel";
 import ProjectPanel from "./ProjectPanel";
@@ -342,7 +342,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
       expect(text).not.toContain(absent);
     }
     expect(menu.querySelector(".session-context-repo-option")).toBeNull();
-    // #4805 - the three items are live now: no dimmed class, no #4779 title.
+    // No dimmed class, no #4779 title.
     for (const suffix of [".groups.trigger", ".menu.editTaskTitle", ".menu.clearTaskTitle"]) {
       const item = byId(`${p}${suffix}`) as HTMLButtonElement;
       expect(item.className).not.toContain("context-option-disabled");
@@ -743,7 +743,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     await openCategoryMenu();
   });
 
-  // #4810 - jsdom has no layout: one prototype stub gives the scroll area (the render
+  // One prototype stub gives the scroll area (the render
   // container) and each group panel (told apart by its header testid) a rect.
   let layout: "top" | "project" = "top";
   const stubLayout = (scroller: HTMLElement) =>
