@@ -1,4 +1,4 @@
-# Smoke test for the Windows portable zip asset, for issue #1589.
+# Smoke test for the Windows portable zip asset.
 #
 # Proves the three things the asset promises and that CI cannot otherwise see:
 #   1. The zip carries the expected files, and the binary is named

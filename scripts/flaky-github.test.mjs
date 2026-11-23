@@ -260,7 +260,7 @@ test('AC-4527-006: a PR on a full page does not stop paging or duplicate an issu
   const result = runQuarantine({ gh, report, nowIso: 'x', runUrl: 'U' });
   assert.deepEqual(pages, [1, 2]);
   assert.deepEqual(result.applied, []);
-  // Issue #120 is found (old evidence, so not read: known F1), never created again.
+  // The tracking issue is found (old evidence, so not read: known F1), never created again.
   assert.deepEqual(result.overflow.notices,
     [{ test_id: 't::120', kind: 'reopen', reason: 'not_read' }]);
   assert.ok(!calls.some((c) => c.args.includes('POST')));

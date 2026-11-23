@@ -113,7 +113,7 @@ vi.mock("@xterm/xterm", () => ({
     write(data: unknown, callback?: () => void): void {
       this.writes.push(data);
       this.screen.push(data);
-      // Real xterm fires the write callback; the #1283 admission settles its
+      // Real xterm fires the write callback; the admission settles its
       // replay/write gates from it.
       callback?.();
     }

@@ -527,7 +527,7 @@ describe("projectStore", () => {
 
   // Identity preservation. Object references drive ProjectPanel's
   // reference-keyed <For>s: every reference these methods preserve is a DOM row
-  // NOT disposed/re-created (and a click over it NOT lost). The #552 event
+  // NOT disposed/re-created (and a click over it NOT lost). The badge event
   // patch semantics (normalized-path match, set/clear) moved to
   // replicaVolatileStore — see replica-volatile.test.ts.
   describe("identity preservation (#748)", () => {

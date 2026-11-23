@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Gate for #2447 (#2464): fails when the current tree has a module dependency cycle that is not
+// Gate: fails when the current tree has a module dependency cycle that is not
 // in the accepted baseline src-tauri/.rust-cycles-baseline.json. A new cycle, or any change to
 // the member set of a known one, gives a new cycle id and fails. Cycles already accepted pass.
 //
@@ -523,7 +523,7 @@ const CASES = [
 ];
 
 // ---------------------------------------------------------------------------------------------
-// Classification fixture pairs (#2465). Each row writes its own predecessor baseline from state X
+// Classification fixture pairs. Each row writes its own predecessor baseline from state X
 // with the real detector, mutates the crate to state Y, then runs the gate against that baseline.
 
 const FIXTURE_MODULES = ['a', 'b', 'c', 'd', 'e', 'f', 'p', 'q', 'r', 's'];

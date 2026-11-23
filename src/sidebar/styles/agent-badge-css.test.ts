@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { declProps, declValue } from "./css-test-helpers";
 
-// #1167 - acceptance criterion 4: the sidebar coding-agent badge has ONE constant
+// Acceptance criterion 4: the sidebar coding-agent badge has ONE constant
 // style, so no rule anywhere may colour .agent-badge by label. The four per-TOOL base
 // rules that survive are the Open-Agent modal's repo chips, anchored on
 // .agent-modal-item-badges, and they are pinned here too so the anchor cannot be
@@ -242,7 +242,7 @@ describe("coding-agent badge CSS (#1167)", () => {
   });
 });
 
-// #2482 - the weekly-quota fill on the agent chip. Every colour below is PARSED out
+// The weekly-quota fill on the agent chip. Every colour below is PARSED out
 // of sidebar.css, never restated, so a stylesheet change moves the numbers these pins
 // check. Only the three dark sidebar rows (named at `.ac-discovery-badge.branch.ci-running`)
 // and the rounded ratios are literals: they are the claims under test.
@@ -423,7 +423,7 @@ describe("weekly-quota fill on the agent chip (#2482)", () => {
   });
 });
 
-// #2512 - the light-theme chip. Colours are parsed from sidebar.css; only the light
+// The light-theme chip. Colours are parsed from sidebar.css; only the light
 // rows (variables.css --sidebar-bg / -hover / -active, and the RootAgentBanner tints
 // over --sidebar-bg) and the rounded ratios are literals.
 const LIGHT_BG = "#f5f5f7";

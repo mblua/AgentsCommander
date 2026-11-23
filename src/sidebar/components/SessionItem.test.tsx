@@ -509,7 +509,7 @@ describe("SessionItem profile-outdated badge (#592)", () => {
     );
     try {
       // The agent badge renders, so the meta container is present; the outdated
-      // badge specifically must not be. #1167 moved the badge to the Coordinator
+      // badge specifically must not be. A later change moved the badge to the Coordinator
       // row's class pair.
       await waitFor(() =>
         expect(rendered.root.querySelector(".ac-discovery-badge.agent")).not.toBeNull(),

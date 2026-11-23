@@ -2,7 +2,7 @@
 
 // Turns a vitest JSON report into GitHub error annotations, one per failed test,
 // so `frontend-regression` names the test that failed instead of naming a grep
-// that did not match (#1206).
+// that did not match.
 //
 // This script only REPORTS. The workflow classifies first and calls it only for
 // a failure it has already decided not to tolerate, and it always exits 0: the
@@ -103,7 +103,7 @@ function collectFailures(report, root) {
 
     // A file that fails to import reports a failed suite and zero failed
     // assertions. Without this it would produce no annotation at all, which is
-    // the "the log names a grep, not a test" failure #1206 exists to remove.
+    // the "the log names a grep, not a test" failure this script exists to remove.
     if (failedHere === 0 && suite?.status === 'failed') {
       suites.push({
         file,

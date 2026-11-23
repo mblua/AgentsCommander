@@ -11,7 +11,7 @@ import {
 } from "./replica-volatile";
 
 // The live event layer for the volatile replica fields. These cover the
-// contract the old in-place projectStore patches had (#552 normalized-path
+// contract the old in-place projectStore patches had (normalized-path
 // matching, set/clear semantics) plus the new one: reads are reactive and
 // fine-grained, so a badge/pill updates WITHOUT re-creating its row.
 
