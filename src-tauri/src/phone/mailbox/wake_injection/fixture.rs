@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::phone::mailbox::host::{CoordinatorTicket, MailboxHost};
 use crate::phone::mailbox::notice::ResolvedWakeAgentCommand;

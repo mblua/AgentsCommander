@@ -1,5 +1,7 @@
 //! Complete version-probe lifetime: bounded output, retained native ownership and settlement.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Stdio;
@@ -107,6 +109,10 @@ pub fn first_text_line(text: &str) -> Option<String> {
 /// scanning further lines would trade that for false positives (plan section 10).
 pub fn parse_version_token(text: &str) -> Option<String> {
     static VERSION_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    #[allow(
+        clippy::expect_used,
+        reason = "the version regex is a fixed, valid literal"
+    )]
     let re = VERSION_RE
         .get_or_init(|| Regex::new(r"\bv?(\d+(?:\.\d+)+)").expect("version regex is valid"));
     let line = first_text_line(text)?;
@@ -277,6 +283,10 @@ where
     debug_assert!(!owner_slot.is_some());
     owner_slot.owner = Some(owner);
     owner_installed();
+    #[allow(
+        clippy::expect_used,
+        reason = "the owner was stored in the slot two lines above"
+    )]
     let owner = owner_slot.owner.as_mut().expect("retained probe owner");
     let waited = owner.wait(timeout, cancel).await;
     let (settlement, cancellation_was_observed) = owner

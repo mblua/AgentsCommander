@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 pub(super) use crate::config::local_config_io::ConfigPublisher;
 #[cfg(test)]
 pub(super) use crate::config::local_config_io::{publish_temp_config, temp_config_path};
@@ -802,6 +804,10 @@ fn absorb_state_keys(
         let Some(tracked_value) = tracked.remove(key) else {
             continue;
         };
+        #[allow(
+            clippy::expect_used,
+            reason = "the `tooling` entry was checked to be an object above"
+        )]
         let state_tooling = state
             .entry("tooling")
             .or_insert_with(|| serde_json::json!({}))
@@ -863,6 +869,10 @@ fn note_moved_state_keys(decisions: &Path, journal_dir: Option<&Path>, moved: &[
 }
 
 /// Ensure a key in a JSON map is an object, inserting `{}` if missing or resetting if corrupted.
+#[allow(
+    clippy::expect_used,
+    reason = "the entry is reset to an object just before the cast"
+)]
 fn ensure_object<'a>(
     map: &'a mut serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -918,6 +928,10 @@ fn upsert_config(
         if !slot.is_object() {
             *slot = serde_json::json!({});
         }
+        #[allow(
+            clippy::expect_used,
+            reason = "the slot is reset to an object just before the cast"
+        )]
         let existing = slot.as_object_mut().expect("just set to object");
         for key in CODING_AGENT_ENTRY_KEYS {
             existing.remove(key);
