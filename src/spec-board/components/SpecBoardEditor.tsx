@@ -9,7 +9,7 @@ interface SpecBoardEditorProps {
 }
 
 const SpecBoardEditor: Component<SpecBoardEditorProps> = (props) => {
-  let debounceTimer: any;
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
   const handleInput = (e: Event) => {
     const value = (e.currentTarget as HTMLTextAreaElement).value;
