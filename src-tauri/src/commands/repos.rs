@@ -8,11 +8,11 @@ use tauri::State;
 
 use crate::config::settings::SettingsState;
 // Preserve existing command-module import paths after moving the implementation.
-#[allow(unused_imports)]
+#[allow(unused_imports, reason = "keeps command-module import path")]
 pub(crate) use crate::repos::derive_repo_name;
 use crate::repos::strip_userinfo;
 
-#[allow(unused_imports)]
+#[allow(unused_imports, reason = "keeps command-module import path")]
 pub use crate::repos::{try_add_repo, RepoMatch};
 
 /// Scan configured paths for potential agents.
