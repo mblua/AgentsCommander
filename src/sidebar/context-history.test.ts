@@ -28,7 +28,7 @@ import {
   refreshContextHistoryOnHover,
 } from "./context-history";
 
-// #3532 P10 - ownership and request discipline of the sidebar owner. The
+// Ownership and request discipline of the sidebar owner. The
 // backend computes every mean; these tests only check what is consumed.
 
 const CMD = "get_context_history_sidebar_means";

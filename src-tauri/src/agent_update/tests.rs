@@ -27,7 +27,7 @@ fn cwd() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------
-// #1551 - shared helpers for the new groups below.
+// Shared helpers for the new groups below.
 // ---------------------------------------------------------------------
 
 use crate::agent_version::{CacheLookup, InstallStatus};
@@ -347,7 +347,7 @@ fn counting_probe(calls: Arc<AtomicUsize>, park: Option<Arc<tokio::sync::Notify>
     })
 }
 
-/// #1967 - a probe that must never run: it records the invocation and then
+/// A probe that must never run: it records the invocation and then
 /// panics, so a scheduling regression is both visible (the counter) and loud.
 fn forbidden_probe(calls: Arc<AtomicUsize>) -> ProbeFn {
     Arc::new(move |command: String| {
@@ -399,7 +399,7 @@ fn bob_settings(root: &Path) -> SettingsState {
     })
 }
 
-/// #4804 - executable `#!/bin/sh` scripts at `root/<codex_rel>` and `root/<claude_rel>`
+/// Executable `#!/bin/sh` scripts at `root/<codex_rel>` and `root/<claude_rel>`
 /// (mode 0755, no symlinks) plus a persisted catalog `agents.10.default.json` naming both
 /// by absolute path with `updateCommands: ["true"]`; returns (codex, claude). Asserts
 /// first that `root` has no `mise` path component.

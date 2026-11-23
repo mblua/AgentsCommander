@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { declProps, declValue, scanSheet, soleRuleBody } from "./css-test-helpers";
 
-// #2584 - the Favorites header is a flex item of a capped flex column and also
+// The Favorites header is a flex item of a capped flex column and also
 // carries the label's `overflow: hidden`, so its automatic minimum size is 0.
 // When favorites overflow the 40% cap it shrank to ~6px and clipped its text.
 // jsdom does no layout, so the stylesheet bytes are the contract.

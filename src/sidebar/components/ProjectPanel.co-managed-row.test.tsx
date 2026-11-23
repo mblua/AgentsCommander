@@ -18,8 +18,8 @@ import type { Session, SessionCommunication } from "../../shared/types";
 
 vi.mock("../attention", () => ({ requestTaskbarAttention: vi.fn() }));
 
-// #2452 - the backend publishes communication.kind = "coManaged" with the
-// message text (#2232). These tests drive the real
+// The backend publishes communication.kind = "coManaged" with the
+// message text. These tests drive the real
 // session_communication_changed event through the fake transport so the store
 // handler, not the test, applies it to the row.
 const projectPath = "C:\\Project";

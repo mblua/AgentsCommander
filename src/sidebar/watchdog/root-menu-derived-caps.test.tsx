@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #1871 section 10.3 - the one test this plan will not ship without. The root's
+// The one test this plan will not ship without. The root's
 // absent menu items must be absent because their DATA is empty, not because the
 // root is named in an exclusion list, so that the day the root carries repo
 // data the entries appear with no code change.

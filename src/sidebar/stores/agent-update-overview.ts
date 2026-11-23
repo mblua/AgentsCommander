@@ -3,14 +3,14 @@ import { AgentUpdateAPI } from "../../shared/ipc";
 import type { AgentUpdateOverviewRow, InstallState } from "../../shared/types";
 
 /**
- * #1551 - the Settings Auto-update overview (plan 5.11): per-mount freshness (`open` /
+ * The Settings Auto-update overview (plan 5.11): per-mount freshness (`open` /
  * `close` sessions), a trailing single-flight `refresh`, the sequence-ordered merge of
  * install states from responses and events alike (highest `seq` per command wins, so
  * the result is independent of delivery order), and a bounded re-poll while a response
  * still reports a `checking` row.
  */
 
-/** #1551 - retry/reconciliation interval (PROBE_TIMEOUT 15 s plus a 5 s IPC/UI margin): while the latest
+/** Retry/reconciliation interval (PROBE_TIMEOUT 15 s plus a 5 s IPC/UI margin): while the latest
  *  response still reports a `checking` row, the store re-asks the backend once per interval. It is a
  *  re-ask cadence, NOT a completion bound: a re-ask may schedule a replacement probe that itself takes up
  *  to PROBE_TIMEOUT, and while the startup pass is unfinished nothing is scheduled at all. */

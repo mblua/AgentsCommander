@@ -17,7 +17,7 @@ import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import type { Session } from "../../shared/types";
 
-// #4752 P05: the Unleash/Leash item in the replica menu, its dialog and restart.
+// The Unleash/Leash item in the replica menu, its dialog and restart.
 
 const projectPath = "C:\\Project";
 const wgPath = `${projectPath}\\.ac\\wg-1-dev-team`;

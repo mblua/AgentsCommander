@@ -240,7 +240,7 @@ fn key_cli_request_carries_chord_verbatim() {
     assert_eq!(error["error"], "invalid_key_chord");
 }
 
-/// #944 - the Rust enum and the `UiAutomationAction` union in `src/shared/types.ts`
+/// The Rust enum and the `UiAutomationAction` union in `src/shared/types.ts`
 /// are two closed lists that MUST agree. They are not generated from one another
 /// (no ts-rs / typeshare / specta in this crate), so nothing but this test stops
 /// them drifting.

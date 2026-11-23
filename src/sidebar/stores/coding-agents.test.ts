@@ -11,7 +11,7 @@ import { codingAgentsStore } from "./coding-agents";
 const REPORT_CMD = "get_coding_agent_catalog_report";
 const LIST_CMD = "list_reseedable_agent_commands";
 
-// #1965 — scalar defaults live in one typed object; envs/updateCommands stay
+// Scalar defaults live in one typed object; envs/updateCommands stay
 // fresh per call so fixture instances never share mutable arrays.
 type DefinitionScalarDefaults = Pick<
   CodingAgentDefinition,

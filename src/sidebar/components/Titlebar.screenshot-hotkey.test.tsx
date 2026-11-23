@@ -229,7 +229,7 @@ describe("Titlebar screenshot hotkey status", () => {
 
     expect(mocks.getHotkeyStatus).toHaveBeenCalledTimes(1);
     expect(mocks.getLabel).toHaveBeenCalledTimes(1);
-    // #1652 - the sidebar Titlebar now makes NO raw `@tauri-apps/api/core`
+    // The sidebar Titlebar now makes NO raw `@tauri-apps/api/core`
     // invoke: `get_instance_label` moved onto `InstanceAPI`, so the whole
     // registry sees it. The empty array is the tripwire: a new raw invoke here
     // must be justified, not appended.

@@ -138,7 +138,7 @@ async fn start_api_server_bind_failure_returns_err_and_status_false() {
     );
 }
 
-/// #1768 fix case. The port is held continuously from reservation to service, so nothing can
+/// The fixed case. The port is held continuously from reservation to service, so nothing can
 /// take it in between. **This is the discriminating test**: section 7.3 runs it against the
 /// unfixed shape (mutant M1) and records it red, then against the fixed shape and records it
 /// green.
@@ -206,7 +206,7 @@ async fn api_start_server_adopts_the_prebound_listener_and_never_releases_the_po
     drop(keeper);
 }
 
-/// #1768 readiness-error **contract** test for the unchanged `Address` path. It pins the
+/// Readiness-error **contract** test for the unchanged `Address` path. It pins the
 /// wording and the shape of the bind-failure readiness error that CI logs show. It is NOT a
 /// control for this change: it exercises only the `Address` path, which this plan does not
 /// alter, so it passes identically on the unfixed and the fixed code. Section 7.3 M1 is the

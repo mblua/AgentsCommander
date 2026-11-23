@@ -167,7 +167,7 @@ pub struct ApplyCodingAgentProfileSelectionRequest {
         reason = "legacy wire input intentionally accepted and ignored"
     )]
     pub typed_confirmation: Option<String>,
-    /// #1941 - absent keeps the legacy ordinary semantics.
+    /// Absent keeps the legacy ordinary semantics.
     #[serde(default)]
     pub assignment_mode: AssignmentMode,
     /// Required only for a bulk assign-and-lock that found protected

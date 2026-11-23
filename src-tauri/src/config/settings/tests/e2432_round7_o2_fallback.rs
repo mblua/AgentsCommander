@@ -543,7 +543,7 @@ fn unavailable_project_fallback_retains_agents_publication_mark() {
     }
 }
 
-/// #4146 - the publication registry is a process-wide mutex that parallel
+/// The publication registry is a process-wide mutex that parallel
 /// tests hold briefly, so one `try_lock` can return `WouldBlock`. Retry the
 /// real call for a bounded time; poison or timeout still fail the test.
 fn publication_state_with_retry(dir: &std::path::Path) -> bool {

@@ -1,6 +1,6 @@
 use super::*;
 
-// ── #1941 scoped selection-lock API ─────────────────────────────
+// ── scoped selection-lock API ─────────────────────────────
 
 struct SelectionApiFixture {
     _temp: tempfile::TempDir,

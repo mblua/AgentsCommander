@@ -19,7 +19,7 @@ import { sessionsStore } from "./stores/sessions";
 import { sessionActivity } from "../shared/session-activity";
 import type { Session, SessionStatus } from "../shared/types";
 
-// #2271 phase 8 - the idle edge is the only place the Co-managed decision can
+// The idle edge is the only place the Co-managed decision can
 // reach the dot without painting `waiting` first: lib.rs emits `session_idle`
 // synchronously and App.tsx turns it straight into setSessionWaiting. This suite
 // mounts the real SidebarApp and drives the real handlers over FakeTransport; it
@@ -31,7 +31,7 @@ const projectPath = "C:\\Project";
 const agentAPath = `${projectPath}\\.ac\\_agent_General`;
 const agentBPath = `${projectPath}\\.ac\\_agent_Worker`;
 
-// #2453 test 5 - the status the backend snapshot reports for SESSION_B.
+// The status the backend snapshot reports for SESSION_B.
 let backendStatusB: SessionStatus = "running";
 
 function backendRows(): Session[] {
@@ -133,7 +133,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
       expect(
         waitingSpy.mock.calls.filter(([id, waiting]) => id === SESSION_B && waiting === true),
       ).toHaveLength(1);
-      // #2442 D4-g - the dot keeps its real activity colour; the Co-managed
+      // The dot keeps its real activity colour; the Co-managed
       // signal is the additive ring, which the armed idle edge must add.
       expect(observedClasses.map((c) => c.split(/\s+/).includes("comanaged"))).toEqual([
         false,
@@ -205,7 +205,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
       rendered.cleanup();
     }
   });
-  // #2453 - a Co-managed cycle must leave the row as a plain idle edge would.
+  // A Co-managed cycle must leave the row as a plain idle edge would.
   async function mountApp(): Promise<{ fake: FakeTransport; cleanup: () => void }> {
     const fake = new FakeTransport();
     setupTransport(fake);

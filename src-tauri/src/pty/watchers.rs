@@ -1,4 +1,4 @@
-//! #1171 - generic, user-configured regex watchers over the plain de-ANSI'd rows of the
+//! Generic, user-configured regex watchers over the plain de-ANSI'd rows of the
 //! `vt100` screen mirror AC already keeps for every session.
 //!
 //! A sibling of `context_scrape`, not an extension of it. The two engines share only the

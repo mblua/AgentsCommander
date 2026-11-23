@@ -85,7 +85,7 @@ const status = (overrides: Partial<WebServerOwnedStatus> = {}): WebServerOwnedSt
   };
 };
 
-// #1453 - the machine of the issue, trimmed to one physical and one virtual
+// The machine of the issue, trimmed to one physical and one virtual
 // adapter: enough to exercise both chooser groups.
 const DEFAULT_INTERFACES: WebServerInterfaceInfo[] = [
   { address: "192.168.1.9", interfaceName: "Ethernet", isVirtual: false },
@@ -216,7 +216,7 @@ function maybeByTestId<T extends Element = Element>(testId: string): T | null {
   return document.querySelector<T>(`[data-ac-testid="${testId}"]`);
 }
 
-// #1453 - chooser rows all share one testid and are told apart by their address.
+// Chooser rows all share one testid and are told apart by their address.
 const ADDR_SELECTOR = '[data-ac-testid="titlebar.webserver.addrOption"]';
 
 function maybeByAddr(address: string): HTMLButtonElement | null {
@@ -229,7 +229,7 @@ function byAddr(address: string): HTMLButtonElement {
   return element;
 }
 
-// #1453 - the popover binds Escape with `on:keydown` (a real element listener)
+// The popover binds Escape with `on:keydown` (a real element listener)
 // rather than the delegated `onKeyDown`, so this has to bubble from the element
 // the user is actually focused on.
 function pressEscape(el: Element): void {
@@ -653,7 +653,7 @@ describe("Titlebar webserver menu", () => {
     await mounted.modules.waitFor(() => {
       expect(mounted.fake.callsFor("start_web_server")).toHaveLength(1);
     });
-    // #1453 - the intent flag is now written only once the start converged, so
+    // The intent flag is now written only once the start converged, so
     // while the first start is still pending nothing has been persisted yet.
     expect(mounted.fake.callsFor("save_settings_draft")).toHaveLength(0);
 
@@ -972,7 +972,7 @@ describe("Titlebar webserver menu", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // #1453 - bind address chooser and bind-failure surfacing.
+  // Bind address chooser and bind-failure surfacing.
   // ---------------------------------------------------------------------------
 
   const BIND_FAILURE = {

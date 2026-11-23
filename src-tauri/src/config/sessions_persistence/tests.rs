@@ -421,8 +421,7 @@ async fn run_unavailable_project_state_child(child_marker: &str) {
                     Err(error) => format!("F1 child wait failed: {error}"),
                     _ => "F1 child exceeded 60 seconds".to_string(),
                 };
-                child.kill().expect("kill unfinished F1 child");
-                child.wait().expect("reap unfinished F1 child");
+                reap_unfinished_f1_child(&mut child);
                 break Err(reason);
             }
         }
@@ -438,4 +437,9 @@ async fn run_unavailable_project_state_child(child_marker: &str) {
     );
     let status = result.expect("isolated F1 child must finish within its deadline");
     assert!(status.success(), "isolated F1 child failed: {status}");
+}
+
+fn reap_unfinished_f1_child(child: &mut std::process::Child) {
+    child.kill().expect("kill unfinished F1 child");
+    child.wait().expect("reap unfinished F1 child");
 }

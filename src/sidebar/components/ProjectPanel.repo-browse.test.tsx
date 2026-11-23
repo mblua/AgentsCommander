@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { vi } from "vitest";
-// #943 - the Browse submenu is desktop-only (`open_external_url` and
+// The Browse submenu is desktop-only (`open_external_url` and
 // `git_remote_url` are both no-ops on the WS host), so it only renders when
 // isTauri is true. jsdom has no __TAURI_INTERNALS__, so isTauri is false there.
 // Mock the module for THIS FILE ONLY: vi.mock is hoisted file-wide, and flipping
@@ -859,7 +859,7 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
     expect(flyout()).toBeNull();
   });
 
-  // 18 (#977)
+  // 18
   it("keeps the menu open when the pointer crosses into the Browse flyout", async () => {
     await setupPanel(
       [coordASession([repo(repoA1, "AgentsCommander", "feature/x")])],

@@ -1,6 +1,6 @@
 use super::*;
 
-// ── #2306 P2 - ordered move + whole-settings order protection ────────
+// ── Ordered move + whole-settings order protection ────────
 
 fn order_ids(agents: &[AgentConfig]) -> Vec<String> {
     agents.iter().map(|agent| agent.id.clone()).collect()
@@ -11,7 +11,7 @@ fn order_positions(agents: &[AgentConfig]) -> Vec<Option<u32>> {
 }
 
 fn disk_ids_and_orders(path: &Path) -> (Vec<String>, Vec<u64>) {
-    // #2716 (B3): `agents` lives in the agents file beside settings.json.
+    // `agents` lives in the agents file beside settings.json.
     let raw = std::fs::read_to_string(path.with_file_name("agents.30.instance.no-git.json"))
         .expect("read agents file");
     let disk: Value = serde_json::from_str(&raw).expect("parse agents file");

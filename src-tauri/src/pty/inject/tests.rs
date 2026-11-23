@@ -19,7 +19,7 @@ struct RecordingBackend {
     capture_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     write_faults: Mutex<VecDeque<bool>>,
     watch_timing: Mutex<Option<(std::time::Duration, std::time::Duration)>>,
-    /// #2586 - scripted screen rows. `None` keeps the `SessionOver` answer,
+    /// Scripted screen rows. `None` keeps the `SessionOver` answer,
     /// `Some(None)` answers `Unavailable`, `Some(Some(rows))` answers `Rows`.
     #[expect(
         clippy::option_option,
@@ -168,7 +168,7 @@ fn recorded_writes(backend: &Arc<RecordingBackend>, id: Uuid) -> Vec<Vec<u8>> {
         .collect()
 }
 
-// #2586 - submit-seam observation sink. Keyed by session id so parallel
+// Submit-seam observation sink. Keyed by session id so parallel
 // tests never read each other's observations.
 static SEAM_OBSERVATIONS: Mutex<Vec<(Uuid, String)>> = Mutex::new(Vec::new());
 

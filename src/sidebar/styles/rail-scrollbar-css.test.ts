@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { declProps, declValue, scanRules } from "./css-test-helpers";
 
-// #2578 — the compact rail's Favorites and project scrollers draw their bars on
+// The compact rail's Favorites and project scrollers draw their bars on
 // one x line at the rail's inner edge, in the thin Noir style of
 // .sidebar-scrollable. jsdom never renders scrollbars, so the stylesheet bytes
 // are the contract. scanRules() is brace-based and so CRLF-safe; every helper
@@ -44,7 +44,7 @@ describe("#2578 rail scrollbars", () => {
   });
 
   it("T4 both scrollers use the thin Noir webkit scrollbar", () => {
-    // #2579: no rail-level pseudo-element rule may survive; one would outrank the
+    // No rail-level pseudo-element rule may survive; one would outrank the
     // global Noir rule in scrollbars.css.
     for (const s of SCROLLERS) {
       expect(

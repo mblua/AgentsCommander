@@ -15,8 +15,8 @@ import {
   railWidthToCss,
 } from "./selected-row-rail";
 
-// #1796 P3. One predicate, two consumers. The load-bearing invariant has two
-// halves (#2751): a value warns exactly when its validator is false, and a value
+// P3. One predicate, two consumers. The load-bearing invariant has two
+// halves: a value warns exactly when its validator is false, and a value
 // is published exactly when it is valid and, for the colour, is not the factory
 // default. The validators and the writer are measured against the same literals.
 
@@ -178,7 +178,7 @@ describe("agreement between the hint predicate and the writer", () => {
   );
 });
 
-// #2751 - the factory default means "follow the theme", so it is never published
+// The factory default means "follow the theme", so it is never published
 // inline: the :root and html.light-theme declarations in variables.css decide.
 describe("the factory default colour follows the theme", () => {
   it.each(["#FFFFFF", "#ffffff", " #FFFFFF "])("does not publish %j", (value) => {

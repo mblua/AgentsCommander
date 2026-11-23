@@ -99,7 +99,7 @@ fn missing_file_is_leashed() {
     assert!(!path.exists());
 }
 
-// #4752 P07: writes the given keys as a store file.
+// P07: writes the given keys as a store file.
 fn store_with(dir: &tempfile::TempDir, keys: &[&str]) -> PathBuf {
     let path = store_in(dir);
     for key in keys {

@@ -37,7 +37,7 @@ export function defaultIndicatorRooms(createRoom: (name: string) => AcWorkgroup)
   return [createRoom("wg-1-dev-team"), createRoom("wg-2-rust-team"), createRoom("wg-3-docs-team")];
 }
 
-// #4695 — gesture diagnostics support for RoomGroupRail.gestures.test.tsx.
+// Gesture diagnostics support for RoomGroupRail.gestures.test.tsx.
 export function createRailRoom(name: string): AcWorkgroup {
   const roomPath = [String.raw`C:\Project\.ac`, name].join("\\");
   const agent = {

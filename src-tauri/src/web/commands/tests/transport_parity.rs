@@ -458,7 +458,7 @@ async fn issue_1937_transport_parity_event_refreshes_another_subscriber_after_wa
     );
 }
 
-/// #1941 rework ronda 1 - the real WebSocket dispatch route for the
+/// Rework ronda 1 - the real WebSocket dispatch route for the
 /// assignment preview must queue behind the owned selection turn. On the
 /// pre-fix arm (no `run_owned_selection_operation`) the dispatch completes
 /// while the turn is held and reads the half-settled pre-publication state.
@@ -544,7 +544,7 @@ async fn issue_1937_transport_parity_assignment_preview_queues_behind_the_turn()
     );
 }
 
-/// #1271 - full create-path harness for the web dispatcher. `ws_state_for`
+/// Full create-path harness for the web dispatcher. `ws_state_for`
 /// lacks the `SelectionCoordinator` and the other states `create_session_inner`
 /// requires, so the web-path invalid-input postcondition test builds them
 /// here, mirroring the `pty_lifecycle` harness (plan Finding F).
@@ -645,7 +645,7 @@ fn ws_state_for_1271(
     )
 }
 
-// #1271 - the adapter's deterministic rejections are Windows-only (the
+// The adapter's deterministic rejections are Windows-only (the
 // host-shell adapter lives in the Windows spawn branch), so the full
 // invalid-input postcondition rows are verified on Windows at both the
 // session layer (here and the native twin) and the backend seam
@@ -813,5 +813,5 @@ async fn configured_default_shell_invalid_payload_leaves_no_session_state_via_we
 }
 
 // ---------------------------------------------------------------------
-// #1551 - agent-update route parity
+// Agent-update route parity
 // ---------------------------------------------------------------------

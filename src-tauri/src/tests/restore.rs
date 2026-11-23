@@ -279,7 +279,7 @@ fn first_restore_does_not_auto_create_root_agent_without_agents() {
     ));
 }
 
-// (#630) Backstop truth table: a real coordinator survives a transient empty
+// Backstop truth table: a real coordinator survives a transient empty
 // discover_teams(); a healthy non-empty discovery is trusted as-is.
 #[test]
 fn resolve_is_coord_for_restore_truth_table() {
@@ -294,7 +294,7 @@ fn resolve_is_coord_for_restore_truth_table() {
     assert!(!resolve_is_coord_for_restore(false, true, false));
 }
 
-// (#630/#631) The wake path passes the persisted fresh intent straight through
+// The wake path passes the persisted fresh intent straight through
 // as create_session_inner's skip_auto_resume. Guards the lib.rs read seam: if
 // this identity is ever broken, restore stops honoring "Restart Session".
 #[test]

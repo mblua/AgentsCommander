@@ -32,7 +32,7 @@ impl Drop for ProfileMutexGuard {
 /// both branches: when `active` is false it keeps the name reserved for the rest of
 /// the reset; when `active` is true it is the reference object that
 /// `mutex_holders::find_holders` compares other processes' handles against. It is
-/// closed on drop either way. #1773 removed the early `CloseHandle` on the active
+/// closed on drop either way. There is no early `CloseHandle` on the active
 /// branch; `active` itself still comes only from `ERROR_ALREADY_EXISTS`.
 #[cfg(target_os = "windows")]
 pub fn acquire_profile_mutex_probe() -> Result<(bool, ProfileMutexGuard), String> {

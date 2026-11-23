@@ -246,11 +246,11 @@ async fn runner_success_with_detached_survivor() {
 
 #[tokio::test]
 async fn pending_prompt_release_requires_only_concurrent_runtime_work() {
-    // #1341: pins the cooperative gate-release invariant the spawned
+    // Pins the cooperative gate-release invariant the spawned
     // restore task relies on (the answerer task is the `agent_update_answer`
     // command; the waiter is the restore wake; both must progress on the
     // same runtime without the main thread doing anything). It does NOT
-    // reproduce the #1341 freeze itself (the gate was cooperative pre-fix;
+    // reproduce the original freeze itself (the gate was cooperative pre-fix;
     // the bug was the lib.rs setup `block_on`, unreachable from a unit
     // test) - the freeze regression net is AC2 + AC8 + AC9 + AC11. If the
     // gate wait were ever made thread-blocking, this test would hang on the

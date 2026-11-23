@@ -571,7 +571,7 @@ fn tmp_files_in(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// #2695 round 2 - a non-UTF-8 `state.json` is unreadable state, not a
+/// Round 2 - a non-UTF-8 `state.json` is unreadable state, not a
 /// scan failure: the scan replaces it with a baseline, as before #2695.
 #[tokio::test]
 async fn scan_heals_a_non_utf8_state_file() {
@@ -597,7 +597,7 @@ async fn scan_heals_a_non_utf8_state_file() {
     assert!(state.last_checked_at.is_some(), "a baseline replaced it");
 }
 
-/// #2695 round 3 - the non-UTF-8 arm of `guarded_state_write` is still a
+/// Round 3 - the non-UTF-8 arm of `guarded_state_write` is still a
 /// compare-and-swap: different invalid bytes on disk mean `Stale`.
 #[test]
 fn guarded_state_write_is_stale_when_non_utf8_bytes_changed() {
@@ -616,7 +616,7 @@ fn guarded_state_write_is_stale_when_non_utf8_bytes_changed() {
     assert_eq!(std::fs::read(&state_path).expect("state bytes"), changed);
 }
 
-/// #2695 T3 - the scan lock was split, not deleted: a second scan cannot
+/// T3 - the scan lock was split, not deleted: a second scan cannot
 /// start while the first is held inside a delivery.
 #[tokio::test]
 async fn a_second_scan_waits_while_the_first_is_inside_a_delivery() {
@@ -658,7 +658,7 @@ async fn a_second_scan_waits_while_the_first_is_inside_a_delivery() {
     );
 }
 
-/// #2695 T7 - a Loop gone at entry is a quiet skip with no write.
+/// T7 - a Loop gone at entry is a quiet skip with no write.
 #[tokio::test]
 async fn scan_loop_skips_a_missing_dir_or_config_quietly() {
     let app = audit_writer_app();
@@ -699,7 +699,7 @@ async fn scan_loop_skips_a_missing_dir_or_config_quietly() {
     );
 }
 
-/// #2695 T12 - the write-time presence recheck, isolated.
+/// T12 - the write-time presence recheck, isolated.
 #[test]
 fn guarded_state_write_is_stale_when_the_config_is_gone() {
     let config = sample_config();
@@ -724,7 +724,7 @@ fn guarded_state_write_is_stale_when_the_config_is_gone() {
     assert!(tmp_files_in(&dir).is_empty(), "no tmp file left");
 }
 
-/// #2695 T13 - the generation key resists a spelling alias.
+/// T13 - the generation key resists a spelling alias.
 #[test]
 fn generation_key_resists_a_spelling_alias() {
     let config = sample_config();
@@ -748,7 +748,7 @@ fn generation_key_resists_a_spelling_alias() {
     assert_ne!(scheduler.loop_generation(&dir), before);
 }
 
-/// #2695 T15 - the commit order, isolated: with the config gone, the
+/// T15 - the commit order, isolated: with the config gone, the
 /// state write refuses before any audit append is attempted.
 #[test]
 fn commit_scan_section_writes_nothing_when_the_config_is_gone() {
@@ -811,7 +811,7 @@ fn commit_scan_section_writes_nothing_when_the_config_is_gone() {
     assert!(tmp_files_in(&dir).is_empty(), "no tmp file left");
 }
 
-/// #2679 - a failed state write appends no audit row. Windows-only: the
+/// A failed state write appends no audit row. Windows-only: the
 /// failure is forced with an open read handle on `state.json`, which
 /// blocks the replace with `os error 5` on Windows but not on Unix. The
 /// ordering contract is cross-platform; a Linux green is not coverage.

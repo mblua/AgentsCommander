@@ -130,7 +130,7 @@ impl fmt::Display for GuardError {
 
 impl std::error::Error for GuardError {}
 
-// #2232 phase 4: the sets below are **unchanged**, and deliberately so. Phase 4
+// Phase 4: the sets below are **unchanged**, and deliberately so. Phase 4
 // gave `claude_watcher` a destination `watch`, per-line preamble starts and a
 // live `Option<Sender>`, but every one of those is either std, `tokio`, or a
 // name the watcher already carried: `capture::record` for the record,
@@ -143,9 +143,9 @@ impl std::error::Error for GuardError {}
 fn production_modules() -> BTreeSet<String> {
     [
         CRATE_ID,
-        // #2232 phase 1: the capture record module the watchers now depend on.
+        // Phase 1: the capture record module the watchers now depend on.
         "agentscommander_lib::capture",
-        // #2232 phase 3: the epoch predicate and the observation prefix cap the
+        // Phase 3: the epoch predicate and the observation prefix cap the
         // watcher now names, so the record carries a real epoch.
         "agentscommander_lib::capture::key",
         "agentscommander_lib::capture::record",
@@ -174,13 +174,13 @@ fn expected_dependencies() -> BTreeSet<DependencyObservation> {
             TARGET_ROOT_SOURCE,
             "agentscommander_lib::telegram::jsonl_kernel",
         ),
-        // #2232 phase 1: the watcher emits one capture record per accepted
+        // Phase 1: the watcher emits one capture record per accepted
         // assistant record.
         (TARGET_ROOT_SOURCE, "agentscommander_lib::capture::record"),
-        // #2232 phase 3: the pure epoch predicate. The watcher evaluates it
+        // Phase 3: the pure epoch predicate. The watcher evaluates it
         // over bytes it has already read; it takes no lock and writes nothing.
         (TARGET_ROOT_SOURCE, "agentscommander_lib::capture::key"),
-        // #2232 phase 3: the observation prefix cap `N` and its pure helper.
+        // Phase 3: the observation prefix cap `N` and its pure helper.
         // Both are constants and a byte slice; `capture::state`'s disk and lock
         // work stays on the supervisor thread.
         (TARGET_ROOT_SOURCE, "agentscommander_lib::capture::state"),

@@ -71,7 +71,7 @@ fn resolve_plan_uses_absolute_env_override_and_builds_dest() {
         plan.dest,
         host_root.path().join(".claude").join(".credentials.json")
     );
-    // #930 - the first-run descriptor must reach the plan: the container
+    // The first-run descriptor must reach the plan: the container
     // backend sees only the plan, never the agent profile.
     assert_eq!(plan.first_run, Some(first_run()));
 }
@@ -137,7 +137,7 @@ fn copy_in_then_remove_copied_is_idempotent() {
 
 #[test]
 fn ensure_first_run_state_merges_into_existing_config_without_touching_other_keys() {
-    // #930 - the replica config dir already holds a seeded .claude.json.
+    // The replica config dir already holds a seeded .claude.json.
     // Add the flags, preserve everything else (identity fields, other
     // projects), or we would clobber user config.
     let root = tempfile::tempdir().expect("root");
@@ -174,7 +174,7 @@ fn ensure_first_run_state_merges_into_existing_config_without_touching_other_key
 
 #[test]
 fn ensure_first_run_state_creates_config_when_absent() {
-    // #930 - an empty config dir onboards too, so "no config seed" does not
+    // An empty config dir onboards too, so "no config seed" does not
     // save us: the file must be created.
     let root = tempfile::tempdir().expect("root");
     let path = root.path().join(".claude").join(".claude.json");
@@ -197,7 +197,7 @@ fn ensure_first_run_state_creates_config_when_absent() {
 
 #[test]
 fn ensure_first_run_state_skips_unparseable_config() {
-    // #930 - never clobber a config we cannot parse: warn and leave it byte
+    // Never clobber a config we cannot parse: warn and leave it byte
     // for byte. The user sees onboarding, which is exactly today's behavior.
     let root = tempfile::tempdir().expect("root");
     let dir = root.path().join(".claude");
@@ -216,7 +216,7 @@ fn ensure_first_run_state_skips_unparseable_config() {
 
 #[test]
 fn ensure_first_run_state_writes_nothing_without_a_descriptor() {
-    // #930 - agents with no first-run descriptor (Codex, Antigravity) are
+    // Agents with no first-run descriptor (Codex, Antigravity) are
     // untouched: no file, not even the config dir, is created.
     let root = tempfile::tempdir().expect("root");
 

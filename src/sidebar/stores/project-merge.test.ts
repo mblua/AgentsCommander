@@ -3,7 +3,7 @@ import type { AcAgentReplica, AcDiscoveryResult, AcLoopSummary, AcWorkgroup } fr
 import type { ProjectState } from "./project";
 import { deepEqual, mergeDiscoveryResult } from "./project-merge";
 
-// #748 — the identity-preserving discovery merge. Object references drive the
+// The identity-preserving discovery merge. Object references drive the
 // reference-keyed <For>s in ProjectPanel: every ref preserved here is a DOM row
 // NOT disposed/re-created on reload (and a click over it NOT lost).
 

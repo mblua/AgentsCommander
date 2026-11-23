@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4805 P03 - the Temporary Rooms group set as its own rail section.
+// The Temporary Rooms group set as its own rail section.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkgroupGroupsConfig } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
