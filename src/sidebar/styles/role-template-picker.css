@@ -1,4 +1,4 @@
-/* ===== Role template picker (#271) ===== */
+/* ===== Role template picker ===== */
 
 /* Let the New Agent form body scroll instead of clipping the footer when the
    template picker pushes the modal past `.agent-modal { max-height:80vh }`.

@@ -1,4 +1,4 @@
-/* #4752 D9 - breathing red halo on an unleashed tile (prototype B); #4802 Unleash dialog red. */
+/* Breathing red halo on an unleashed tile (prototype B), and the Unleash dialog red. */
 .replica-item.unleashed {
   --unleash-red: var(--status-exited);
   position: relative;
@@ -31,7 +31,7 @@
     box-shadow: inset 0 0 0 3px var(--unleash-red), 0 0 12px 3px var(--unleash-red);
   }
 }
-/* #4802 - the Unleash confirmation dialog in danger red; scoped, other modals unchanged. */
+/* The Unleash confirmation dialog in danger red; scoped, other modals unchanged. */
 .agent-modal.unleash-confirm {
   border-color: var(--status-exited);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6),
