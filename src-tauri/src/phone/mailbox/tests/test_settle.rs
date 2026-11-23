@@ -46,7 +46,7 @@ fn no_peer_is_closed_on_a_non_purged_status() {
     );
 }
 
-// ── (#885 D-3) handle_purge_wg end-to-end tests ──
+// ── handle_purge_wg end-to-end tests ──
 
 /// Build a purge-wg outbox message file in the sender's outbox.
 #[allow(
@@ -190,7 +190,7 @@ async fn process_message_purge_wg_without_token_is_rejected() {
         "process_message should not error on rejection"
     );
 
-    // (#885 E-1) Assert on the REASON, not just file existence. A rejection
+    // Assert on the REASON, not just file existence. A rejection
     // test that does not pin which guard rejected passes when the guard is
     // deleted.
     let rejected = sender_cwd
@@ -205,7 +205,7 @@ async fn process_message_purge_wg_without_token_is_rejected() {
         "must be rejected by the F-7 token guard, not by WG resolution: {reason}"
     );
 
-    // (#885 E-2) Zero destroy events (now meaningful with the hook).
+    // Zero destroy events (now meaningful with the hook).
     assert_no_spawn_or_destroy_events(&hooks_clone);
 }
 
@@ -280,14 +280,14 @@ async fn process_message_purge_wg_with_master_token_and_forged_from_is_rejected(
         rejected.exists(),
         "master-token purge with forged from must be rejected"
     );
-    // (#885 E-1) Pin WHICH guard rejected.
+    // Pin WHICH guard rejected.
     let reason = std::fs::read_to_string(&rejected).unwrap();
     assert!(
         reason.contains("requires a session token"),
         "must be rejected by the F-7 token guard, not by WG resolution: {reason}"
     );
 
-    // (#885 E-2) Zero destroy events.
+    // Zero destroy events.
     assert_no_spawn_or_destroy_events(&hooks_clone);
 }
 
@@ -354,7 +354,7 @@ async fn root_guard_aborts_purge() {
         .process_message(&app, &path, OutboxOrigin::Replica)
         .await;
 
-    // (#885 E-6) Assert, don't hedge.
+    // Assert, don't hedge.
     let responses_dir = sender_cwd
         .join(crate::config::agent_local_dir_name())
         .join("responses");
@@ -369,7 +369,7 @@ async fn root_guard_aborts_purge() {
         "response must contain 'failed_root_guard': {body}"
     );
 
-    // (#885 E-2) Zero destroy events: the root guard aborts before the
+    // Zero destroy events: the root guard aborts before the
     // destroy loop.
     assert_no_spawn_or_destroy_events(&hooks_clone);
 }
@@ -388,7 +388,7 @@ async fn quiet_period_is_clamped_to_floor() {
     let app_struct = make_mailbox_app(temp.path());
     let app = app_handle(&app_struct);
 
-    // (#885 E-3) Seed a live, busy peer so the gate is exercised, not
+    // Seed a live, busy peer so the gate is exercised, not
     // vacuously passed with an empty pty_live set.
     let peer_sid = seed_live_busy_peer(&app, &peer_cwd).await;
 
@@ -498,7 +498,7 @@ async fn test_wake_settle_defers_and_does_not_burn_attempts() {
     assert!(!temp.path().join("rejected").exists());
 }
 
-/// #2336 - a typing-held wake gets the menu guard's exemption: the filesystem
+/// A typing-held wake gets the menu guard's exemption: the filesystem
 /// poller never counts an attempt against it and never rejects it, even past
 /// the attempt ceiling. The file stays at its original path for the next poll.
 #[tokio::test]
@@ -596,7 +596,7 @@ async fn test_settle_live_holds_during_menu_guard_block() {
     assert!(crate::pty::menu_guard::is_menu_guard_deferred_error(&err));
 }
 
-/// #2586 T10 - an idle session settles `Ready` well before the cap. The
+/// An idle session settles `Ready` well before the cap. The
 /// negative controls redden a constant `TimedOut` mapping and a hang.
 #[tokio::test]
 async fn test_settle_until_ready_reports_ready_before_the_cap() {
@@ -630,7 +630,7 @@ async fn test_settle_until_ready_reports_ready_before_the_cap() {
     assert_eq!(res, Ok(SettleReadiness::Ready));
 }
 
-/// #2586 T11 - a never-ready session hits the cap: still `Ok` (bias to
+/// A never-ready session hits the cap: still `Ok` (bias to
 /// deliver) and `TimedOut`. T10 and T11 are each other's control.
 #[tokio::test]
 async fn test_settle_until_ready_reports_timed_out_at_the_cap() {
@@ -662,7 +662,7 @@ async fn test_settle_until_ready_reports_timed_out_at_the_cap() {
     assert_eq!(res, Ok(SettleReadiness::TimedOut));
 }
 
-/// #2586 T12 - the readiness survives the real cold-spawn caller. No test
+/// The readiness survives the real cold-spawn caller. No test
 /// hooks, so the production 2000 ms settle runs (about 2.1 s wall).
 #[tokio::test]
 async fn test_wait_for_spawned_wake_idle_propagates_ready() {

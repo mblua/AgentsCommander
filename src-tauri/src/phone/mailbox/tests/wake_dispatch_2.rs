@@ -292,7 +292,7 @@ async fn poll_keeps_supported_busy_command_retriable() {
     assert!(mock_pty_writes_for(&app, session_id).is_empty());
 }
 
-/// (#1399 T2) The claim is a same-directory suffix: invisible to the
+/// The claim is a same-directory suffix: invisible to the
 /// `extension() == "json"` scan filter, same archive parent, exact inverse.
 #[test]
 fn wake_claim_is_a_same_directory_suffix_with_an_exact_inverse() {
@@ -477,7 +477,7 @@ fn arm_positive_reclaim_ticket(
         .is_ok());
 }
 
-/// (#1399 T3) Reclamation, all four branches: an unowned claim with no
+/// Reclamation, all four branches: an unowned claim with no
 /// receipt is returned; a claim whose receipt exists is deleted without
 /// recreating the message (the no-double-delivery assertion, for both
 /// `delivered/` and `rejected/`); a claim in `live_claims` is untouched.
@@ -568,7 +568,7 @@ fn reclaim_returns_unowned_claims_and_never_resurrects_settled_or_live_ones() {
     );
 }
 
-/// (#1399 T4) The sort key is send time, not filename: an earlier timestamp
+/// The sort key is send time, not filename: an earlier timestamp
 /// in `zzzz.json` sorts before a later one in `aaaa.json`; malformed,
 /// absent, and unreadable timestamps all yield `None`, which sorts first.
 #[test]
@@ -614,7 +614,7 @@ fn outbox_send_time_orders_by_timestamp_not_filename() {
     assert!(outbox_message_send_time(&malformed) < Some(early_key));
 }
 
-/// (#1399 T8) Both alias orders retain the same canonical spelling, so a
+/// Both alias orders retain the same canonical spelling, so a
 /// later cycle cannot change the path-keyed ownership ledger key.
 #[test]
 fn outbox_dir_spellings_collapse_to_one_physical_entry() {
@@ -657,7 +657,7 @@ fn outbox_dir_spellings_collapse_to_one_physical_entry() {
     assert_eq!(with_missing[0].as_os_str(), expected.as_os_str());
 }
 
-/// (#1399 T5) The split preserves the retry ledger, twice over: the prune
+/// The split preserves the retry ledger, twice over: the prune
 /// predicate keeps a claimed path's entry alive across the cycle, and the
 /// shared drain releases ownership so the next cycle can re-claim and
 /// count a second attempt. With a duplicated drain or without the prune

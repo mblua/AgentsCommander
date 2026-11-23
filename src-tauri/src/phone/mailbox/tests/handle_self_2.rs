@@ -1,6 +1,6 @@
 use super::*;
 
-/// #749 - switch variant of the rename-back contract: a failed Phase-2 inject returns the
+/// Switch variant of the rename-back contract: a failed Phase-2 inject returns the
 /// archived handoff to the root of the queue-time cwd.
 #[tokio::test]
 async fn self_switch_driver_inject_failure_renames_handoff_back() {
@@ -20,7 +20,7 @@ async fn self_switch_driver_inject_failure_renames_handoff_back() {
         Err("pty write failed".to_string())
     };
 
-    // (#756) F8: a failed switch handoff inject fires NO boundary events
+    // F8: a failed switch handoff inject fires NO boundary events
     // (no Cleared by design, and no ContentInjected without a real inject).
     let boundary_events = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
     let events_seen = boundary_events.clone();
@@ -175,7 +175,7 @@ async fn self_switch_driver_persist_failure_skips_restart_and_cleans_pending() {
     assert!(pending.is_empty());
 }
 
-// ────────────────────────── #1632 self-handoff-and-restart ──────────────────────────
+// ────────────────────────── self-handoff-and-restart ──────────────────────────
 //
 // Every test below that reaches `handle_self_restart` NAMES its seeding call and its
 // `agent_id` argument explicitly. That is not a style rule: D1 replaces the landed
