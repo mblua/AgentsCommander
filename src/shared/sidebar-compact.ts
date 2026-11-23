@@ -1,13 +1,13 @@
 import { createSignal } from "solid-js";
 
 /**
- * #2236 — the compact sidebar rail width in TypeScript. Pinned equal to the
+ * The compact sidebar rail width in TypeScript. Pinned equal to the
  * `--ac-rail-width` token phase 1 lands in `src/sidebar/styles/variables.css`
  * by `sidebar-compact.test.ts`; this is the number's only TS home.
  */
 export const RAIL_WIDTH_PX = 68;
 
-/** #2236 D16a — declared here and nowhere else; phase 5 consumes it. No
+/** D16a — declared here and nowhere else; phase 5 consumes it. No
  *  parsing or matching lives in this module. */
 export const DEFAULT_SIDEBAR_COMPACT_HOTKEY = "Ctrl+Shift+E";
 
@@ -73,7 +73,7 @@ export function toggleSidebarCompact(): void {
 }
 
 /**
- * #2236 D25 — the named seams the #1532 pulse routes its seven width
+ * D25 — the named seams the pulse routes its seven width
  * couplings through. Each member is the identity in expanded mode and reads
  * or writes the rail nudge while compact, so the pulse keeps comparing the
  * width it actually owns instead of the hidden expanded width.

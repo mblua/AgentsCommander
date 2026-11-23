@@ -1,4 +1,4 @@
-// #2646 - the web remote token is untrusted URL/session input until it is
+// The web remote token is untrusted URL/session input until it is
 // checked. The server only ever creates it as uuid::Uuid::new_v4().to_string()
 // (lowercase, hyphenated), so anything else is dropped before it can reach
 // sessionStorage or the WebSocket URL.

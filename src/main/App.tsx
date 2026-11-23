@@ -74,11 +74,11 @@ const SIDEBAR_PULSE_REQUEST_TIMEOUT_MS = 8000;
 
 const SIDEBAR_ANIMATION_FALLBACK_MS = 400;
 
-// #2297 phase 3 - main close handshake.
+// Main close handshake.
 const QUIT_RETRY_GRACE_MS = 2000;
 const QUIT_FORCE_OFFER_MS = 10_000;
 
-/** #2349 - the visible carrier of an overlay-pinned placement flush. Emitted at
+/** The visible carrier of an overlay-pinned placement flush. Emitted at
  *  most once per accepted close round. */
 const PLACEMENT_OVERLAY_ALERT =
   "Window placement is pinned by the local settings overlay and was not saved.";
@@ -256,7 +256,7 @@ const pulsePhase = (
   completedObserverAck,
 });
 
-/** #3532 - the registered path of the sidebar's selected project; no fallback. */
+/** The registered path of the sidebar's selected project; no fallback. */
 export function selectedHistoryProject(): string | null {
   const key = workgroupGroupsStore.activeProjectPath();
   if (key === null) return null;
@@ -298,7 +298,7 @@ const MainApp: Component = () => {
   let endActiveDividerDrag: (() => void) | null = null;
   let sidebarAnimationTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // #2236 phase 7 — the pulse's seven width couplings go through these named
+  // The pulse's seven width couplings go through these named
   // seams. Expanded mode delegates to the host accessors unchanged; compact
   // mode reads and writes the rail nudge instead of the hidden live width.
   const seams = createPulseWidthSeams({
@@ -1226,7 +1226,7 @@ const MainApp: Component = () => {
     suppressQuitForce(round);
   };
 
-  /** #2349 - one bounded placement flush per accepted close round. Retries and
+  /** One bounded placement flush per accepted close round. Retries and
    *  Force reuse the round's promise and result, and the overlay alert is
    *  counted per round so none of them can alert twice. */
   const awaitPlacementFlush = async (round: QuitRound): Promise<void> => {

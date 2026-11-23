@@ -10,7 +10,7 @@ const geometryKeyMap: Record<PersistedWindowType, keyof AppSettings> = {
   terminal: "terminalGeometry",
 };
 
-/** #2349 - the quit path bounds its placement flush so a stuck invoke cannot
+/** The quit path bounds its placement flush so a stuck invoke cannot
  *  trap the user; at the deadline the flush settles as `failed` and quit
  *  continues with the previous durable placement. */
 export const MAIN_WINDOW_QUIT_FLUSH_TIMEOUT_MS = 2_000;
@@ -101,7 +101,7 @@ async function observeMainWindow(): Promise<MainWindowObservation> {
   };
 }
 
-/** #2393 - the rectangle an observation may contribute as normal bounds, or
+/** The rectangle an observation may contribute as normal bounds, or
  *  `null` when the window is in a special state or the rectangle is unusable.
  *  Shared by the fold and by the startup sample so both obey one rule. */
 function normalBoundsOf(
@@ -178,7 +178,7 @@ async function createMainWindowGeometryController(): Promise<MainWindowGeometryC
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const win = getCurrentWindow();
 
-  // #2393 - with no valid persisted rectangle, sample the window once before the
+  // With no valid persisted rectangle, sample the window once before the
   // listeners attach. Otherwise a first run whose first event arrives maximized
   // retains no rectangle at all and persists nothing, not on the debounce and not
   // on the quit flush. The special-state rule is unchanged: a maximized,
@@ -277,7 +277,7 @@ async function createMainWindowGeometryController(): Promise<MainWindowGeometryC
 }
 
 /**
- * #2349 - the bounded placement flush every accepted close route awaits before
+ * The bounded placement flush every accepted close route awaits before
  * its first quit command. When no main controller exists (browser build, or
  * after cleanup) it resolves `noop`. Concurrent calls share one bounded promise
  * and result; the slot clears when that promise settles, so a later accepted
