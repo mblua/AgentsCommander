@@ -703,7 +703,7 @@ pub(crate) fn raw_update_commands_problem(raw: &serde_json::Value) -> Option<Str
     None
 }
 
-/// #2736 - the raw `installCommands` counterpart of
+/// The raw `installCommands` counterpart of
 /// `raw_update_commands_problem`: a sanitized reason for a present value that
 /// is not an object, lacks a string `default`, carries a non-string per-OS
 /// value, or a blank or control-character value. Text is never echoed.

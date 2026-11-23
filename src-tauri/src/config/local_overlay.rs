@@ -1,4 +1,4 @@
-//! #1737 - the `.local` alter-ego override layer.
+//! The `.local` alter-ego override layer.
 //!
 //! Two read-time overrides, one policy module:
 //!

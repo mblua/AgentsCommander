@@ -3124,7 +3124,7 @@ P0-identifier	src-tauri/src/commands/task.rs	return Err(format!("room root is no
 P0-identifier	src-tauri/src/commands/task.rs	"room root is not a `room-*` or legacy `wg-*` Room directory: {}",	section 5.3 canonical dual-acceptance phrase; it must name both prefixes
 P0-identifier	src-tauri/src/config/coding_agent_profiles/paths.rs	"Room replica '{}' is not inside a `room-*` or legacy `wg-*` Room directory",	section 5.3 canonical dual-acceptance phrase; it must name both prefixes
 P0-identifier	src-tauri/src/config/entity_prefix.rs	//! On-disk prefix of a Room directory, and of the legacy Workgroup directory	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
-P0-identifier	src-tauri/src/config/entity_prefix.rs	/// Prefix of a legacy Workgroup directory. Never produced again (#1614); still	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
+P0-identifier	src-tauri/src/config/entity_prefix.rs	/// Prefix of a legacy Workgroup directory. Never produced again; still	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
 P0-identifier	src-tauri/src/config/entity_prefix.rs	pub const LEGACY_WORKGROUP_DIR_PREFIX: &str = "wg-";	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
 P0-identifier	src-tauri/src/config/entity_prefix.rs	} else if name.starts_with(LEGACY_WORKGROUP_DIR_PREFIX) {	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
 P0-identifier	src-tauri/src/config/entity_prefix.rs	Some(LEGACY_WORKGROUP_DIR_PREFIX)	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it

@@ -16,7 +16,7 @@ use std::path::Path;
 
 use crate::filesystem::projects::discovery;
 
-/// #2434 - escape a bare instructions filename for a gitignore pattern: `\`,
+/// Escape a bare instructions filename for a gitignore pattern: `\`,
 /// `*`, `?`, `[`, `]` anywhere, and a leading `#` or `!`, each get a `\`
 /// prefix. Separators and trailing spaces are already rejected upstream.
 pub(crate) fn escape_gitignore_name(name: &str) -> String {
@@ -30,14 +30,14 @@ pub(crate) fn escape_gitignore_name(name: &str) -> String {
     out
 }
 
-/// #3532 - the context history store owns this directory: its SQLite database
+/// The context history store owns this directory: its SQLite database
 /// and rollback journals. `heatmap.json` stays visible.
 const CONTEXT_HISTORY_IGNORE_ENTRY: (&str, &str) = (
     "/context-history/",
     "# AgentsCommander: exclude the context history database and journals.",
 );
 
-/// #1968 - the machine-local coding-agent catalog children, rooted at `.ac/`.
+/// The machine-local coding-agent catalog children, rooted at `.ac/`.
 fn catalog_artifact_patterns() -> [String; 10] {
     [
         CODING_AGENTS_LOCAL_ARTIFACT,
@@ -63,19 +63,19 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     configured: &[String],
 ) -> Result<(), String> {
     let gitignore_path = ac_root.join(".gitignore");
-    // #2717 - the project-settings rows have one home, shared with the
+    // The project-settings rows have one home, shared with the
     // migration's sweep.
     let project_settings_rows = crate::config::naming_migration::project_settings_ignore_rows();
     let [project_settings_row, project_settings_lock_row, set_aside_row] = project_settings_rows
         .each_ref()
         .map(|(pattern, comment)| (pattern.as_str(), *comment));
     let project_settings_gitignore_pattern = project_settings_row.0;
-    // #2718 - the Loop state rows, shared with the Loop scope's sweep.
+    // The Loop state rows, shared with the Loop scope's sweep.
     let loop_state_rows = crate::config::naming_migration::loop_state_ignore_rows();
     let [loop_state_row, loop_state_tmp_row, loop_set_aside_row] = loop_state_rows
         .each_ref()
         .map(|(pattern, comment)| (pattern.as_str(), *comment));
-    // #2807 - the agent state rows, shared with the config pair's sweep.
+    // The agent state rows, shared with the config pair's sweep.
     let config_state_rows = crate::config::naming_migration::config_state_ignore_rows();
     let [config_state_row, config_state_lock_row, config_state_tmp_row] = config_state_rows
         .each_ref()
@@ -135,7 +135,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             "/.project-settings.json.lock",
             "# AgentsCommander: exclude project-settings write-lock sidecars.",
         ),
-        // #2717 - the migrated project settings take their own sidecar, and the
+        // The migrated project settings take their own sidecar, and the
         // naming migration sets a displaced project file aside in `.ac/`.
         project_settings_lock_row,
         set_aside_row,
@@ -144,7 +144,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     required_entries.extend(agent_runtime_ignore_entries());
     required_entries.extend(catalog_ignore_entries(&catalog));
     required_entries.extend([
-        // #2807 - the agent state file beside each tracked `config.json`, its
+        // The agent state file beside each tracked `config.json`, its
         // lock sidecar and its publish temporary.
         config_state_row,
         config_state_lock_row,
@@ -205,7 +205,7 @@ fn catalog_ignore_entries(catalog: &[String; 10]) -> [(&str, &str); 10] {
     let [.., catalog_retired_lock, catalog_set_aside] = catalog;
 
     [
-        // #1968 - the machine-local coding-agent catalog children. The tracked
+        // The machine-local coding-agent catalog children. The tracked
         // `agents.json` and `_seed/` masters stay tracked; these are the
         // sidecars, lock and publication temporaries that must never be
         // committed. Composed from the registry: `config::instance_artifacts`
@@ -246,7 +246,7 @@ fn catalog_ignore_entries(catalog: &[String; 10]) -> [(&str, &str); 10] {
             "# AgentsCommander: exclude coding-agent migration journal publication temporaries \
                 (the journal name starts with a dot).",
         ),
-        // #2715 - the pre-migration lock sidecar the naming migration leaves on
+        // The pre-migration lock sidecar the naming migration leaves on
         // disk for good, and every catalog file it sets aside.
         (
             catalog_retired_lock.as_str(),
@@ -300,7 +300,7 @@ fn write_required_gitignore(
         let content = discovery::read_ac_root_gitignore(gitignore_path)
             .map_err(|e| format!("Failed to read Project AC Root .gitignore: {e}"))?;
         let (content, migrated) = migrate_legacy_seed_manifest_gitignore(content);
-        // #2715 - the append-only writer never removes a row, so the catalog
+        // The append-only writer never removes a row, so the catalog
         // rows the naming migration renamed are retired here.
         let (content, retired) = crate::config::naming_migration::retire_ignore_pairs(
             &content,
@@ -364,7 +364,7 @@ fn write_required_gitignore(
     Ok(())
 }
 
-/// #2715 - the three `.ac/.gitignore` pairs whose value the `agents.*` rename
+/// The three `.ac/.gitignore` pairs whose value the `agents.*` rename
 /// changed. The lock row is not here: its leftover stays on disk and ignored.
 pub(crate) const RETIRED_CATALOG_IGNORE_PAIRS: [(&str, &str); 3] = [
     (
@@ -381,20 +381,20 @@ pub(crate) const RETIRED_CATALOG_IGNORE_PAIRS: [(&str, &str); 3] = [
     ),
 ];
 
-/// #2717 - the `.ac/.gitignore` pair whose value the project-settings rename
+/// The `.ac/.gitignore` pair whose value the project-settings rename
 /// changed. The lock row is not here: its leftover stays on disk and ignored.
 pub(crate) const RETIRED_PROJECT_SETTINGS_IGNORE_PAIRS: [(&str, &str); 1] = [(
     "# AgentsCommander: exclude generated project-local settings.",
     "/project-settings.json",
 )];
 
-/// #2718 - the `.ac/.gitignore` pair whose value the Loop state rename changed.
+/// The `.ac/.gitignore` pair whose value the Loop state rename changed.
 pub(crate) const RETIRED_LOOP_STATE_IGNORE_PAIRS: [(&str, &str); 1] = [(
     "# AgentsCommander: exclude Loop scheduler runtime state.",
     "_loop_*/state.json",
 )];
 
-/// #2090 - migrate the retired `!/seed-manifest.toml` un-ignore pair written by
+/// Migrate the retired `!/seed-manifest.toml` un-ignore pair written by
 /// older builds. Only the two AC-managed lines (the retired comment directly
 /// above the negation and, when the managed block wrote one, the blank line
 /// before that comment) are removed; a bare `!/seed-manifest.toml` without the

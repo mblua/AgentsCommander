@@ -63,13 +63,13 @@ pub(crate) fn wayland_socket() -> Result<String, std::env::VarError> {
     std::env::var("WAYLAND_SOCKET")
 }
 
-/// #2774 Set only inside a Hyprland session; empty counts as unset.
+/// Set only inside a Hyprland session; empty counts as unset.
 #[cfg(target_os = "linux")]
 pub(crate) fn hyprland_instance_signature() -> Option<std::ffi::OsString> {
     std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").filter(|v| !v.is_empty())
 }
 
-/// #2774 `XDG_CONFIG_HOME`, else `$HOME/.config`; empty values count as unset.
+/// `XDG_CONFIG_HOME`, else `$HOME/.config`; empty values count as unset.
 #[cfg(target_os = "linux")]
 pub(crate) fn hypr_config_home() -> Option<std::path::PathBuf> {
     let non_empty = |key| std::env::var_os(key).filter(|v| !v.is_empty());
@@ -83,12 +83,12 @@ pub(crate) fn inherited_path() -> Option<std::ffi::OsString> {
     std::env::var_os("PATH")
 }
 
-/// #4804 `MISE_DATA_DIR`; empty counts as unset.
+/// `MISE_DATA_DIR`; empty counts as unset.
 pub(crate) fn mise_data_dir() -> Option<std::ffi::OsString> {
     std::env::var_os("MISE_DATA_DIR").filter(|v| !v.is_empty())
 }
 
-/// #4843 Set by the AppImage runtime; empty counts as set (any value means AppImage).
+/// Set by the AppImage runtime; empty counts as set (any value means AppImage).
 pub(crate) fn in_appimage() -> bool {
     std::env::var_os("APPIMAGE").is_some()
 }
