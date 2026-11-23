@@ -218,7 +218,7 @@ async function awaitAgentMessageListener(fake: FakeTransport): Promise<void> {
   );
 }
 
-describe("TerminalView last coding-agent message stamp (#1682)", () => {
+describe("TerminalView last coding-agent message stamp", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

@@ -64,7 +64,7 @@ const row = (overrides: Partial<ActivityRow> = {}): ActivityRow => ({
   ...overrides,
 });
 
-describe("freezing a row (#1171)", () => {
+describe("freezing a row", () => {
   it("takes the workgroup from the working directory, not from the session name", () => {
     const frozen = freezeRow(
       match(),
@@ -85,7 +85,7 @@ describe("freezing a row (#1171)", () => {
  * Test 77. The window subscribes before it fetches, so a match arriving during the
  * fetch is in BOTH the stream and the snapshot. It must be shown exactly once.
  */
-describe("merging the snapshot with the stream (#1171)", () => {
+describe("merging the snapshot with the stream", () => {
   it("neither duplicates nor loses a match that arrives during the fetch", () => {
     const streamed = freezeRow(match({ seq: 7 }), session());
     const fromSnapshot = [
@@ -140,7 +140,7 @@ describe("merging the snapshot with the stream (#1171)", () => {
  * window is open, so without a structural bound after every merge the frontend grows without
  * one. A single session can deliver dozens of rows a second.
  */
-describe("bounding what the window holds (#1171)", () => {
+describe("bounding what the window holds", () => {
   const burst = (sessionId: string, count: number, from = 0) =>
     Array.from({ length: count }, (_, i) =>
       freezeRow(match({ sessionId, seq: from + i }), session({ id: sessionId }))
@@ -222,7 +222,7 @@ describe("bounding what the window holds (#1171)", () => {
  * fractional-second sibling: `.` sorts before `Z`, so `...00.100Z` reads as older than
  * `...00Z`.
  */
-describe("ordering rows for display (#1171)", () => {
+describe("ordering rows for display", () => {
   it("orders one session by seq, not by the text of its timestamps", () => {
     const whole = freezeRow(match({ seq: 1, at: "2026-07-30T22:00:00Z" }), session());
     const fractional = freezeRow(
@@ -338,7 +338,7 @@ describe("ordering rows for display (#1171)", () => {
  * Solid's `<For>` keys on object identity, not on the logical key, so a poll that
  * rebuilds the whole ring would rebuild and re-animate every row on screen every ten seconds.
  */
-describe("row identity across merges (#1171)", () => {
+describe("row identity across merges", () => {
   it("keeps the object it already held for a key it already has", () => {
     const held = freezeRow(match({ seq: 1 }), session());
     const identicalSnapshot = freezeRow(match({ seq: 1 }), session());
@@ -357,7 +357,7 @@ describe("row identity across merges (#1171)", () => {
   });
 });
 
-describe("surfacing degraded watchers (#1171)", () => {
+describe("surfacing degraded watchers", () => {
   /**
    * A degraded watcher has BY DEFINITION already emitted matches, so a marker that only
    * renders inside the "configured and waiting" branch is exactly where it can never be
@@ -380,7 +380,7 @@ describe("surfacing degraded watchers (#1171)", () => {
   });
 });
 
-describe("filtering (#1171)", () => {
+describe("filtering", () => {
   const rows = [
     row({ sessionId: "s1", seq: 1, watcherId: "reads", agentId: "a1", workgroup: "WG-1" }),
     row({ sessionId: "s2", seq: 2, watcherId: "errors", agentId: "a2", workgroup: "WG-2" }),
@@ -425,7 +425,7 @@ describe("filtering (#1171)", () => {
  * Test 81. The empty states, told apart from snapshot VALUES with no nullability --
  * and `warming` is its own state so the day-one message never flickers before the first tick.
  */
-describe("resolving which state the window shows (#1171)", () => {
+describe("resolving which state the window shows", () => {
   it("shows warming until the engine has ticked, even with no watchers", () => {
     expect(resolveView([snapshot({ warmedUp: false })], 0, 0)).toBe("warming");
     expect(resolveView([], 0, 0)).toBe("warming");
@@ -479,7 +479,7 @@ describe("resolving which state the window shows (#1171)", () => {
   });
 });
 
-describe("aggregating snapshots across a scope (#1171)", () => {
+describe("aggregating snapshots across a scope", () => {
   it("sums a watcher's counts and keeps degraded sticky across sessions", () => {
     const merged = mergeActiveWatchers([
       snapshot({
