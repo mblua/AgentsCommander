@@ -1,4 +1,4 @@
-// #4248 renderer fixture: test-only, standalone; no app source, IPC or filesystem.
+// Renderer fixture: test-only, standalone; no app source, IPC or filesystem.
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";

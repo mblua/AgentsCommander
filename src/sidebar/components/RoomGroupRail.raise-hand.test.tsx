@@ -20,7 +20,7 @@ import { roomHasRaisedHand } from "./room-session";
 const projectPath = "C:\\Project";
 
 /** A workgroup with one coordinator replica. `taskTitle` defaults to a real
- *  title so the #763 `!!wg.taskTitle` gate passes; pass null to exercise it. */
+ *  title so the `!!wg.taskTitle` gate passes; pass null to exercise it. */
 function room(
   name: string,
   opts: { taskTitle?: string | null; coordinator?: boolean } = {}
