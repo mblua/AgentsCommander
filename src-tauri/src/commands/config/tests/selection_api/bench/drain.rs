@@ -649,6 +649,21 @@ async fn issue_2475_concurrent_read_bodies_occupy_the_turn_simultaneously() {
 }
 
 async fn run_bench_drain_abort_child() {
+    // #4928: keep the intended abort below from leaving an OS core dump.
+    #[cfg(target_os = "linux")]
+    {
+        let zero: libc::c_ulong = 0;
+        // SAFETY: prctl(PR_SET_DUMPABLE, 0) takes no pointers and only clears the
+        // dumpable flag of this child test process; every variadic argument is passed
+        // as the unsigned long the kernel reads.
+        let rc = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, zero, zero, zero, zero) };
+        assert_eq!(
+            rc,
+            0,
+            "prctl(PR_SET_DUMPABLE, 0) failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
     let bench = bench_fixture(1, 1);
     let options = BenchOptions {
         budget: Some(std::time::Duration::from_millis(50)),
