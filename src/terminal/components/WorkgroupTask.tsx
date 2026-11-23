@@ -46,7 +46,7 @@ function scanFrontmatter(detect: string, start: number): { title: string | null;
   while (pos < detect.length) {
     const nl = detect.indexOf("\n", pos);
     const lineEnd = nl < 0 ? detect.length : nl;
-    const line = detect.slice(pos, lineEnd).replace(/\s+$/, "");
+    const line = detect.slice(pos, lineEnd).trimEnd();
 
     if (line === "---") {
       bodyStart = nl < 0 ? detect.length : nl + 1;
@@ -74,7 +74,7 @@ function parseTask(content: string | null): ParsedTask {
 
   const firstNl = detect.indexOf("\n");
   const firstLineEnd = firstNl < 0 ? detect.length : firstNl;
-  const firstLine = detect.slice(0, firstLineEnd).replace(/\s+$/, "");
+  const firstLine = detect.slice(0, firstLineEnd).trimEnd();
   // Reject prefixed openers like `---not`, `--- body`, or `----`.
   if (firstLine !== "---") return { title: null, body: raw };
 

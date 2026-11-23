@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #2202 AC 4, the ordering half, end to end through the rendered sidebar rather
+// AC 4, the ordering half, end to end through the rendered sidebar rather
 // than through markActivity alone: a repo leaving `ci: "running"` must reach
 // `lastActivityBySessionId` and make `naturalCoordinatorItems` re-sort, so the
 // room whose CI just finished floats to the top of the coordinator rows.

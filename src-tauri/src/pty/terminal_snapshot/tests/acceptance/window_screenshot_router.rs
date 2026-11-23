@@ -300,81 +300,81 @@ pub(super) async fn send_raw_screenshot_request(
     stream
 }
 
+/// Notepad discovery diagnostics: the last snapshot size and cumulative match counters.
+#[cfg(target_os = "windows")]
+#[derive(Default)]
+struct NotepadWindowScan {
+    last_snapshot_window_count: usize,
+    matching_process_windows: usize,
+    matching_notepad_title_windows: usize,
+    matching_notepad_app_name_windows: usize,
+    matching_process_zero_ids: usize,
+    matching_process_id_errors: usize,
+}
+
+#[cfg(target_os = "windows")]
+impl NotepadWindowScan {
+    /// Inspects one snapshot; returns the first matching window's valid nonzero ID.
+    fn inspect(&mut self, windows: Vec<xcap::Window>, notepad_pid: u32) -> Option<String> {
+        self.last_snapshot_window_count = windows.len();
+        for window in windows {
+            let belongs_to_notepad = window.pid().is_ok_and(|pid| pid == notepad_pid);
+            let has_notepad_title = window
+                .title()
+                .is_ok_and(|title| title.to_ascii_lowercase().contains("notepad"));
+            let has_notepad_app_name = window
+                .app_name()
+                .is_ok_and(|app_name| app_name.to_ascii_lowercase().contains("notepad"));
+            if !(belongs_to_notepad || has_notepad_title || has_notepad_app_name) {
+                continue;
+            }
+            if has_notepad_title {
+                self.matching_notepad_title_windows += 1;
+            }
+            if has_notepad_app_name {
+                self.matching_notepad_app_name_windows += 1;
+            }
+            self.matching_process_windows += 1;
+            match window.id() {
+                Ok(id) if id != 0 => return Some(id.to_string()),
+                Ok(_) => self.matching_process_zero_ids += 1,
+                Err(_) => self.matching_process_id_errors += 1,
+            }
+        }
+        None
+    }
+}
+
 #[cfg(target_os = "windows")]
 async fn find_notepad_window_id(notepad: &mut ChildGuard, notepad_pid: u32) -> String {
-    let mut target_window_id = None;
-    let mut last_snapshot_window_count = 0;
-    let mut matching_process_windows = 0;
-    let mut matching_notepad_title_windows = 0;
-    let mut matching_notepad_app_name_windows = 0;
-    let mut matching_process_zero_ids = 0;
-    let mut matching_process_id_errors = 0;
+    let mut scan = NotepadWindowScan::default();
     for _ in 0..40 {
         let windows = match xcap::Window::all() {
             Ok(windows) => windows,
             Err(error) => panic!("interactive window enumeration must succeed: {error}"),
         };
-        last_snapshot_window_count = windows.len();
-        for window in windows {
-            let belongs_to_notepad = match window.pid() {
-                Ok(pid) => pid == notepad_pid,
-                Err(_) => false,
-            };
-            let has_notepad_title = match window.title() {
-                Ok(title) => title.to_ascii_lowercase().contains("notepad"),
-                Err(_) => false,
-            };
-            let has_notepad_app_name = match window.app_name() {
-                Ok(app_name) => app_name.to_ascii_lowercase().contains("notepad"),
-                Err(_) => false,
-            };
-            if belongs_to_notepad || has_notepad_title || has_notepad_app_name {
-                if has_notepad_title {
-                    matching_notepad_title_windows += 1;
-                }
-                if has_notepad_app_name {
-                    matching_notepad_app_name_windows += 1;
-                }
-                matching_process_windows += 1;
-                target_window_id = match window.id() {
-                    Ok(id) if id != 0 => Some(id.to_string()),
-                    Ok(_) => {
-                        matching_process_zero_ids += 1;
-                        None
-                    }
-                    Err(_) => {
-                        matching_process_id_errors += 1;
-                        None
-                    }
-                };
-                if target_window_id.is_some() {
-                    break;
-                }
-            }
-        }
-        if target_window_id.is_some() {
-            break;
+        if let Some(window_id) = scan.inspect(windows, notepad_pid) {
+            return window_id;
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
-    match target_window_id {
-        Some(window_id) => window_id,
-        None => {
-            let child_exited = match notepad.0.try_wait() {
-                Ok(Some(_)) => true,
-                Ok(None) => false,
-                Err(_) => false,
-            };
-            panic!(
-                "Notepad did not expose a nonzero native window ID: last snapshot had \
-                 {last_snapshot_window_count} windows, {matching_process_windows} matched the \
-                 child process, title, or app name, {matching_notepad_title_windows} matched the \
-                 title, {matching_notepad_app_name_windows} matched the app name, \
-                 {matching_process_zero_ids} had zero IDs, {matching_process_id_errors} ID \
-                 inspections failed, and the launched child exited: {child_exited}"
-            )
-        }
-    }
+    let child_exited = matches!(notepad.0.try_wait(), Ok(Some(_)));
+    let NotepadWindowScan {
+        last_snapshot_window_count,
+        matching_process_windows,
+        matching_notepad_title_windows,
+        matching_notepad_app_name_windows,
+        matching_process_zero_ids,
+        matching_process_id_errors,
+    } = scan;
+    panic!(
+        "Notepad did not expose a nonzero native window ID: last snapshot had \
+         {last_snapshot_window_count} windows, {matching_process_windows} matched the \
+         child process, title, or app name, {matching_notepad_title_windows} matched the \
+         title, {matching_notepad_app_name_windows} matched the app name, \
+         {matching_process_zero_ids} had zero IDs, {matching_process_id_errors} ID \
+         inspections failed, and the launched child exited: {child_exited}"
+    )
 }
 
 #[cfg(target_os = "windows")]

@@ -365,7 +365,8 @@ describe("#4841 row decorations and header badges are unique per window", () => 
       for (const ctx of ["selected", "workgroups"]) {
         only(document, `workgroup.header.blockedMenu.${ctx}.${AP(wgPath(proj))}`);
       }
-      only(document, `project.header.${AP(proj)}.blockedMenu`);
+      const id = `project.header.${AP(proj)}.blockedMenu`;
+      expect(count(document, id), id).toBe(1);
       only(document, `coordinators.header.${AP(proj)}.blockedMenu`);
     }
   });

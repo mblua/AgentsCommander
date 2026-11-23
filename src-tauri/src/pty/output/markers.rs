@@ -23,7 +23,7 @@ pub struct ResponseWatcher {
     pub capturing: bool,
 }
 
-/// #973 (B) - is there a cell on this screen a human could see?
+/// Is there a cell on this screen a human could see?
 ///
 /// "Visible" is deliberately not "the child wrote a byte", and not even "a cell has contents":
 ///
@@ -102,7 +102,7 @@ fn skip_dcs(chars: &mut Peekable<Chars<'_>>) {
 /// Strip ANSI escape sequences so marker detection ignores color, cursor,
 /// title, hyperlink, shell-integration, and device-control noise.
 ///
-/// #973 - this is the IDLE DETECTOR's predicate, and the startup gate no longer uses it. It is
+/// This is the IDLE DETECTOR's predicate, and the startup gate no longer uses it. It is
 /// stateless and consumes `ESC` plus exactly one char, which is fine for deciding whether a chunk
 /// looked busy and wrong for deciding whether a child has painted. See
 /// `SessionIoFanout::has_rendered_visible_content`.

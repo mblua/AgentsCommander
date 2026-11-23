@@ -1,4 +1,4 @@
-//! #1032 - the pure half of the context scrape: turn the plain rows of a session's
+//! The pure half of the context scrape: turn the plain rows of a session's
 //! screen mirror into a percentage, using that agent's user-configured regex.
 //!
 //! Pure by construction: no locks, no vt100, no Tauri. Everything that can go wrong here

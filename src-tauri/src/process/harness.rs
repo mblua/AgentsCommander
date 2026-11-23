@@ -1,13 +1,13 @@
 //! Runs harness commands: `run_argv` for an argv list and `run_raw_shell` for a raw
 //! string (`cmd.exe /C` on Windows, `sh -c` elsewhere), both with the agent search
-//! path. On Windows it adds `CREATE_NO_WINDOW` only when no console is owned (#992).
+//! path. On Windows it adds `CREATE_NO_WINDOW` only when no console is owned.
 
 use std::process::Command;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// #992 - Does this process own a console?
+/// Does this process own a console?
 ///
 /// `GetConsoleWindow()` is NOT this test. It returns NULL for a ConPTY-attached
 /// process, which does own a console. `GetConsoleCP()` fails, returning 0, only when
@@ -33,9 +33,9 @@ fn argv_command(argv: &[String]) -> Command {
     let mut command = Command::new(&argv[0]);
     crate::config::agent_path::apply_search_path_to_std_command(&mut command);
     command.args(&argv[1..]);
-    // #992 - the release binary is GUI-subsystem, and `attach_parent_console`
+    // The release binary is GUI-subsystem, and `attach_parent_console`
     // deliberately does NOT attach when the std handles are already valid
-    // (inherited pipes, see cli/mod.rs and issue #129). Driven from PowerShell
+    // (inherited pipes, see cli/mod.rs). Driven from PowerShell
     // automation, AC therefore owns no console, and a console-subsystem child
     // spawned without the flag makes Windows allocate a NEW console for it: a
     // stray Windows Terminal tab, while the output goes to the inherited pipes
@@ -50,7 +50,7 @@ fn argv_command(argv: &[String]) -> Command {
     command
 }
 
-/// #992 - see `argv_command`. Same reasoning, same condition.
+/// See `argv_command`. Same reasoning, same condition.
 #[cfg(target_os = "windows")]
 fn platform_shell_command(raw: &str) -> Command {
     let mut command = Command::new("cmd.exe");

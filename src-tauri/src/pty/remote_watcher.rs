@@ -1,4 +1,4 @@
-//! #2064 Phase A - the remote activity producer.
+//! The remote activity producer.
 //!
 //! One polling sweeper answers two questions per repo: is CI running on the
 //! repo's exact `HEAD`, and is the repository's default branch ahead of it. Both

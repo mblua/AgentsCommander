@@ -1,4 +1,4 @@
-//! #1171 - compiling a user-configured watcher pattern.
+//! Compiling a user-configured watcher pattern.
 //!
 //! A separate compiler from `context_scrape/pattern.rs` and NOT a reuse of it, for exactly
 //! one reason: that one rejects any pattern without capture group 1 (`pattern.rs:44-48`,

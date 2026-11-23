@@ -1,6 +1,6 @@
 import type { Component } from "solid-js";
 
-/** #881 — monochrome Heroicons archive-box glyph for archive entry points. */
+/** Monochrome Heroicons archive-box glyph for archive entry points. */
 const ArchiveIcon: Component<{ class?: string }> = (props) => (
   <svg class={props.class} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
     <path d="M3.375 3C2.339 3 1.5 3.84 1.5 4.875v.75C1.5 6.66 2.34 7.5 3.375 7.5h17.25c1.035 0 1.875-.84 1.875-1.875v-.75C22.5 3.839 21.66 3 20.625 3H3.375Z" />

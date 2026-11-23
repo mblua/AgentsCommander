@@ -14,7 +14,7 @@ const RestartPromptModal: Component<{
     <div
       class="modal-overlay"
       onClick={props.onLater}
-      // #2655 - Escape = backdrop click; the dialog takes focus on mount so keys reach here.
+      // Escape = backdrop click; the dialog takes focus on mount so keys reach here.
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.stopPropagation();
@@ -42,7 +42,7 @@ const RestartPromptModal: Component<{
             <strong>{props.agentLabel}</strong> assigned to <strong>{props.replicaName}</strong>.
             Restart the session now to apply it?
           </p>
-          {/* #573: surface a failed restart inline (reusing `.agent-picker-error`)
+          {/* Surface a failed restart inline (reusing `.agent-picker-error`)
               and keep the modal open so the user can retry — a swallowed rejection
               would leave the old agent running while the UI looks applied. */}
           <Show when={props.error}>

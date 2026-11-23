@@ -1,4 +1,4 @@
-//! #3516 - preflight launch preparation: the same adapter, cwd and env as the CLI spawn.
+//! Preflight launch preparation: the same adapter, cwd and env as the CLI spawn.
 
 use super::{LocalProcessBackend, SpawnEnvironment};
 use crate::errors::AppError;

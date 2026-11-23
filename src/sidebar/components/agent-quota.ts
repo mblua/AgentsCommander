@@ -1,4 +1,4 @@
-/** #2482 - null when there is nothing to draw. Otherwise the two widths, in
+/** Null when there is nothing to draw. Otherwise the two widths, in
  *  percent, that the chip's gradient uses: remaining on the left, used on the
  *  right.
  *
@@ -24,7 +24,7 @@ export function agentQuotaTitle(used: number): string {
   return `${AGENT_QUOTA_TOOLTIP_PREFIX}: ${100 - used}% remaining, ${used}% used`;
 }
 
-/** #2482 - every attribute the filled chip needs, from a label and a reading.
+/** Every attribute the filled chip needs, from a label and a reading.
  *  Used by BOTH chips: `SessionItem.tsx` (p6) and the replica row (p7). With
  *  no reading it returns ONLY `class`, so a spread gives today's chip byte for
  *  byte, and the label stays the accessible name because nothing overrides it.
@@ -50,7 +50,7 @@ export function quotaChipAttrs(
   };
 }
 
-/** #2681 - "N% left" next to an agent name in the picker and Settings lists,
+/** "N% left" next to an agent name in the picker and Settings lists,
  *  or null when there is no valid reading. */
 export function quotaRemainingLabel(weeklyUsedPercent: number | null | undefined): string | null {
   const fill = quotaFill(weeklyUsedPercent);

@@ -280,7 +280,7 @@ describe("shared ipc transport seam", () => {
     }
   });
 
-  // #2222 boundary pin: this is the only test that loads the real ipc module
+  // Boundary pin: this is the only test that loads the real ipc module
   // for the new event. The listener suites swap `../shared/ipc` for a mocked
   // factory that never sees an event string, so F-T1..F-T4 stay green even if
   // this literal is misspelled here.

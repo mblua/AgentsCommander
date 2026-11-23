@@ -70,7 +70,7 @@ const nullIdentitySnapshot = (): ResourceSnapshot => {
   return snapshot;
 };
 
-// #647 C/D: a quarantined group — the kill was not verified dead (an AV is
+// A quarantined group — the kill was not verified dead (an AV is
 // stripping PROCESS_TERMINATE). It must stay killable (Force-kill) and carry the
 // per-PID detail in lastError.
 const quarantinedSnapshot = (): ResourceSnapshot => {
@@ -82,7 +82,7 @@ const quarantinedSnapshot = (): ResourceSnapshot => {
   return snapshot;
 };
 
-// #647 C: a group the backend is actively terminating (a kill in flight). Its row
+// A group the backend is actively terminating (a kill in flight). Its row
 // shows the "Verifying..." indicator and its kill button is disabled.
 const terminatingSnapshot = (): ResourceSnapshot => {
   const snapshot = activeSnapshot();
@@ -91,7 +91,7 @@ const terminatingSnapshot = (): ResourceSnapshot => {
   return snapshot;
 };
 
-// #566 - multiple groups spanning projects / workgroups / roles / states so the
+// Multiple groups spanning projects / workgroups / roles / states so the
 // filter dimensions visibly change the rendered row count.
 const multiGroupSnapshot = (): ResourceSnapshot => {
   const snapshot = activeSnapshot();
@@ -322,7 +322,7 @@ describe("ResourceMonitorApp automation hooks", () => {
     }
   });
 
-  // #587 — embedded mode (mounted in MainApp's central pane) drops the window
+  // Embedded mode (mounted in MainApp's central pane) drops the window
   // titlebar and exposes a Detach control instead.
   it("in embedded mode hides the window titlebar and shows a Detach button", async () => {
     const fake = new FakeTransport();
@@ -354,7 +354,7 @@ describe("ResourceMonitorApp automation hooks", () => {
     }
   });
 
-  // #587 — windowed (default) mode keeps the window titlebar and shows no
+  // Windowed (default) mode keeps the window titlebar and shows no
   // Detach button. (The titlebar's controls — including the renamed Attach
   // button — are gated behind isTauri, which is false under jsdom, so only the
   // titlebar shell is observable here; the Detach-vs-titlebar split is the
@@ -500,7 +500,7 @@ describe("ResourceMonitorApp automation hooks", () => {
         expect(groupRowCount(rendered.root)).toBe(3);
       });
 
-      // Project chip narrows to the matching project (new #566 dimension).
+      // Project chip narrows to the matching project.
       click(
         rendered.root.querySelector(
           '[data-ac-testid="resourceMonitor.filter.project.OtherProject_ac"]'
@@ -565,7 +565,7 @@ describe("ResourceMonitorApp automation hooks", () => {
     }
   });
 
-  // #566 N1 - regression guard: with a snapshot already loaded but the active
+  // Regression guard: with a snapshot already loaded but the active
   // filter matching zero rows, an in-flight poll (loading=true, kept snapshot)
   // must NOT flash the "loading" empty-state over the stable filtered-empty one.
   it("keeps the filtered-empty state during an in-flight poll instead of flashing loading (N1)", async () => {
@@ -651,7 +651,7 @@ describe("ResourceMonitorApp automation hooks", () => {
     }
   });
 
-  // #647 (test 6): a quarantined group is killable again (Force-kill), and a
+  // A quarantined group is killable again (Force-kill), and a
   // non-finalized quarantined result keeps the confirm modal open showing the
   // per-PID detail AND the English security guidance (the latter ADDS to, never
   // replaces, the former). The narrowed "Verifying..." indicator does NOT show on
@@ -741,7 +741,7 @@ describe("ResourceMonitorApp automation hooks", () => {
     }
   });
 
-  // #647 (Step 7): success keys off `finalized`. A finalized kill closes the modal
+  // Success keys off `finalized`. A finalized kill closes the modal
   // (the tile flips to Exited via the backend session_created emit, E5).
   it("closes the kill modal when the result is finalized (verified success)", async () => {
     const fake = new FakeTransport();
@@ -797,7 +797,7 @@ describe("ResourceMonitorApp automation hooks", () => {
     }
   });
 
-  // #647 C: a group the backend is actively terminating shows the "Verifying..."
+  // A group the backend is actively terminating shows the "Verifying..."
   // indicator and its kill button stays disabled (a kill is already in flight).
   it("shows the Verifying indicator and disables Kill on a terminating group", async () => {
     const fake = new FakeTransport();
@@ -822,7 +822,7 @@ describe("ResourceMonitorApp automation hooks", () => {
     }
   });
 
-  // #647 (Step 7): a non-finalized `terminating` result (a concurrent kill still
+  // A non-finalized `terminating` result (a concurrent kill still
   // settling) must keep the modal open with a "Verifying..." banner and a Retry,
   // NOT close as a false success — the zombie-tile race grinch found.
   it("keeps the modal open with a Verifying banner when the result is terminating and not finalized", async () => {
@@ -890,7 +890,7 @@ describe("ResourceMonitorApp automation hooks", () => {
   });
 });
 
-// #2581 - per-agent warnings sit above the Agents list, name the agent and
+// Per-agent warnings sit above the Agents list, name the agent and
 // jump to its row.
 const groupWarningSnapshot = (): ResourceSnapshot => {
   const snapshot = multiGroupSnapshot();

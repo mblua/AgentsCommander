@@ -153,11 +153,11 @@ impl RemoteSweeper {
             .get(&key.nwo)
             .cloned()
             .unwrap_or_else(|| DEFAULT_BRANCH_LABEL.to_string());
-        // #2131: a repo sitting on its own default branch has no branch of its
+        // A repo sitting on its own default branch has no branch of its
         // own to rebase, so the notice is suppressed there while the chip keeps
         // its orange bar. Fail open: the sentinel label means the default branch
         // is unresolved, which is not an identity and never suppresses (the same
-        // rule #2126 applies to CI).
+        // rule that applies to CI).
         let on_default_branch = base_label != DEFAULT_BRANCH_LABEL && key.branch == base_label;
         let entry = state.keys.entry(key.clone()).or_default();
         let base = ctx.staleness_dial;
@@ -166,8 +166,8 @@ impl RemoteSweeper {
             Ok((answer, behind_by, ahead_by, _identical)) => {
                 let prior_confirmed = entry.staleness.confirmed;
                 let prior_last = entry.staleness.last_confirmed_at;
-                // #2141 precedence, in this order, one decision branch:
-                //   1. `on_default_branch`  -> #2131, unchanged, records `answer`.
+                // Precedence, in this order, one decision branch:
+                //   1. `on_default_branch`  -> unchanged, records `answer`.
                 //   2. `ahead_by == Some(0)` -> no own commits, records `Current`.
                 //   3. otherwise             -> today's behaviour; `None` fails open.
                 // A repo on its own default branch also reports `ahead_by == 0`,
@@ -304,7 +304,7 @@ pub(crate) fn persisted_ci_state(state: CiState) -> PersistedCiState {
     }
 }
 
-/// #2473: the persisted reason code for a CI failure, published only while the
+/// The persisted reason code for a CI failure, published only while the
 /// chip is `Unknown`.
 pub(crate) fn persisted_failure_reason(kind: FailureKind) -> &'static str {
     match kind {

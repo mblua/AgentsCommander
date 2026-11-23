@@ -1,7 +1,7 @@
 import type { Component } from "solid-js";
 
 /**
- * #1731 - the "add someone to this group" glyph for the Add to Group row in the
+ * The "add someone to this group" glyph for the Add to Group row in the
  * replica context menu. It takes the slot the 👥 emoji used to hold; that emoji
  * moved to Create new group, which reads as "a group" and is what that row
  * produces. Callers size/tint it via the passed-in `class`

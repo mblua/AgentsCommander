@@ -1,4 +1,4 @@
-/** #2543 - pure drag-reorder arithmetic for the Settings coding-agent list.
+/** Pure drag-reorder arithmetic for the Settings coding-agent list.
  *  A leaf: imports nothing, owns no DOM. */
 
 export const DRAG_THRESHOLD = 4; // px of pointer travel before a drag starts

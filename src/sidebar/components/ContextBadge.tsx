@@ -25,7 +25,7 @@ export const CONTEXT_BADGE_TOOLTIP =
   "Best-effort: it can be unavailable, stale or absent. A high reading does not " +
   "mean this session must be restarted.";
 
-/** #3532 P11 - the live row this badge belongs to; Root rows never pass one. */
+/** The live row this badge belongs to; Root rows never pass one. */
 export interface ContextHistoryScope {
   projectPath: string;
   runtimeSessionId: string | null | undefined;
@@ -46,7 +46,7 @@ export function rampColor(mean: number, theme: "dark" | "light"): string {
 
 /** Grace period to move the pointer from the badge to the card. */
 export const CLOSE_DELAY_MS = 150;
-/** #4796 Mouse hover must stay on the badge this long before the card opens. */
+/** Mouse hover must stay on the badge this long before the card opens. */
 export const OPEN_DELAY_MS = 2000;
 
 const UNAVAILABLE: SidebarHistoryState = { status: "unavailable" };
@@ -55,7 +55,7 @@ const ContextBadge: Component<{
   percent: number | null | undefined;
   testId?: string;
   historyScope?: ContextHistoryScope;
-  /** #4091 Saved colour session count; the returned buckets decide the fallback. */
+  /** Saved colour session count; the returned buckets decide the fallback. */
   colorSessions?: number;
 }> = (props) => {
   const reading = (): { value: number } | undefined => {

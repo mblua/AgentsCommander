@@ -1,4 +1,4 @@
-//! #2475 - test-only timing instrumentation (the parent also gates it on test).
+//! Test-only timing instrumentation (the parent also gates it on test).
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 #![cfg(test)]
 

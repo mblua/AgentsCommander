@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 
-// #3037 - the modal's IPC is desktop-only; every case runs as Tauri against
+// The modal's IPC is desktop-only; every case runs as Tauri against
 // a controllable DebugAPI and error_log_event listener.
 const ipc = vi.hoisted(() => ({
   ping: null as (() => void) | null,
@@ -144,7 +144,7 @@ describe("ErrorModal key routing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// #3037 - "hide future popups for this error type" checkbox.
+// "hide future popups for this error type" checkbox.
 // ---------------------------------------------------------------------------
 
 type Deferred<T> = {

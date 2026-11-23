@@ -12,7 +12,12 @@ fn register_session_seeds_activity_when_profile_opts_in() {
     let id = Uuid::new_v4();
     detector.register_session(id, IdleTuning::DEFAULT); // seed = true
     assert!(
-        detector.activity.lock().unwrap().contains_key(&id),
+        detector
+            .activity
+            .lock()
+            .unwrap()
+            .timestamps
+            .contains_key(&id),
         "register_session must seed activity[id] — the #260 fix"
     );
 }
@@ -28,7 +33,12 @@ fn register_session_does_not_seed_when_opted_out() {
             ..IdleTuning::DEFAULT
         },
     );
-    assert!(!detector.activity.lock().unwrap().contains_key(&id));
+    assert!(!detector
+        .activity
+        .lock()
+        .unwrap()
+        .timestamps
+        .contains_key(&id));
     // ...but the tuning is still recorded.
     assert!(detector.tuning.lock().unwrap().contains_key(&id));
 }
@@ -50,10 +60,11 @@ fn seeded_silent_session_crosses_idle_threshold() {
         .activity
         .lock()
         .unwrap()
+        .timestamps
         .get(&id)
         .expect("register_session must seed activity[id] — the #260 fix");
 
-    let activity = detector.activity.lock().unwrap().clone();
+    let activity = detector.activity.lock().unwrap().timestamps.clone();
     let idle_set: HashSet<Uuid> = HashSet::new();
     let mut tuning_map = HashMap::new();
     tuning_map.insert(id, tuning);
@@ -117,7 +128,12 @@ fn resize_grace_suppression_preserves_the_seed() {
     // "Initial output" arrives inside RESIZE_GRACE → suppressed.
     detector.record_activity_with_bytes(id, 500);
     assert!(
-        detector.activity.lock().unwrap().contains_key(&id),
+        detector
+            .activity
+            .lock()
+            .unwrap()
+            .timestamps
+            .contains_key(&id),
         "the seed must survive resize-grace suppression"
     );
 }
@@ -135,7 +151,12 @@ fn remove_session_clears_tuning() {
         !detector.tuning.lock().unwrap().contains_key(&id),
         "remove_session must drop the tuning entry"
     );
-    assert!(!detector.activity.lock().unwrap().contains_key(&id));
+    assert!(!detector
+        .activity
+        .lock()
+        .unwrap()
+        .timestamps
+        .contains_key(&id));
 }
 
 /// #552: `touch_silence` updates only the `silence` map; it must NOT insert
@@ -161,7 +182,12 @@ fn touch_silence_is_decoupled_from_idle_dot() {
         "touch_silence must populate the silence map"
     );
     assert!(
-        !detector.activity.lock().unwrap().contains_key(&id),
+        !detector
+            .activity
+            .lock()
+            .unwrap()
+            .timestamps
+            .contains_key(&id),
         "touch_silence must NOT touch activity (the #260 idle-dot signal)"
     );
     assert!(
@@ -212,7 +238,12 @@ fn register_session_seeds_silence_even_when_activity_seed_disabled() {
         },
     );
     assert!(
-        !detector.activity.lock().unwrap().contains_key(&id),
+        !detector
+            .activity
+            .lock()
+            .unwrap()
+            .timestamps
+            .contains_key(&id),
         "activity seed is gated off here"
     );
     assert!(
@@ -390,7 +421,7 @@ fn pty_input_boundary_revalidates_idle_and_defers_busy_callback() {
     );
     let id = Uuid::new_v4();
     detector.register_session(id, IdleTuning::DEFAULT);
-    detector.activity.lock().unwrap().insert(
+    detector.activity.lock().unwrap().timestamps.insert(
         id,
         Instant::now() - IdleTuning::DEFAULT.idle_threshold - Duration::from_secs(3),
     );
@@ -428,7 +459,7 @@ fn pty_input_boundary_rejects_busy_and_unsettled_resize_before_route_lock() {
     assert_eq!(busy.unwrap_err(), PtyInputBoundaryFailure::Busy);
     assert_eq!(route_calls.load(Ordering::SeqCst), 0);
 
-    detector.activity.lock().unwrap().insert(
+    detector.activity.lock().unwrap().timestamps.insert(
         id,
         Instant::now() - IdleTuning::DEFAULT.idle_threshold - Duration::from_secs(3),
     );
@@ -838,7 +869,7 @@ fn issue_2158_explicit_input_promotes_during_both_windows() {
     let first = now - Duration::from_secs(2);
     detector.record_output_classified_at(id, 8, true, first, Some(first));
     assert_eq!(detector.team_silence_age_at(id, Instant::now()), None);
-    detector.activity.lock().unwrap().insert(
+    detector.activity.lock().unwrap().timestamps.insert(
         id,
         Instant::now() - IdleTuning::DEFAULT.idle_threshold - Duration::from_secs(3),
     );
