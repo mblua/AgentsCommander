@@ -41,16 +41,16 @@ import {
 } from "../../shared/sidebar-compact";
 
 
-// #2236 D23 - a click whose target sits inside one of these is a nested
+// A click whose target sits inside one of these is a nested
 // control's own click and must not also activate the row.
 const CONTROL_SEL = "button, a, [role='button'], [role='menuitem']";
 
 const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide }> = (props) => {
   const compact = () => props.compact ?? sidebarCompact();
-  // #2519: the arrows point the way the panel moves, so the left rail mirrors the glyph.
+  // The arrows point the way the panel moves, so the left rail mirrors the glyph.
   const toggleGlyph = () => ((props.railSide === "left") !== compact() ? "<<" : ">>");
   const [busy, setBusy] = createSignal(false);
-  // #1871 - the menu is open iff menuPos() !== null. menuEpoch is a plain let,
+  // The menu is open iff menuPos() !== null. menuEpoch is a plain let,
   // not a signal, exactly as replicaCtxMenuEpoch is in ProjectPanel: nothing
   // renders from it.
   const [menuPos, setMenuPos] = createSignal<{ x: number; y: number } | null>(null);
@@ -78,7 +78,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
     if (root && typeof root.status !== "string") voiceRecorder.revokeSession(root.id);
   });
 
-  // #2271 - keyed sidecar, read here because the dot has no session field to
+  // Keyed sidecar, read here because the dot has no session field to
   // carry the state across a list refresh. Declared before the dotClass memo:
   // createMemo computes eagerly, so a later declaration would sit in its TDZ.
   const isComanaged = () => {
@@ -86,7 +86,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
     return r ? sessionsStore.comanagedBySessionId[r.id] ?? false : false;
   };
 
-  // #2408 - the real activity class; Co-managed capture is an additive ring.
+  // The real activity class; Co-managed capture is an additive ring.
   const dotClass = createMemo(() => `${sessionDotClass(rootSession())}${isComanaged() ? " comanaged" : ""}`);
 
   const subtitle = createMemo(() => {
@@ -148,7 +148,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
     }
   };
 
-  // #1871 - transcribed from advanceReplicaCtxMenuEpoch / closeReplicaCtxMenu
+  // Transcribed from advanceReplicaCtxMenuEpoch / closeReplicaCtxMenu
   // in ProjectPanel. An expanded bot list never survives an epoch change.
   const advanceMenuEpoch = () => {
     menuEpoch += 1;
@@ -265,8 +265,8 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
     }
   };
 
-  // #1871 - menu-side handlers. The catalogue's onSelect takes no MouseEvent,
-  // so these take none. Since #1896 the banner has no row buttons, so these are
+  // Menu-side handlers. The catalogue's onSelect takes no MouseEvent,
+  // so these take none. The banner has no row buttons, so these are
   // the only open-folder and close paths. SessionRowMenu dismisses before it
   // invokes onSelect, so none of these calls closeMenu() itself.
   const menuOpenFolder = async () => {
@@ -389,7 +389,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
 
   return (
     <>
-      {/* #2236 D23 - a group, not a widget: the row's activation is the real
+      {/* A group, not a widget: the row's activation is the real
           .root-agent-banner-open button and the toggle is its sibling. The
           guarded onClick keeps automation-bridge's container click() working. */}
       <div
@@ -438,7 +438,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
           <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() && !voiceRecorder.micError()}>
             <span class="root-agent-subtitle">
               {subtitle()}
-              {/* #624 / #1167 - coding-agent badge, mirroring SessionItem. Both
+              {/* Coding-agent badge, mirroring SessionItem. Both
                   now emit the Coordinator row's class pair
                   (.ac-discovery-badge.agent), so the badge is one constant style
                   everywhere: no data-agent, no `running`, and identical for a
@@ -458,7 +458,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
                   testId="rootAgent.contextBadge"
                 />
               </Show>
-              {/* #592 - drift reload for the Root Agent (loaded profile cell no
+              {/* Drift reload for the Root Agent (loaded profile cell no
                   longer matches its current config). Reuses the restart path, which
                   re-stamps the content hash and clears the flag. */}
               <Show when={rootSession()?.profileOutdated}>
@@ -522,7 +522,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
             </button>
           </Show>
           <Show when={hasLivePty()}>
-            {/* #1896 - the replica row's bridge indicator (ProjectPanel), not a
+            {/* The replica row's bridge indicator (ProjectPanel), not a
                 button: attach and detach live in the menu (rootAgent.menu.telegram). */}
             <Show when={bridge()}>
               <span
@@ -561,7 +561,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
           />
         </Portal>
       </Show>
-      {/* #1871 - every item is derived from data by a *Spec helper. A literal
+      {/* Every item is derived from data by a *Spec helper. A literal
           `false` on any key is a defect: the day the root carries repo data,
           the same reposSpec expression turns the entries on with no code
           change. root-menu-derived-caps.test.tsx pins this record exactly. */}

@@ -1,7 +1,7 @@
 import type { Component } from "solid-js";
 
 /**
- * #1708 - the "move this session out of the main window" glyph, shared by the
+ * The "move this session out of the main window" glyph, shared by the
  * session context menu and the session row's detach button so the two cannot
  * diverge. A monochrome SVG, not the typographic glyph it replaced, which at
  * the menu's 13px read as a smudge. Callers size/tint it via the passed-in

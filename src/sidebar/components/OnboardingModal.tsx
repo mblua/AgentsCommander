@@ -4,7 +4,7 @@ import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
 import CodingAgentQuickConfiguration from "./CodingAgentQuickConfiguration";
 
-// #975 — the first-run Welcome flow is now a thin wrapper over the reusable
+// The first-run Welcome flow is now a thin wrapper over the reusable
 // CodingAgentQuickConfiguration. Every `onboardingDismissed` write lives here:
 // the reusable component never touches first-run state, so other consumers can
 // mount it without dismissing onboarding as a side effect.
@@ -24,7 +24,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
   };
 
   // Success path: dismissal rides along in the same single settings write that
-  // persists the new agent, preserving the pre-#975 atomic update.
+  // persists the new agent, preserving the earlier atomic update.
   const withDismissal = (settings: AppSettings): AppSettings => ({
     ...settings,
     onboardingDismissed: true,
