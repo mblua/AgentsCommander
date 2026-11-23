@@ -325,14 +325,6 @@
         "agentscommander_lib::config::loops::lock",
         "agentscommander_lib::config::loops::storage"
       ]
-    },
-    {
-      "id": "897cef14e42a1694",
-      "members": [
-        "agentscommander_lib::session::context_alerts",
-        "agentscommander_lib::session::context_alerts::actor",
-        "agentscommander_lib::session::context_alerts::runtime"
-      ]
     }
   ],
   "functionCycles": []
