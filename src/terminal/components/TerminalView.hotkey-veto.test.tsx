@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #2236 phase 5 — what a REAL xterm Terminal can prove. It does not assert
+// What a REAL xterm Terminal can prove. It does not assert
 // "no bytes for Ctrl+Shift+E": an unvetoed build produces no bytes either.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";

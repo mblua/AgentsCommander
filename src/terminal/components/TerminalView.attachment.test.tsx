@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #1363 - the frontend attachment surface. Three properties the restored #961
+// The frontend attachment surface. Three properties the restored #961
 // seed/reconcile suite does not cover, because F introduces them:
 //
 //   1. ORDERING. Attach and detach are async invokes whose completion order is
@@ -1043,7 +1043,7 @@ describe("TerminalView attachment (#1363)", () => {
   });
 
   // Criterion L, frontend half. An unavailable parser still attaches — refusing
-  // would leave the terminal black for the life of the session (#955) — and it
+  // would leave the terminal black for the life of the session — and it
   // emits chunks with NO sequence. Such a chunk is written live on arrival, and
   // the attach settling without a snapshot must not write it a second time:
   // there is no reset on that path, so there is nothing to replay.
@@ -1191,7 +1191,7 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
-  // #1439: a re-attach can settle with NO snapshot (the backend grid reconcile
+  // A re-attach can settle with NO snapshot (the backend grid reconcile
   // refused the seed) while the PTY sits at the grid the other window drove it
   // to. The attach settle must invalidate the viewport dedup key and re-impose
   // this window's grid: the embedded box did not change across the detach, so
@@ -1288,7 +1288,7 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
-  // #1489 - the attach replay must be ordered: every retained live byte was
+  // The attach replay must be ordered: every retained live byte was
   // written on arrival and queued BEFORE the reset+snapshot, so the snapshot
   // write must have parsed completely before the retained replay is written.
   // The snapshot carries sequence 1 (pinned below LIVE's 5: with sequence >= 5
@@ -1354,7 +1354,7 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
-  // #1489 - after replay and the fitted resize, the attach must bottom the
+  // After replay and the fitted resize, the attach must bottom the
   // viewport to the current screen exactly once. The attach fetch is held so
   // the selectSession priming sync fires with the PRE-snapshot grid (80x24),
   // exactly as in production where the attach IPC round-trip spans animation
@@ -2629,7 +2629,7 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
-  // #1489 - every async continuation of an attach transaction must be inert
+  // Every async continuation of an attach transaction must be inert
   // once a newer attach owns the session. Four scenarios: a held
   // generation-1 snapshot callback fenced by the shared drain (main, the
   // snapshot-class variant), a generation-1 live byte still queued when
@@ -2935,7 +2935,7 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
-  // #1489 - ordinary live output must never bottom a viewport the user
+  // Ordinary live output must never bottom a viewport the user
   // deliberately scrolled up. The settle sequence is the only bottoming path;
   // `writeLivePtyOutput` never calls `scrollToBottom`. The settle-window
   // sub-step proves the wheel guard (4.5): a real wheel event in the
@@ -3001,7 +3001,7 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
-  // #1489 - an attach settle over a meaningful multi-viewport history must
+  // An attach settle over a meaningful multi-viewport history must
   // bottom to the current screen: bufferLength and baseY reflect the parsed
   // history, and the settled record carries the normal-buffer evidence.
   it("attach settle preserves meaningful multi-viewport history", async () => {
@@ -3059,7 +3059,7 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
-  // #1489 - a near-64-KiB ring replay stays exactly-once with one settle:
+  // A near-64-KiB ring replay stays exactly-once with one settle:
   // the live bytes are written on arrival, the snapshot re-seeds, and the
   // retention replays after it — never duplicated.
   it("near-64-KiB ring replay stays exactly-once with one settle", async () => {
@@ -3101,7 +3101,7 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
-  // #1489 Codex lifecycle: an idle multi-viewport scrollback with overlapping
+  // Codex lifecycle: an idle multi-viewport scrollback with overlapping
   // live events settles at the bottom; a user scroll-up survives ordinary live
   // output and the re-attach; the second attach's settle records the
   // alternate-screen evidence (the alternate buffer has no scrollback, so the
@@ -3194,7 +3194,7 @@ describe("TerminalView attachment (#1363)", () => {
     }
   });
 
-  // #1489 Pi lifecycle: a near-64-KiB ring replay with a switch away
+  // Pi lifecycle: a near-64-KiB ring replay with a switch away
   // mid-replay and back. Both generations' pipelines are held on gated
   // writes; completing them in reverse order (B's generation, then A's)
   // proves exactly-once screen content, one settle per attach, and inert

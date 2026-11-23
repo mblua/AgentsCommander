@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { declProps, declValue, escapeRe, scanRules } from "./css-test-helpers";
 
-// #4821 - in 4 sidebar styles the sticky project header must stay opaque: each
+// In 4 sidebar styles the sticky project header must stay opaque: each
 // style's `background` shorthand must end in the `var(--sidebar-bg)` color layer.
 // The sheet is CRLF on disk; every regex here is CRLF-safe (`[^}]*`, `m` flag).
 const RAW = readFileSync(new URL("./sidebar.css", import.meta.url), "utf8");
