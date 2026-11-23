@@ -9,7 +9,7 @@ const receiverMethod =
 const owner = p => /^src-tauri\/src\/(?:filesystem|path_identity|path_utils)(?:\.rs$|\/)/.test(p);
 const inUniverse = p => /^src-tauri\/src\/.*\.rs$/.test(p);
 
-// #4014: a finite subset of receivers whose standard Path/PathBuf type is lexically proven.
+// A finite subset of receivers whose standard Path/PathBuf type is lexically proven.
 // Unsupported or ambiguous provenance yields no site (it stays in the WARN approximation).
 const stdPaths = new Set(['std::path::Path', 'std::path::PathBuf']);
 const bodyItems = new Set(['fn', 'static', 'const', 'struct', 'enum', 'union', 'trait', 'impl',
@@ -141,7 +141,7 @@ function parameterLetSafe(T, k, name) {
   return T[n].name !== name;
 }
 
-// #4025: one immutable local, seeded directly by a standard constructor or parameter.
+// One immutable local, seeded directly by a standard constructor or parameter.
 // This finite proof accepts PathBuf trait overrides as the documented lexical limit.
 function oneArgument(T, open) {
   const close = T[open]?.mate;

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// #1614 plan section 9.4 AC1: the visible-text gate, and the script that
+// Plan section 9.4 AC1: the visible-text gate, and the script that
 // derives and classifies the allowlist beside it.
 //
 //   node scripts/room-rename-allowlist.mjs sweep [--rev <rev>]

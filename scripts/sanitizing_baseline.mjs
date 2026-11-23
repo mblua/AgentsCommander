@@ -214,7 +214,7 @@ export function createSnapshot({ baseRef = 'origin/main', cwd, runner = gitRunne
     assertStableHead() { if (resolve('HEAD') !== headOid) throw new GateError(
       `HEAD drift from ${headOid}; retry on a stable checkout`); } };
 }
-// Versioned accepted findings (#3182). An entry turns a matching FAIL into ACCEPTED;
+// Versioned accepted findings. An entry turns a matching FAIL into ACCEPTED;
 // an entry that matches nothing is only a WARN: these gates compare against the PR base,
 // so an entry goes stale once its debt is merged.
 export const ALLOWLIST_FILE = 'sanitizing.allowlist.json';

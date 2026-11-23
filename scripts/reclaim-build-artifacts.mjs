@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Reclaims regenerable Rust/Tauri build artifacts from workgroup repo clones, for issue #932.
+// Reclaims regenerable Rust/Tauri build artifacts from workgroup repo clones.
 //
 // Workgroup clones accumulate large Cargo/Tauri output under two locations:
 //   - repo-root `target`         (current cargo workspace layout)
@@ -129,7 +129,7 @@ function childDirs(dir) {
 // Discover repo roots reachable from a scan root, bounded to two levels:
 //   root itself, `repo-*` children, and `repo-*` grandchildren under a replica dir.
 // Replica dirs are `room-*` today and `wg-*` in the legacy layout; both are accepted,
-// otherwise a scan of `.ac` silently skips every current room clone (#1702).
+// otherwise a scan of `.ac` silently skips every current room clone.
 function discoverRepoRoots(scanRoot) {
   const found = new Set();
   if (isRepoRoot(scanRoot)) found.add(scanRoot);

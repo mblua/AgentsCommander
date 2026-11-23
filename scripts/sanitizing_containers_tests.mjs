@@ -96,7 +96,7 @@ const candidateSnapshot = () => {
     'HEAD moved while taking the candidate snapshot; rerun on a stable checkout');
   return snapshot;
 };
-// Live-clone gate calls return ERROR if HEAD moves mid-test (#4214 diagnosis:
+// Live-clone gate calls return ERROR if HEAD moves mid-test (diagnosis:
 // _sanitizing/flaky-test04-ac4214-001). Fail with the gate reasons, not later `undefined`.
 function stable(result, step) {
   if (result.status !== 'ERROR') return result;
@@ -448,7 +448,7 @@ test('04 settings immutable git and errors', t => {
   }
 });
 
-// #3919 stage 1: literalScope widens only the literal search; instance-artifacts-v1
+// Stage 1: literalScope widens only the literal search; instance-artifacts-v1
 // exempts exact instance metadata shapes for the registered name.
 const sessionsScope = root + 'config/sessions_persistence/';
 const snapshotRegistry = (extra = {}) => ({ version: 1, containers: [{

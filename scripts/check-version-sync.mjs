@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Verifies every project version location agrees, for issue #201.
+// Verifies every project version location agrees.
 //
 // Reads each location bump-version.mjs writes and exits non-zero with a
 // list of mismatched files/fields when they disagree. Used locally and in

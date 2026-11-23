@@ -1,4 +1,4 @@
-// Tests for the script line-length ratchet (#4130). Long inputs are built at runtime so
+// Tests for the script line-length ratchet. Long inputs are built at runtime so
 // this file keeps every line within 100 Unicode characters.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
