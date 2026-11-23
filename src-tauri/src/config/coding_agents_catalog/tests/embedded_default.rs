@@ -39,7 +39,7 @@ pub(crate) fn embedded_default_matches_current_presets_exactly() {
         assert_eq!(def.color, color);
         assert_eq!(def.command, command);
         assert_eq!(def.instructions_filename.as_deref(), filename);
-        // #769 P2: Claude/Codex/OpenCode ship an active configSeed; the other
+        // P2: Claude/Codex/OpenCode ship an active configSeed; the other
         // six ship none (no master, no re-seed button).
         match seed_dest {
             Some(dest) => {
@@ -58,7 +58,7 @@ pub(crate) fn embedded_default_matches_current_presets_exactly() {
         assert!(def.removable, "{key} must be removable");
         assert!(def.envs.is_empty());
         assert!(!def.isolated_home);
-        // #2124 - every shipped row carries the conservative burst filter.
+        // Every shipped row carries the conservative burst filter.
         let burst = def
             .idle_burst
             .as_ref()
@@ -119,7 +119,7 @@ fn every_embedded_entry_validates() {
     }
 }
 
-/// #2124 T9 - serde, strict local layer and legacy migration for `idleBurst`.
+/// Serde, strict local layer and legacy migration for `idleBurst`.
 #[test]
 fn idle_burst_serde_and_local_layer() {
     // A definition without `idleBurst` deserializes `None` and does not

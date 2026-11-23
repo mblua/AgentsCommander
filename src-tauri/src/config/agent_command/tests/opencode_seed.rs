@@ -19,7 +19,7 @@ fn command_runs_opencode_matches_basename_and_wrapper() {
     assert!(!command_runs_opencode("claude", &["--resume".to_string()]));
 }
 
-// #2561 - `\` is a path separator only on Windows; on POSIX `file_stem` and
+// `\` is a path separator only on Windows; on POSIX `file_stem` and
 // `file_name` keep the whole `C:\tools\...` string, so these run there only.
 #[cfg(windows)]
 #[test]
@@ -397,7 +397,7 @@ fn build_spawn_expands_and_creates_opencode_config_dir_for_replica_placeholder()
     );
 }
 
-// #598 - config-folder seed resolution wired into build_agent_spawn_command.
+// Config-folder seed resolution wired into build_agent_spawn_command.
 
 #[test]
 fn build_spawn_resolves_active_seed_for_replica_without_touching_fs() {
@@ -428,11 +428,11 @@ fn build_spawn_resolves_active_seed_for_replica_without_touching_fs() {
     use crate::config::config_seed::ConfigSeedTier;
     // Matrix tiers outrank workspace tiers; profile beats base in each. The
     // matrix's bare `.claude` (the agent's own live config) is never a source.
-    // #769 P2 + #1318 appends the absent-only CatalogDefault master LAST
+    // The resolver then appends the absent-only CatalogDefault master LAST
     // (still pure path math; perform_config_seed gates it on absent-dest +
     // non-empty), resolved from the SESSION WORKSPACE's
     // `.ac/coding-agents/_seed/<dest>`.
-    // #2162: each tier is preceded by its `.<os>` variant when the host has
+    // Each tier is preceded by its `.<os>` variant when the host has
     // a token, so the list is 10 entries on linux/windows/macos and 5 on any
     // other target. Built here from the same host token the code uses, so
     // the assertion is exact on every supported target.
@@ -605,4 +605,4 @@ fn build_spawn_seed_none_when_disabled() {
     assert!(spawn.seed.is_none(), "disabled seed must resolve to None");
 }
 
-// #592 - profile content-hash (drift detector) tests.
+// Profile content-hash (drift detector) tests.

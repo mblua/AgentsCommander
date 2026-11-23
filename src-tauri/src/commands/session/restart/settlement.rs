@@ -236,11 +236,11 @@ pub(crate) async fn publish_restart_after_warnings<R: tauri::Runtime>(
     publication: Option<crate::session::selection::LifecycleEffectGuard>,
 ) -> Result<SessionInfo, String> {
     let app = transaction.app();
-    // (#756) C3: mirror the honored fresh intent into the coordinator clocks so
+    // C3: mirror the honored fresh intent into the coordinator clocks so
     // it survives record destruction (idle auto-close, manual close destroy the
     // record that carries start_fresh_on_restore). Self-gates on coordinators
     // inside the helper; root agents are never coordinators, so this is a no-op
-    // for them. Self-handoff-and-switch (#668) respawns through this function
+    // for them. Self-handoff-and-switch respawns through this function
     // and inherits the mirror automatically.
     if restart_start_fresh {
         crate::commands::pty::write_start_fresh_mirror_for_session(app, new_uuid, true).await;
@@ -488,7 +488,7 @@ pub(crate) async fn accept_restart_teardown<R: tauri::Runtime>(
     }
 }
 
-/// #1171 - this covers BOTH restart paths: `execute_restart_transaction`'s success path and
+/// This covers BOTH restart paths: `execute_restart_transaction`'s success path and
 /// `finalize_failed_restart`. A restart is a normal flow - it is in the invoke handler, the
 /// mailbox calls it, and a bulk settings save can restart sessions - so without the purge here
 /// every restart would orphan up to 500 ring entries under an id that is already gone from the

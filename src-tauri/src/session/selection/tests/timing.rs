@@ -17,7 +17,7 @@ fn selection_timing_line_separates_queue_wait_and_work() {
 
 use crate::session::selection::timing_probe::{timing_field_ms, TimingSinkRegistration};
 
-/// #2475 - `queue_wait` and work are bounded by synchronized events, not by
+/// `queue_wait` and work are bounded by synchronized events, not by
 /// sleep lengths: the submission provably happens before the release, and
 /// the operation's entry and finish are explicit handshakes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -91,7 +91,7 @@ async fn timed_selection_operation_records_queue_wait_and_work() {
     );
 }
 
-/// #2475 - recording happens after the turn is released: a recording sink
+/// Recording happens after the turn is released: a recording sink
 /// that blocks must not keep the next operation out of the turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn timing_record_runs_after_the_turn_is_released() {
@@ -125,7 +125,7 @@ async fn timing_record_runs_after_the_turn_is_released() {
     assert_eq!(first.await.expect("join"), Ok(()));
 }
 
-/// #2475 - every matching registration receives the sample, and dropping
+/// Every matching registration receives the sample, and dropping
 /// one registration removes only that one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn issue_2475_two_concurrent_sinks_for_one_command_both_receive_the_sample() {
@@ -164,7 +164,7 @@ async fn issue_2475_two_concurrent_sinks_for_one_command_both_receive_the_sample
     );
 }
 
-/// #2475 - the mechanism itself: two guards held together count 2, two
+/// The mechanism itself: two guards held together count 2, two
 /// taken in sequence count 1 (which a set of thread ids cannot tell apart).
 #[test]
 fn issue_2475_occupancy_guard_counts_simultaneous_holders() {
@@ -185,7 +185,7 @@ fn issue_2475_occupancy_guard_counts_simultaneous_holders() {
     assert_eq!(sequence.in_flight(), 0);
 }
 
-/// #2475 - a timed body launched WITHOUT the run context never touches the
+/// A timed body launched WITHOUT the run context never touches the
 /// run's occupancy; one launched with it does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn issue_2475_occupancy_ignores_non_participating_bodies() {
@@ -213,7 +213,7 @@ async fn issue_2475_occupancy_ignores_non_participating_bodies() {
     assert_eq!(occupancy.in_flight(), 0);
 }
 
-/// #2475 - the guard's Drop also covers unwind: a panicking body leaves
+/// The guard's Drop also covers unwind: a panicking body leaves
 /// nothing in flight.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn issue_2475_occupancy_guard_releases_on_panic() {

@@ -382,7 +382,7 @@ fn save_load_real_round_trip_is_symmetric() {
     assert_eq!(loaded.start_fresh_at("proj:wg-2-team/coord"), None);
 }
 
-// ── #621 targeted-removal + startup-prune tests ──────────────────────────
+// ── targeted-removal + startup-prune tests ──────────────────────────
 
 #[test]
 fn remove_workgroup_drops_only_target_prefix() {
@@ -479,7 +479,7 @@ fn should_keep_clock_key_policy() {
 
 #[test]
 fn should_keep_clock_key_keeps_when_project_unenumerable() {
-    // (#621 E1) A project whose `.ac` does not exist yields ZERO candidates
+    // A project whose `.ac` does not exist yields ZERO candidates
     // (enumerate requires `.ac`), so the key is kept by the 0-match branch, NOT
     // by the `existing_ac_root` guard (which is only a TOCTOU belt).
     let tmp = tempfile::tempdir().expect("temp dir");
@@ -492,7 +492,7 @@ fn should_keep_clock_key_keeps_when_project_unenumerable() {
 
 #[test]
 fn should_keep_clock_key_keeps_ambiguous_homonym_project() {
-    // (#621 E3 / LOW-3a) Two registered projects share a folder_name; one lacks
+    // Two registered projects share a folder_name; one lacks
     // the wg. >1 match -> cannot confirm -> KEEP (mirrors resolve_project_reference
     // Ambiguous). This is the conservative guard that backs MED-1.
     let tmp = tempfile::tempdir().expect("temp dir");
@@ -510,7 +510,7 @@ fn should_keep_clock_key_keeps_ambiguous_homonym_project() {
 
 #[test]
 fn prune_with_never_drops_a_persisted_session_key() {
-    // (#621 MED-1) The cardinal-sin guard: a live coordinator of a temporarily
+    // The cardinal-sin guard: a live coordinator of a temporarily
     // UNREGISTERED homonym project must keep its clock even though the prune would
     // otherwise resolve the name to the registered homonym and find the wg absent.
     let tmp = tempfile::tempdir().expect("temp dir");
@@ -541,7 +541,7 @@ fn prune_with_never_drops_a_persisted_session_key() {
     assert!(clocks.last_user_message_at("app:wg-5-team/coord").is_some());
 }
 
-/// (#2413) T9: the create ledger restores only when every overlapping create
+/// T9: the create ledger restores only when every overlapping create
 /// failed, exactly once, on the last finish; any success wipes the escrow.
 #[test]
 fn create_ledger_handoff() {

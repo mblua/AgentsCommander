@@ -42,7 +42,7 @@ pub struct AgentUpdatePlan {
     pub updates: Vec<UpdateTarget>,
 }
 
-/// #1551 - one row of the read-only Settings "Auto-update" table.
+/// One row of the read-only Settings "Auto-update" table.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentUpdateOverviewRow {
@@ -52,7 +52,7 @@ pub struct AgentUpdateOverviewRow {
     pub color: String,
     pub update_commands: Vec<String>,
     pub install: InstallState,
-    /// #4804 - `Some("mise")` when the resolved binary is mise-managed.
+    /// `Some("mise")` when the resolved binary is mise-managed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub managed_by: Option<String>,
 }
@@ -62,7 +62,7 @@ pub struct AgentUpdateOverviewRow {
 ///    `settings.agents[]`, i.e. agents the user actually registered) are
 ///    considered: a catalog-only command is never prompted nor updated.
 ///    Zero registered commands -> empty plan.
-/// 1. The FIRST catalog entry for a command is the effective entry (#1967):
+/// 1. The FIRST catalog entry for a command is the effective entry:
 ///    distinct commands keep catalog order, and `label`/`commands` come from
 ///    that first entry. A later duplicate never contributes anything.
 /// 2. An empty effective sequence means no prompt and no update: the command is
@@ -110,7 +110,7 @@ pub fn build_update_plan(
     AgentUpdatePlan { prompts, updates }
 }
 
-/// #1551/#1967 - one row per DISTINCT effective command with a non-empty
+/// One row per DISTINCT effective command with a non-empty
 /// sequence, in catalog order. The first entry of a command wins: its
 /// key/label/color and its exact sequence are used, a later duplicate adds no
 /// row, and an empty first sequence suppresses the command for good (a later
@@ -145,11 +145,11 @@ pub fn build_update_overview_rows(
         .collect()
 }
 
-/// #4804 - mise tools whose install dir also holds packages installed by their own
+/// Mise tools whose install dir also holds packages installed by their own
 /// package manager: an agent there was installed by npm/pip/gem/go, not by mise.
 const MISE_RUNTIMES: [&str; 6] = ["node", "bun", "deno", "python", "ruby", "go"];
 
-/// #4804 - where a resolved path sits in a mise data dir. Pure: path components only.
+/// Where a resolved path sits in a mise data dir. Pure: path components only.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum MiseLayout {
     /// `<data>/command-wrappers/bin/<name>` or `<data>/shims/<name>`: a mise entry point.
@@ -158,7 +158,7 @@ pub(crate) enum MiseLayout {
     Install { tool: OsString },
 }
 
-/// #4804 - `rest` is the path relative to the data dir `data_dir`.
+/// `rest` is the path relative to the data dir `data_dir`.
 fn mise_in_layout(data_dir: &Path, rest: &Path) -> Option<MiseLayout> {
     let mut parts: Vec<&OsStr> = Vec::new();
     for component in rest.components() {
@@ -183,7 +183,7 @@ fn mise_in_layout(data_dir: &Path, rest: &Path) -> Option<MiseLayout> {
     }
 }
 
-/// #4804 - (a) relative to `mise_data_dir` when set; if (a) gives None, (b) relative to
+/// (a) relative to `mise_data_dir` when set; if (a) gives None, (b) relative to
 /// the first `mise` component of `resolved` (the default data dir layout).
 pub(crate) fn mise_layout(resolved: &Path, mise_data_dir: Option<&Path>) -> Option<MiseLayout> {
     let from_env = mise_data_dir.and_then(|data_dir| {
@@ -203,7 +203,7 @@ pub(crate) fn mise_layout(resolved: &Path, mise_data_dir: Option<&Path>) -> Opti
     })
 }
 
-/// #4804 - true when `resolved` is mise-managed (plan v4 P01 rule). Reads only directory
+/// True when `resolved` is mise-managed (plan v4 P01 rule). Reads only directory
 /// listings under `<data>/installs/<runtime>/`; no process, no config, no canonicalize.
 pub(crate) fn mise_managed(resolved: &Path, mise_data_dir: Option<&Path>) -> bool {
     match mise_layout(resolved, mise_data_dir) {
@@ -213,7 +213,7 @@ pub(crate) fn mise_managed(resolved: &Path, mise_data_dir: Option<&Path>) -> boo
     }
 }
 
-/// #4804 - a runtime global (npm/pip/... bin) named like the entry point exists, so the
+/// A runtime global (npm/pip/... bin) named like the entry point exists, so the
 /// owner of the shim or wrapper is unknown. Matches entry NAMES only, of any type.
 fn mise_runtime_has_global(data_dir: &Path, name: &OsStr) -> bool {
     let Some(stem) = Path::new(name).file_stem() else {
@@ -235,21 +235,21 @@ fn mise_runtime_has_global(data_dir: &Path, name: &OsStr) -> bool {
     })
 }
 
-/// #4804 - first token of a registered command (`normalize_legacy_agent_command(cmd).shell`)
+/// First token of a registered command (`normalize_legacy_agent_command(cmd).shell`)
 /// resolved with `resolve_program`. None when empty or not resolvable.
 pub(crate) fn resolve_command_program(command: &str) -> Option<PathBuf> {
     let normalized = normalize_legacy_agent_command(command).ok()?;
     resolve_program(&normalized.shell)
 }
 
-/// #4804 - Some("mise") when `command` resolves to a mise-managed binary, else None.
+/// Some("mise") when `command` resolves to a mise-managed binary, else None.
 pub(crate) fn command_managed_by(command: &str) -> Option<&'static str> {
     let path = resolve_command_program(command)?;
     let data_dir = crate::config::environment::mise_data_dir();
     mise_managed(&path, data_dir.as_deref().map(Path::new)).then_some("mise")
 }
 
-/// #1551 - resolve + probe policy for one catalog command. Executes a process ONLY for a
+/// Resolve + probe policy for one catalog command. Executes a process ONLY for a
 /// bare token whose stem has a built-in probe (plan 5.2): a project-authored catalog can
 /// name `claude` and get the user's own PATH `claude`, but can never point the probe at a
 /// bundled binary. Explicit paths and unknown stems report presence only (`unprobed`).
@@ -259,7 +259,7 @@ pub(crate) fn resolve_command_install_probe(
     resolve_command_install_probe_with(command, resolve_program)
 }
 
-/// #2589 - `resolve_command_install_probe` against an explicit search path.
+/// `resolve_command_install_probe` against an explicit search path.
 pub(crate) fn resolve_command_install_probe_in(
     command: &str,
     search_path: &OsStr,
@@ -307,7 +307,7 @@ pub async fn probe_command_install_state(command: &str) -> InstallState {
     probe_command_install_state_in(command, &effective_search_path()).await
 }
 
-/// #2589 - resolve AND execute the probe with `search_path`, so both the agent
+/// Resolve AND execute the probe with `search_path`, so both the agent
 /// and its `#!/usr/bin/env` interpreter are found.
 pub(crate) async fn probe_command_install_state_in(
     command: &str,
@@ -373,7 +373,7 @@ where
     }
 }
 
-/// #1551 - the probe a scheduled task runs; production = `probe_command_install_state`.
+/// The probe a scheduled task runs; production = `probe_command_install_state`.
 pub type ProbeFn =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = InstallState> + Send>> + Send + Sync>;
 
@@ -381,11 +381,11 @@ pub fn production_probe() -> ProbeFn {
     Arc::new(|command| Box::pin(async move { probe_command_install_state(&command).await }))
 }
 
-/// #1551 - instant: never awaits a probe, never waits on the gate, never holds a lock across
+/// Instant: never awaits a probe, never waits on the gate, never holds a lock across
 /// an await. Probes are scheduled ONLY once the startup pass is finished, so a version probe
 /// can never overlap an update of the same CLI, and ONLY through the single-lock
 /// `lookup_or_begin`, so two overlapping calls can never open two tickets.
-/// #1967 P4 - `Err` when the persisted catalog is unavailable; nothing is probed or
+/// P4 - `Err` when the persisted catalog is unavailable; nothing is probed or
 /// scheduled in that case.
 pub async fn update_overview<E>(
     app: &E,
@@ -459,7 +459,7 @@ where
     ))
 }
 
-/// #1551 - the ONE spawn site for probe tasks: the Settings-triggered scheduling of
+/// The ONE spawn site for probe tasks: the Settings-triggered scheduling of
 /// `update_overview_with` and the post-pass scheduling of `schedule_post_update_probes`
 /// both come through here. `tauri::async_runtime::spawn`, never `tokio::spawn`, so it
 /// runs from any caller context.
@@ -475,7 +475,7 @@ where
     }));
 }
 
-/// #1551 - the probe task body. Announces `agent_install_state_changed` ONLY for a state
+/// The probe task body. Announces `agent_install_state_changed` ONLY for a state
 /// committed to the current cache generation: a completion rejected by an invalidation is
 /// re-probed once on the same (renewed) ticket; a second rejection emits nothing and drops
 /// the ticket, which frees the slot so the next overview call schedules fresh work. At most

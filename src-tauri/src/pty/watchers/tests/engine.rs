@@ -14,7 +14,7 @@ pub(super) enum Painted {
     Unchanged,
     Missing,
     Gone,
-    /// #2879 - the last frame again under its SAME stamp, answered as a real backend
+    /// The last frame again under its SAME stamp, answered as a real backend
     /// would: `Unchanged` to a reader that already saw that stamp, the frame otherwise.
     Same,
 }
@@ -30,7 +30,7 @@ pub(super) struct ScriptedBackend {
     last: Mutex<HashMap<Uuid, PaintedRows>>,
     sequence: Mutex<HashMap<Uuid, u64>>,
     pub(super) reads: AtomicUsize,
-    /// #2879 - the `seen` stamp of every read, in order.
+    /// The `seen` stamp of every read, in order.
     pub(super) seen: Mutex<Vec<Option<FrameStamp>>>,
 }
 
@@ -254,7 +254,7 @@ impl Harness {
         Self::build(None)
     }
 
-    /// #2879 - the same harness with an internal activity factory.
+    /// The same harness with an internal activity factory.
     pub(super) fn with_activity_factory(factory: ActivityFactory) -> Self {
         Self::build(Some(factory))
     }

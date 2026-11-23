@@ -1,4 +1,4 @@
-//! Agent-facing web browser actions (#3367), delivered through the outbox like
+//! Agent-facing web browser actions, delivered through the outbox like
 //! `raise-hand`. Any live session may read the state; only orchestrators may
 //! navigate or reload.
 

@@ -810,7 +810,7 @@ async fn containment_rejects_a_link_or_reparse_replica() {
         "a linked replica is never targeted"
     );
 }
-/// #2129 - T2: the unresolved sentinel is qualified, and neither the bare
+/// T2: the unresolved sentinel is qualified, and neither the bare
 /// sentinel nor the branch name is what the notice carries.
 #[test]
 fn issue_2129_branch_stale_qualifies_the_unresolved_sentinel() {
@@ -827,7 +827,7 @@ fn issue_2129_branch_stale_qualifies_the_unresolved_sentinel() {
         InternalSystemNotice::ContextAlert { .. } => panic!("a remote activity notice"),
     }
 }
-/// #2129 - T1: a resolved base is named and qualified.
+/// T1: a resolved base is named and qualified.
 #[test]
 fn issue_2129_branch_stale_qualifies_a_resolved_base() {
     let transition = transition(TransitionKind::BranchStale, Path::new("room"), "repo");
@@ -840,8 +840,8 @@ fn issue_2129_branch_stale_qualifies_a_resolved_base() {
     }
 }
 
-/// #2129 - T3: a base equal to the branch is named by relation, so the
-/// branch name is never printed twice. #2131 normally suppresses this
+/// T3: a base equal to the branch is named by relation, so the
+/// branch name is never printed twice. The branch filter normally suppresses this
 /// notice first; the branch is defence in depth.
 #[test]
 fn issue_2129_branch_stale_names_a_base_equal_to_the_branch_by_relation() {
@@ -858,7 +858,7 @@ fn issue_2129_branch_stale_names_a_base_equal_to_the_branch_by_relation() {
     }
 }
 
-/// #2129 - T4: the qualifier never touches a CI kind, whose base branch
+/// T4: the qualifier never touches a CI kind, whose base branch
 /// must stay empty.
 #[test]
 fn issue_2129_ci_kinds_keep_an_empty_base_branch() {

@@ -18,17 +18,17 @@ tokio::task_local! {
 
 #[cfg(test)]
 tokio::task_local! {
-    /// #2475 - test-only run context. Read by the wrapper BEFORE the spawn, like
+    /// Test-only run context. Read by the wrapper BEFORE the spawn, like
     /// `IN_SELECTION_WORKER`, because task locals do not propagate into it.
     pub(crate) static BENCH_CONTEXT: timing_probe::BenchContext;
 }
 
-/// #1940 - the process-wide turn serializing persisted selection operations
+/// The process-wide turn serializing persisted selection operations
 /// (broad profile apply, instance override, self-switch persist) together with
 /// the restart settlement they trigger. Owned so a spawned task can hold it
 /// across await points without borrowing its acquirer.
 ///
-/// #2475 - a read-write lock: persisted operations take the write side and
+/// A read-write lock: persisted operations take the write side and
 /// stay mutually exclusive; the three read-only previews take the read side,
 /// so they overlap each other but never a persisted operation. tokio's
 /// `RwLock` is fair: a waiting writer blocks later readers, so an apply is
@@ -41,7 +41,7 @@ pub(super) fn selection_operation_turn() -> &'static Arc<tokio::sync::RwLock<()>
 
 #[cfg(test)]
 tokio::task_local! {
-    /// #2475 - test-only: a private turn for this task, so a test that holds
+    /// Test-only: a private turn for this task, so a test that holds
     /// one reader while waiting for a second is not deadlocked by a writer
     /// from an unrelated test queueing on the process-wide turn. Read before
     /// any spawn, like `IN_SELECTION_WORKER`.
@@ -57,7 +57,7 @@ pub(super) fn current_selection_turn() -> Arc<tokio::sync::RwLock<()>> {
     Arc::clone(selection_operation_turn())
 }
 
-/// #1940 - crate-only owned guard over the selection operation turn. Holding it
+/// Crate-only owned guard over the selection operation turn. Holding it
 /// keeps the whole guarded operation - persisted publication through restart
 /// settlement, classification and event publication - serialized against every
 /// other guarded operation.
@@ -65,13 +65,13 @@ pub(crate) struct SelectionOperationGuard {
     pub(super) _turn: tokio::sync::OwnedRwLockWriteGuard<()>,
 }
 
-/// #2475 - owned guard over the READ side of the selection operation turn:
+/// Owned guard over the READ side of the selection operation turn:
 /// excludes every persisted operation, admits other readers.
 pub(crate) struct SelectionReadGuard {
     pub(super) _turn: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 
-/// #1940 - acquire the selection operation turn.
+/// Acquire the selection operation turn.
 ///
 /// A submission from inside the selection worker task local is rejected with
 /// `RecursiveSubmission` BEFORE waiting, so the worker can never block on a turn
@@ -85,7 +85,7 @@ pub(crate) async fn acquire_selection_operation_turn(
     Ok(SelectionOperationGuard { _turn: turn })
 }
 
-/// #2475 - acquire the READ side of the selection operation turn, with the same
+/// Acquire the READ side of the selection operation turn, with the same
 /// `RecursiveSubmission` rejection BEFORE waiting as the write side.
 pub(crate) async fn acquire_selection_read_turn(
 ) -> Result<SelectionReadGuard, SelectionCoordinatorError> {
@@ -201,7 +201,7 @@ where
         // while this one still counts.
         #[cfg(test)]
         drop(occupancy);
-        // #2475 - release the turn BEFORE logging: the logger writes (and may
+        // Release the turn BEFORE logging: the logger writes (and may
         // rotate) app.log synchronously, and that must never extend the turn.
         drop(turn);
         // I4813 - record off the worker: the next turn holder sits in this

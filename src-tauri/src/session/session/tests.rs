@@ -126,7 +126,7 @@ fn session_info_from_session_copies_telegram_bot_id_internally() {
     assert_eq!(info.telegram_bot_id.as_deref(), Some("bot-1"));
 }
 
-// #2451 - match carrier plumbing: always on the wire, `null` when unset.
+// Match carrier plumbing: always on the wire, `null` when unset.
 #[test]
 fn session_info_serializes_match_tier_as_null_when_absent() {
     let json = serde_json::to_value(SessionInfo::from(&sample_session(None)))
@@ -175,7 +175,7 @@ fn session_info_serialization_does_not_expose_telegram_bot_id() {
     assert!(json.get("telegramBotId").is_none());
 }
 
-// #1088: context_percent is an internal carrier for snapshot_sessions,
+// `context_percent` is an internal carrier for snapshot_sessions,
 // mapped by From<&Session> but kept off the frontend IPC wire (badge path
 // untouched).
 #[test]
@@ -269,7 +269,7 @@ fn find_workgroup_task_path_handles_unc_prefix_input() {
     assert!(p.ends_with(r"\wg-3-team\TASK.md"));
 }
 
-// --- #1028: SessionRepo.dirty is backend-authoritative and never restored ---
+// --- SessionRepo.dirty is backend-authoritative and never restored ---
 
 /// The whole point of `skip_deserializing`. A `sessions.json` written before the app
 /// closed can hold `dirty: true` from a worktree state that is long gone; restoring
@@ -296,7 +296,7 @@ fn session_repo_dirty_is_never_deserialized() {
     );
 }
 
-/// Back-compat: `sessions.json` from before #1028 has no `dirty` key at all.
+/// Back-compat: `sessions.json` from older builds has no `dirty` key at all.
 #[test]
 fn session_repo_without_dirty_key_restores_as_none() {
     let old = r#"{"label":"A","sourcePath":"C:/a","branch":"main"}"#;

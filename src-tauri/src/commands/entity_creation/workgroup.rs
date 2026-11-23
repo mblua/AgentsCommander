@@ -52,7 +52,7 @@ pub(super) fn allocate_disk_room(
         &wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME),
     )
     .map_err(|e| format!("Failed to create messaging directory: {e}"))?;
-    // #1795: `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
+    // `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
     // created with the same hard `?` they use. A half-created room must not be
     // reported as created.
     crate::config::shared_locations::create_room_shared_dir(&wg_dir)
@@ -231,10 +231,10 @@ pub(crate) fn create_or_update_replica_on_disk(
     Ok(replica_dir)
 }
 
-/// #1939 - guarded, lossless initialization of one Room replica config.
+/// Guarded, lossless initialization of one Room replica config.
 ///
 /// Shared by `create_or_update_replica_on_disk` and the GUI workgroup loop so
-/// both publish through the #1938 sidecar with one merge: repair identity and
+/// both publish through the sidecar with one merge: repair identity and
 /// context, refresh `repos`, and preserve tooling, custom context and unknown
 /// keys. A missing config file inside the guard is the first-creation boundary
 /// (`try_exists`, so an inspection error is an error, never absence); only then
@@ -298,7 +298,7 @@ pub(super) fn initialize_replica_config_on_disk(
     Ok(())
 }
 
-/// #1939 - the GUI workgroup replica loop. Kept as one function so the GUI path
+/// The GUI workgroup replica loop. Kept as one function so the GUI path
 /// and the on-disk path provably share the same guarded initializer instead of
 /// a second destructive writer.
 // Compatibility entry point for callers without creation diagnostics.
