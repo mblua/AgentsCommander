@@ -1,7 +1,7 @@
 use super::activity_stamp::{T1, T2};
 use super::*;
 
-// ── #2807 (C2): the config pair entry point ─────────────────────────────
+// ── (C2): the config pair entry point ─────────────────────────────
 
 pub(super) const CLEANUP_STATE: &str = "after_cleanup_state_publish";
 pub(super) const CLEANUP_TRACKED: &str = "after_cleanup_tracked_write";

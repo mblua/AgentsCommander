@@ -1,6 +1,6 @@
 //! Settings loading: parse, compose layers and run startup migrations.
 //! Owns `compose_settings_parts` (project projection, agents file, overlay, decode with base
-//! fallback), `load_settings` and when it runs the root-token and migration save, the #248 and
+//! fallback), `load_settings` and when it runs the root-token and migration save, the wake-rule and
 //! window migrations, and read-only probes such as `read_log_level_only`.
 //! Source capture, CLI loaders, backups and validation live in submodules; writing lives in `save`.
 
@@ -67,7 +67,7 @@ pub use validate::{
     ROOM_NUMBER_MASK_MAX_WIDTH,
 };
 
-/// #1737 (D5): `settings_path` is `Some` on every production loader and `None` on
+/// (D5): `settings_path` is `Some` on every production loader and `None` on
 /// the in-module test call sites. `None` means "no overlay lookup".
 #[cfg(test)]
 pub(crate) fn parse_settings_json(
@@ -207,7 +207,7 @@ pub(crate) fn compose_settings_parts(
     let legacy_profiles = value.as_object().is_some_and(legacy_profiles_shape_present);
     let main_profile_owner = value.as_object().expect("settings object").clone();
     let (physical_sidecar, physical_groups) = physical_agents_view(agents.as_ref());
-    // #2716 (B3): the agents file is layer 30, under the layer-50 overlay, so it is
+    // (B3): the agents file is layer 30, under the layer-50 overlay, so it is
     // merged into the raw base object here: after the detection above, so
     // `legacy_profiles` stays a property of the settings file, and before the
     // `pre_merge` clone, so the undecodable fallback carries its groups.
@@ -219,12 +219,12 @@ pub(crate) fn compose_settings_parts(
             startup.as_deref_mut(),
         )
     });
-    // #1737 (D21): the clone must be taken BEFORE the merge, because the merge is
+    // (D21): the clone must be taken BEFORE the merge, because the merge is
     // in place and the overlay's presence is not known until it returns. Gated on
     // `settings_path.is_some()`, which is true on all three production loaders and
     // false on the in-module test call sites. Cost: one Value clone per load.
     let pre_merge = settings_path.map(|_| value.clone());
-    // #1737 (D5): the merge point, after the legacy-shape detection and before the
+    // (D5): the merge point, after the legacy-shape detection and before the
     // project decode. Merging after the detection keeps the `legacy_profiles` flag
     // a property of the base file alone and makes the B7 cross-key edge impossible.
     let physical_base = value.clone();
@@ -241,12 +241,12 @@ pub(crate) fn compose_settings_parts(
     let mut identity_physical =
         coding_agent_identity_physical_from_raw(&value, &physical_groups, &overlay);
     let unmerged = if overlay.is_empty() { None } else { pre_merge };
-    // #1077: decode the six project fields and replace the three runtime fields
+    // Decode the six project fields and replace the three runtime fields
     // with the SELECTED canonical paths BEFORE deserializing the rest of
     // AppSettings, so a wrong-typed project field cannot fail unrelated settings
     // deserialization and unresolved/conflicting pairs survive in hidden state.
     let base = production_instance_base();
-    // #2716 (B3, option C): with the agents file unreadable, the decode error also
+    // (B3, option C): with the agents file unreadable, the decode error also
     // names it, so the dialog does not name only the intact settings file.
     let unreadable_agents_file = agents_layer
         .as_ref()
@@ -267,7 +267,7 @@ pub(crate) fn compose_settings_parts(
     let state =
         apply_project_decode_to_value(&mut value, base.as_deref(), &projects::FsCandidateResolver);
     let decoded: Result<AppSettings, String> = serde_json::from_value(value).map_err(decode_error);
-    // #1737 (D21): a merged value that fails to decode falls back to the BASE
+    // (D21): a merged value that fails to decode falls back to the BASE
     // value, never to defaults. One wrong-typed leaf in settings.local.json must
     // not replace a valid base configuration.
     let (mut settings, state) = match (decoded, unmerged) {
@@ -330,7 +330,7 @@ fn finalize_composed_settings(
     overlay: LocalSettingsOverlay,
     startup: Option<&mut Option<StartupAgentRows>>,
 ) {
-    // #2306 P1 - in-memory finalize over the merged view. It is deliberately not
+    // P1 - in-memory finalize over the merged view. It is deliberately not
     // part of `needs_save`: a legacy file with no ordinals must load without a
     // disk write or a backup rotation.
     finalize_agent_order(&mut settings.agents);
@@ -346,7 +346,7 @@ fn finalize_composed_settings(
     }
 }
 
-/// #2015: legacy pre-v2 codingAgentProfiles are no longer migrated. Detection only;
+/// Legacy pre-v2 codingAgentProfiles are no longer migrated. Detection only;
 /// never mutates the value.
 pub(crate) fn legacy_profiles_shape_present(root: &Map<String, Value>) -> bool {
     let Some(p) = root.get("codingAgentProfiles").and_then(Value::as_object) else {
@@ -484,7 +484,7 @@ pub(crate) fn startup_profile_legacy_work(
     actionable_profile_legacy_work(&owner, !sidecar_profiles).map(Some)
 }
 
-/// #1737 (D15) - the settings value when the base `settings.json` is absent,
+/// (D15) - the settings value when the base `settings.json` is absent,
 /// unreadable or unparseable. A valid `settings.local.json` still applies, over the
 /// serialized defaults, so the file the following `needs_save` write creates holds
 /// exactly what a no-overlay fresh instance would have written and deleting the
@@ -512,7 +512,7 @@ pub(crate) fn default_settings_with_overlay_captured(
     let Ok(mut value @ Value::Object(_)) = serde_json::to_value(AppSettings::default()) else {
         return AppSettings::default();
     };
-    // #4091: drop only the synthetic default colour, so an absent overlay key
+    // Drop only the synthetic default colour, so an absent overlay key
     // decodes as `None` and normalizes to the effective last window.
     if let Some(defaults) = value.as_object_mut() {
         defaults.remove("contextHistoryColorSessions");
@@ -547,7 +547,7 @@ pub(crate) fn default_settings_with_overlay_captured(
     match serde_json::from_value::<AppSettings>(value) {
         Ok(mut settings) => {
             settings.project_path_state = Arc::new(state);
-            // #2306 P1 - same in-memory finalize as the normal parse, applied to
+            // P1 - same in-memory finalize as the normal parse, applied to
             // the defaults-plus-overlay view; still no write.
             finalize_agent_order(&mut settings.agents);
             refresh_agent_id_hashes(&mut settings.agents);
@@ -628,7 +628,7 @@ pub fn load_settings() -> AppSettings {
     load_settings_from_path(&path)
 }
 
-/// `pub(crate)` only so `commands::config`'s #1737 tests can seed a
+/// `pub(crate)` only so `commands::config`'s tests can seed a
 /// `settings.json` plus `settings.local.json` pair in a tempdir and load it
 /// through the real loader instead of reproducing the loader in a test. No
 /// production caller outside this module.
@@ -655,7 +655,7 @@ pub(crate) fn load_settings_from_path_with_blocking_menus_publish(
         legacy_profiles_detected,
     );
 
-    // #248 migration — translates legacy startOnlyCoordinators (if present).
+    // Migration — translates legacy startOnlyCoordinators (if present).
     // Track whether the legacy field was on disk so we can fire a single save
     // at the end of the function (Grinch Z3 — without this, upgrade users
     // with an existing root_token never persist the migration and the legacy
@@ -806,7 +806,7 @@ pub(crate) fn apply_loaded_window_migrations(settings: &mut AppSettings) {
     // after upgrade. Runs BEFORE root_token auto-gen so the migrated values persist
     // via the same save. The deprecated `sidebar_geometry`/`terminal_geometry` fields
     // are automatically dropped from disk by `skip_serializing_if` on the next save.
-    // #1737 (D7c): each of these three migrations writes its destination key from a
+    // (D7c): each of these three migrations writes its destination key from a
     // legacy source on the typed struct AFTER the merge, so an overlay that owns the
     // destination would have its override silently overwritten from the base file.
     // Owning the destination suppresses the migration; with no overlay in force
@@ -846,7 +846,7 @@ pub(crate) fn apply_loaded_window_migrations(settings: &mut AppSettings) {
     }
 }
 
-/// One-shot migration for issue #248: translate the legacy
+/// One-shot migration: translate the legacy
 /// `startOnlyCoordinators` field into the new state-sensitive
 /// `restore_coordinator_wake_state`. Idempotent — once the legacy carrier is
 /// cleared (`.take()`), subsequent calls see `None` and do nothing.
@@ -861,7 +861,7 @@ pub(crate) fn apply_loaded_window_migrations(settings: &mut AppSettings) {
 /// `warn!` and keep the new field's existing value — never silently overwrite
 /// a deliberate `restoreCoordinatorWakeState` with a stale legacy value.
 pub(crate) fn apply_issue_248_migration(settings: &mut AppSettings) {
-    // #1737 (D7c): the overlay owns `restoreCoordinatorWakeState`, so this migration
+    // (D7c): the overlay owns `restoreCoordinatorWakeState`, so this migration
     // would overwrite the operator's value from the base file's legacy key. Return
     // WITHOUT taking the legacy carrier: dropping it here would delete
     // `startOnlyCoordinators` from the base file while `restore_base` simultaneously
@@ -903,7 +903,7 @@ pub(crate) fn apply_issue_248_migration(settings: &mut AppSettings) {
 ///
 /// Returns `None` on missing file, missing field, malformed JSON, unreadable filesystem,
 /// or any other read error — fully read-only and side-effect-free.
-/// #1737 (D16): routed through the merged (base plus `settings.local.json`) view.
+/// (D16): routed through the merged (base plus `settings.local.json`) view.
 pub(crate) fn read_log_level_from_path(path: &std::path::Path) -> Option<String> {
     read_merged_top_level_key(path, "logLevel")?
         .as_str()
@@ -915,7 +915,7 @@ pub fn read_log_level_only() -> Option<String> {
     read_log_level_from_path(&settings_path()?)
 }
 
-/// #1737 (D16): routed through the merged (base plus `settings.local.json`) view.
+/// (D16): routed through the merged (base plus `settings.local.json`) view.
 pub(crate) fn read_activity_log_enabled_from_path(path: &std::path::Path) -> bool {
     read_merged_top_level_key(path, "activityLogEnabled")
         .as_ref()

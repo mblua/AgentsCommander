@@ -95,7 +95,7 @@ fn update_config_json_object_preserves_unknown_fields() {
 #[test]
 fn agent_replica_root_config_writes_go_through_shared_helper() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // #1938 - the roots are every crate area that can hold a replica or
+    // The roots are every crate area that can hold a replica or
     // local config writer. The scan reports matches; it never whitelists
     // them, so an unexpected writer fails here and is fixed (or escalated
     // with evidence), never silenced.
@@ -363,7 +363,7 @@ fn non_utf8_file_name() -> std::ffi::OsString {
     }
 }
 
-/// #1209, instance-dir half: every temporary name this module can publish is
+/// Instance-dir half: every temporary name this module can publish is
 /// inside the pattern the instance `.gitignore` emits for atomic-write
 /// temporaries.
 ///
@@ -411,7 +411,7 @@ fn atomic_temp_names_stay_inside_the_ignored_glob() {
 }
 
 // -----------------------------------------------------------------------
-// #1938 cross-process config write lock.
+// Cross-process config write lock.
 //
 // The parent tests below re-execute this same lib test binary with
 // `--exact config::local_config_io::tests::issue_1937_config_lock_child`
@@ -521,7 +521,7 @@ fn assert_child_success(
     );
 }
 
-/// #1938 - the child half of the cross-process tests. Without the child-only
+/// The child half of the cross-process tests. Without the child-only
 /// action environment this test is a no-op, so a normal suite run (and the
 /// focused CI filter) passes it without touching any fixture.
 #[test]
@@ -575,7 +575,7 @@ fn issue_1937_config_lock_child() {
     println!("AC_1937_CONFIG_LOCK_CHILD_DONE action={action}");
 }
 
-/// #1938 - the production deadline is 5 seconds and the injected short
+/// The production deadline is 5 seconds and the injected short
 /// deadline is honored: a bounded wait with a distinct diagnostic naming
 /// the sidecar and the elapsed limit, then a clean reacquire.
 #[test]
@@ -603,7 +603,7 @@ fn issue_1937_config_lock_timeout() {
     assert!(lock_sidecar_path(&path).is_file(), "sidecar must survive");
 }
 
-/// #1938 - exclusion across separate processes: a live holder in this
+/// Exclusion across separate processes: a live holder in this
 /// process makes a separate test process time out.
 #[test]
 fn issue_1937_config_lock_process_exclusion() {
@@ -632,7 +632,7 @@ fn issue_1937_config_lock_process_exclusion() {
     );
 }
 
-/// #1938 - normal child exit releases the lock: while the child holds it the
+/// Normal child exit releases the lock: while the child holds it the
 /// parent times out, and after the child exits the parent reacquires.
 #[test]
 fn issue_1937_config_lock_process_release() {
@@ -668,7 +668,7 @@ fn issue_1937_config_lock_process_release() {
     assert!(lock_sidecar_path(&path).is_file(), "sidecar must survive");
 }
 
-/// #1938 - process death (kill, no unwind) also releases the OS lock in the
+/// Process death (kill, no unwind) also releases the OS lock in the
 /// kernel, so no sidecar deletion or stale-lock cleanup is needed.
 #[test]
 fn issue_1937_config_lock_process_death_release() {
@@ -702,7 +702,7 @@ fn issue_1937_config_lock_process_death_release() {
     );
 }
 
-/// #1938 - separate handles in one process contend exactly like separate
+/// Separate handles in one process contend exactly like separate
 /// processes, so the guarantee does not depend on one caller shape.
 #[test]
 fn issue_1937_config_lock_same_process_handles() {
@@ -718,7 +718,7 @@ fn issue_1937_config_lock_same_process_handles() {
     drop(second);
 }
 
-/// #1938 - canonicalization folds raw, dot-segment, symlink, and Windows
+/// Canonicalization folds raw, dot-segment, symlink, and Windows
 /// case / verbatim aliases of one directory onto the single physical
 /// sidecar.
 #[test]
@@ -761,7 +761,7 @@ fn issue_1937_config_lock_path_aliases_share_one_sidecar() {
     assert!(lock_sidecar_path(&path).is_file());
 }
 
-/// #1938 - a malformed config is rejected under the lock and the original
+/// A malformed config is rejected under the lock and the original
 /// bytes stay untouched.
 #[test]
 fn issue_1937_config_lock_malformed_json_preserved() {
@@ -779,7 +779,7 @@ fn issue_1937_config_lock_malformed_json_preserved() {
     drop(reacquired);
 }
 
-/// #1938 - a failing mutation closure leaves the file untouched and releases
+/// A failing mutation closure leaves the file untouched and releases
 /// the lock.
 #[test]
 fn issue_1937_config_lock_closure_failure_preserved() {
@@ -801,7 +801,7 @@ fn issue_1937_config_lock_closure_failure_preserved() {
     drop(reacquired);
 }
 
-/// #1938 - an atomic publish failure preserves the prior bytes, removes the
+/// An atomic publish failure preserves the prior bytes, removes the
 /// temp file, releases the lock, and leaves the sidecar in place.
 #[test]
 fn issue_1937_config_lock_publish_failure_preserves_prior_bytes() {
@@ -847,7 +847,7 @@ fn issue_1937_config_lock_publish_failure_preserves_prior_bytes() {
     drop(reacquired);
 }
 
-/// #1938 - the sidecar is never deleted, including error recovery, and it is
+/// The sidecar is never deleted, including error recovery, and it is
 /// never truncated or written to.
 #[test]
 fn issue_1937_config_lock_sidecar_survives_every_outcome() {
@@ -891,7 +891,7 @@ fn issue_1937_config_lock_sidecar_survives_every_outcome() {
     assert_eq!(std::fs::read(&lock_path).expect("read"), b"");
 }
 
-/// #1938 - two live processes update disjoint keys; the cross-process lock
+/// Two live processes update disjoint keys; the cross-process lock
 /// serializes their read-modify-publish cycles so both keys survive.
 #[test]
 fn issue_1937_config_lock_concurrent_disjoint_updates_both_survive() {

@@ -4,7 +4,7 @@ use super::activity_stamp::{
 use super::*;
 
 // ------------------------------------------------------------------
-// #1939 tooling-shape discriminator for config metadata writes.
+// Tooling-shape discriminator for config metadata writes.
 // ------------------------------------------------------------------
 
 pub(super) fn codex_entry() -> CodingAgentEntry {
@@ -138,7 +138,7 @@ fn issue_1937_selection_state_tooling_shape_plain_repo_metadata_stays_compatible
     }
 }
 
-// ── #2433 descriptor persistence ──
+// ── Descriptor persistence ──
 
 pub(super) fn fixed_entry(command: &str, identity: &[(&str, &str)]) -> CodingAgentEntry {
     CodingAgentEntry {

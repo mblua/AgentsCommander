@@ -3,7 +3,7 @@ use super::*;
 const C3_CLEANUP_PREFIX: &str =
     "Config pair r/config.json and r/config.state.no-git.json cleanup failed: ";
 
-/// #2816 (C3) E10 - the cleanup-wrapped TRACKED text keeps its wire code.
+/// (C3) E10 - the cleanup-wrapped TRACKED text keeps its wire code.
 #[test]
 fn issue_2816_selection_error_code_keeps_the_tracked_tooling_code() {
     assert_eq!(
@@ -14,7 +14,7 @@ fn issue_2816_selection_error_code_keeps_the_tracked_tooling_code() {
     );
 }
 
-/// #2816 (C3) E10 - the arm is not widened: the state-side text and an
+/// (C3) E10 - the arm is not widened: the state-side text and an
 /// unrelated write failure stay `configWriteFailed`.
 #[test]
 fn issue_2816_selection_error_code_does_not_reclassify_the_state_side() {
@@ -30,7 +30,7 @@ fn issue_2816_selection_error_code_does_not_reclassify_the_state_side() {
     );
 }
 
-/// #2816 (C3) E10 - the write path: a tracked `tooling` that turns
+/// (C3) E10 - the write path: a tracked `tooling` that turns
 /// malformed after the enumeration still classifies as before.
 #[tokio::test]
 async fn issue_2816_write_path_malformed_tracked_tooling_keeps_its_code() {

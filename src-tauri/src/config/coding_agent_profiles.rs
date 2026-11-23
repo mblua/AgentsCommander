@@ -85,7 +85,7 @@ fn read_json_object(path: &Path) -> Option<Value> {
     serde_json::from_str::<Value>(&content).ok()
 }
 
-/// #2786 (C1) - through the shared loader, so a state key such as
+/// (C1) - through the shared loader, so a state key such as
 /// `profileContentHash` is served from the state file first.
 fn read_tooling_string(agent_dir: &Path, key: &str) -> Option<String> {
     crate::config::agent_config::read_agent_local_config_json(agent_dir)
@@ -96,7 +96,7 @@ fn read_tooling_string(agent_dir: &Path, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// #2816 (C3) - which file of the config pair a `tooling` string lives in.
+/// (C3) - which file of the config pair a `tooling` string lives in.
 #[derive(Clone, Copy)]
 enum ToolingSide {
     Decisions,
@@ -131,7 +131,7 @@ fn write_tooling_string(
         let tooling_value = obj
             .entry("tooling".to_string())
             .or_insert_with(|| serde_json::json!({}));
-        // #1939 - a malformed `tooling` is never silently reset: the write fails
+        // A malformed `tooling` is never silently reset: the write fails
         // with the stored bytes untouched (shape-based, like agent_config).
         let tooling = tooling_value
             .as_object_mut()

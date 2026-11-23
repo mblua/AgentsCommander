@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 pub const LOOP_DIR_PREFIX: &str = "_loop_";
 pub const LOOP_CONFIG_FILE: &str = "config.toml";
-/// #2718 (B4b) - the Loop state name, composed once in the registry.
+/// (B4b) - the Loop state name, composed once in the registry.
 pub const LOOP_STATE_FILE: &str = crate::config::instance_artifacts::LOOP_STATE_TARGET_NAME;
 pub const LOOP_AUDIT_FILE: &str = "audit.jsonl";
 pub const LOOP_TIMEZONE_LOCAL: &str = "local";
