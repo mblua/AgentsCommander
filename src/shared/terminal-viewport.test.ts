@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #973 — the guard rails around the size we hand to `create_session`.
+// The guard rails around the size we hand to `create_session`.
 //
 // dev-rust measured the fix as it will actually ship: opening the PTY at the
 // fitted size and letting the view's redundant same-size burst land is 0/10

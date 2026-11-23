@@ -261,7 +261,7 @@ describe("ipc black box", () => {
     expect(record.lastSentAtMs).toBe(0);
   });
 
-  // #2646 - the `window` URL param is untrusted: known values are kept, any
+  // The `window` URL param is untrusted: known values are kept, any
   // other value (or an empty one) is recorded as "main".
   it.each([
     ...["main", "browser", "detached", "resource-monitor", "screenshot-overlay", "spec-board", "watchers", "terminal"].map(
