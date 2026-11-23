@@ -105,7 +105,7 @@ enum Reason {
     PosixBaseUtility,
     /// An `open::` call handing a path or URL to the desktop handler.
     DesktopOpener,
-    /// Probes what the app's own processes (WebKitGTK) see, so it keeps
+    /// #4843: probes what the app's own processes (WebKitGTK) see, so it keeps
     /// the app's `PATH`.
     AppEnvProbe,
 }
@@ -123,14 +123,14 @@ windows-only, test-only, posix-base-utility, desktop-opener, app-env-probe \
 /// Sum of `covered` plus every reason count MUST equal `total`.
 type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 
-// Recertified by the workspace source walk after merging main.
+// Batch #3503: recertified by the workspace source walk after merging main.
 // Extracted helpers add no constructor sites; all 99 classified rows still match.
-// Recertified by the source walk; cli/stdout/tests.rs adds one TestOnly
+// #4016: recertified by the source walk; cli/stdout/tests.rs adds one TestOnly
 // child-runner constructor, for 100 classified rows.
-// Adds one TestOnly row, for 101 classified rows.
-// Adds two TestOnly rows (lock holder child, wrapper child), for 103
+// #4752 P02 adds one TestOnly row, for 101 classified rows.
+// #4788 adds two TestOnly rows (lock holder child, wrapper child), for 103
 // classified rows.
-// Adds one AppEnvProbe site to the process.rs row (gst-inspect-1.0 probe).
+// #4843 adds one AppEnvProbe site to the process.rs row (gst-inspect-1.0 probe).
 const FAKE_SHELL_RS: &str = "src-tauri/src/process/host/login/fake_shell.rs";
 const PROFILE_TESTS_RS: &str = "src-tauri/src/config/profile/tests.rs";
 const LOCK_TESTS_RS: &str = "src-tauri/src/filesystem/single_instance_lock/tests.rs";
@@ -351,7 +351,7 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 2)],
     ),
     ("src-tauri/src/process/host/login.rs", 1, 0, &[(Owner, 1)]),
-    // `#[cfg(all(test, unix))]` fake login shell; its executable probe is test-only.
+    // #4608: `#[cfg(all(test, unix))]` fake login shell; its executable probe is test-only.
     (FAKE_SHELL_RS, 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/config/coding_agents_catalog/tests.rs",
@@ -705,7 +705,7 @@ fn constructor_count(body: &str) -> usize {
 }
 
 /// Every production point where `AgentsCommander` executes something either
-/// applies the effective search path or is classified exempt with one
+/// applies the #2589 effective search path or is classified exempt with one
 /// reason from a fixed vocabulary. For each scanned file the guard checks
 /// `total == covered + sum(exempt)`, so an added or removed site anywhere,
 /// covered or not, reddens it until a human classifies the site.
