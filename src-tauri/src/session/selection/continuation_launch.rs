@@ -20,7 +20,7 @@ use super::envelope::FinalizedOwnedCarryOutcome;
 use super::replacement::{
     LifecycleEffectSlot, OwnedEffectState, OwnedLaunchReceipt, OwnedReplacementContinuation,
     OwnedReplacementDescriptor, OwnedSourceStop, OwnedSourceValidation,
-    ReplacementCleanupAuthority, ReplacementStage,
+    ReplacementCleanupAuthority, ReplacementProgress, ReplacementStage,
 };
 
 #[cfg(test)]
@@ -454,6 +454,8 @@ impl OwnedReplacementContinuation {
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         let observed = manager
             .with_current_carrier_snapshot(&permit, |current| {
+                #[cfg(test)]
+                let _fault = Self::fixture_refuse_refresh(pty);
                 if !Self::launch_is_current(&captured.0, current, pty) {
                     return None;
                 }
@@ -722,6 +724,15 @@ impl OwnedReplacementContinuation {
         current: &crate::session::manager::CarrierSnapshot,
         pty: &Arc<Mutex<PtyManager>>,
     ) -> bool {
+        pty.try_lock()
+            .is_ok_and(|pty| Self::guarded_launch_is_current(launch, current, &pty))
+    }
+
+    fn guarded_launch_is_current(
+        launch: &OwnedLaunchReceipt,
+        current: &crate::session::manager::CarrierSnapshot,
+        pty: &PtyManager,
+    ) -> bool {
         let Some(row) = current.rows.iter().find(|row| {
             row.id == launch.binding.session_id()
                 && row.token == launch.token
@@ -747,19 +758,104 @@ impl OwnedReplacementContinuation {
         }) else {
             return false;
         };
-        pty.try_lock().is_ok_and(|pty| {
-            let Some((Some(cwd), replica, generation)) = pty.route_identities(row.id) else {
-                return false;
-            };
-            generation == launch.generation
-                && pty.backend_kind(row.id) == Some(launch.backend)
-                && pty.has_session(row.id)
-                && launch.cwd_identity.matches_route_observations(
-                    Some(&cwd),
-                    replica.as_ref(),
-                    launch.replica_identity.as_ref(),
+        let Some((Some(cwd), replica, generation)) = pty.route_identities(row.id) else {
+            return false;
+        };
+        generation == launch.generation
+            && pty.backend_kind(row.id) == Some(launch.backend)
+            && pty.has_session(row.id)
+            && launch.cwd_identity.matches_route_observations(
+                Some(&cwd),
+                replica.as_ref(),
+                launch.replica_identity.as_ref(),
+            )
+    }
+
+    pub(super) fn capture_transferred_work(
+        &self,
+    ) -> Option<(
+        crate::config::sessions_persistence::PublishedCarrier,
+        OwnedLaunchReceipt,
+        Uuid,
+    )> {
+        self.owner.state.lock().ok().and_then(|state| {
+            let progress = state.replacement.as_ref()?;
+            let launch = progress.launch.as_ref()?;
+            if state.executor_nonce != self.executor_nonce
+                || state.stage != ReplacementStage::FinalizedPublish
+                || !progress.work_transferred
+                || !progress.preparing_released
+                || !progress.reservations_released
+                || !progress.retired
+                || !progress.retirement_cleanup_completed
+                || !progress.activity_completed
+                || progress.initial_b.is_none()
+                || !matches!(
+                    progress.context_prerequisite,
+                    None | Some(OwnedEffectState::Completed { .. })
                 )
+                || progress.create_reservation.is_some()
+                || progress.work_reservation.is_some()
+                || !matches!(state.completion.as_ref(),
+                    Some(Ok(info)) if info.id == launch.binding.session_id().to_string())
+                || !state.effects_are_terminal()
+            {
+                return None;
+            }
+            let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
+                return None;
+            };
+            Some((
+                progress.current_checkpoint.clone()?,
+                launch.clone(),
+                descriptor.previous.id,
+            ))
         })
+    }
+
+    pub(super) fn prove_pre_input_launch(
+        &self,
+        progress: &ReplacementProgress,
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        pty: &PtyManager,
+    ) -> Option<crate::config::sessions_persistence::PublishedCarrier> {
+        let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
+            return None;
+        };
+        let initial = progress.initial_b.as_ref()?;
+        let launch = progress.launch.as_ref()?;
+        let first = progress.first_checkpoint.as_ref()?;
+        let checkpoint = progress.current_checkpoint.as_ref()?;
+        let tracker = progress.tracker.as_ref()?;
+        let id = progress.binding.session_id();
+        if progress.cleanup != ReplacementCleanupAuthority::Disarmed
+            || progress.preparing_nonce != self.owner.operation
+            || initial.operation != self.owner.operation
+            || launch.operation != self.owner.operation
+            || initial.preparing_nonce != progress.preparing_nonce
+            || launch.preparing_nonce != progress.preparing_nonce
+            || initial.binding != progress.binding
+            || launch.binding != progress.binding
+            || initial.token != launch.token
+            || initial.launch_generation != launch.generation
+            || first.session_id != id
+            || first.token != launch.token
+            || first.target != descriptor.target
+            || checkpoint.session_id != id
+            || checkpoint.token != launch.token
+            || checkpoint.target != descriptor.target
+            || current
+                .rows
+                .iter()
+                .any(|row| row.id == descriptor.previous.id)
+            || !Self::guarded_launch_is_current(launch, current, pty)
+            || !pty.response_close_state().same_state(tracker)
+            || !tracker.healthy_open_generation(id, launch.generation)
+        {
+            return None;
+        }
+        crate::config::sessions_persistence::current_protected_carrier(permit, checkpoint, current)
     }
 
     pub(super) fn retained_commit_copy(&self) -> Option<CommitResult> {

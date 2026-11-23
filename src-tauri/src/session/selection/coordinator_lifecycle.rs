@@ -313,6 +313,7 @@ impl SelectionCoordinator {
         let operation = Uuid::new_v4();
         let executor_nonce = Uuid::new_v4();
         let progress = ReplacementProgress {
+            pre_input: Default::default(),
             source_executor: SourceExecutorObservation::NotStarted,
             current_previous: descriptor.previous.clone(),
             launch_start_fresh: None,

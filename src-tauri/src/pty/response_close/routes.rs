@@ -306,6 +306,37 @@ impl ResponseCloseState {
             .ok()
             .flatten()
     }
+
+    pub(crate) fn healthy_open_generation(&self, id: Uuid, generation: u64) -> bool {
+        self.with_inner(|inner| {
+            inner.publishers == 63
+                && inner
+                    .routes
+                    .get(&id)
+                    .is_some_and(|route| route.generation == generation && route.closing.is_none())
+        })
+        .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_set_closing(&self, id: Uuid, generation: u64) {
+        self.with_inner(|inner| {
+            let route = inner.routes.get_mut(&id).expect("active tracker route");
+            assert_eq!(route.generation, generation);
+            route.closing = Some(Uuid::new_v4());
+        })
+        .unwrap();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_poison_tracker(&self) {
+        let result = std::panic::catch_unwind(|| {
+            let _guard = self.inner.lock().expect("healthy tracker");
+            panic!("fixture poison of live tracker");
+        });
+        assert!(result.is_err() && self.inner.is_poisoned());
+    }
+
     pub(crate) fn is_closing(&self, id: Uuid, generation: u64) -> Result<bool, ResponseCloseError> {
         let inner = self
             .inner

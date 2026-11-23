@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use super::super::replacement::{
-    LifecycleEffectGuard, LifecycleEffectSlot, OwnedEffectState, OwnedLaunchReceipt,
-    OwnedReplacementContinuation, OwnedReplacementDescriptor, OwnedReplacementWork,
-    PendingCleanupEvidence, PendingRollback, ReplacementCleanupAuthority, ReplacementStage,
-    ReplacementState, RollbackCause, RollbackCursor, RollbackIdentity, RollbackResume, RollbackRow,
+    LifecycleEffectGuard, LifecycleEffectSlot, OwnedEffectState, OwnedReplacementContinuation,
+    OwnedReplacementDescriptor, OwnedReplacementWork, PendingCleanupEvidence, PendingRollback,
+    PreInputReceipt, ReplacementCleanupAuthority, ReplacementStage, ReplacementState, ReplyLoss,
+    RollbackCause, RollbackCursor, RollbackIdentity, RollbackResume, RollbackRow,
     SourceExecutorObservation, WakePathValidation,
 };
 use super::super::SelectionCoordinator;
@@ -105,6 +105,7 @@ pub(crate) struct WakeRollbackObservation {
 }
 
 const ROLLBACK_EFFECT: usize = LifecycleEffectSlot::PendingRollback as usize;
+const WORK_TRANSFER: usize = LifecycleEffectSlot::WorkTransfer as usize;
 
 impl RollbackIdentity {
     pub(super) fn preparing_matches(
@@ -199,6 +200,140 @@ impl Drop for RollbackResume<'_> {
 }
 
 impl OwnedReplacementContinuation {
+    pub(crate) fn record_wake_transfer_not_started(&self) {
+        if let Ok(mut state) = self.owner.state.lock() {
+            if state.executor_nonce == self.executor_nonce
+                && matches!(state.effects[WORK_TRANSFER], OwnedEffectState::NotStarted)
+            {
+                if let Some(progress) = state.replacement.as_mut() {
+                    progress.pre_input.receipt = Some(PreInputReceipt::NotStarted);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn complete_wake_transfer_no_input(&self, mut effect: LifecycleEffectGuard) {
+        let Ok(mut state) = self.owner.state.lock() else {
+            return;
+        };
+        let attempt = effect.attempt;
+        let running = &state.effects[WORK_TRANSFER];
+        if !Arc::ptr_eq(&self.owner, &effect.owner)
+            || state.executor_nonce != self.executor_nonce
+            || effect.slot != LifecycleEffectSlot::WorkTransfer
+            || !matches!(running, OwnedEffectState::Running(id) if *id == attempt)
+        {
+            return;
+        }
+        if let Some(progress) = state.replacement.as_mut() {
+            progress.pre_input.receipt = Some(PreInputReceipt::NoInput(attempt));
+            state.effects[WORK_TRANSFER] = OwnedEffectState::Completed {
+                attempt,
+                outcome: Err("replacement work stopped before input".into()),
+            };
+            effect.completed = true;
+        }
+    }
+
+    /// Supply a successful result ID only from the failed send. The source
+    /// supplies the binding from the real Retained return after dropping its guards.
+    pub(crate) fn arrive_wake_reply_loss(
+        &self,
+        binding: PendingCreateBinding,
+        failed_reply: Option<&str>,
+    ) -> bool {
+        let Ok(mut state) = self.owner.state.lock() else {
+            return false;
+        };
+        let source_arrived = failed_reply.is_none();
+        let worker_qualified = state.successful_publication_for(binding, failed_reply);
+        if state.executor_nonce != self.executor_nonce
+            || !matches!(state.effects[WORK_TRANSFER], OwnedEffectState::NotStarted)
+        {
+            return false;
+        }
+        let Some(progress) = state.replacement.as_mut() else {
+            return false;
+        };
+        let source_returned =
+            progress.source_executor == (SourceExecutorObservation::Returned { failed: false });
+        if binding != progress.binding
+            || self.owner.operation != progress.preparing_nonce
+            || !matches!(
+                progress.accepted_work,
+                OwnedReplacementWork::OrdinaryOwned { .. }
+            )
+            || (source_arrived && !source_returned)
+            || (!source_arrived && !worker_qualified)
+        {
+            return false;
+        }
+        progress.pre_input.reply_loss = match (progress.pre_input.reply_loss, source_arrived) {
+            (ReplyLoss::Empty, true) => ReplyLoss::SourceArrived,
+            (ReplyLoss::Empty, false) => ReplyLoss::FailedReplyArrived,
+            (ReplyLoss::SourceArrived, false) | (ReplyLoss::FailedReplyArrived, true)
+                if source_returned && worker_qualified =>
+            {
+                ReplyLoss::SettlerClaimed
+            }
+            _ => return false,
+        };
+        matches!(progress.pre_input.reply_loss, ReplyLoss::SettlerClaimed)
+    }
+
+    pub(super) fn wake_pre_input_is_ready(&self, lost_reply: bool) -> bool {
+        self.owner.state.lock().is_ok_and(|state| {
+            state.executor_nonce == self.executor_nonce
+                && state.stage == ReplacementStage::FinalizedPublish
+                && state.pre_input_is_verified(lost_reply)
+        })
+    }
+
+    pub(super) fn dispose_wake_pre_input(
+        &self,
+        permit: &CarrierMutationPermit,
+        current: &CarrierSnapshot,
+        pty: &PtyManager,
+        lost_reply: bool,
+    ) -> Option<()> {
+        let (carrier, reservations) = {
+            let mut state = self.owner.state.lock().ok()?;
+            let progress = state.replacement.as_ref()?;
+            if state.executor_nonce != self.executor_nonce
+                || !state.pre_input_release_is_authorized(lost_reply)
+            {
+                return None;
+            }
+            let carrier = self.prove_pre_input_launch(progress, permit, current, pty)?;
+            let progress = state.replacement.as_mut()?;
+            let reservations = (
+                progress.create_reservation.take(),
+                progress.work_reservation.take(),
+            );
+            (carrier, reservations)
+        };
+        #[cfg(test)]
+        Self::fixture_publication_probe(|fixture| &fixture.before_disposal);
+        drop(reservations);
+        if !pty.response_close_state().is_healthy() {
+            self.note_retained_work("replacement tracker failed during reservation release".into());
+            return None;
+        }
+        let mut state = self.owner.state.lock().ok()?;
+        if state.executor_nonce != self.executor_nonce
+            || state.stage != ReplacementStage::FinalizedPublish
+            || !state.pre_input_is_verified(lost_reply)
+        {
+            return None;
+        }
+        let progress = state.replacement.as_mut()?;
+        progress.current_checkpoint = Some(carrier);
+        progress.reservations_released = true;
+        progress.terminal_verified = true;
+        state.stage = ReplacementStage::Completed;
+        Some(())
+    }
+
     #[cfg(test)]
     pub(crate) fn fixture_wake_rollback_state() -> Option<Arc<WakeRollbackFixture>> {
         wake_rollback_fixture()
@@ -216,18 +351,6 @@ impl OwnedReplacementContinuation {
         if let Some(fixture) = wake_rollback_fixture() {
             fixture.before_return.reach().await;
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn fixture_pending_source_validation(&self) -> bool {
-        if let Some(control) = &self.fixture {
-            if control.ticket_only.load(Ordering::Acquire) {
-                return self
-                    .fixture_reached(ReplacementFixtureCut::BeforeSourceValidation)
-                    .await;
-            }
-        }
-        true
     }
 
     #[cfg(test)]
@@ -377,49 +500,6 @@ impl OwnedReplacementContinuation {
             }
         }
         true
-    }
-
-    pub(super) fn capture_transferred_work(
-        &self,
-    ) -> Option<(PublishedCarrier, OwnedLaunchReceipt, Uuid)> {
-        self.owner.state.lock().ok().and_then(|state| {
-            let progress = state.replacement.as_ref()?;
-            let launch = progress.launch.as_ref()?;
-            if state.executor_nonce != self.executor_nonce
-                || state.stage != ReplacementStage::FinalizedPublish
-                || !progress.work_transferred
-                || !progress.preparing_released
-                || !progress.reservations_released
-                || !progress.retired
-                || !progress.retirement_cleanup_completed
-                || !progress.activity_completed
-                || progress.initial_b.is_none()
-                || !matches!(
-                    progress.context_prerequisite,
-                    None | Some(OwnedEffectState::Completed { .. })
-                )
-                || progress.create_reservation.is_some()
-                || progress.work_reservation.is_some()
-                || !matches!(state.completion.as_ref(),
-                    Some(Ok(info)) if info.id == launch.binding.session_id().to_string())
-                || !state.effects.iter().all(|effect| {
-                    matches!(
-                        effect,
-                        OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }
-                    )
-                })
-            {
-                return None;
-            }
-            let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
-                return None;
-            };
-            Some((
-                progress.current_checkpoint.clone()?,
-                launch.clone(),
-                descriptor.previous.id,
-            ))
-        })
     }
 
     pub(super) fn rollback_identity(&self) -> Option<RollbackIdentity> {
@@ -826,7 +906,51 @@ impl OwnedReplacementContinuation {
 }
 
 impl ReplacementState {
-    fn effects_are_terminal(&self) -> bool {
+    fn pre_input_release_is_authorized(&self, lost_reply: bool) -> bool {
+        let Some(progress) = self.replacement.as_ref() else {
+            return false;
+        };
+        self.stage == ReplacementStage::FinalizedPublish
+            && self.pre_input_is_verified(lost_reply)
+            && self.successful_publication_for(progress.binding, None)
+            && self.effects_are_terminal()
+            && progress.source_executor == (SourceExecutorObservation::Returned { failed: false })
+            && progress.preparing_released
+            && progress.retired
+            && progress.retirement_cleanup_completed
+            && progress.activity_completed
+            && !progress.work_transferred
+            && progress.create_reservation.is_some()
+            && progress.work_reservation.is_some()
+            && matches!(
+                progress.context_prerequisite,
+                None | Some(OwnedEffectState::Completed { .. })
+            )
+    }
+
+    pub(super) fn pre_input_is_verified(&self, lost_reply: bool) -> bool {
+        let Some(progress) = self.replacement.as_ref() else {
+            return false;
+        };
+        let effect = &self.effects[WORK_TRANSFER];
+        if lost_reply {
+            return matches!(progress.pre_input.reply_loss, ReplyLoss::SettlerClaimed)
+                && matches!(effect, OwnedEffectState::NotStarted);
+        }
+        match (progress.pre_input.receipt, effect) {
+            (Some(PreInputReceipt::NotStarted), OwnedEffectState::NotStarted) => true,
+            (
+                Some(PreInputReceipt::NoInput(id)),
+                OwnedEffectState::Completed {
+                    attempt,
+                    outcome: Err(_),
+                },
+            ) => id == *attempt,
+            _ => false,
+        }
+    }
+
+    pub(in crate::session::selection) fn effects_are_terminal(&self) -> bool {
         self.effects.iter().all(|effect| {
             matches!(
                 effect,
@@ -843,7 +967,6 @@ impl ReplacementState {
             return false;
         };
         let released = progress.terminal_verified
-            && progress.work_transferred
             && progress.reservations_released
             && progress.preparing_released
             && progress.create_reservation.is_none()
@@ -857,10 +980,15 @@ impl ReplacementState {
         }
         match self.stage {
             ReplacementStage::Completed => {
-                progress.retired && progress.retirement_cleanup_completed
+                progress.retired
+                    && progress.retirement_cleanup_completed
+                    && (progress.work_transferred
+                        || self.pre_input_is_verified(false)
+                        || self.pre_input_is_verified(true))
             }
             ReplacementStage::RolledBack => {
-                progress.precommit_rollback_verified(matches!(self.completion, Some(Err(_))))
+                progress.work_transferred
+                    && progress.precommit_rollback_verified(matches!(self.completion, Some(Err(_))))
             }
             _ => false,
         }

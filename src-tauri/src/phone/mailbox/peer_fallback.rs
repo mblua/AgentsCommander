@@ -56,8 +56,10 @@ async fn prepare_replacement_context(
     Ok(true)
 }
 
-fn retained(stage: &'static str, session: Option<Uuid>) -> Result<OwnedPeerWakeStep, String> {
-    Ok(RetainedExit::step(stage, session))
+type PeerReplacementResult = Result<(OwnedPeerWakeStep, Option<PendingCreateBinding>), String>;
+
+fn retained(stage: &'static str, session: Option<Uuid>) -> PeerReplacementResult {
+    Ok((RetainedExit::step(stage, session), None))
 }
 
 /// #3263 - Admitted-stage exit before any create call: roll the owner back so a
@@ -67,7 +69,7 @@ async fn end_before_publish(
     manager: &SessionManager,
     pty: &Arc<Mutex<PtyManager>>,
     stage: &'static str,
-) -> Result<OwnedPeerWakeStep, String> {
+) -> PeerReplacementResult {
     let base = format!("{ERR_WAKE_RETAINED}: stage={stage}");
     let done = continuation
         .rollback_failed_create(manager, pty, &base)
@@ -234,7 +236,7 @@ impl MailboxPoller {
         app: &S,
         pty: &Arc<Mutex<PtyManager>>,
         execution: &mut OwnedPeerWakeExecution,
-    ) -> Result<OwnedPeerWakeStep, String> {
+    ) -> PeerReplacementResult {
         #[cfg(test)]
         let (fixture, fixture_continuation) = self.peer_replacement_fixture_context(execution);
 
@@ -267,6 +269,7 @@ impl MailboxPoller {
             };
         #[cfg(not(test))]
         let fixture_created = None;
+        let real_create = fixture_created.is_none();
         let created = match fixture_created {
             Some(created) => created,
             None => {
@@ -282,11 +285,13 @@ impl MailboxPoller {
 
         if let crate::session::create_contracts::OwnedReplacementCreateStep::Retained = created? {
             continuation.relay_pending_source_refusal();
-            return retained("create_retained", None);
+            let binding = real_create.then(|| continuation.binding()).flatten();
+            return retained("create_retained", None).map(|(step, _)| (step, binding));
         }
         let Some((info, id, effect)) =
             begin_replacement_work_transfer(continuation, &manager, pty).await
         else {
+            continuation.record_wake_transfer_not_started();
             return retained("work_transfer_unavailable", None);
         };
         if info.telegram_bot_id.is_some() {
@@ -305,9 +310,7 @@ impl MailboxPoller {
             .await
             .is_none()
         {
-            // The bridge/settle calls returned; no input was attempted. Keep
-            // their known incomplete-work result instead of an unwind receipt.
-            effect.complete(Err("replacement work stopped before input".into()));
+            continuation.complete_wake_transfer_no_input(effect);
             return retained("completion_info_lost", Some(id));
         }
         let injected = self
@@ -329,9 +332,10 @@ impl MailboxPoller {
         continuation
             .finish_observed_work_transfer(&manager, pty, effect, true)
             .await;
-        Ok(OwnedPeerWakeStep::Delivered(replacement_delivery(
-            execution,
-        )))
+        Ok((
+            OwnedPeerWakeStep::Delivered(replacement_delivery(execution)),
+            None,
+        ))
     }
 
     async fn try_inject_peer_candidate<S: MailboxHost>(

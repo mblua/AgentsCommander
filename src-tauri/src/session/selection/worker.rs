@@ -21,13 +21,165 @@ use super::payload::SelectionCoordinatorError;
 use super::transaction::SelectionTransaction;
 use super::{
     CoordinatorInner, CoordinatorJob, LifecycleEntryOutcome, LifecycleExecutor, SelectionContext,
-    SelectionResourceEffects, SelectionWindowEffects,
+    SelectionHost, SelectionResourceEffects, SelectionWindowEffects,
 };
 
 #[cfg(test)]
 use super::replacement_fixture::{
     ReplacementFixtureControl, ReplacementFixtureCut, ReplacementFixtureEnvelopeTrace,
+    ReplacementFixtureOutcome,
 };
+
+#[cfg(test)]
+use super::replacement::{
+    LifecycleEffectSlot, OwnedEffectState, OwnedReplacementContinuation, PreInputReceipt, ReplyLoss,
+};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(test)]
+use std::sync::Mutex;
+
+#[cfg(test)]
+type PublicationProbe = Mutex<Option<Box<dyn FnOnce() + Send>>>;
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct WakePublicationFixture {
+    pub(crate) refuse_refresh: AtomicUsize,
+    pub(crate) before_disposal: PublicationProbe,
+    pub(crate) after_disposal: PublicationProbe,
+}
+
+#[cfg(test)]
+static WAKE_PUBLICATION: Mutex<Option<Arc<WakePublicationFixture>>> = Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) struct WakePublicationObservation {
+    pub(crate) operation: uuid::Uuid,
+    pub(crate) binding: crate::session::manager::PendingCreateBinding,
+    pub(crate) publication: bool,
+    pub(crate) terminal: bool,
+    pub(crate) work_transferred: bool,
+    pub(crate) holds: (bool, bool),
+    pub(crate) work_attempt: Option<uuid::Uuid>,
+    receipt: Option<PreInputReceipt>,
+    reply_loss: ReplyLoss,
+}
+
+#[cfg(test)]
+impl WakePublicationObservation {
+    pub(crate) fn not_started(&self) -> bool {
+        matches!(self.receipt, Some(PreInputReceipt::NotStarted))
+    }
+
+    pub(crate) fn no_input_attempt(&self) -> Option<uuid::Uuid> {
+        match self.receipt {
+            Some(PreInputReceipt::NoInput(attempt)) => Some(attempt),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn source_arrived(&self) -> bool {
+        matches!(
+            self.reply_loss,
+            ReplyLoss::SourceArrived | ReplyLoss::SettlerClaimed
+        )
+    }
+
+    pub(crate) fn worker_arrived(&self) -> bool {
+        matches!(
+            self.reply_loss,
+            ReplyLoss::FailedReplyArrived | ReplyLoss::SettlerClaimed
+        )
+    }
+
+    pub(crate) fn reply_loss_claimed(&self) -> bool {
+        matches!(self.reply_loss, ReplyLoss::SettlerClaimed)
+    }
+}
+
+#[cfg(test)]
+impl OwnedReplacementContinuation {
+    pub(crate) async fn fixture_pending_source_validation(&self) -> bool {
+        if let Some(control) = &self.fixture {
+            if control.ticket_only.load(Ordering::Acquire) {
+                return self
+                    .fixture_reached(ReplacementFixtureCut::BeforeSourceValidation)
+                    .await;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn install_wake_publication_fixture() -> Arc<WakePublicationFixture> {
+        let fixture = Arc::new(WakePublicationFixture::default());
+        *WAKE_PUBLICATION.lock().unwrap() = Some(fixture.clone());
+        fixture
+    }
+
+    pub(super) fn fixture_refuse_refresh<T>(
+        pty: &Mutex<T>,
+    ) -> Option<std::sync::MutexGuard<'_, T>> {
+        let fixture = WAKE_PUBLICATION.lock().unwrap().clone()?;
+        let remaining = fixture
+            .refuse_refresh
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .ok()?;
+        (remaining == 1).then(|| pty.try_lock().expect("test holds PTY for the real refresh"))
+    }
+
+    pub(super) fn fixture_publication_probe(
+        select: impl FnOnce(&WakePublicationFixture) -> &PublicationProbe,
+    ) {
+        let fixture = WAKE_PUBLICATION.lock().unwrap().clone();
+        if let Some(fixture) = fixture {
+            let probe = select(&fixture).lock().unwrap().take();
+            if let Some(probe) = probe {
+                probe();
+            }
+        }
+    }
+
+    pub(crate) fn fixture_observe_publication(&self) -> WakePublicationObservation {
+        let state = self.owner.state.lock().unwrap();
+        let progress = state.replacement.as_ref().unwrap();
+        WakePublicationObservation {
+            operation: self.owner.operation,
+            binding: progress.binding,
+            publication: state.successful_publication_for(progress.binding, None),
+            terminal: state.replacement_terminal_is_verified(),
+            work_transferred: progress.work_transferred,
+            holds: (
+                progress.create_reservation.is_some(),
+                progress.work_reservation.is_some(),
+            ),
+            work_attempt: match state.effects[LifecycleEffectSlot::WorkTransfer as usize] {
+                OwnedEffectState::Completed { attempt, .. } => Some(attempt),
+                _ => None,
+            },
+            receipt: progress.pre_input.receipt,
+            reply_loss: progress.pre_input.reply_loss,
+        }
+    }
+
+    pub(crate) fn fixture_invalidate_no_input(&self, scenario: &str) {
+        let mut state = self.owner.state.lock().unwrap();
+        let effect = &mut state.effects[LifecycleEffectSlot::WorkTransfer as usize];
+        let OwnedEffectState::Completed { attempt, .. } = *effect else {
+            panic!("fixture reached a real no-input effect");
+        };
+        if scenario == "ambiguous" {
+            *effect = OwnedEffectState::Ambiguous(attempt);
+        } else {
+            let progress = state.replacement.as_mut().unwrap();
+            progress.pre_input.receipt = match scenario {
+                "generic-error" => None,
+                "wrong-attempt" => Some(PreInputReceipt::NoInput(uuid::Uuid::new_v4())),
+                _ => unreachable!(),
+            };
+        }
+    }
+}
 
 #[allow(
     clippy::expect_used,
@@ -495,7 +647,8 @@ impl<C: SelectionContext> SelectionTransaction<C> {
             Result<crate::session::session::SessionInfo, String>,
         >,
     ) {
-        let session_id = request.binding.session_id();
+        let binding = request.binding;
+        let session_id = binding.session_id();
         let owned = request.owned_replacement.clone();
         let result = if owned.is_some() {
             execute_owned_finalize_create(transaction, request).await
@@ -504,22 +657,50 @@ impl<C: SelectionContext> SelectionTransaction<C> {
         };
         match result {
             Some(result) => {
+                #[cfg(test)]
+                if let Some(owned) = owned.as_ref().filter(|_| result.is_ok()) {
+                    let _ = owned
+                        .fixture_reached(ReplacementFixtureCut::AdapterReturned)
+                        .await;
+                }
                 let observed = result.clone();
                 hold.release();
                 drop(hold._create_ticket.take());
-                if let Some(owned) = owned {
+                if let Some(owned) = &owned {
                     if let Ok(mut state) = owned.owner.state.lock() {
                         state.completion = Some(observed);
                         state.publication_observed = true;
                         state.envelope_released = true;
                     }
                     owned.owner.changed.notify_waiters();
+                    #[cfg(test)]
+                    if let Some(control) = owned.fixture.as_ref().filter(|_| result.is_ok()) {
+                        control.record_outcome(
+                            owned,
+                            ReplacementFixtureCut::AdmissionReleased,
+                            Some(ReplacementFixtureOutcome::Finalized),
+                        );
+                        let _ = owned
+                            .fixture_reached(ReplacementFixtureCut::AfterReleaseBeforeSend)
+                            .await;
+                    }
                 }
-                // No await separates recording the attempt from sending.
-                // Only receipt permits the producer to certify work.
-                let sent = response.send(result);
-                if sent.is_err() {
+                if let Err(undelivered) = response.send(result) {
                     log::debug!("[selection] create finalizer caller dropped session={session_id}");
+                    if let (Some(owned), Ok(info)) = (owned, undelivered) {
+                        let claimed = owned.arrive_wake_reply_loss(binding, Some(&info.id));
+                        #[cfg(test)]
+                        if let Some(control) = &owned.fixture {
+                            control.record(&owned, ReplacementFixtureCut::ReceiverLost);
+                        }
+                        if claimed {
+                            if let Some(pty) = transaction.host().pty_optional().cloned() {
+                                owned
+                                    .settle_wake_pre_input(&transaction.manager().await, &pty, true)
+                                    .await;
+                            }
+                        }
+                    }
                 }
             }
             None => {

@@ -243,7 +243,29 @@ pub(super) enum ReplacementCleanupAuthority {
     Unknown,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum PreInputReceipt {
+    NotStarted,
+    NoInput(Uuid),
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) enum ReplyLoss {
+    #[default]
+    Empty,
+    SourceArrived,
+    FailedReplyArrived,
+    SettlerClaimed,
+}
+
+#[derive(Default)]
+pub(super) struct PreInputProgress {
+    pub(super) receipt: Option<PreInputReceipt>,
+    pub(super) reply_loss: ReplyLoss,
+}
+
 pub(super) struct ReplacementProgress {
+    pub(super) pre_input: PreInputProgress,
     pub(super) source_executor: SourceExecutorObservation,
     pub(super) current_previous: crate::session::session::Session,
     pub(super) launch_start_fresh: Option<bool>,
@@ -268,11 +290,6 @@ pub(super) struct ReplacementProgress {
     pub(super) create_reservation: Option<crate::pty::manager::CreateOwnerReservation>,
     pub(super) work_reservation: Option<crate::pty::manager::WorkDeliveryReservation>,
     pub(super) tracker: Option<crate::pty::manager::ResponseCloseState>,
-    #[expect(
-        dead_code,
-        reason = "C20 requires complete inert retained source data; this field grants no replay \
-            authority"
-    )]
     pub(super) accepted_work: OwnedReplacementWork,
     pub(super) cleanup: ReplacementCleanupAuthority,
     pub(super) preparing_started: bool,
@@ -695,6 +712,20 @@ pub(super) struct ReplacementState {
 }
 
 impl ReplacementState {
+    pub(super) fn successful_publication_for(
+        &self,
+        binding: PendingCreateBinding,
+        failed_reply: Option<&str>,
+    ) -> bool {
+        self.publication_observed
+            && self.envelope_released
+            && matches!(self.completion.as_ref(), Some(Ok(info))
+                if info.id == binding.session_id().to_string()
+                && failed_reply.is_none_or(|id| id == info.id)
+                && matches!(&self.effects[LifecycleEffectSlot::Publication as usize],
+                    OwnedEffectState::Completed { outcome: Ok(Some(id)), .. } if *id == info.id))
+    }
+
     pub(super) fn retained_effect_diagnostic(&self) -> String {
         let pending = self
             .effects

@@ -476,6 +476,38 @@ impl OwnedReplacementContinuation {
         self.finish_rollback_terminal().await
     }
 
+    pub(crate) async fn settle_wake_pre_input(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        lost_reply: bool,
+    ) {
+        if !self.wake_pre_input_is_ready(lost_reply) {
+            return;
+        }
+        let permit = acquire_carrier_mutation_permit().await;
+        let verified = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                let Ok(guard) = pty.try_lock() else {
+                    return false;
+                };
+                self.dispose_wake_pre_input(&permit, current, &guard, lost_reply)
+                    .is_some()
+            })
+            .await;
+        if verified {
+            #[cfg(test)]
+            Self::fixture_publication_probe(|fixture| &fixture.after_disposal);
+            self.remove_terminal_owner();
+        }
+    }
+
+    fn remove_terminal_owner(&self) {
+        if let Some(inner) = self.coordinator.upgrade() {
+            SelectionCoordinator { inner }.remove_terminal_entry(&self.owner);
+        }
+    }
+
     async fn finish_rollback_terminal(&self) -> bool {
         let verified = self.owner.state.lock().is_ok_and(|mut state| {
             if state.executor_nonce != self.executor_nonce {
@@ -527,9 +559,7 @@ impl OwnedReplacementContinuation {
             {
                 return verified;
             }
-            if let Some(inner) = self.coordinator.upgrade() {
-                SelectionCoordinator { inner }.remove_terminal_entry(&self.owner);
-            }
+            self.remove_terminal_owner();
         }
         verified
     }
@@ -634,9 +664,7 @@ impl OwnedReplacementContinuation {
             {
                 return verified;
             }
-            if let Some(inner) = self.coordinator.upgrade() {
-                SelectionCoordinator { inner }.remove_terminal_entry(&self.owner);
-            }
+            self.remove_terminal_owner();
         }
         verified
     }
