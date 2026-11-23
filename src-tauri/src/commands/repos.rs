@@ -1,5 +1,5 @@
 //! Tauri commands for repositories: `search_repos` over configured project paths and
-//! `git_remote_url` (#943), which reads `origin` with a 2 s timeout and strips userinfo.
+//! `git_remote_url`, which reads `origin` with a 2 s timeout and strips userinfo.
 //! Holds no state; search and helpers are delegated to `crate::repos` and git calls to
 //! `crate::process::git::read`.
 
@@ -34,12 +34,12 @@ pub async fn search_repos(
     Ok(results)
 }
 
-/// #943 - upper bound for the `git remote get-url` call, mirroring
+/// Upper bound for the `git remote get-url` call, mirroring
 /// the git sweeper's `detect_status_with_timeout` (src-tauri/src/pty/git_watcher.rs).
 /// The context menu must never wait on a stalled git.
 const GIT_REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// #943 - `origin`'s URL for a repo working dir, userinfo stripped, or `None`.
+/// `origin`'s URL for a repo working dir, userinfo stripped, or `None`.
 ///
 /// Every failure mode (path missing, not a work tree root, no `origin`, git not on
 /// PATH, timeout) collapses to `None` on purpose: the caller's only decision is
@@ -60,7 +60,7 @@ pub async fn git_remote_url_inner(path: &str) -> Option<String> {
 }
 
 async fn run_git_remote_get_url(working_dir: &str) -> Option<String> {
-    // #943 - require a work tree ROOT, do not let git discover a repo by walking
+    // Require a work tree ROOT, do not let git discover a repo by walking
     // up. `git remote get-url` climbs to the nearest ancestor `.git`, so a
     // sourcePath that exists but is not a repo (failed clone, deleted `.git`, a
     // plain folder the user configured) would answer with an UNRELATED
@@ -112,7 +112,7 @@ async fn run_git_remote_get_url(working_dir: &str) -> Option<String> {
     }
 }
 
-/// #943 - read-only. `Ok(None)` means "no Browse items"; see `git_remote_url_inner`.
+/// Read-only. `Ok(None)` means "no Browse items"; see `git_remote_url_inner`.
 #[tauri::command]
 pub async fn git_remote_url(path: String) -> Result<Option<String>, String> {
     if path.trim().is_empty() {

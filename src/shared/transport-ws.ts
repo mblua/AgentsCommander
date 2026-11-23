@@ -13,7 +13,7 @@ interface PendingRequest {
   reject: (reason: string) => void;
 }
 
-/** #1942 - mutating selection operations whose completion is owned by the
+/** Mutating selection operations whose completion is owned by the
  *  backend task, not by this transport's 30s convenience timer. A broad
  *  restart can outlive the timer, and dropping the reply locally would
  *  fabricate a timeout for work that is still running. They stay pending until
@@ -241,7 +241,7 @@ export class WsTransport implements Transport {
 
     const callbacks = this.listeners.get("pty_output");
     if (callbacks) {
-      // #1363: the payload is the same flat shape the Tauri window receives,
+      // The payload is the same flat shape the Tauri window receives,
       // minus `sequence` (this transport carries no parser sequence). An
       // unsequenced event is written live with no reconcile, so both
       // transports traverse the one writer in TerminalView.
@@ -294,7 +294,7 @@ export class WsTransport implements Transport {
       });
       this.ws!.send(msg);
 
-      // Timeout after 30s. #1942: the backend-owned mutating operations above
+      // Timeout after 30s. The backend-owned mutating operations above
       // are exempt while the socket remains connected - disconnect still
       // rejects every pending request through rejectAllPending.
       if (!BACKEND_OWNED_COMPLETION_COMMANDS.has(cmd)) {

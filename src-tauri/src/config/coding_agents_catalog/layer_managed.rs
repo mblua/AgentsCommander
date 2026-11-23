@@ -21,7 +21,7 @@ use super::{
 };
 
 // ---------------------------------------------------------------------------
-// #1968 P5 - managed base, local overrides and recoverable migration.
+// Managed base, local overrides and recoverable migration.
 //
 // `agents.json` becomes an AC-managed snapshot (root `managed` marker) of the
 // supported shipped defaults; `<catalog>/agents.local.json` is the user-owned

@@ -1,5 +1,5 @@
 /**
- * #1652 - the renderer half of the IPC black box.
+ * The renderer half of the IPC black box.
  *
  * Records what only the renderer can see - which `invoke()` calls are in
  * flight, whether the JS task loop is still running, whether frames are still
@@ -206,7 +206,7 @@ function buildRecord(now: number): IpcBlackBoxRecord {
 }
 
 /**
- * #2646 - every `window=` value the app creates, plus the legacy detached
+ * Every `window=` value the app creates, plus the legacy detached
  * "terminal" that main.tsx still reads. The URL is untrusted, so any other
  * value (or a missing one) is recorded as "main".
  */

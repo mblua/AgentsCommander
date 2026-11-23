@@ -1,4 +1,4 @@
-//! Tauri commands for the per-room Co-managed opt-in (#2265, epic #2232).
+//! Tauri commands for the per-room Co-managed opt-in.
 //!
 //! Thin wrappers only, by design: the on-disk contract lives in
 //! `config::co_managed` (a leaf outside the 88-member SCC) and the SCC-owned

@@ -1,4 +1,4 @@
-//! #2774 The only disk access for the Hyprland `bindings.lua` managed block (std only).
+//! The only disk access for the Hyprland `bindings.lua` managed block (std only).
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;

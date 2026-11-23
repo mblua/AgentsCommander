@@ -1,4 +1,4 @@
-//! #2374 - the neutral, versioned on-disk snapshot of the remote CI view.
+//! The neutral, versioned on-disk snapshot of the remote CI view.
 //!
 //! The PTY sweeper produces it and the `room activity` CLI reads it, and the
 //! two must agree on the bytes without either depending on the other: the
@@ -45,7 +45,7 @@ pub(crate) enum PersistedCiState {
     Unknown,
 }
 
-/// One repo's published CI view: the state plus the #2473 detail. `run_ids`
+/// One repo's published CI view: the state plus the detail. `run_ids`
 /// and `pull_requests` are meaningful only while `Running`; `unknown_reason`
 /// only while `Unknown` (one of the `ci-query-*` producer codes).
 #[derive(Clone, Debug, PartialEq)]
@@ -77,8 +77,8 @@ struct SnapshotDto {
 struct RepoDto {
     path: String,
     ci_state: PersistedCiState,
-    /// #2473 additive fields: absent in older bytes, omitted when empty so the
-    /// pre-#2473 shape is byte-identical. Schema stays 1.
+    /// Additive fields: absent in older bytes, omitted when empty so the
+    /// earlier shape is byte-identical. Schema stays 1.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     run_ids: Vec<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

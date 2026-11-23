@@ -1,4 +1,4 @@
-//! Agent-turn stamps and the post-restore resume prompt pass (#1682, #1793).
+//! Agent-turn stamps and the post-restore resume prompt pass.
 //! `record_agent_turn_completed` persists `lastAgentMessageAt` and broadcasts it, behind gates.
 //! `run_restart_resume` waits for restored sessions to reach their prompt and injects the
 //! configured resume prompt once each, failing closed after `RESTART_RESUME_DEADLINE`.
@@ -14,7 +14,7 @@ use tauri::AppHandle;
 use tauri::Manager;
 use uuid::Uuid;
 
-/// #1682 - called from the idle callback after `mark_idle`. Persists the stamp
+/// Called from the idle callback after `mark_idle`. Persists the stamp
 /// for an armed session, then announces it on both transports. A no-op when a
 /// control write less than `USER_WRITE_STAMP_WINDOW` old re-opened the busy
 /// period this edge closed, when the user has unsubmitted input less than the
@@ -27,7 +27,7 @@ pub(crate) async fn record_agent_turn_completed<R: tauri::Runtime>(
     id: Uuid,
     control_write_age: Option<std::time::Duration>,
 ) {
-    // #1682 gate 1 - do not stamp when a PTY write we made, and that was not a
+    // Gate 1 - do not stamp when a PTY write we made, and that was not a
     // delivered message, is what re-opened the busy period this edge just
     // closed. `lib.rs` read the age off the idle detector at the edge instant;
     // see this phase's D1a for why it is a parameter and not a `try_state` here.
@@ -41,14 +41,14 @@ pub(crate) async fn record_agent_turn_completed<R: tauri::Runtime>(
         return;
     }
 
-    // #1682 gate 2 - do not stamp while the user has a RECENT half-typed,
+    // Gate 2 - do not stamp while the user has a RECENT half-typed,
     // unsubmitted line in this terminal. The agent CLI's echo of those
     // keystrokes is real PTY output, and `commands/pty.rs:70` marks activity
     // for the keystroke itself before `substantive` is known at `:75`, so both
     // mechanisms would otherwise advance a stamp that is meant to track this
     // agent's own output rather than the person's typing. `pending_nonspace`
-    // (#871) is the repository's existing per-session answer to "is there
-    // unsubmitted content"; the age bound is #1682's, and it is required
+    // is the repository's existing per-session answer to "is there
+    // unsubmitted content"; the age bound is a later addition, and it is required
     // rather than defensive, because outside `pty::input_activity` the only
     // clear is `reset`, reached from a session destroy or restart and from a
     // fresh conversation boundary, and neither reaches an agent driven by
@@ -59,7 +59,7 @@ pub(crate) async fn record_agent_turn_completed<R: tauri::Runtime>(
     // `try_state` fail-open PATTERN as `classify_substantive` in
     // `commands/pty.rs`, with the value that lets THIS function's
     // primary action proceed. The two values are opposite on purpose:
-    // `classify_substantive` fails open to `true` to preserve #871's
+    // `classify_substantive` fails open to `true` to preserve the prior
     // clear contract, this gate to `false` so the stamp still lands.
     //
     // Bound to a `bool` in its own scope so the `std::sync::Mutex` guard is
@@ -79,12 +79,12 @@ pub(crate) async fn record_agent_turn_completed<R: tauri::Runtime>(
         return;
     }
 
-    // #1682 gate 3 - armed, known, and carrying a coding agent.
+    // Gate 3 - armed, known, and carrying a coding agent.
     let Some((cwd, _agent_id)) = mgr.agent_stamp_target(id).await else {
         return;
     };
 
-    // #1682 gate 4 - the monotonic write reports whether it actually landed.
+    // Gate 4 - the monotonic write reports whether it actually landed.
     let at = chrono::Utc::now().to_rfc3339();
     match agent_config::set_last_agent_message_at(&cwd, &at) {
         Ok(true) => {}
@@ -102,8 +102,8 @@ pub(crate) async fn record_agent_turn_completed<R: tauri::Runtime>(
     );
 }
 
-/// (#1793) Settle before the first readiness poll. NOT a readiness guard: the
-/// idle detector SEEDS `activity` at PTY spawn (#260), so `waiting_for_input`
+/// Settle before the first readiness poll. NOT a readiness guard: the
+/// idle detector SEEDS `activity` at PTY spawn, so `waiting_for_input`
 /// reaches `true` for a session that has printed nothing, and waiting longer
 /// makes that more likely, not less. What makes readiness mean "the agent
 /// painted its prompt and then went quiet" is the second conjunct,
@@ -115,10 +115,10 @@ pub(crate) async fn record_agent_turn_completed<R: tauri::Runtime>(
 /// The value is engineering judgement.
 pub(crate) const RESTART_RESUME_SETTLE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// (#1793) Poll cadence, matching the idle detector's own tick.
+/// Poll cadence, matching the idle detector's own tick.
 pub(crate) const RESTART_RESUME_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// (#1793) Budget after the settle. A target that never reaches its prompt in
+/// Budget after the settle. A target that never reaches its prompt in
 /// this window gets NOTHING: fails closed on purpose, diverging from
 /// `loops::delivery::wait_for_session_idle`, which waits 90 s and fails OPEN.
 /// The direction is forced by the feature; the 300 s is engineering judgement
@@ -126,7 +126,7 @@ pub(crate) const RESTART_RESUME_POLL: std::time::Duration = std::time::Duration:
 /// risk of nudging an agent the user has already picked up by hand.
 pub(crate) const RESTART_RESUME_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// (#1793) One agent the pass will nudge. Built inside the restore loop, where
+/// One agent the pass will nudge. Built inside the restore loop, where
 /// the persisted row and its new session id are both in hand, so no correlation
 /// key is needed. `working_directory` is for log lines only.
 #[derive(Debug, Clone)]
@@ -144,7 +144,7 @@ pub(crate) struct RestartResumeTarget {
     pub collected_at: std::time::Instant,
 }
 
-/// (#1793) Pure: the exact text a restored row earns at restart, or `None`.
+/// Pure: the exact text a restored row earns at restart, or `None`.
 pub(crate) fn restart_resume_prompt_for(
     settings: &AppSettings,
     is_coordinator: bool,
@@ -166,10 +166,10 @@ pub(crate) fn restart_resume_prompt_for(
     }
 }
 
-/// (#1793) Pure: the FIRST readiness conjunct. The session must still exist,
+/// Pure: the FIRST readiness conjunct. The session must still exist,
 /// must not have exited, and must be parked at its prompt. On its own this is
 /// NOT enough: `waiting_for_input` is also true for a session that has printed
-/// nothing since spawn (#260 seeds the activity clock). The second conjunct is
+/// nothing since spawn (spawn seeds the activity clock). The second conjunct is
 /// applied by `partition_restart_resume_ready`.
 pub(crate) fn restart_resume_session_is_ready(session: Option<&SessionInfo>) -> bool {
     match session {
@@ -180,7 +180,7 @@ pub(crate) fn restart_resume_session_is_ready(session: Option<&SessionInfo>) -> 
     }
 }
 
-/// (#1793) Pure: split the working set into the targets that stay and the
+/// Pure: split the working set into the targets that stay and the
 /// targets that may be written to NOW. Both readiness conjuncts are applied
 /// here. Every input target is returned in EXACTLY ONE of the two vectors, and
 /// the caller assigns `remaining` back over its working set, so selection and
@@ -204,7 +204,7 @@ pub(crate) fn partition_restart_resume_ready(
     (remaining, ready)
 }
 
-/// (#1793) Spawned once per app start from the restore tail in `lib.rs`, after
+/// Spawned once per app start from the restore tail in `lib.rs`, after
 /// the idle observer is running, with the targets the restore loop collected.
 /// Sequential by construction: at most one PTY write is in flight, so a fleet
 /// restart cannot produce a write storm.
@@ -256,7 +256,7 @@ pub(crate) async fn run_restart_resume(app: &AppHandle, mut targets: Vec<Restart
     );
 }
 
-/// (#1793) One injection. Root, exited, agentless and plain-shell rejection, the
+/// One injection. Root, exited, agentless and plain-shell rejection, the
 /// write permit, the menu guard, the two staggered Enters and the agent-turn
 /// arming all come from the canonical trusted-notice injector. This adds only
 /// the exact-text validation that injector leaves to its callers.

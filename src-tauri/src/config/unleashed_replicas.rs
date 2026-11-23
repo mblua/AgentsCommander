@@ -3,7 +3,7 @@
 //! `is_unleashed`, sets flags with `set_unleashed`, and drops them with `forget_under`.
 //! Unreadable content reads as empty and is never rewritten on read.
 
-// #4752 P02: Unleash flag store for replicas and temp rooms (#4780). This module is the
+// P02: Unleash flag store for replicas and temp rooms. This module is the
 // sole owner of `unleashed-replicas.json` in the app config directory. An unleashed
 // replica spawns without the Git brakes; the flag persists until the user turns it off (D3).
 use std::path::{Path, PathBuf};
@@ -154,7 +154,7 @@ pub(crate) fn set_unleashed(replica_root: &str, unleashed: bool) -> Result<(), S
     set_unleashed_in(&path, replica_root, unleashed)
 }
 
-// #4752 P07: removes every key at or under `root` from `path`; returns how many. A
+// P07: removes every key at or under `root` from `path`; returns how many. A
 // missing store stays absent. No replica-shape check (a room dir is a valid root).
 pub(crate) fn forget_under_in(path: &Path, root: &str) -> Result<usize, String> {
     let key = replica_key(root);
@@ -196,7 +196,7 @@ pub(crate) fn forget_under_in(path: &Path, root: &str) -> Result<usize, String> 
     Ok(removed)
 }
 
-// #4752 P07: drops the flags under a deleted room or replica. Never fails the delete.
+// P07: drops the flags under a deleted room or replica. Never fails the delete.
 pub(crate) fn forget_under(root: &Path) {
     let Some(store) = store_path() else {
         return;

@@ -1431,7 +1431,7 @@ P0-identifier	src-tauri/src/commands/entity_creation/team_create.rs	pub async fn
 P1-comment	src-tauri/src/commands/entity_creation/team_create.rs	// Ensure gitignore protects workgroup clones from parent repo operations
 P1-comment	src-tauri/src/commands/entity_creation/team_create.rs	// Determine next WG number
 P1-comment	src-tauri/src/commands/entity_creation.rs	// TASK.md: every new workgroup starts with an explicit task title.
-P1-comment	src-tauri/src/commands/entity_creation/team_delete.rs	/// Committed-intent outcome of a team delete's workgroup cascade (#1063).
+P1-comment	src-tauri/src/commands/entity_creation/team_delete.rs	/// Committed-intent outcome of a team delete's workgroup cascade.
 P1-comment	src-tauri/src/commands/entity_creation/team_delete.rs	/// Workgroup names whose directory was removed or was already absent at the
 P0-identifier	src-tauri/src/commands/entity_creation.rs	removed_workgroups: Vec<String>,
 P1-comment	src-tauri/src/commands/entity_creation/team_delete.rs	/// Workgroup names whose removal failed and whose original path remains: rows
@@ -1722,7 +1722,7 @@ P0-identifier	src-tauri/src/commands/task.rs	workgroup_root: strip_unc(&wg_root)
 P1-comment	src-tauri/src/commands/task.rs	/// Clear the workgroup TASK.md for the given session to the canonical Clean state.
 P1-comment	src-tauri/src/commands/task.rs	/// AND emits `workgroup_task_updated` for sibling sessions/windows.
 P1-comment	src-tauri/src/commands/task.rs	/// Clear the workgroup TASK.md addressed directly by its `wg-*` root path, for
-P1-comment	src-tauri/src/commands/task.rs	/// cold workgroups with no live/exited session to resolve from (#545). Mirrors
+P1-comment	src-tauri/src/commands/task.rs	/// cold workgroups with no live/exited session to resolve from. Mirrors
 P0-identifier	src-tauri/src/commands/task.rs	workgroup_root: String,
 P0-identifier	src-tauri/src/commands/task.rs	let wg_root = validate_wg_root(&workgroup_root, &project_paths)?;
 P4-log	src-tauri/src/commands/task.rs	log::info!("[task] clean_at for {} -> {:?}", workgroup_root, outcome);
@@ -3104,7 +3104,7 @@ P0-identifier	src-tauri/src/commands/entity_creation/workgroup.rs	.map_err(|_| f
 P0-identifier	src-tauri/src/commands/entity_creation/team_delete.rs	/// Scan `base` for the present `room-N-<team>` and legacy `wg-N-<team>`	section 5.13 compatibility statement: it must name what the product still ACCEPTS
 P1-comment	src-tauri/src/commands/entity_creation.rs	// from an index. The literal 3 was "wg-".len(); "room-".len() is 5,	Rule P1 comment describing the legacy prefix the change still accepts
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup_delete.rs	validate_existing_name(&workgroup_name, "Room")?;	introduced by this change and names the legacy prefix deliberately
-P0-identifier	src-tauri/src/commands/entity_creation/room_number.rs	/// #1614: legacy `wg-*` directories are deliberately NOT counted, because the	section 5.13 compatibility statement: it must name what the product still ACCEPTS
+P0-identifier	src-tauri/src/commands/entity_creation/room_number.rs	/// Legacy `wg-*` directories are deliberately NOT counted, because the	section 5.13 compatibility statement: it must name what the product still ACCEPTS
 P0-identifier	src-tauri/src/commands/entity_creation/room_number.rs	/// Room and legacy Workgroup slot namespaces are independent; in a root that	section 5.13 compatibility statement: it must name what the product still ACCEPTS
 P1-comment	src-tauri/src/commands/entity_creation/room_number.rs	/// already holds `wg-1-{team}` the next Room is `room-1-{team}`.	Rule P1 comment describing the legacy prefix the change still accepts
 P0-identifier	src-tauri/src/commands/entity_creation/tests/workgroup_delete.rs	/// the `room-` and the legacy `wg-` prefix.	section 5.13 compatibility statement: it must name what the product still ACCEPTS
@@ -3124,7 +3124,7 @@ P0-identifier	src-tauri/src/commands/task.rs	return Err(format!("room root is no
 P0-identifier	src-tauri/src/commands/task.rs	"room root is not a `room-*` or legacy `wg-*` Room directory: {}",	section 5.3 canonical dual-acceptance phrase; it must name both prefixes
 P0-identifier	src-tauri/src/config/coding_agent_profiles/paths.rs	"Room replica '{}' is not inside a `room-*` or legacy `wg-*` Room directory",	section 5.3 canonical dual-acceptance phrase; it must name both prefixes
 P0-identifier	src-tauri/src/config/entity_prefix.rs	//! On-disk prefix of a Room directory, and of the legacy Workgroup directory	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
-P0-identifier	src-tauri/src/config/entity_prefix.rs	/// Prefix of a legacy Workgroup directory. Never produced again (#1614); still	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
+P0-identifier	src-tauri/src/config/entity_prefix.rs	/// Prefix of a legacy Workgroup directory. Never produced again; still	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
 P0-identifier	src-tauri/src/config/entity_prefix.rs	pub const LEGACY_WORKGROUP_DIR_PREFIX: &str = "wg-";	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
 P0-identifier	src-tauri/src/config/entity_prefix.rs	} else if name.starts_with(LEGACY_WORKGROUP_DIR_PREFIX) {	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it
 P0-identifier	src-tauri/src/config/entity_prefix.rs	Some(LEGACY_WORKGROUP_DIR_PREFIX)	D1/D2 dual-prefix helper: it must NAME the legacy prefix to accept it

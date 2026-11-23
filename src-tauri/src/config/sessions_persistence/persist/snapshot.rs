@@ -141,7 +141,7 @@ pub(in super::super) fn deduplicate_preserving_affected(
 }
 
 fn strip_claude_tokens(tokens: &mut Vec<String>, start: usize) {
-    // #260: Claude's resume flag from the CodingAgentProfile. resume_tokens
+    // Claude's resume flag from the CodingAgentProfile. resume_tokens
     // is a 1-element const for Claude, so [0] is provably in bounds.
     let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
     let mut idx = start;
@@ -150,7 +150,7 @@ fn strip_claude_tokens(tokens: &mut Vec<String>, start: usize) {
             tokens.remove(idx);
             continue;
         }
-        // (#756) Rider belt: strip the launcher-minted identity so it can
+        // Rider belt: strip the launcher-minted identity so it can
         // never self-perpetuate; a replayed stale --session-id hard-fails
         // the spawn (transcript collision), unlike a stale --continue.
         // UUID-gated: only the AC-injected `--session-id <v4>` shape is
@@ -177,7 +177,7 @@ fn strip_claude_tokens(tokens: &mut Vec<String>, start: usize) {
 }
 
 fn strip_codex_tokens(tokens: &mut Vec<String>, start: usize) {
-    // #260 — resume tokens from the CodingAgentProfile. G6: slice-pattern
+    // Resume tokens from the CodingAgentProfile. G6: slice-pattern
     // destructure, never index; a wrong-arity slice no-ops gracefully.
     let &[resume_subcmd, resume_flag] = CodingAgentKind::Codex.profile().resume_tokens else {
         debug_assert!(false, "Codex resume_tokens must have exactly 2 elements");
@@ -196,7 +196,7 @@ fn strip_codex_tokens(tokens: &mut Vec<String>, start: usize) {
 }
 
 fn strip_antigravity_tokens(tokens: &mut Vec<String>, start: usize) {
-    // #260/#1482 — resume token from the CodingAgentProfile. Only the
+    // Resume token from the CodingAgentProfile. Only the
     // AC-injected `--continue` is stripped; `-c` and `--conversation <ID>`
     // are user-authored resume forms and are preserved. resume_tokens is a
     // 1-element const for Antigravity, so [0] is provably in bounds.
@@ -224,11 +224,11 @@ fn strip_antigravity_tokens(tokens: &mut Vec<String>, start: usize) {
 /// - **cmd.exe wrapper**: tokens may be separate args (`["/C", "codex", "resume", "--last"]`)
 ///   or embedded in a single arg string (`["/K", "git pull && codex resume --last"]`)
 pub(crate) fn strip_auto_injected_args(shell: &str, args: &[String]) -> Vec<String> {
-    // #260 — consult the single detector (session/profile.rs) instead of
+    // Consult the single detector (session/profile.rs) instead of
     // re-deriving agent identity here. Guarantees this stripper agrees with
     // the `agent_kind` that `create_session_inner` stamped on the session.
     let (is_claude, is_codex, is_antigravity) = match CodingAgentKind::detect(shell, args) {
-        // #1873 - Muse takes Pi's preserve path: `resume --last` in a persisted
+        // Muse takes Pi's preserve path: `resume --last` in a persisted
         // recipe is user-authored (AC tokens live only in the effective vector).
         Some(CodingAgentKind::Pi | CodingAgentKind::Muse) => return args.to_vec(),
         Some(CodingAgentKind::Claude) => (true, false, false),
@@ -371,7 +371,7 @@ fn strip_direct_injected_args(
         if is_claude && a.eq_ignore_ascii_case("--continue") {
             continue;
         }
-        // (#756) Rider belt, direct-exec form: strip the launcher-minted
+        // Rider belt, direct-exec form: strip the launcher-minted
         // `--session-id <v4>` pair / `--session-id=<v4>` joined token.
         // UUID-gated so user-authored non-UUID values are preserved.
         if is_claude {
@@ -403,7 +403,7 @@ fn strip_direct_injected_args(
 /// would make `list-sessions` (which filters on `id.is_some()`) report the
 /// session as alive when it is not. See §224.
 ///
-/// `communication` is deliberately PRESERVED (#747): a raised hand is durable
+/// `communication` is deliberately PRESERVED: a raised hand is durable
 /// intent, not prior-run runtime state, so a transiently failed restore keeps
 /// it for the next startup attempt. `list-sessions` still reports
 /// `raisedHand: false` for these rows because `id` and `status` are stripped

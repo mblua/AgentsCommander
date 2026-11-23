@@ -1,4 +1,4 @@
-//! Temp-room IPC (#4779): list, create and delete `temp-room-trNN` folders in the
+//! Temp-room IPC: list, create and delete `temp-room-trNN` folders in the
 //! app config dir. The seams take the base dir explicitly; the commands only
 //! resolve `config_dir()` and delegate.
 
@@ -45,7 +45,7 @@ fn unleash_store(base: &Path) -> PathBuf {
     base.join(crate::config::instance_artifacts::UNLEASHED_REPLICAS_FILE_NAME)
 }
 
-// #4805 - the room's TASK.md title; a read error is logged and shows no title.
+// The room's TASK.md title; a read error is logged and shows no title.
 fn task_title_of(dir: &Path) -> Option<String> {
     crate::cli::task_ops::read_title(dir).unwrap_or_else(|e| {
         log::warn!(

@@ -12,7 +12,7 @@ pub(crate) fn append_catalog_defaults(
     os_token: Option<&str>,
     candidates: &mut Vec<ConfigSeedCandidate>,
 ) {
-    // #769 P2 + #1318: append the absent-only, non-empty CatalogDefault
+    // Append the absent-only, non-empty CatalogDefault
     // tier LAST (lowest precedence). Pure path math here;
     // perform_config_seed gates it on absent-dest + non-empty master,
     // so it never overwrites an existing replica config. The master
@@ -27,7 +27,7 @@ pub(crate) fn append_catalog_defaults(
         .cloned()
         .or_else(crate::config::config_dir);
     if let Some(master_root) = master_root {
-        // #2162: the OS variant of the master precedes the base one,
+        // The OS variant of the master precedes the base one,
         // inside the same (absent-only, non-empty-gated) tier.
         if let Some(os) = os_token {
             candidates.push(crate::config::config_seed::ConfigSeedCandidate {

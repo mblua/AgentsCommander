@@ -4,11 +4,11 @@
 //! These leaf writers take no lock; callers hold the Loop lock from `lock`.
 //! Raw file operations live in `crate::filesystem::loop_files`.
 
-use super::lock::loop_write_pause_hook;
-use super::{
+use super::model::{
     validate_loop_id, LoopAuditEntry, LoopConfigToml, LoopState, LOOP_AUDIT_FILE, LOOP_CONFIG_FILE,
     LOOP_DIR_PREFIX, LOOP_STATE_FILE,
 };
+use super::pause_hook::loop_write_pause_hook;
 use crate::config::naming_migration;
 use crate::filesystem::loop_files;
 #[cfg(test)]

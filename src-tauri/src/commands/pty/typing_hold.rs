@@ -1,4 +1,4 @@
-//! Typing-hold glue (#2336): records qualifying keystrokes and answers whether a peer wake
+//! Typing-hold glue: records qualifying keystrokes and answers whether a peer wake
 //! must wait because the user is typing.
 //! Reads the hold window from settings on each check and tracks held wake message IDs, also
 //! publishing hold changes to the response close-hold publisher.
@@ -44,7 +44,7 @@ pub(super) fn record_typing_hold_keystroke<R: tauri::Runtime>(
     }
 }
 
-/// #2336 - the live natural-hold window. Read from settings on every evaluation
+/// The live natural-hold window. Read from settings on every evaluation
 /// so an edit takes effect without a restart; clamped because the Settings API
 /// rejects out-of-range values but a hand-edited settings.json still loads.
 pub(super) async fn typing_hold_window<R: tauri::Runtime>(
@@ -65,7 +65,7 @@ pub(super) async fn typing_hold_window<R: tauri::Runtime>(
     Ok(Duration::from_secs(u64::from(seconds)))
 }
 
-/// #2336 - pure in-memory padlock snapshot for one session. An absent state or
+/// Pure in-memory padlock snapshot for one session. An absent state or
 /// session reads as open with no held ids; no lock is held across an await.
 pub(super) fn typing_hold_snapshot<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -95,7 +95,7 @@ pub(super) fn typing_hold_snapshot<R: tauri::Runtime>(
     }
 }
 
-/// #2336 - evaluated inside `pty::inject` at the serialized write boundary of a
+/// Evaluated inside `pty::inject` at the serialized write boundary of a
 /// peer wake. Read-only, so evaluating it never consumes the hold.
 pub(crate) async fn typing_hold_defers_injection<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -111,7 +111,7 @@ pub(crate) async fn typing_hold_defers_injection<R: tauri::Runtime>(
     typing_hold_snapshot(app, session_id, window).closed
 }
 
-/// #2336 - count a peer wake message ID as deferred, once (the set dedupes, so
+/// Count a peer wake message ID as deferred, once (the set dedupes, so
 /// a retried poll of the same message never increases the count).
 pub(crate) fn note_held_wake<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -129,7 +129,7 @@ pub(crate) fn note_held_wake<R: tauri::Runtime>(
     }
 }
 
-/// #2336 - drop a held message ID after an observed delivery.
+/// Drop a held message ID after an observed delivery.
 pub(crate) fn clear_held_wake<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,

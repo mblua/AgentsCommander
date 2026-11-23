@@ -65,7 +65,7 @@ pub(crate) fn resolve_launch_auto_self_clear(
     crate::config::settings::resolve_auto_self_clear(settings, &agent_name, class_default_on)
 }
 
-/// #592 - true when a session's loaded profile cell no longer matches what a
+/// True when a session's loaded profile cell no longer matches what a
 /// Reload would load right now. Mirrors the restart-time resolution so the
 /// "configured" side equals `restart_session`'s effective cell. Hashes RAW
 /// cells (cell-only); swallows all "cannot determine" cases to false (never
@@ -75,7 +75,7 @@ pub(crate) fn compute_profile_outdated(settings: &AppSettings, info: &SessionInf
         return false;
     }
     let cwd = info.working_directory.as_str();
-    // #2434 - the SAME selection a Reload would launch: the matched agent, its
+    // The SAME selection a Reload would launch: the matched agent, its
     // letter and its authority. `NoAgent` and `Unresolved` raise no badge (a
     // badge whose click restarts a session that cannot start is a trap).
     let requested = effective_restart_requested_profile(None, info.requested_profile.clone());
@@ -108,7 +108,7 @@ pub(crate) fn compute_profile_outdated(settings: &AppSettings, info: &SessionInf
     let Some(agent) = settings.agents.iter().find(|a| a.id == agent_id) else {
         return false;
     };
-    // #2431 - the one definition of a cell digest, as the spawn stamps it.
+    // The one definition of a cell digest, as the spawn stamps it.
     let configured = crate::config::agent_command::cell_identity(agent, &resolution.cell);
     // Loaded hash: in-memory stamp, else the persisted replica copy (survives an
     // AC restart that cleared the in-memory stamp).

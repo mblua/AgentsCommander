@@ -1,4 +1,4 @@
-//! #1172 - rotate an origin Agent Matrix's `memory/` to a timestamped archive under
+//! Rotate an origin Agent Matrix's `memory/` to a timestamped archive under
 //! `memory-archive/` at session spawn, so a fresh agent starts with a clean write
 //! target and the
 //! previous session's memory is preserved rather than deleted.
@@ -13,7 +13,7 @@ const MEMORY_DIR_NAME: &str = "memory";
 
 /// Deliberate independent twin of `phone::mailbox::ARCHIVE_TIMESTAMP_FORMAT`
 /// (`mailbox.rs:848`), per D3. That constant is part of the `self-clear/`
-/// naming contract the #749 resume prompt and the CLI help expose to agents.
+/// naming contract the resume prompt and the CLI help expose to agents.
 /// The two must stay free to diverge, so the literal is duplicated instead of
 /// exported from `phone` into `config`.
 const MEMORY_ROTATION_TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S";

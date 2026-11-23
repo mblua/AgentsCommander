@@ -14,7 +14,7 @@ pub(crate) fn write_created_role(root: &Path, bytes: &[u8]) -> Result<PathBuf, S
 /// Build the Role.md body written by `create_agent_matrix`. Kept as a separate
 /// pure helper so the legacy (no-template) format can be unit-tested without
 /// touching the Tauri command surface. `template` is the resolved template; when
-/// `None`, output is byte-identical to the pre-#271 inline `format!`.
+/// `None`, output is byte-identical to the earlier inline `format!`.
 ///
 /// When a template is supplied, its body is inserted as a `## Role Profile`
 /// section between the title/description and the mandatory `## Source of Truth`

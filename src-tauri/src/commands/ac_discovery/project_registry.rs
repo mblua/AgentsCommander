@@ -13,7 +13,7 @@ use crate::config::settings::{
 use std::path::Path;
 use tauri::{Manager, State};
 
-// ── #191 — shared open/new project commands ──────────────────────────────
+// ── Shared open/new project commands ──────────────────────────────
 
 pub(crate) async fn mutate_project_paths_with_settings_path<T: Send + 'static>(
     settings: &SettingsState,
@@ -138,7 +138,7 @@ pub(crate) async fn open_project_inner_with_event_and_settings_path<R: tauri::Ru
             None,
         );
     }
-    // #1318 - a first open of an unseeded project seeds the catalog + masters
+    // A first open of an unseeded project seeds the catalog + masters
     // immediately (no restart needed). The gate acquire (kernel lock, up to
     // DEFAULT_LOCK_TIMEOUT 10s polling) must run on a blocking thread, never on
     // the async executor, hence run_blocking_owned. Fail-soft: any error is

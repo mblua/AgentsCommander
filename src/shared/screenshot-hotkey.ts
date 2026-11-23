@@ -1,4 +1,4 @@
-// #714 Lightweight frontend pre-validation of the screenshot-capture hotkey.
+// Lightweight frontend pre-validation of the screenshot-capture hotkey.
 //
 // This MIRRORS the backend MVP parser (`crate::screenshot::parse_screenshot_hotkey`):
 // exactly one Ctrl/Control modifier plus one alphanumeric key. The backend stays

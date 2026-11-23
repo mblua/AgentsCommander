@@ -90,7 +90,7 @@ pub(crate) async fn discover_replica(
             fqn='{project_folder}:{dir_name}/{replica_name}' is_coordinator={is_coordinator}"
     );
 
-    // #552 look up this coordinator's persisted clocks by FQN
+    // Look up this coordinator's persisted clocks by FQN
     // (same shape as agent_fqn_from_path: <project>:<wg>/<agent>).
     let fqn = format!("{project_folder}:{dir_name}/{replica_name}");
     let clock_entry = if is_coordinator {
@@ -98,7 +98,7 @@ pub(crate) async fn discover_replica(
     } else {
         None
     };
-    // (#580) the badge field carries the unified idle
+    // The badge field carries the unified idle
     // anchor max(user, activity) (rename deferred,
     // Decision C) so a dormant/just-loaded row shows the
     // real accumulated idle (closed time included), not
@@ -113,7 +113,7 @@ pub(crate) async fn discover_replica(
         .and_then(|e| e.manually_closed_at)
         .map(|dt| dt.to_rfc3339());
 
-    // #1941 - strict protection state from the same
+    // Strict protection state from the same
     // validated replica directory; an invalid state is
     // surfaced as `invalid`, never as default false.
     let (saved_pair, selection_state, selection_error) = replica_selection_wire_fields(wg_path);

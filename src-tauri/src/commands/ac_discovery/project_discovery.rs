@@ -59,7 +59,7 @@ pub(crate) async fn discover_project_inner(
     }
 
     let cfg = settings.read().await.clone();
-    // #552 snapshot the persisted badge/auto-closed store once (see discover_ac_agents).
+    // Snapshot the persisted badge/auto-closed store once (see discover_ac_agents).
     let clocks_snapshot: std::collections::HashMap<
         String,
         crate::config::coordinator_clocks::ClockEntry,
@@ -121,7 +121,7 @@ pub(crate) async fn discover_project_inner(
     // Recompute coordinator flags on every live session against the hoisted team
     // snapshot. Spawned (not awaited) so populating the project tree NEVER blocks on
     // `session_mgr` / inner `sessions` lock contention during the boot-concurrent
-    // session restore (#384 empty-tree hang fix). This refresh only emits
+    // session restore (empty-tree hang). This refresh only emits
     // `session_coordinator_changed` for live sessions; it is not needed to build the
     // returned tree (each replica's `is_coordinator` is computed inline above), so
     // moving it off the return path is behavior-preserving for the tree while keeping
@@ -192,7 +192,7 @@ async fn scan_project_context_updates(
         let base = base.to_path_buf();
         let ac_root = ac_root.to_path_buf();
         move || {
-            // #1065 Stage F: production records recognized context updates under the
+            // Production records recognized context updates under the
             // gate; a `#[cfg(test)]` lib build stays non-emitting.
             #[cfg(not(test))]
             let activation =

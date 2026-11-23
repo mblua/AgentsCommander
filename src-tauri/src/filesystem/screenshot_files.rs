@@ -88,7 +88,7 @@ pub(crate) fn validate_saved_screenshot(
     Ok(canonical)
 }
 
-/// #2774 Read the portal's screenshot file: a regular file (no symlink), at most
+/// Read the portal's screenshot file: a regular file (no symlink), at most
 /// `max_bytes`. Never writes or deletes it.
 #[cfg(target_os = "linux")]
 pub(crate) fn read_portal_screenshot(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {

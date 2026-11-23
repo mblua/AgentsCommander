@@ -38,7 +38,7 @@ pub async fn get_resource_snapshot(
         .map_err(|e| e.to_string())
 }
 
-/// #647 A: route the manual RM Kill through the per-agent Job Object (the only
+/// A: route the manual RM Kill through the per-agent Job Object (the only
 /// mechanism that bypasses per-handle `PROCESS_TERMINATE` stripping by an AV/EDR),
 /// then VERIFY the kill via the reaper before tearing the session down.
 ///

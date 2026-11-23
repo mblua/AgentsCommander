@@ -200,7 +200,7 @@ pub(crate) async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
                 ArchiveChangeReason::Unarchive,
                 None,
             );
-            // #1318 - the rollback re-registered the project; seed its catalog
+            // The rollback re-registered the project; seed its catalog
             // now so reads target the project `.ac` without a restart.
             let seed_path = path.clone();
             if let Err(error) = crate::config::seed_manifest::run_blocking_owned(move || {
@@ -267,7 +267,7 @@ pub(crate) async fn unarchive_project_inner<R: tauri::Runtime>(
         ArchiveChangeReason::Unarchive,
         None,
     );
-    // #1318 - unarchive is a re-registration; seed the catalog + masters now so
+    // Unarchive is a re-registration; seed the catalog + masters now so
     // reads target the project `.ac` without a restart (the boot loop covers it
     // at the next boot either way). Fail-soft; gate acquire on a blocking thread.
     if result.registered {
