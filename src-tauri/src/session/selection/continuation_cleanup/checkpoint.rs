@@ -824,3 +824,45 @@ impl OwnedReplacementContinuation {
             .is_some()
     }
 }
+
+impl ReplacementState {
+    fn effects_are_terminal(&self) -> bool {
+        self.effects.iter().all(|effect| {
+            matches!(
+                effect,
+                OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }
+            )
+        })
+    }
+
+    pub(crate) fn replacement_terminal_is_verified(&self) -> bool {
+        if !self.publication_observed || !self.envelope_released || !self.effects_are_terminal() {
+            return false;
+        }
+        let Some(progress) = self.replacement.as_ref() else {
+            return false;
+        };
+        let released = progress.terminal_verified
+            && progress.work_transferred
+            && progress.reservations_released
+            && progress.preparing_released
+            && progress.create_reservation.is_none()
+            && progress.work_reservation.is_none()
+            && matches!(
+                progress.context_prerequisite,
+                None | Some(OwnedEffectState::Completed { .. })
+            );
+        if !released {
+            return false;
+        }
+        match self.stage {
+            ReplacementStage::Completed => {
+                progress.retired && progress.retirement_cleanup_completed
+            }
+            ReplacementStage::RolledBack => {
+                progress.precommit_rollback_verified(matches!(self.completion, Some(Err(_))))
+            }
+            _ => false,
+        }
+    }
+}

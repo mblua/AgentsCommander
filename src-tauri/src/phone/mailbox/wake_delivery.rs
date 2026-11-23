@@ -1,7 +1,5 @@
-//! Wake delivery on `MailboxPoller`: outbox action/mode validation, `deliver_outbox_tail`,
-//! and the wake engine (`deliver_wake`, `deliver_validated_wake`, `deliver_wake_engine`).
-//! Covers peer wakes, cold peer text admission and owned peer replacement, with
-//! snapshot and source-currency checks for replacements.
+//! Validates outbox actions and modes and delivers peer wakes and cold text.
+//! Owns peer replacement wake delivery, including snapshot and source-currency checks.
 
 use super::handoff::resolve_remote_pty_command;
 use super::notice::{
@@ -32,6 +30,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use uuid::Uuid;
+
+#[cfg(test)]
+mod tests;
 
 fn owned_replacement_work(
     msg: &OutboxMessage,
@@ -185,16 +186,12 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         is_app_outbox: bool,
     ) -> OutboxStage {
-        // Action-based dispatch (close-session, etc.) — handled before mode-based delivery
         if let Some(ref action) = msg.action {
             match action.as_str() {
                 "close-session" => {
-                    // §224 G-IMPL-2 — thread `is_app_outbox` so the response-
-                    // write path can skip the outbox-relative primary write
-                    // when the message came from the app-outbox (master-token
-                    // path). That derived path lands under
-                    // <config_dir>/instances/<id>/responses/ which the CLI
-                    // never polls, so writing there leaks orphan JSON files.
+                    // §224 G-IMPL-2: app-outbox replies skip the outbox-relative primary write.
+                    // That master-token path derives <config_dir>/instances/<id>/responses/,
+                    // which the CLI never polls, leaving orphan JSON.
                     return Ok(std::ops::ControlFlow::Break(
                         self.handle_close_session(app, path, msg, is_app_outbox)
                             .await,
@@ -209,14 +206,12 @@ impl MailboxPoller {
             }
         }
 
-        // Deliver based on mode — all modes require immediate delivery or rejection
         let mode = if msg.mode.is_empty() {
             "wake"
         } else {
             msg.mode.as_str()
         };
-        // Only `wake` is supported. Defensive check for malformed outbox files
-        // that might arrive from external (root-token) write paths.
+        // Reject malformed external root-token outbox modes; wake is the only supported mode.
         if mode != "wake" {
             return Ok(std::ops::ControlFlow::Break(
                 self.reject_message(
@@ -264,10 +259,8 @@ impl MailboxPoller {
             .response
             .as_ref()
             .map(ResponseWakeWork::candidate_disposal);
-        // #2232 phase 7: a Co-managed message is delivered inline with its
-        // display attribution; it is never parked for the detached worker pool,
-        // whose shared `deliver_wake` tail carries no attribution and must keep
-        // its exact behaviour for every other origin.
+        // #2232 phase 7: Co-managed wakes deliver inline with display attribution.
+        // Other origins keep the attribution-free shared tail and worker-pool behavior.
         let comanaged = origin == OutboxOrigin::CoManaged;
         if !comanaged {
             if let Some(slot) = deferred_tail {
@@ -298,15 +291,11 @@ impl MailboxPoller {
         }
     }
 
-    /// Deliver mode: wake — inject into the recipient's PTY for any non-Exited
-    /// session; destroy and respawn if Exited; spawn persistent if none. Always
-    /// delivers (no busy-gate — stdin buffer absorbs input while the agent is
-    /// mid-turn).
-    // #791: `pub(crate)` so the in-daemon control-plane API can funnel through
-    // the SAME actuation the poller uses (no fork). The API calls this on a
-    // throwaway `MailboxPoller::new()` (delivery-stateless: this method and its
-    // whole `&self` callee chain read only `app.state::<...>()`, never the
-    // poller's `poll_interval` / `retry_tracker` fields). See plan #791 §0.5 HIGH-1.
+    /// Wake injects into a non-Exited PTY, respawns Exited, or spawns persistent if absent.
+    /// The stdin buffer accepts input while busy, so delivery has no busy gate.
+    // #791 §0.5 HIGH-1: the in-daemon API shares this actuation via a throwaway
+    // MailboxPoller::new(). This delivery-stateless call chain reads app.state,
+    // never the poller's poll_interval or retry_tracker.
     pub(crate) async fn deliver_wake<S: MailboxHost>(
         &self,
         app: &S,
@@ -334,9 +323,8 @@ impl MailboxPoller {
         .await
     }
 
-    /// #2232 phase 7: deliver a wake whose origin is the Co-managed provenance
-    /// queue. `comanaged` is display-only and never part of routing; the
-    /// existing entry points stay attribution-free.
+    /// #2232 phase 7: Co-managed queue attribution affects display only, never routing.
+    /// Existing entry points remain attribution-free.
     async fn deliver_wake_with_attribution<S: MailboxHost>(
         &self,
         app: &S,
@@ -357,11 +345,9 @@ impl MailboxPoller {
         .await
     }
 
-    /// Single private entry for every wake delivery kind. The variant is selected only by
-    /// code: serialized peer messages can enter only `Peer`, while the validated target,
-    /// notice, cancellation, and guard capability are required for `InternalSystem`.
-    /// Returns the annotated `OutboxMessage` for the `Delivered:` receipt; the
-    /// internal-system arm builds its own envelope (it holds no serialized message).
+    /// Single wake entry: serialized messages use Peer. InternalSystem requires the
+    /// validated target, notice, cancellation and guard, and builds its own envelope.
+    /// Returns the annotated outbox message for the Delivered: receipt.
     pub(crate) async fn deliver_validated_wake<S: MailboxHost>(
         &self,
         app: &S,
@@ -417,11 +403,8 @@ impl MailboxPoller {
                 cancellation,
                 guard,
             } => {
-                // The internal-system envelope never carries dispatch flags, so
-                // the fresh unannotated envelope is the correct delivered
-                // message. Built up front because the delivery below moves
-                // `target`; the delivery MUST still run (context alerts,
-                // notices, cancellations, guard).
+                // Build the flag-free receipt before delivery moves the target.
+                // Delivery must still run for context alerts, notices, cancellations and guard.
                 let delivered = internal_system_envelope(&target);
                 self.deliver_internal_system_wake(app, target, notice, cancellation, guard)
                     .await?;
@@ -438,49 +421,39 @@ impl MailboxPoller {
         comanaged: bool,
         response: Option<&ResponseWakeWork>,
     ) -> Result<OutboxMessage, String> {
-        // Parse a hand-authored logical action after process_message's
-        // authorization/routing gates but before any recipient actuation.
+        // Parse the logical action after authorization and routing, before actuation.
         let parsed_remote_command = msg
             .command
             .as_deref()
             .map(parse_remote_pty_command)
             .transpose()?;
 
-        // #1635-2 D5: a wake carries dispatch flags when it names a specific
-        // agent (empty string and `auto` are the no-flag shapes — the API/DB
-        // path writes `preferred_agent: String::new()`) or requests a profile
-        // letter. Flagged wakes suppress the spawn-time config.json writes
-        // (skip_tooling_save) and populate the delivered-receipt annotations.
+        // #1635-2 D5: a specific agent or profile sets flags, except empty/auto agent
+        // values (the API/DB sends an empty agent). Flags skip spawn-time config.json
+        // writes via skip_tooling_save and annotate the delivered receipt.
         let flags_present = (!msg.preferred_agent.is_empty() && msg.preferred_agent != "auto")
             || msg.requested_profile.is_some();
 
-        // #1635-2 D6: a present requestedProfile that is not a single A-Z
-        // letter is a permanent delivery error. The CLI rejects it before
-        // enqueue (1635-1); this defends hand-written outbox JSON.
+        // #1635-2 D6: a present profile outside single A-Z is a permanent error.
+        // The CLI rejects it before enqueue (#1635-1); this guards hand-written JSON.
         if let Some(letter) = msg.requested_profile.as_deref() {
             if crate::config::settings::normalize_profile_letter(letter).is_none() {
                 return Err(ERR_INVALID_DISPATCH_PROFILE.to_string());
             }
         }
 
-        // #4309 - shared PTY text policy before any recipient actuation. A file
-        // notification's text depends on the backend: judged below from the plan.
+        // #4309: check PTY text before actuation; resolve backend-dependent text below.
         if !super::wake_injection::body_depends_on_backend(msg, origin) {
             super::wake_injection::admit_peer_text(msg, &msg.body, origin, comanaged)?;
         }
 
-        // (#885 J2) A purge is destroying this agent's record right now. A wake
-        // delivered into that window falls through to spawn-persistent below and
-        // would cold-spawn the agent we are purging, silently breaking the verb's
-        // postcondition. This is a BACKSTOP, not the primary defense: the DB
-        // dispatcher must skip its tick before leasing (see `api/dispatcher.rs`,
-        // #885 F-5); reaching this Err from there would burn an attempt and can
-        //   POISON the message. The one caller for which this Err is safe:
-        //   - filesystem poller: non-permanent error, retried at the 3s poll
-        //     interval up to MAX_DELIVERY_ATTEMPTS. Deferred, not lost.
-        //   The inline API send that used to map this to a rejected outcome no
-        //   longer exists (#1177), so the DB dispatcher is now the only other
-        //   caller, and it is exactly the one F-5 must keep out of this window.
+        // #885 J2: backstop against cold-spawning an agent while purge destroys its record.
+        // The DB dispatcher must skip the tick before leasing (api/dispatcher.rs, #885 F-5).
+        // Returning this error after a DB lease would burn an attempt and can poison delivery.
+        // The filesystem poller treats it as non-permanent and retries at 3s intervals
+        // up to MAX_DELIVERY_ATTEMPTS, deferring the wake.
+        // #1177 removed inline API send, leaving the DB dispatcher as the only other
+        // caller; its pre-lease guard keeps it outside this window.
         if let Some(g) = app.pty_purge() {
             if g.blocks_agent(&msg.to) {
                 return Err(format!(
@@ -504,8 +477,7 @@ impl MailboxPoller {
                 std::ops::ControlFlow::Break(delivered) => return Ok(delivered),
                 std::ops::ControlFlow::Continue(fallback) => fallback,
             };
-            // #4309 - no live candidate took the wake. Judge the text the spawn below would
-            // write, before any destroy, spawn or replacement.
+            // #4309: validate cold-path text before destroy, spawn or replacement.
             if super::wake_injection::body_depends_on_backend(msg, origin) {
                 self.admit_cold_peer_text(app, msg, (origin, comanaged))
                     .await?;
@@ -923,48 +895,6 @@ impl MailboxPoller {
         })
         .await;
         result
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn fixture_wake_request<S: MailboxHost>(
-        &self,
-        app: &S,
-        msg: &OutboxMessage,
-    ) -> crate::session::create_contracts::OwnedReplacementCreateRequest {
-        let plan = self.resolve_wake_spawn_plan(app, msg).await.unwrap();
-        owned_replacement_request(plan, false).0
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn fixture_probe_once<S: MailboxHost>(
-        &self,
-        app: &S,
-        msg: &OutboxMessage,
-        previous: Uuid,
-    ) {
-        let fixture = OwnedReplacementContinuation::fixture_wake_rollback_state().unwrap();
-        let _resume = fixture.after_probe.arm();
-        let pause = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            fixture.after_probe.entered.notified(),
-        );
-        tokio::select! {
-            reached = pause => reached.expect("competing wake reached its authenticated probe"),
-            _ = self.fixture_probe_owned_wake(app, msg, previous) => panic!("wake missed probe"),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn fixture_probe_owned_wake<S: MailboxHost>(
-        &self,
-        app: &S,
-        msg: &OutboxMessage,
-        previous: Uuid,
-    ) {
-        let request = self.fixture_wake_request(app, msg).await;
-        let _ = self
-            .admit_owned_peer_replacement(app, msg, &request, previous)
-            .await;
     }
 
     fn with_owned_source_validation<S: MailboxHost>(
