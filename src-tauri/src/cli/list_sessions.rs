@@ -54,13 +54,13 @@ fn status_tag(status: &SessionStatus) -> &'static str {
     }
 }
 
-/// #698/#747 - derive the public `raisedHand` boolean from a persisted row.
+/// Derive the public `raisedHand` boolean from a persisted row.
 /// True when the row is a coordinator, has a present status, and carries a
 /// visible `RaiseHand` communication. `Exited` status is deliberately NOT a
-/// disqualifier since #747: a dormant restored coordinator legitimately keeps
+/// disqualifier: a dormant restored coordinator legitimately keeps
 /// its persisted raised hand until real user input clears it. Every real-exit
 /// path clears `communication` in the same critical section (`mark_exited`),
-/// so an exited row with a visible hand can only be the #747 dormant restore.
+/// so an exited row with a visible hand can only be a dormant restore.
 /// Missing status, missing/hidden/non-raise communication, non-coordinator,
 /// and restore-only rows map to false.
 fn raised_hand_from_persisted(s: &PersistedSession) -> bool {
@@ -104,7 +104,7 @@ pub fn execute(args: ListSessionsArgs) -> i32 {
         }
     }
 
-    // Issue #231: detect whether the daemon is running before trusting
+    // Detect whether the daemon is running before trusting
     // sessions.json. Warn on stderr if not — preserve stdout JSON and exit 0.
     //
     // When the caller filters by `--status exited`, the natural expectation is

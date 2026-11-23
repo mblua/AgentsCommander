@@ -1,4 +1,4 @@
-//! Host-only audit log for the control-plane API (#791, §0.5 G8).
+//! Host-only audit log for the control-plane API.
 //!
 //! Appends one line per mint / revoke / authenticated request to
 //! `api-audit.log` in `config_dir()`. The log is capped at 10 MB with a single

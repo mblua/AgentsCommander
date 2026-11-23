@@ -73,7 +73,7 @@ fn format_no_response_error(
 /// crashed mid-handle, response landed at an undeliverable path, still in
 /// flight, or still queued). "Outcome unknown" belongs in the exit-2 class;
 /// exit 0 or a fabricated failure here would re-create the silent-success /
-/// false-timeout surfaces #224 and #1440 were filed to eliminate.
+/// false-timeout surfaces this exit code exists to prevent.
 fn interpret_close_response_exit_code(content: &str) -> i32 {
     let resp: serde_json::Value = match serde_json::from_str(content) {
         Ok(v) => v,
@@ -338,7 +338,7 @@ fn wait_for_close_response(
     // handle_close_session). Pollear el response subsume la vieja espera de
     // "delivery confirmation", cuyo presupuesto fijo de 30s expiraba durante
     // cierres graceful normales de ~30s y reportaba un timeout falso (97.9%
-    // de los graceful, #1440).
+    // de los graceful).
     let delivered_path = crate::phone::types::outbox_delivered_receipt(outbox_dir, msg_id);
     let rejected_reason_path = crate::phone::types::outbox_rejected_reason(outbox_dir, msg_id);
 

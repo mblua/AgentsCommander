@@ -1,4 +1,4 @@
-//! `api-client` host CLI verb (#791 §5.4): mint / revoke / list control-plane
+//! `api-client` host CLI verb: mint / revoke / list control-plane
 //! API client tokens. All subcommands require HOST AUTHORITY (the master or
 //! root token) so a container (which has no master token by construction)
 //! cannot self-mint. Mint binds a token to exactly one replica FQN and rejects

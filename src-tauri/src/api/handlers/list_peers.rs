@@ -1,4 +1,4 @@
-//! `GET /api/v1/peers` (#791 §6.2). Mirrors `list-peers-lean` for the caller's
+//! `GET /api/v1/peers`. Mirrors `list-peers-lean` for the caller's
 //! bound replica; `reachable` is computed from the bound FQN, so a client sees
 //! exactly the peers its identity may reach.
 

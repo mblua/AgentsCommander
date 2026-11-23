@@ -1,4 +1,4 @@
-//! The one-candidate-per-session slot (#2232 phase 3).
+//! The one-candidate-per-session slot.
 //!
 //! The slot holds **the last record received** and nothing else: no
 //! concatenation, no window, no accumulator. Phase 5 assembles a multi-record
