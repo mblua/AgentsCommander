@@ -52,7 +52,7 @@ pub(crate) fn sender_name_for_session_cwd(working_directory: &str) -> String {
     sender_name_for_session_cwd_with_root_flag(working_directory, is_root_agent)
 }
 
-/// #881: session working dirs minus those under an archived project.
+/// Session working dirs minus those under an archived project.
 ///
 /// Subtractive on purpose: root-agent and ad-hoc CWD sessions outside every
 /// project path must still be scanned.
@@ -79,7 +79,7 @@ pub(crate) enum WakeDeliveryOrigin {
     DbQueue,
 }
 
-/// Where a scanned message file was found (#2232 phase 7).
+/// Where a scanned message file was found (phase 7).
 ///
 /// Attribution is **by directory**, decided once per sweep: the mailbox routes
 /// and authorizes a message from this value and never from a path comparison at
@@ -378,7 +378,7 @@ impl InternalSystemNotice {
         }
     }
 
-    /// #1157 - the wording now lives in the operator-editable injected-message
+    /// The wording now lives in the operator-editable injected-message
     /// registry. This function keeps its signature and its threshold formatting;
     /// the only embedded copy of the text is `DEFAULT_CONTEXT_ALERT_TEMPLATE`.
     #[allow(
@@ -484,7 +484,7 @@ pub(crate) enum WakeContent<'a> {
         from: &'a str,
         body: &'a str,
         origin: WakeDeliveryOrigin,
-        /// #2232 phase 7: true only for a message the Co-managed supervisor
+        /// Phase 7: true only for a message the Co-managed supervisor
         /// wrote into the provenance queue. Display-only; `from` stays the
         /// exact FQN and is the credential.
         comanaged: bool,
@@ -708,7 +708,7 @@ pub(crate) struct ResolvedWakeSpawnPlan {
     pub(crate) spawn_args: Vec<String>,
     pub(crate) spawn_label: Option<String>,
     pub(crate) configured_spawn: Option<crate::config::agent_command::AgentSpawnCommand>,
-    /// #1271 - the configured host shell paired with the resolved agent, built
+    /// The configured host shell paired with the resolved agent, built
     /// from the same settings guard that produced the spawn.
     pub(crate) resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
 }
@@ -895,7 +895,7 @@ pub(crate) fn validate_root_sender_payload_with_root_dir(
 /// the mailbox can resolve qualified WG-peer FQNs against the same root-walk-up
 /// source the sending CLI used (and the same source `list_peers::detect_wg_replica`
 /// uses to report siblings as `reachable: true`). In-memory only — settings.json
-/// is NOT mutated. See #228 D1-a.
+/// is NOT mutated.
 ///
 /// The path layout is fixed by `MailboxPoller::poll` which constructs outbox
 /// paths as `Path::new(<all_paths-entry>).join(agent_local_dir_name()).join("outbox")`.
@@ -907,7 +907,7 @@ pub(crate) fn validate_root_sender_payload_with_root_dir(
 /// `__agent_* -> wg-* -> <workspace> -> <project>` walk-up is delegated to
 /// `config::ac_root::wg_replica_layout_from_agent_dir` (single source with
 /// `cli::send::project::derive_root_project_dir` and `list_peers::detect_wg_replica`,
-/// see #726); only the outbox-specific `<file>.json -> outbox -> <local-dir>`
+/// see the related change); only the outbox-specific `<file>.json -> outbox -> <local-dir>`
 /// prefix to reach the `__agent_*` dir stays here.
 pub(crate) fn derive_project_from_outbox_path(
     outbox_file: &Path,
@@ -953,13 +953,13 @@ pub(crate) const ERR_UNSUPPORTED_LOGICAL_REMOTE_COMMAND: &str =
 pub(crate) const ERR_UNMAPPED_LOGICAL_REMOTE_COMMAND: &str =
     "Cannot execute logical remote command";
 
-/// #1635-2 D6: a present `requestedProfile` that fails A-Z normalization is a
+/// A present `requestedProfile` that fails A-Z normalization is a
 /// permanent delivery error. The CLI already rejects it before enqueue
 /// (1635-1); this defends hand-written outbox JSON.
 pub(crate) const ERR_INVALID_DISPATCH_PROFILE: &str =
     "send: requestedProfile must be a single letter A through Z";
 
-/// #4309 - permanent marker: the shared PTY text policy rejected peer wake text.
+/// Permanent marker: the shared PTY text policy rejected peer wake text.
 pub(crate) const ERR_INVALID_PEER_TEXT: &str = "invalid_peer_text";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

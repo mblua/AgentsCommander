@@ -17,7 +17,7 @@ use crate::session::session::SessionStatus;
 use std::io::Read;
 use uuid::Uuid;
 
-/// (#1001 PR2 / B, grinch P1) Pure per-tick decision for the LIVE-inject settle,
+/// (PR2 / B, grinch P1) Pure per-tick decision for the LIVE-inject settle,
 /// sourced ENTIRELY from the real-time `activity_age` snapshot - never the lagged
 /// `SessionManager.waiting_for_input`, which the watcher flips idle up to ~500ms
 /// after `activity_age` crosses `idle_threshold` (watcher granularity + `on_idle` +
@@ -61,7 +61,7 @@ pub(crate) fn live_settle_action(
     }
 }
 
-/// (#1001 PR2 P2 / B, option-a) How long after PTY spawn a live wake candidate is
+/// (PR2 P2 / B, option-a) How long after PTY spawn a live wake candidate is
 /// still treated as "starting". Below this, a session emitting output cannot be
 /// told apart from a mid-turn one by `activity_age` alone (both are
 /// `< idle_threshold`), so the busy fast-path would inject into a not-paste-ready
@@ -79,9 +79,9 @@ pub(crate) fn live_settle_action(
 /// mode in `tests/wake_consumption_measure/main.rs`.
 pub(crate) const STARTUP_SETTLE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// (#1001 PR2 P2 / B, option-a) Route a live wake by session age: a candidate whose
+/// (PR2 P2 / B, option-a) Route a live wake by session age: a candidate whose
 /// PTY was registered less than `startup_threshold` ago is `Starting` (route to the
-/// sustained-idle settle - waits out startup churn, the #611 gate PR1 measured at
+/// sustained-idle settle - waits out startup churn, the gate PR1 measured at
 /// 0% drop); an older one is `Established` (keep the `activity_age` busy fast-path).
 /// Pure so the classification is unit-testable without timers.
 ///
@@ -99,7 +99,7 @@ pub(crate) fn live_wake_route(
     }
 }
 
-/// (#1001 PR2 P2 / B, option-a) Which live-wake settle path a candidate takes.
+/// (PR2 P2 / B, option-a) Which live-wake settle path a candidate takes.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum LiveWakeRoute {
     /// Recently spawned; may still be emitting startup output. Route to the
@@ -111,7 +111,7 @@ pub(crate) enum LiveWakeRoute {
     Established,
 }
 
-/// #1388 - the readiness input for the cold-spawn wake settle.
+/// The readiness input for the cold-spawn wake settle.
 ///
 /// Idle ALONE is satisfied by a child that has painted nothing: `IdleDetector`
 /// seeds activity at spawn (`idle_detector.rs:128-145`) and the watcher flips a
@@ -128,9 +128,9 @@ pub(crate) fn wake_settle_ready(
     waiting_for_input && has_rendered_visible_content
 }
 
-/// (#1001 PR2 / B) Pure per-tick decision for the COLD-SPAWN settle loop, so the
+/// (PR2 / B) Pure per-tick decision for the COLD-SPAWN settle loop, so the
 /// sustained-idle + inject-anyway-cap policy is unit-testable without timers. The
-/// cold-spawn path gates on the composed `wake_settle_ready` (#1388: idle AND
+/// cold-spawn path gates on the composed `wake_settle_ready` (idle AND
 /// rendered, not `SessionManager.waiting_for_input` alone - a freshly spawned
 /// session has no meaningful `activity_age` during startup churn); the live path
 /// uses `live_settle_action` on real-time `activity_age` instead (grinch P1).
@@ -153,7 +153,7 @@ pub(crate) fn settle_tick(
     (next_idle_since, SettleAction::Wait)
 }
 
-/// #626 - which leg of the self-handoff-and-clear gate we are in.
+/// Which leg of the self-handoff-and-clear gate we are in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelfClearPhase {
     /// Waiting for sustained idle to inject provider-resolved logical-clear text.
@@ -164,7 +164,7 @@ pub(crate) enum SelfClearPhase {
     Handoff,
 }
 
-/// #626 - gate state threaded by the driver across polls. Pure-function in/out, so the whole
+/// Gate state threaded by the driver across polls. Pure-function in/out, so the whole
 /// two-stage policy (settle, reset, phase transition, per-phase cap, destroyed) is unit-testable.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct SelfClearGateState {
@@ -186,7 +186,7 @@ impl SelfClearGateState {
     }
 }
 
-/// #626 - the action the driver must take after one decider step.
+/// The action the driver must take after one decider step.
 #[derive(Debug, PartialEq)]
 pub(crate) enum SelfClearGateAction {
     /// Keep polling; the driver adopts the returned state and carries it forward.
@@ -200,7 +200,7 @@ pub(crate) enum SelfClearGateAction {
     Abandon(&'static str),
 }
 
-/// (#756) Fresh-boundary events surfaced by the self-clear / self-switch
+/// Fresh-boundary events surfaced by the self-clear / self-switch
 /// drivers through an injected callback, so the generic (test-injectable)
 /// drivers stay free of app state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,12 +212,12 @@ pub(crate) enum SelfClearBoundary {
     ContentInjected,
 }
 
-/// #626 - pure two-stage gate step. Returns (`next_state`, action). `session_present == false`
+/// Pure two-stage gate step. Returns (`next_state`, action). `session_present == false`
 /// means the session vanished between polls. The Clear->Handoff transition RESETS `idle_since` to
 /// None and
 /// `phase_started` to `now`, so the Phase 2 window can NOT be satisfied by pre-clear idle. Same
-/// "pure decision, thin timer loop" pattern as #617's `self_clear_gate_step` (replaced here),
-/// reusing the #611 `next_sustained_idle_state` settle/reset core. Unit-testable WITHOUT timers,
+/// "pure decision, thin timer loop" pattern as the old `self_clear_gate_step` (replaced here),
+/// reusing the `next_sustained_idle_state` settle/reset core. Unit-testable WITHOUT timers,
 /// locks, or PTY.
 pub(crate) fn self_clear_gate_advance(
     state: SelfClearGateState,
@@ -274,7 +274,7 @@ pub(crate) fn self_clear_gate_advance(
     }
 }
 
-/// #626/#629/#636 - archive `<root>/<stem>.md` to `<root>/self-clear/<timestamp>_<stem>.md`. No-op
+/// Archive `<root>/<stem>.md` to `<root>/self-clear/<timestamp>_<stem>.md`. No-op
 /// (`Ok(None)`) if `<stem>.md` is absent. Creates the `self-clear/` subdir on demand. `timestamp`
 /// is supplied by the caller so this is deterministic in tests. Returns the archived path on
 /// success.
@@ -282,8 +282,8 @@ pub(crate) fn self_clear_gate_advance(
 /// child share it). On Windows a source held open without `FILE_SHARE_DELETE` yields
 /// `ERROR_SHARING_VIOLATION` (os error 32); the caller treats any `Err` as a non-fatal warn (no
 /// clobber, the source stays). NO retries (a retry loop would block the caller). Consumers:
-/// SELF-FORGET.md at queue time (#626) and SELF-HANDOFF.md immediately before the Phase-2 prompt
-/// inject (#749, via `archive_handoff_for_inject`).
+/// SELF-FORGET.md at queue time and SELF-HANDOFF.md immediately before the Phase-2 prompt
+/// inject (via `archive_handoff_for_inject`).
 pub(crate) fn archive_root_md(
     root: &std::path::Path,
     stem: &str,
@@ -308,9 +308,9 @@ pub(crate) fn archive_root_md(
     Ok(Some(dst))
 }
 
-/// #749 - archive `<root>/SELF-HANDOFF.md` -> `self-clear/<ts>_SELF-HANDOFF.md` IMMEDIATELY before
+/// Archive `<root>/SELF-HANDOFF.md` -> `self-clear/<ts>_SELF-HANDOFF.md` IMMEDIATELY before
 /// the Phase-2 handoff prompt is injected, so the prompt can name the file's real, final location.
-/// Replaces #629's post-inject 180s grace timer, which raced the agent's read: inject `Ok` only
+/// Replaces the old post-inject 180s grace timer, which raced the agent's read: inject `Ok` only
 /// proves bytes reached the PTY, not that the prompt was consumed, so a slow, queued, or
 /// unsubmitted prompt could outlive the grace window and lose its file mid-read.
 ///
@@ -319,7 +319,7 @@ pub(crate) fn archive_root_md(
 /// it cannot drift from `archive_root_md`'s naming); `archived` is `Some(dst)` only when the
 /// rename actually happened, so the caller can rename it BACK if the inject then fails (a
 /// re-issue needs the canonical root name, see `restore_handoff_after_failed_inject`). Fallbacks
-/// keep the pre-#749 behavior: a missing source (anomalous here, the queue-time gate proved it
+/// keep the older behavior: a missing source (anomalous here, the queue-time gate proved it
 /// existed; warn and let the prompt's "missing or empty" clause cover it) or a rename failure
 /// (e.g. Windows sharing violation, os error 32; the file is still at the root) both point the
 /// prompt at the root name. `timestamp` is supplied by the caller so this is deterministic in
@@ -369,9 +369,9 @@ pub(crate) fn archive_handoff_for_inject(
     }
 }
 
-/// #749 - best-effort undo of `archive_handoff_for_inject` after a FAILED prompt inject: the
+/// Best-effort undo of `archive_handoff_for_inject` after a FAILED prompt inject: the
 /// prompt never reached the agent, so its notes must return to the canonical root name for a
-/// re-issue (the pre-#749 code expressed the same semantics by not archiving on inject failure).
+/// re-issue (the older code expressed the same semantics by not archiving on inject failure).
 /// Refuses to clobber: if a NEW entry named `SELF-HANDOFF.md` appeared at the root in the
 /// interim, the archived copy stays where it is (still recoverable under `self-clear/`). The
 /// exists-then-rename pair is not atomic (Windows rename replaces an existing file), but the
@@ -408,11 +408,11 @@ pub(crate) fn restore_handoff_after_failed_inject(
     }
 }
 
-/// #749 - shared Phase-2 tail for both self-handoff drivers: archive the handoff FIRST, inject a
+/// Shared Phase-2 tail for both self-handoff drivers: archive the handoff FIRST, inject a
 /// prompt naming the exact archived path, and rename the file back if the inject fails. Archiving
 /// before the prompt exists makes the promised location final, so a late read still succeeds (the
 /// old post-inject 180s timer raced slow, queued, or unsubmitted prompts); it also keeps a
-/// consumed handoff from false-triggering the NEXT cycle's existence gate (#629's concern).
+/// consumed handoff from false-triggering the NEXT cycle's existence gate (the timer's concern).
 /// `build_prompt` is the flow's prompt builder (`build_self_clear_handoff_prompt` /
 /// `build_self_switch_handoff_prompt`); `action` labels the log lines.
 pub(crate) async fn inject_handoff_prompt_with_archive<Inject, InjectFut>(
@@ -435,7 +435,7 @@ where
         &handoff_path,
         forgotten_summary.map(ForgottenSummary::as_str),
     );
-    // (#756) Returns whether the prompt reached the PTY, so the drivers fire
+    // Returns whether the prompt reached the PTY, so the drivers fire
     // their post-boundary-content event only on a real injection.
     let injected = match super::handoff::checked_handoff_prompt(prompt) {
         Ok(prompt) => inject(session_id, prompt).await,
@@ -517,7 +517,7 @@ pub(crate) fn err_is_pty_session_missing(e: &str) -> bool {
     e.contains("Session not found:")
 }
 
-/// #1883 - pure severity classifier for a PTY injection failure. A menu-guard or
+/// Pure severity classifier for a PTY injection failure. A menu-guard or
 /// typing-hold deferral is a recoverable "not yet" (the dispatcher releases the
 /// lease and the poller preserves the attempt and retries), so both are logged
 /// at debug and never reach the Application Error sink; every other error keeps
@@ -560,14 +560,14 @@ pub(crate) fn session_cwd_matches_fqn(cwd: &str, target: &str) -> bool {
     crate::config::teams::agent_fqn_from_path(cwd) == target
 }
 
-/// #2113: case-tolerant pre-filter for internal system notices.
+/// Case-tolerant pre-filter for internal system notices.
 ///
 /// The target FQN is derived from the CANONICAL replica dir
 /// (`InternalSystemTarget::for_context_alert`), so it carries the on-disk
 /// spelling. A session CWD carries the spelling in `cfg.project_paths`, stored
 /// verbatim by `SessionManager::create_session`. On a case-insensitive
 /// filesystem the two can differ by case and still name the same directory,
-/// which dropped the notice (#2113).
+/// which dropped the notice.
 ///
 /// Covers a case difference in the project segment, in the agent segment, and
 /// in the room segment AFTER its `room-`/`wg-` prefix. It does NOT cover a
