@@ -1,4 +1,4 @@
-//! #2079 macOS Screen Recording gate, moved out of native.rs by #2774; leaf: no
+//! macOS Screen Recording gate, moved out of native.rs; leaf: no
 //! `super` paths.
 
 /// The refusal message when macOS has not granted Screen Recording.

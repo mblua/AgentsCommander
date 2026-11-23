@@ -1,4 +1,4 @@
-//! #714 screenshot stub for every target other than Windows, Linux and macOS.
+//! Screenshot stub for every target other than Windows, Linux and macOS.
 //!
 //! Compiled on every target other than Windows, Linux and macOS. It uses NO
 //! native screenshot crates (`xcap`, `image`, clipboard, global shortcut). It

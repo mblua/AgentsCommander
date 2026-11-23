@@ -58,7 +58,7 @@ function hostState(scroller: HTMLElement): HostState | undefined {
   return state;
 }
 
-export function placeFilterRow(scroller: HTMLElement): void {
+function collectPanelHeaders(scroller: HTMLElement): { headers: HTMLElement[]; boxes: PanelBox[] } {
   const headers: HTMLElement[] = [];
   const boxes: PanelBox[] = [];
   for (const panel of Array.from(scroller.children)) {
@@ -69,6 +69,11 @@ export function placeFilterRow(scroller: HTMLElement): void {
     headers.push(header);
     boxes.push({ top, bottom });
   }
+  return { headers, boxes };
+}
+
+export function placeFilterRow(scroller: HTMLElement): void {
+  const { headers, boxes } = collectPanelHeaders(scroller);
   if (headers.length === 0) return;
   const state = hostState(scroller);
   if (!state) return;

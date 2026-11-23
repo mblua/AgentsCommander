@@ -4,7 +4,7 @@ import { FakeTransport } from "../shared/testing/fake-transport";
 import type { AgentSummary, ReportQuery, ReportResponse } from "../shared/context-history";
 import { createHistoryState } from "./state";
 
-// #3532 P06 - per-instance history state: generations drop late responses,
+// Per-instance history state: generations drop late responses,
 // pagination appends backend pages without recomputing totals, and errors
 // never keep an older result on screen as the answer of a newer query.
 
@@ -57,7 +57,7 @@ function deferred<T>() {
 
 const WINDOWS = [25, 100, 300];
 
-/** #4091 A state with the loaded settings list, as the App provides it. */
+/** A state with the loaded settings list, as the App provides it. */
 function configured(project: string, now: () => number = () => NOW) {
   const state = createHistoryState(project, now);
   state.setWindows(WINDOWS);

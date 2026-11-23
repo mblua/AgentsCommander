@@ -82,7 +82,7 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
   onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
 
   const launchAgent = async (repo: RepoMatch, selection: AgentPickerSelection) => {
-    // #516 — create first; only hide Home / close the modal once the session
+    // Create first; only hide Home / close the modal once the session
     // exists. A rejection (e.g. the Resource Monitor cap) propagates to
     // AgentPickerModal.apply()'s catch, which keeps this modal open with the
     // error shown instead of hiding Home behind a silent hang.

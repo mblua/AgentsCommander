@@ -1,4 +1,4 @@
-//! #935 - resolve a container replica's enabled repos into read-write bind mounts.
+//! Resolve a container replica's enabled repos into read-write bind mounts.
 //!
 //! The replica's own `config.json` `repos[]` array is already per-agent (team
 //! creation filters it, see plan Sec 2). This module turns that array into the
@@ -181,7 +181,7 @@ pub fn resolve_repo_mounts(replica_root: &Path) -> Result<RepoMountResolution, S
                 config_entry: entry,
                 outcome: RepoOutcome::Mounted {
                     name,
-                    // #993 - dockerd rejects a verbatim \\?\ mount source. Strip it
+                    // Dockerd rejects a verbatim \\?\ mount source. Strip it
                     // AFTER the Sec 4.2 checks above, which run on the verbatim path.
                     host_path: crate::path_utils::normalize_windows_verbatim_path_buf(&canonical),
                     container_path,

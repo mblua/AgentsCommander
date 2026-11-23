@@ -10,7 +10,7 @@ import TypingHoldIcon from "./TypingHoldIcon";
 const MIC_DISABLED_TITLE =
   "Enable voice-to-text in Settings and set a Gemini API key to use this.";
 
-// #2337 - the backend owns the padlock; this is only the read cadence.
+// The backend owns the padlock; this is only the read cadence.
 const TYPING_HOLD_POLL_MS = 500;
 
 const StatusBar: Component<{ detached?: boolean }> = (props) => {
@@ -66,7 +66,7 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
 
   onCleanup(cleanup);
 
-  // #1171 - opens the activity window scoped to this session, or focuses and re-scopes it
+  // Opens the activity window scoped to this session, or focuses and re-scopes it
   // when it is already open. Tauri-only: the web client renders this same StatusBar but has
   // no such window and no arm for the command, and a button that returns a raw error is
   // worse than an absent one.
@@ -84,19 +84,19 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
     void PtyAPI.write(sessionId, encoder.encode("\x15"));
   };
 
-  // #2337 - the snapshot is stored with the session it came from. Rendering only
+  // The snapshot is stored with the session it came from. Rendering only
   // when the ids agree keeps a slow fetch for tab A from painting over tab B and
   // makes the closed state and pending count per session.
   const [typingHold, setTypingHold] = createSignal<{
     sessionId: string;
     snapshot: TypingHoldSnapshot;
   } | null>(null);
-  // #2337 - pending is per session: a toggle for tab A must not disable tab B's
+  // Pending is per session: a toggle for tab A must not disable tab B's
   // padlock (and must not swallow B's clicks) while it is in flight.
   const [typingHoldPending, setTypingHoldPending] = createSignal<ReadonlySet<string>>(
     new Set(),
   );
-  // #2337 - one order for every writer of `typingHold`: polls and toggles share
+  // One order for every writer of `typingHold`: polls and toggles share
   // this sequence, so a poll that left before a toggle cannot land after it and
   // repaint the pre-toggle state.
   let typingHoldSeq = 0;
@@ -128,7 +128,7 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
       : `Hold message delivery to this session (${snapshot.heldCount} held)`;
   };
 
-  // #2337 - poll while this bar is mounted. The effect re-runs on every active
+  // Poll while this bar is mounted. The effect re-runs on every active
   // session change: cleanup drops the timer AND the previous session's late
   // responses (the `cancelled` flag), so a slow fetch for tab A can never paint
   // over tab B. A failed poll keeps the last known snapshot and retries on the

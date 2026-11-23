@@ -29,7 +29,7 @@ fn report_send_error(
     event_port.bridge_error(session_id, msg, Some(kind.as_str()));
 }
 
-// ── #280 §3.2 — error classification + throttling ─────────────
+// ── Error classification + throttling ───────────────────────
 
 /// Coarse classification of Telegram API failure modes. Used to tag log
 /// lines so an operator can grep by kind and to drive the throttle below
@@ -103,7 +103,7 @@ impl BridgeLogger {
     pub(crate) fn log(&mut self, direction: &str, session_id: &str, text: &str) {
         if let Some(ref mut f) = self.file {
             let now = chrono::Utc::now().format("%H:%M:%S%.3f");
-            // #280 G-MED-3 / LOW-1 — telegram-bridge.log is outside
+            // telegram-bridge.log is outside
             // env_logger's sink scrub. Redact BEFORE truncating so the 500-
             // byte cut cannot land inside a token tail and leak a partial
             // secret (the redactor's 10-char floor would refuse to match
@@ -168,7 +168,7 @@ impl DiagLogger {
     pub(crate) fn log_raw(&mut self, text: &str) {
         if let Some(ref mut f) = self.raw_file {
             let now = chrono::Utc::now().format("%H:%M:%S%.3f");
-            // #280 G-MED-3 — diag-raw.log lives outside env_logger's sink
+            // diag-raw.log lives outside env_logger's sink
             // scrub. Scrub here so secret-bearing content (agent output
             // containing a Telegram URL, or any future call site that
             // bypassed api.rs) cannot land in the diag log.
@@ -183,7 +183,7 @@ impl DiagLogger {
     pub(crate) fn log_sent(&mut self, text: &str) {
         if let Some(ref mut f) = self.sent_file {
             let now = chrono::Utc::now().format("%H:%M:%S%.3f");
-            // #280 G-MED-3 — same scrub as log_raw; diag-sent.log bypasses
+            // Same scrub as log_raw; diag-sent.log bypasses
             // env_logger.
             let text = crate::telegram::redact::redact(text);
             let _ = write_telegram_log(f, format_args!("--- [{now}] ---\n"));
@@ -240,7 +240,7 @@ pub(crate) async fn flush_buffer(
         diag.log_sent(&chunk);
 
         if let Err(e) = api::send_message(network, token, chat_id, &chunk).await {
-            // #280 — defense-in-depth scrub before `msg` reaches the
+            // Defense-in-depth scrub before `msg` reaches the
             // `telegram_bridge_error` Tauri event payload (which bypasses
             // the env_logger format closure that protects stderr/app.log).
             // The reqwest error sites inside api.rs already wrap with

@@ -45,7 +45,7 @@ const [activeWorkingDirectory, setActiveWorkingDirectory] = createSignal("");
 const [activeWorkgroupTask, setActiveWorkgroupTask] = createSignal<string | null>(null);
 const [activeIsRootAgent, setActiveIsRootAgent] = createSignal(false);
 
-// #1455 - `activeWorkgroupTask` is a pure cache with no periodic refresh, so its two
+// `activeWorkgroupTask` is a pure cache with no periodic refresh, so its two
 // asynchronous writers (a local TASK mutation and a `SessionAPI.list()` snapshot)
 // used to resolve last-write-wins, and a snapshot taken before a save could revert
 // the header after it. These two values give the writers an order. Deliberately NOT
@@ -54,7 +54,7 @@ const [activeIsRootAgent, setActiveIsRootAgent] = createSignal(false);
 let taskWriteSeq = 0;
 let lastLocalTaskWrite: { workgroupRoot: string; seq: number } | null = null;
 
-// #1455 - TASK.md is per-WORKGROUP, not per-session: `find_workgroup_task_path_for_cwd`
+// TASK.md is per-WORKGROUP, not per-session: `find_workgroup_task_path_for_cwd`
 // (src-tauri/src/session/session.rs:242-256) walks up from a session's cwd to the first
 // `wg-*` ancestor, and `SessionInfo.workgroup_task` re-reads that path on every list
 // (`session.rs:396`), so every session under one workgroup root shows the same file.
@@ -79,7 +79,7 @@ function cwdUnderWorkgroupRoot(cwd: string, workgroupRoot: string): boolean {
   );
 }
 
-// #1455 - true when an accepted local task write landed after the caller took its
+// True when an accepted local task write landed after the caller took its
 // session snapshot AND that session displays the same TASK.md, i.e. the snapshot's
 // task field is already stale.
 function localTaskWriteWins(sessionCwd: string, expectedTaskSeq: number): boolean {
@@ -344,7 +344,7 @@ export const terminalStore = {
     setActiveShellArgs(session.effectiveShellArgs);
     setActiveWorkingDirectory(session.workingDirectory);
     bindTaskCache(session.workingDirectory);
-    // #1455 - every other field binds unconditionally; only the task field can lose
+    // Every other field binds unconditionally; only the task field can lose
     // to a newer local write against the same workgroup's TASK.md.
     if (!localTaskWriteWins(session.workingDirectory, expectedTaskSeq)) {
       setActiveWorkgroupTask(session.workgroupTask ?? null);
@@ -388,7 +388,7 @@ export const terminalStore = {
     setActiveShellArgs(session.effectiveShellArgs);
     setActiveWorkingDirectory(session.workingDirectory);
     bindTaskCache(session.workingDirectory);
-    // #1455 - see bindLive.
+    // See bindLive.
     if (!localTaskWriteWins(session.workingDirectory, expectedTaskSeq)) {
       setActiveWorkgroupTask(session.workgroupTask ?? null);
     }
@@ -413,14 +413,14 @@ export const terminalStore = {
     setActiveWorkgroupTask(task);
   },
 
-  // #1455 - capture this immediately BEFORE an awaited `SessionAPI.list()` and hand
+  // Capture this immediately BEFORE an awaited `SessionAPI.list()` and hand
   // it back to `bindLive` / `bindLockedSession`. Non-reactive on purpose; see the
   // declaration.
   get taskWriteSeq() {
     return taskWriteSeq;
   },
 
-  // #1455 - the local-write side of the task ordering. `workgroupRoot` is the root
+  // The local-write side of the task ordering. `workgroupRoot` is the root
   // whose TASK.md the mutation just rewrote, straight off `TaskUpdateResult`. The
   // write is accepted unless the header is positively known to be showing a
   // DIFFERENT workgroup's file. While the store is unbound (`clearLiveMetadata`

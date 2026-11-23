@@ -18,7 +18,7 @@ impl SessionIoFanout {
         self.idle_detector.record_resize(id);
     }
 
-    /// #973 - a degenerate size must never reach the vt100 parser, and this is the boundary
+    /// A degenerate size must never reach the vt100 parser, and this is the boundary
     /// where that invariant actually breaks, so this is where it is enforced.
     ///
     /// `vt100::grid::set_size` computes `size.rows - 1` on a `u16` (grid.rs:73). With
@@ -27,7 +27,7 @@ impl SessionIoFanout {
     /// this function is HOLDING `screen_parsers`, which poisons the mutex - after which
     /// `handle_output`, `get_screen_snapshot` and `get_pty_size` all take the `if let Ok` /
     /// `.ok()?` branch and silently do nothing, for every session, for the life of the process.
-    /// One `cols: 0` would take #955's screen snapshot down app-wide, without a single log line.
+    /// One `cols: 0` would take the screen snapshot down app-wide, without a single log line.
     ///
     /// The callers guard too (`local_backend` only moves the screen for a size the `ConPTY`
     /// actually took), but they cannot be the only guard: `container_backend:1099` calls this
@@ -56,7 +56,7 @@ impl SessionIoFanout {
                 );
                 return;
             };
-            // #1439 record-first: the ConPTY took this size whether or not the
+            // Record-first: the ConPTY took this size whether or not the
             // parser can follow it; the attach reconcile compares against this.
             state.conpty_size = (rows, cols);
             if state.parser_availability != ParserAvailability::Available {
@@ -156,7 +156,7 @@ impl SessionIoFanout {
         }
     }
 
-    /// #973 (B) - has the child painted anything a human could see?
+    /// Has the child painted anything a human could see?
     ///
     /// This is the startup gate's trigger, and it asks the REAL, STATEFUL vt100 parser that
     /// `handle_output` has already fed every byte of every chunk. Call it after `handle_output`,
@@ -295,7 +295,7 @@ impl SessionIoFanout {
         }
     }
 
-    /// #1032 - the live grid's rows, plain text, for the context scrape.
+    /// The live grid's rows, plain text, for the context scrape.
     ///
     /// TWO-state on purpose. The fanout knows nothing about children, so `None` here means
     /// "no parser for this id" and says NOTHING about whether the session is over: only a
@@ -314,7 +314,7 @@ impl SessionIoFanout {
         Some(screen.rows(0, cols).collect())
     }
 
-    /// #1171 - the same live grid `get_screen_rows` clones, but only when it CHANGED since
+    /// The same live grid `get_screen_rows` clones, but only when it CHANGED since
     /// the caller last looked, plus the two O(1) facts the watcher engine needs from the same
     /// guard: the per-row wrap flags and the cursor row.
     ///
@@ -326,7 +326,7 @@ impl SessionIoFanout {
     /// `resize_screen_and_broadcast` reflows the grid without bumping `output_sequence`
     /// (`:202-212`) - a sequence-only comparison would report `Unchanged` over a screen that
     /// was just re-laid at a new width. `output_sequence` is only READ here; its semantics
-    /// are #955's and are untouched.
+    /// are untouched.
     ///
     /// TWO-state on the negative side for the same reason `get_screen_rows` is: `Missing`
     /// means "no parser for this id" and says NOTHING about whether the session is over. Only
@@ -384,7 +384,7 @@ impl SessionIoFanout {
         Some(state.parser.screen().size())
     }
 
-    /// #1171 - poison `screen_parsers` deterministically, so the "a lock we could not take
+    /// Poison `screen_parsers` deterministically, so the "a lock we could not take
     /// makes no claim about the session" arm is covered by a test rather than by reasoning.
     /// Mould: `PtyManager::poison_route_registry_for_test` (`manager.rs:346-355`).
     /// Test-only: parks the sequence one step from overflow, which is the reachable way to make

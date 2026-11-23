@@ -1,7 +1,7 @@
 import type { Component } from "solid-js";
 
 /**
- * #775 — the raised-hand glyph shared by every raise-hand indicator (the
+ * The raised-hand glyph shared by every raise-hand indicator (the
  * group-rail tabs and the per-coordinator row). A monochrome SVG (not an
  * emoji) so it stays crisp and inherits the caller's amber `color` in the
  * Tauri webview regardless of emoji-font availability. Callers size/tint it

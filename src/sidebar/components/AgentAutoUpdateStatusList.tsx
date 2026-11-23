@@ -8,7 +8,7 @@ import { agentUpdateOverviewStore } from "../stores/agent-update-overview";
 const LISTENER_EVENTS = ["agent_install_state_changed", "agent_updates_finished"] as const;
 
 /**
- * #1551 - read-only Auto-update table of the Coding Agents screen (plan 5.12): one row
+ * Read-only Auto-update table of the Coding Agents screen (plan 5.12): one row
  * per update-capable catalog entry (catalog order, duplicates kept), the configured
  * tri-state read from the modal DRAFT (so the table follows the dropdown before Save),
  * the detected install state, and this boot's live state. It writes nothing.

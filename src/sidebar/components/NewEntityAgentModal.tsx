@@ -17,13 +17,13 @@ const NewEntityAgentModal: Component<{
   const [error, setError] = createSignal("");
   const [creating, setCreating] = createSignal(false);
 
-  // #278 — distinguish user-edited fields from template-populated ones so a
+  // Distinguish user-edited fields from template-populated ones so a
   // second template click can overwrite the first template's values without
   // clobbering anything the user typed by hand.
   const [nameDirty, setNameDirty] = createSignal(false);
   const [descriptionDirty, setDescriptionDirty] = createSignal(false);
 
-  // #271 — template picker state.
+  // Template picker state.
   const [templates, setTemplates] = createSignal<RoleTemplateMeta[]>([]);
   const [templateQuery, setTemplateQuery] = createSignal("");
   const [selectedTemplateId, setSelectedTemplateId] = createSignal<string | null>(null);
@@ -202,7 +202,7 @@ const NewEntityAgentModal: Component<{
         </div>
 
         <div class="new-agent-form new-agent-form-scroll">
-          {/* #271 — optional role-template picker */}
+          {/* Optional role-template picker */}
           <div class="new-agent-field tpl-picker">
             <label class="new-agent-label" for="new-agent-template-search">
               Template (optional)

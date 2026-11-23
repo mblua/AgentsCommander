@@ -5,14 +5,14 @@
 // with the raw string:
 //   "Resource Monitor cap reached: {active}/{max} agent groups are active"
 // That is turned into a short, actionable message. Every other failure is
-// surfaced verbatim so nothing is silently swallowed (#516).
+// surfaced verbatim so nothing is silently swallowed.
 
 const CAP_PREFIX = "Resource Monitor cap reached";
 
 // A restart whose stored coding-agent id no longer exists (src-tauri
-// `session.rs`, #2434) rejects with
+// `session.rs`) rejects with
 //   "unresolved_coding_agent_reference: '<id>' matches no configured coding agent"
-// That is turned into plain words that keep the vanished id (#2573).
+// That is turned into plain words that keep the vanished id.
 const UNRESOLVED_AGENT_RE = /^unresolved_coding_agent_reference:\s*'([^']*)'/;
 const UNRESOLVED_AGENT_PREFIX = "unresolved_coding_agent_reference";
 const UNRESOLVED_AGENT_FIX =

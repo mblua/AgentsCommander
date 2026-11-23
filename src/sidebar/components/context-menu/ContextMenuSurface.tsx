@@ -1,4 +1,4 @@
-// #1871 phase 1 - context-menu MECHANICS only, private to context-menu/.
+// Context-menu MECHANICS only, private to context-menu/.
 // Portal, the session-context-menu div, viewport clamping, the window
 // click / contextmenu / keydown(Escape) dismissal with its cleanup, and one
 // keyed flyout slot with its open/close scheduling and positioning. It knows

@@ -1,4 +1,4 @@
-//! Temp-room mailbox routes (#4780): a temp room talks only with the Root Agent
+//! Temp-room mailbox routes: a temp room talks only with the Root Agent
 //! and verified Room orchestrators, both directions.
 
 use super::outbox_auth::outbox_route_project_paths;

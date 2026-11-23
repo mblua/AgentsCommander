@@ -1,4 +1,4 @@
-//! #777 "Non-stop" watchdog: backend timing + actuation half of the hybrid design.
+//! "Non-stop" watchdog: backend timing + actuation half of the hybrid design.
 //!
 //! The frontend owns the ONLY thing it can compute correctly, the visible
 //! `working/total` counter parity, and pushes a full snapshot (one entry per

@@ -3,7 +3,7 @@
 //! transport, validation errors, length checks, rendering, normalization or
 //! storage, and imports nothing from the crate.
 
-/// #1157 - the forbidden-scalar set of `crate::pty::inject::validate_pty_input_text`,
+/// The forbidden-scalar set of `crate::pty::inject::validate_pty_input_text`,
 /// shared so the injected-message sanitizer
 /// (`crate::config::injected_messages::render::sanitize`) strips exactly what
 /// that validator rejects. Deriving both from one predicate is what keeps the

@@ -1,4 +1,4 @@
-//! #1773: name the process(es) holding the single-instance mutex when
+//! Name the process(es) holding the single-instance mutex when
 //! `test-reset --confirm-testeable` refuses with `testable_gui_active`.
 //!
 //! Windows only. The kernel does not answer "who holds named object X", so the

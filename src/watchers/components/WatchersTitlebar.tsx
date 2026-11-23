@@ -1,7 +1,7 @@
 import { Component } from "solid-js";
 
 /**
- * #1171 - the window is `decorations(false)`, so the frame is HTML.
+ * The window is `decorations(false)`, so the frame is HTML.
  *
  * The Tauri window API is imported inside each handler rather than at module scope,
  * following the Resource Monitor (`resource-monitor/App.tsx:145`, `:155`) rather than

@@ -35,7 +35,7 @@ pub(crate) fn find_latest_jsonl(project_dir: &Path) -> Option<PathBuf> {
     best.map(|(p, _)| p)
 }
 
-/// Find `<transcript_id>.jsonl` in a directory (non-recursive, #2454).
+/// Find `<transcript_id>.jsonl` in a directory (non-recursive).
 ///
 /// The stem is compared case-insensitively and whole paths are never compared:
 /// a path may be in Windows verbatim form. `find_latest_jsonl` is left as it

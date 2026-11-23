@@ -19,7 +19,7 @@ pub(crate) fn derive_repo_name(path: &Path) -> Option<String> {
     Some(name)
 }
 
-/// #943 - drop `user[:password]@` from a scheme-form remote URL.
+/// Drop `user[:password]@` from a scheme-form remote URL.
 ///
 /// `git remote get-url` returns whatever `.git/config` holds, and a repo cloned
 /// with a token carries `https://<user>:<ghp_...>@github.com/o/r.git`. The caller

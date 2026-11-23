@@ -1,5 +1,5 @@
 /**
- * #1363 - per-listener event scoping.
+ * Per-listener event scoping.
  *
  * Tauri's JS default registers a listener as `EventTarget::Any`, and the Rust
  * side SHORT-CIRCUITS the label filter for such a listener

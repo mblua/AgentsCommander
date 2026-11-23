@@ -1,4 +1,4 @@
-//! #714 Active-agent screenshot capture.
+//! Active-agent screenshot capture.
 //!
 //! Native, Greenshot-style screenshot flow: a global hotkey freezes the desktop,
 //! the user drags a rectangle on a per-monitor overlay, and the crop is saved as
@@ -117,7 +117,7 @@ pub struct ScreenshotCaptureEvent {
 pub trait ScreenshotEvents {
     fn capture_saved(&self, result: ScreenshotCaptureResult);
     fn capture_failed(&self, event: ScreenshotCaptureEvent);
-    /// #2774 A Wayland registration reached its final status (the X11, Windows and macOS
+    /// A Wayland registration reached its final status (the X11, Windows and macOS
     /// paths decide synchronously and do not emit this).
     #[cfg(target_os = "linux")]
     fn hotkey_status_changed(&self, status: ScreenshotHotkeyStatus);
@@ -191,7 +191,7 @@ pub(crate) struct OverlayPlacement {
 /// A monitor as either source can describe it. `scale` is that source's own
 /// scale factor.
 ///
-/// The rule this type exists to enforce (#2173): **tao owns the screen
+/// The rule this type exists to enforce: **tao owns the screen
 /// coordinate space** — every value handed to Tauri is derived from
 /// `tauri::Monitor` alone — and **xcap owns pixels** — the captured bitmap stays
 /// the sole authority for the crop. The xcap scale factor is used for exactly
