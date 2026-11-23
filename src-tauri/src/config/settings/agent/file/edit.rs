@@ -11,20 +11,34 @@ use super::super::super::{
     SourceAvailability, SourceKind, SourceReadContext, SourceRef, SourceRevision, SourceScope,
     SETTINGS_CAPTURE_LIMIT,
 };
+use super::super::instance::write_agents_instance_file;
 use super::super::{
     canonical_profile_source, capture_registered_profile_gate, captured_registered_profile_object,
     is_valid_profile_letter, normalized_profile_cells, physical_profile_rows,
     project_physical_profiles, recheck_registered_profile_gate, validate_agent_commands,
     ProfileCellConfig, ProfileSlotConfig,
 };
+use super::super::{AgentConfig, AGENTS_INSTANCE_KEYS};
 use super::{
     agent_file_checkpoint, agent_file_decode, agent_file_read, read_agent_file_snapshot,
     AgentFileEdits, AgentFileProfileEdit, AgentFileRowAction, AgentFileRowEdit,
     AgentFileSaveOutcome, AgentFileSaveReply, AgentFileSourceMenu, AgentFileSourcePreferences,
     SelectedAgentFileSnapshot,
 };
+use super::{
+    config_dirs, config_file_unavailable, config_selection, config_snapshot, read_config_file,
+    read_registered_shape, read_resolved, ConfigFileSnapshot,
+};
+use crate::config::coding_agent_files::locator::{normalize_config_name, resolve_locator};
+use crate::config::coding_agent_files::{
+    with_active, with_loaded, CodingAgentConfigFiles, ConfigContext, ConfigFileError,
+    ConfigFileLocator, ConfigScope,
+};
+use crate::config::settings::{refresh_agent_id_hashes, CodingAgentProfilesConfig};
+use crate::filesystem::settings_sources;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub(crate) fn prepare_agent_file_edits(
@@ -492,4 +506,177 @@ pub(crate) async fn persist_agent_file_edits(
     })
     .await
     .map_err(|_| "sourceWorkerFailed")?
+}
+
+// #4845 P17: save, create, register and activate coding-agent config files.
+
+fn config_save_failed(error: impl std::fmt::Display) -> ConfigFileError {
+    ConfigFileError::new("configFileSaveFailed", error.to_string())
+}
+
+/// Decision 4 encode + write: `before` keeps every other top-level key.
+fn write_config_groups(
+    settings: &AppSettings,
+    before: &Value,
+    path: &std::path::Path,
+    mut agents: Vec<AgentConfig>,
+    profiles: CodingAgentProfilesConfig,
+) -> Result<(), ConfigFileError> {
+    refresh_agent_id_hashes(&mut agents);
+    validate_agent_commands(&AppSettings {
+        agents: agents.clone(),
+        ..settings.clone()
+    })
+    .map_err(|reason| ConfigFileError::new("configFileInvalidAgents", reason))?;
+    let incoming = serde_json::json!({"agents": agents, "codingAgentProfiles": profiles});
+    let mut groups =
+        canonical_profile_source(before, &incoming, true).map_err(config_save_failed)?;
+    if let (Some(slots), Some(raw_slots)) = (
+        groups
+            .pointer_mut("/codingAgentProfiles/profileSlots")
+            .and_then(Value::as_object_mut),
+        before
+            .pointer("/codingAgentProfiles/profileSlots")
+            .and_then(Value::as_object),
+    ) {
+        for (letter, slot) in slots {
+            let raw = raw_slots.get(letter).and_then(Value::as_object);
+            if let (Some(slot), Some(raw)) = (slot.as_object_mut(), raw) {
+                for (key, value) in raw.iter().filter(|(key, _)| *key != "label") {
+                    slot.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+    let mut output = before.as_object().cloned().unwrap_or_default();
+    for key in AGENTS_INSTANCE_KEYS {
+        if let Some(value) = groups.get_mut(key).map(Value::take) {
+            output.insert(key.to_owned(), value);
+        }
+    }
+    write_agents_instance_file(&output, path).map_err(config_save_failed)
+}
+
+/// Decision 4: save `named`/`loaded` files only, under the read revision.
+#[allow(dead_code, reason = "I4845 staged; removed in P18")]
+pub(crate) fn save_config_file(
+    settings: &AppSettings,
+    settings_path: &std::path::Path,
+    ctx: &ConfigContext,
+    loc: &ConfigFileLocator,
+    expected: &SourceRevision,
+    agents: Vec<AgentConfig>,
+    profiles: CodingAgentProfilesConfig,
+) -> Result<ConfigFileSnapshot, ConfigFileError> {
+    let dirs = config_dirs(settings, settings_path, ctx);
+    let path = resolve_locator(&config_selection(settings), &dirs, ctx, loc)?;
+    match loc {
+        ConfigFileLocator::RegisteredInstance {} => {
+            return Err(ConfigFileError::new(
+                "configFileUseSettings",
+                "Save this file from the settings.",
+            ))
+        }
+        ConfigFileLocator::Layer { .. } | ConfigFileLocator::Other { .. } => {
+            return Err(ConfigFileError::new(
+                "configFileReadOnly",
+                "This file is read-only.",
+            ))
+        }
+        ConfigFileLocator::Named { .. } | ConfigFileLocator::Loaded { .. } => {}
+    }
+    let mut current = config_snapshot(loc, path.clone());
+    let before = read_registered_shape(&mut current).ok_or_else(config_file_unavailable)?;
+    if &current.revision != expected {
+        return Err(ConfigFileError::new(
+            "staleConfigFile",
+            "This file changed on disk. Reload it first.",
+        ));
+    }
+    write_config_groups(settings, &before, &path, agents, profiles)?;
+    Ok(read_resolved(settings, settings_path, ctx, loc, path))
+}
+
+/// Decision 5: create a named file in the instance or project dir.
+#[allow(dead_code, reason = "I4845 staged; removed in P18")]
+pub(crate) fn create_config_file(
+    settings: &AppSettings,
+    settings_path: &std::path::Path,
+    ctx: &ConfigContext,
+    scope: ConfigScope,
+    name: &str,
+    agents: Vec<AgentConfig>,
+    profiles: CodingAgentProfilesConfig,
+) -> Result<ConfigFileSnapshot, ConfigFileError> {
+    let name = normalize_config_name(name)?;
+    if scope == ConfigScope::Project && !matches!(ctx, ConfigContext::Project(_)) {
+        return Err(ConfigFileError::new(
+            "configFileWrongProject",
+            "This file belongs to another project.",
+        ));
+    }
+    let loc = ConfigFileLocator::Named { scope, name };
+    let dirs = config_dirs(settings, settings_path, ctx);
+    let path = resolve_locator(&config_selection(settings), &dirs, ctx, &loc)?;
+    let dir = path.parent().unwrap_or(std::path::Path::new(""));
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let exists = settings_sources::list_file_names(dir)
+        .unwrap_or_default()
+        .iter()
+        .any(|known| known.to_lowercase() == file_name);
+    if exists {
+        return Err(ConfigFileError::new(
+            "configNameExists",
+            "A file with this name already exists.",
+        ));
+    }
+    settings_sources::create_dir_all(dir).map_err(config_save_failed)?;
+    write_config_groups(settings, &serde_json::json!({}), &path, agents, profiles)?;
+    Ok(read_resolved(settings, settings_path, ctx, &loc, path))
+}
+
+/// Decision 6: the selection with a valid registered-shape file appended once.
+#[allow(dead_code, reason = "I4845 staged; removed in P18")]
+pub(crate) fn register_loaded(
+    settings: &AppSettings,
+    path: &str,
+) -> Result<CodingAgentConfigFiles, ConfigFileError> {
+    let invalid = || ConfigFileError::new("configFileInvalid", "This is not a valid agents file.");
+    let canonical =
+        settings_sources::canonical(std::path::Path::new(path)).map_err(|_| invalid())?;
+    if !settings_sources::is_regular_file(&canonical) {
+        return Err(invalid());
+    }
+    let canonical = canonical.to_string_lossy().into_owned();
+    let loc = ConfigFileLocator::Loaded {
+        path: canonical.clone(),
+    };
+    let mut snapshot = config_snapshot(&loc, PathBuf::from(&canonical));
+    read_registered_shape(&mut snapshot).ok_or_else(invalid)?;
+    Ok(with_loaded(
+        settings.coding_agent_config_files.as_ref(),
+        &canonical,
+    ))
+}
+
+/// Decision 7: the selection with `loc` active for `ctx`, if `loc` is `Available`.
+#[allow(dead_code, reason = "I4845 staged; removed in P18")]
+pub(crate) fn set_active_config_file(
+    settings: &AppSettings,
+    settings_path: &std::path::Path,
+    ctx: &ConfigContext,
+    loc: &ConfigFileLocator,
+) -> Result<CodingAgentConfigFiles, ConfigFileError> {
+    let snapshot = read_config_file(settings, settings_path, ctx, loc)?;
+    if snapshot.availability != SourceAvailability::Available {
+        return Err(config_file_unavailable());
+    }
+    Ok(with_active(
+        settings.coding_agent_config_files.as_ref(),
+        ctx,
+        loc.clone(),
+    ))
 }

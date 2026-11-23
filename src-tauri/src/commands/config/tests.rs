@@ -251,6 +251,7 @@ mod api_server;
 mod coding_agent_install;
 mod e2432_p02_source_api_tests;
 mod hash_activation;
+mod i4845_config_file_commands;
 mod issue_3083_tests;
 mod p02_wire_schema_tests;
 mod placement;

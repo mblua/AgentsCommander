@@ -6,7 +6,7 @@
 
 mod blocking_menu;
 mod command;
-mod file;
+pub(crate) mod file;
 mod help;
 mod instance;
 mod profile;

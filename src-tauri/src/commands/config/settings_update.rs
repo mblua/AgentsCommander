@@ -306,6 +306,8 @@ pub(crate) fn build_protected_settings_candidate(
     // that did not come out of `parse_settings_json` and is later saved must inherit
     // the live overlay state first.
     candidate.local_overlay_state = current.local_overlay_state.clone();
+    // #4845 D8: the config-file selection is owned by the config-file commands.
+    candidate.coding_agent_config_files = current.coding_agent_config_files.clone();
     // #965: rail collapse is mutated only by `set_rail_collapse`. A settings payload
     // from the GUI, CLI, or API must never carry authority for it, so restore both
     // fields from live memory. Same rule and same mechanism as the project lists
@@ -374,6 +376,7 @@ pub(crate) async fn persist_settings_draft_update_with_saver_and_publication(
     // #1737: the same overlay-state carry-over as in
     // `build_protected_settings_candidate` above, and for the same reason (plan D14).
     draft.local_overlay_state = current.local_overlay_state.clone();
+    draft.coding_agent_config_files = current.coding_agent_config_files.clone();
     draft.coding_agent_identity_physical = current.coding_agent_identity_physical.clone();
     // #965: same protect as `build_protected_settings_candidate`. The SettingsModal
     // Save path lands here, and so does every whole-object writer that reads

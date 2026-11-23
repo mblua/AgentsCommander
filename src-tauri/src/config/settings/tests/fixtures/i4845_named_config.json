@@ -1,0 +1,37 @@
+{
+  "agents": [
+    {
+      "id": "same",
+      "label": "Own",
+      "color": "#123456",
+      "command": "tool"
+    }
+  ],
+  "codingAgentProfiles": {
+    "profileBindingVersion": 1,
+    "profilesByBaseHash": {
+      "cid1:5c52b6deb3631a09d8c4f642675052e28acb2e7fff38a3e86067a25ef23b796a": {
+        "A": {
+          "enabled": true,
+          "additionalArguments": "--own",
+          "env": {},
+          "notes": ""
+        }
+      }
+    },
+    "profileLabelsByBaseHash": {
+      "cid1:5c52b6deb3631a09d8c4f642675052e28acb2e7fff38a3e86067a25ef23b796a": {
+        "A": "Own A"
+      }
+    },
+    "profileSlots": {
+      "A": {
+        "label": "Main",
+        "note": "x"
+      }
+    }
+  },
+  "unknownTop": {
+    "keep": [1, null]
+  }
+}

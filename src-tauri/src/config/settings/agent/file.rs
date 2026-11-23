@@ -22,6 +22,14 @@ use super::{
     is_valid_profile_letter, physical_profile_sets, profile_container, validate_agent_commands,
     AgentBackendConfig, AgentConfig, ProfileSlotConfig, RegisteredProfileCapture,
 };
+use crate::config::coding_agent_files::inventory::list_entries;
+use crate::config::coding_agent_files::locator::resolve_locator;
+use crate::config::coding_agent_files::{
+    active_locator, CatalogLayer, ConfigContext, ConfigDirs, ConfigFileError, ConfigFileLocator,
+    ConfigScope, InventoryEntry,
+};
+use crate::config::instance_artifacts::CODING_AGENTS_CATALOG_DIR_NAME;
+use crate::filesystem::settings_sources;
 #[cfg(test)]
 pub(crate) use authority::AGENT_FILE_CHECKPOINT;
 pub(crate) use authority::{
@@ -30,13 +38,17 @@ pub(crate) use authority::{
 };
 #[cfg(test)]
 pub(crate) use edit::save_agent_file_locked;
+#[allow(unused_imports, reason = "I4845 staged; removed in P18")]
+pub(crate) use edit::{
+    create_config_file, register_loaded, save_config_file, set_active_config_file,
+};
 pub(crate) use edit::{
     persist_agent_file_edits, prepare_agent_file_edits, remember_agent_file_locked,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // E2432 P02: finite physical-file APIs. These do not activate the broad source protocol.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -535,4 +547,311 @@ where
 {
     let raw = Option::<Value>::deserialize(deserializer)?;
     Ok(raw.and_then(|value| serde_json::from_value(value).ok()))
+}
+
+// #4845 P17: the settings-side glue of the coding-agent config files.
+
+/// One config file read for a locator. `registeredInstance` reads live settings.
+#[allow(dead_code, reason = "I4845 staged; removed in P18")]
+#[derive(Debug, Clone)]
+pub(crate) struct ConfigFileSnapshot {
+    pub(crate) locator: ConfigFileLocator,
+    pub(crate) path: PathBuf,
+    pub(crate) revision: SourceRevision,
+    pub(crate) availability: SourceAvailability,
+    pub(crate) agents: Vec<AgentConfig>,
+    pub(crate) coding_agent_profiles: CodingAgentProfilesConfig,
+    pub(crate) read_only: bool,
+    pub(crate) diagnostic: Option<String>,
+}
+
+/// The inventory of a context with availability, read-only flag and agent count.
+#[allow(dead_code, reason = "I4845 staged; removed in P18")]
+#[derive(Debug, Clone)]
+pub(crate) struct ConfigFileListing {
+    pub(crate) context: ConfigContext,
+    pub(crate) entries: Vec<(InventoryEntry, SourceAvailability, bool, Option<usize>)>,
+    pub(crate) active: ConfigFileLocator,
+    pub(crate) active_notice: Option<String>,
+}
+
+const CONFIG_LAYER_KINDS: [(SourceKind, CatalogLayer); 3] = [
+    (SourceKind::CatalogBase, CatalogLayer::CatalogBase),
+    (SourceKind::CatalogProject, CatalogLayer::CatalogProject),
+    (SourceKind::CatalogPersonal, CatalogLayer::CatalogPersonal),
+];
+
+fn layer_kind(layer: CatalogLayer) -> SourceKind {
+    CONFIG_LAYER_KINDS
+        .iter()
+        .find(|(_, l)| *l == layer)
+        .map(|(kind, _)| *kind)
+        .unwrap_or(SourceKind::CatalogBase)
+}
+
+fn config_scope_layers(
+    scope: ConfigScope,
+    ac_dir: &Path,
+) -> impl Iterator<Item = (ConfigScope, CatalogLayer, PathBuf)> + '_ {
+    CONFIG_LAYER_KINDS
+        .iter()
+        .filter(move |(kind, _)| {
+            scope == ConfigScope::Project || *kind != SourceKind::CatalogProject
+        })
+        .filter_map(move |(kind, layer)| {
+            crate::config::coding_agents_catalog::independent_catalog_path(ac_dir, *kind)
+                .map(|path| (scope, *layer, path))
+        })
+}
+
+/// Decision 1: the dirs and layer files a locator of `ctx` can point at.
+#[allow(dead_code, reason = "I4845 staged; removed in P18")]
+pub(crate) fn config_dirs(
+    _settings: &AppSettings,
+    settings_path: &Path,
+    ctx: &ConfigContext,
+) -> ConfigDirs {
+    let settings_dir = settings_path
+        .parent()
+        .unwrap_or(Path::new(""))
+        .to_path_buf();
+    let mut layers: Vec<_> = config_scope_layers(ConfigScope::Instance, &settings_dir).collect();
+    let project = match ctx {
+        ConfigContext::Instance => None,
+        ConfigContext::Project(key) => {
+            let ac_dir = Path::new(key).join(".ac");
+            layers.extend(config_scope_layers(ConfigScope::Project, &ac_dir));
+            Some((key.clone(), ac_dir.join(CODING_AGENTS_CATALOG_DIR_NAME)))
+        }
+    };
+    ConfigDirs {
+        registered_path: super::agents_instance_path(settings_path),
+        instance_dir: settings_dir.join(CODING_AGENTS_CATALOG_DIR_NAME),
+        project,
+        layers,
+    }
+}
+
+pub(super) fn config_snapshot(loc: &ConfigFileLocator, path: PathBuf) -> ConfigFileSnapshot {
+    ConfigFileSnapshot {
+        read_only: match loc {
+            ConfigFileLocator::Other { .. } => true,
+            ConfigFileLocator::Layer { .. } => path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("agents.10.") || name.starts_with("agents.40.")
+                }),
+            _ => false,
+        },
+        locator: loc.clone(),
+        path,
+        revision: SourceRevision::Absent {},
+        availability: SourceAvailability::Absent,
+        agents: Vec::new(),
+        coding_agent_profiles: CodingAgentProfilesConfig::default(),
+        diagnostic: None,
+    }
+}
+
+fn invalid_config(snapshot: &mut ConfigFileSnapshot, code: impl Into<String>) {
+    snapshot.availability = SourceAvailability::Invalid;
+    snapshot.diagnostic = Some(code.into());
+}
+
+/// Decision 3, registered shape. Returns the file object when it is `Available`.
+pub(super) fn read_registered_shape(snapshot: &mut ConfigFileSnapshot) -> Option<Value> {
+    let bytes = match settings_sources::bytes(&snapshot.path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(_) => {
+            invalid_config(snapshot, "sourceReadFailed");
+            return None;
+        }
+    };
+    snapshot.revision = source_bytes_revision(&bytes);
+    let value = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(value) if value.get("agents").is_some_and(Value::is_array) => value,
+        _ => {
+            invalid_config(snapshot, "invalidAgentsArray");
+            return None;
+        }
+    };
+    match agent_file_decode(&value, true) {
+        Ok((agents, profiles)) => {
+            snapshot.agents = agents;
+            snapshot.coding_agent_profiles = profiles;
+            snapshot.availability = SourceAvailability::Available;
+            Some(value)
+        }
+        Err(code) => {
+            invalid_config(snapshot, code);
+            None
+        }
+    }
+}
+
+fn read_layer(
+    snapshot: &mut ConfigFileSnapshot,
+    settings_path: &Path,
+    scope: ConfigScope,
+    layer: CatalogLayer,
+    ctx: &ConfigContext,
+) {
+    let observation = observe_agent_file(&snapshot.path);
+    if matches!(observation, BoundedSourceObservation::Absent) {
+        return;
+    }
+    let primary = match (scope, ctx) {
+        (ConfigScope::Project, ConfigContext::Project(key)) => Some(PathBuf::from(key)),
+        _ => None,
+    };
+    let read = SourceReadContext::from_primary(settings_path, primary)
+        .map_err(|_| "sourceContextUnavailable".to_owned())
+        .and_then(|context| {
+            let source = context.source(layer_kind(layer));
+            snapshot_from_captured_source(&context, &source, &observation, None)
+        });
+    let selected = match read {
+        Ok(selected) => selected,
+        Err(code) => return invalid_config(snapshot, code),
+    };
+    snapshot.revision = selected.revision.clone();
+    match agent_file_projection(&selected) {
+        Ok(projection) => {
+            snapshot.agents = projection.agents;
+            snapshot.coding_agent_profiles = projection.coding_agent_profiles;
+            snapshot.availability = SourceAvailability::Available;
+        }
+        Err(_) => {
+            let code = selected.diagnostics.first().map(|d| d.code.clone());
+            invalid_config(snapshot, code.unwrap_or_else(|| "invalidSource".into()));
+        }
+    }
+}
+
+pub(super) fn read_resolved(
+    settings: &AppSettings,
+    settings_path: &Path,
+    ctx: &ConfigContext,
+    loc: &ConfigFileLocator,
+    path: PathBuf,
+) -> ConfigFileSnapshot {
+    let mut snapshot = config_snapshot(loc, path);
+    match loc {
+        ConfigFileLocator::RegisteredInstance {} => {
+            snapshot.revision = match settings_sources::bytes(&snapshot.path) {
+                Ok(bytes) => source_bytes_revision(&bytes),
+                Err(_) => SourceRevision::Absent {},
+            };
+            snapshot.agents = settings.agents.clone();
+            snapshot.coding_agent_profiles = settings.coding_agent_profiles.clone();
+            snapshot.availability = SourceAvailability::Available;
+        }
+        ConfigFileLocator::Layer { scope, layer } => {
+            read_layer(&mut snapshot, settings_path, *scope, *layer, ctx);
+        }
+        _ => {
+            read_registered_shape(&mut snapshot);
+        }
+    }
+    snapshot
+}
+
+pub(super) fn config_selection(
+    settings: &AppSettings,
+) -> crate::config::coding_agent_files::CodingAgentConfigFiles {
+    settings
+        .coding_agent_config_files
+        .clone()
+        .unwrap_or_default()
+}
+
+/// Decision 3: read one file of `ctx`. Never creates files.
+#[allow(dead_code, reason = "I4845 staged; removed in P18")]
+pub(crate) fn read_config_file(
+    settings: &AppSettings,
+    settings_path: &Path,
+    ctx: &ConfigContext,
+    loc: &ConfigFileLocator,
+) -> Result<ConfigFileSnapshot, ConfigFileError> {
+    let dirs = config_dirs(settings, settings_path, ctx);
+    let path = resolve_locator(&config_selection(settings), &dirs, ctx, loc)?;
+    Ok(read_resolved(settings, settings_path, ctx, loc, path))
+}
+
+/// Decision 9: every file of `ctx`, with the active one and its notice.
+#[allow(dead_code, reason = "I4845 staged; removed in P18")]
+pub(crate) fn list_config_files(
+    settings: &AppSettings,
+    settings_path: &Path,
+    ctx: &ConfigContext,
+) -> ConfigFileListing {
+    let sel = config_selection(settings);
+    let dirs = config_dirs(settings, settings_path, ctx);
+    let active = active_locator(settings.coding_agent_config_files.as_ref(), ctx);
+    let mut active_available = false;
+    let entries: Vec<_> = list_entries(&sel, &dirs, ctx)
+        .into_iter()
+        .map(|entry| {
+            let snapshot = read_resolved(
+                settings,
+                settings_path,
+                ctx,
+                &entry.locator,
+                entry.path.clone(),
+            );
+            let available = snapshot.availability == SourceAvailability::Available;
+            active_available |= available && entry.locator == active;
+            let count = available.then_some(snapshot.agents.len());
+            (entry, snapshot.availability, snapshot.read_only, count)
+        })
+        .collect();
+    ConfigFileListing {
+        context: ctx.clone(),
+        entries,
+        active_notice: (!active_available).then(|| "activeConfigFileUnavailable".to_owned()),
+        active,
+    }
+}
+
+pub(super) fn config_file_unavailable() -> ConfigFileError {
+    ConfigFileError::new(
+        "configFileUnavailable",
+        "This file is missing or not valid.",
+    )
+}
+
+/// Decision 8: the agents and profiles of an `Available` file.
+#[allow(dead_code, reason = "I4845 staged; removed in P18")]
+pub(crate) fn agents_of(
+    settings: &AppSettings,
+    settings_path: &Path,
+    ctx: &ConfigContext,
+    loc: &ConfigFileLocator,
+) -> Result<(Vec<AgentConfig>, CodingAgentProfilesConfig), ConfigFileError> {
+    let snapshot = read_config_file(settings, settings_path, ctx, loc)?;
+    if snapshot.availability != SourceAvailability::Available {
+        return Err(config_file_unavailable());
+    }
+    Ok((snapshot.agents, snapshot.coding_agent_profiles))
+}
+
+/// Decision 8: a clone of `settings` whose agents come from `loc`.
+#[allow(dead_code, reason = "I4845 staged; removed in P18")]
+pub(crate) fn scoped_agent_settings(
+    settings: &AppSettings,
+    settings_path: &Path,
+    ctx: &ConfigContext,
+    loc: &ConfigFileLocator,
+) -> Result<AppSettings, ConfigFileError> {
+    let (agents, coding_agent_profiles) = agents_of(settings, settings_path, ctx, loc)?;
+    if matches!(loc, ConfigFileLocator::RegisteredInstance {}) {
+        return Ok(settings.clone());
+    }
+    Ok(AppSettings {
+        agents,
+        coding_agent_profiles,
+        ..settings.clone()
+    })
 }
