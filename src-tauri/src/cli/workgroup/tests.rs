@@ -785,7 +785,7 @@ async fn legacy_workgroup_provisioning_never_upserts_concurrent_team_winner() {
     assert!(list_workgroup_dirs(&ac_root).is_empty());
 }
 
-// Exact ignored CHILD HELPER for the CLI workgroup
+// #1063 Stage D-owned exact ignored CHILD HELPER for the CLI workgroup
 // cross-process lock-order inversion. Frozen fully-qualified name (a Stage E
 // parent spawns this verbatim via `current_exe --exact <name> --ignored`):
 //   crate::cli::workgroup::tests::cli_workgroup_lock_order_inversion_child

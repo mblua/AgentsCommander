@@ -324,7 +324,7 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
     remove_hooked(args, Some(&activation), |_| {})
 }
 
-/// CLI workgroup removal with the project-only lock order.
+/// CLI workgroup removal with the #1063 project-only lock order.
 ///
 /// Workgroup deletion is a project-only mutation: it acquires the project
 /// seed-manifest gate before the atomic rename and NEVER acquires the
@@ -376,7 +376,7 @@ fn remove_hooked(
     match cli_remove_refresh_decision(outcome)? {
         RemoveRefreshDecision::EmitWorkgroupRemoved => {}
     }
-    // Drop the workgroup's coordinator_clocks keys. CLI is its own process,
+    // (#621) Drop the workgroup's coordinator_clocks keys. CLI is its own process,
     // so load+save the on-disk map directly (the startup prune backstops the
     // GUI-running-concurrently race).
     if let Some(project_name) = project_path.file_name().and_then(|n| n.to_str()) {

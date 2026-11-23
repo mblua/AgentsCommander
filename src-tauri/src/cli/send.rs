@@ -596,7 +596,7 @@ fn resolve_send_target(
             return Err(1);
         }
     } else if crate::config::root_agent::is_root_agent_target(&resolved_to) {
-        // Coordinator → root. Only identity-verified WG coordinators
+        // #293 — coordinator → root. Only identity-verified WG coordinators
         // are allowed to address the Root Agent. Master/root token still goes
         // through this gate intentionally: the URI is meaningful only when
         // paired with a real coordinator identity, and the verified check is

@@ -103,7 +103,7 @@ fn room_replica_root_resolves_to_fqn() {
     assert_ne!(from, crate::config::root_agent::ROOT_AGENT_SENDER);
 }
 
-/// (D): a Room replica and a legacy Workgroup replica at the same
+/// #1614 (D): a Room replica and a legacy Workgroup replica at the same
 /// slot number are two DISTINCT peers, because every identity path keys on
 /// the full directory name and never on the prefix or the number (the
 /// mixed root of section 5.11, residual R1).
