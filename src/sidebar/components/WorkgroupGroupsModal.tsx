@@ -25,7 +25,7 @@ function cloneConfig(config: WorkgroupGroupsConfig): WorkgroupGroupsConfig {
     groups: config.groups.map((group) => ({ ...group })),
     showAll: config.showAll,
     showUngrouped: config.showUngrouped,
-    // #777 (dev-webpage-ui #1, BLOCKER): the modal seeds its draft with THIS local
+    // The modal seeds its draft with THIS local
     // clone (not the store's), so it MUST deep-clone nonStop too, or opening the
     // modal drops a persisted nonStop and the first Save wipes it.
     nonStop: config.nonStop
@@ -64,7 +64,7 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
     setSaveError(null);
   };
 
-  // #746 — id of the row just added via "Add group"; its name input's ref
+  // Id of the row just added via "Add group"; its name input's ref
   // consumes this to focus+select the pre-filled name so the user can type
   // over it immediately. Plain variable (not a signal): addGroup sets it
   // synchronously right before setDraft creates the new row.
@@ -131,7 +131,7 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
     }
   };
 
-  // #777 Non-stop section state. An absent nonStop renders as the default for
+  // Non-stop section state. An absent nonStop renders as the default for
   // editing; the first touch materializes it in the draft (persisted by save()).
   const ns = (): NonStopGroupConfig => draft().nonStop ?? defaultNonStop();
   const setNonStop = (patch: Partial<NonStopGroupConfig>) => {
@@ -187,8 +187,8 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
             </label>
           </div>
 
-          {/* #777 Non-stop watchdog section. Static JSX (NOT a keyed <For> over
-              field rows) so the text inputs keep focus (the #614 lesson). The
+          {/* Non-stop watchdog section. Static JSX (NOT a keyed <For> over
+              field rows) so the text inputs keep focus. The
               single show toggle = rail visibility AND watchdog on/off; Telegram
               and Sound are independent measures. */}
           <div class="workgroup-groups-nonstop">
@@ -285,10 +285,10 @@ const WorkgroupGroupsModal: Component<WorkgroupGroupsModalProps> = (props) => {
           </div>
 
           <div class="workgroup-groups-table">
-            {/* #746 — <Index>, NOT <For>: updateGroup replaces the edited row
+            {/* <Index>, NOT <For>: updateGroup replaces the edited row
                 object on every keystroke, and a reference-keyed <For> would
                 dispose+recreate the row, dropping focus after one character
-                (the #614 trap). Position-keyed rows keep the inputs stable. */}
+                (a keyed-list focus trap). Position-keyed rows keep the inputs stable. */}
             <Index each={draft().groups}>
               {(group) => (
                 <div class="workgroup-group-edit-row" data-ac-testid={`workgroupGroups.row.${group().id}`}>

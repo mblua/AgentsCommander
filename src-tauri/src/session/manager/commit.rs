@@ -341,7 +341,7 @@ pub(super) fn apply_lifecycle_mutations(
     result: &mut CommitResult,
     changed_ids: &mut HashSet<Uuid>,
 ) -> Vec<Uuid> {
-    // #1149 - ids only. The record itself is built after every fallible exit
+    // Ids only. The record itself is built after every fallible exit
     // below, so a later `?` can never strand a record for a session this
     // commit did not actually finalize.
     let mut finalized_live_ids: Vec<Uuid> = Vec::new();

@@ -5,12 +5,12 @@
 //! Leaf readers and writers of the Loop files live in `storage`; raw IO lives in
 //! `crate::filesystem::loop_files`.
 
-#[cfg(test)]
-use super::pause;
-use super::{
-    apply_loop_update_patch, baseline_loop_state, loop_dir, read_loop_config, read_loop_state,
-    validate_loop_config, validate_loop_id, write_loop_config, write_loop_state_atomic,
-    LoopConfigToml, LoopState, LoopUpdatePatch, LEGACY_LOOP_STATE_RENAME, LOOP_DIR_PREFIX,
+use super::model::{validate_loop_id, LoopConfigToml, LoopState, LoopUpdatePatch, LOOP_DIR_PREFIX};
+use super::pause_hook::loop_write_pause_hook;
+use super::rules::{apply_loop_update_patch, baseline_loop_state, validate_loop_config};
+use super::storage::{
+    loop_dir, read_loop_config, read_loop_state, write_loop_config, write_loop_state_atomic,
+    LEGACY_LOOP_STATE_RENAME,
 };
 use crate::config::local_config_io::{acquire_sidecar_write_lock, SidecarWriteLock};
 use crate::config::naming_migration;
@@ -250,14 +250,4 @@ pub fn remove_loop_files(ac_root: &Path, loop_id: &str) -> Result<PathBuf, Strin
     loop_files::remove_loop_directory(&dir)
         .map_err(|e| format!("Failed to remove Loop directory: {e}"))?;
     Ok(dir)
-}
-
-#[cfg(not(test))]
-#[inline(always)]
-pub(super) fn loop_write_pause_hook(_stage: &str, _dir: &Path) {}
-
-/// #2682 - test-only pause point. Inert unless a test arms it.
-#[cfg(test)]
-pub(super) fn loop_write_pause_hook(stage: &str, dir: &Path) {
-    pause::hook(stage, dir);
 }

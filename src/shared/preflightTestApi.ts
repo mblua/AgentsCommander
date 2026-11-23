@@ -6,7 +6,7 @@ import type {
   PreflightTestTarget,
 } from "./preflightTypes";
 
-/** #3832 - undefined omits the draft key so old callers keep their exact arguments. */
+/** Undefined omits the draft key so old callers keep their exact arguments. */
 function withDraft(
   args: Record<string, unknown>,
   draft: PreflightTestDraft | null | undefined,
@@ -14,7 +14,7 @@ function withDraft(
   return draft === undefined ? args : { ...args, draft };
 }
 
-/** #3516/#3832 - the preflight chain test over an injected transport (Tauri or WS). */
+/** The preflight chain test over an injected transport (Tauri or WS). */
 export function createPreflightTestAPI(transport: Pick<Transport, "invoke">) {
   return {
     listTargets: (agentId: string, replicaPaths: string[]) =>

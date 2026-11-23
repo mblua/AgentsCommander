@@ -1,4 +1,4 @@
-//! #1032 - a per-session, best-effort reading of a coding agent's context-window usage,
+//! A per-session, best-effort reading of a coding agent's context-window usage,
 //! taken by running a per-agent, user-configured regex over the plain de-ANSI'd rows of the
 //! `vt100` screen mirror AC already keeps for every session.
 //!
@@ -89,7 +89,7 @@ pub trait ContextSampleSink: Send + Sync {
     fn observe(&self, sample: ContextSample);
 }
 
-/// #1088 - where a tick's changed readings go to be written onto their sessions
+/// Where a tick's changed readings go to be written onto their sessions
 /// and persisted to `sessions.json` so the disk-reading CLI can surface them.
 ///
 /// Like the other sinks, the scraper holds ONLY this narrow trait: the concrete
@@ -101,7 +101,7 @@ pub trait ContextPersistSink: Send + Sync {
     fn commit(&self, changed: Vec<(Uuid, Option<u8>)>) -> BoxFuture<'_, ()>;
 }
 
-/// The IPC contract, normative for #1033.
+/// The IPC contract, normative for the Settings UI.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextUsagePayload {
@@ -166,7 +166,7 @@ pub struct ContextScraper {
     patterns: Arc<dyn ContextPatternSource>,
     sink: Arc<dyn ContextEventSink>,
     samples: Arc<dyn ContextSampleSink>,
-    /// #1088 - the fifth narrow sink: commits a tick's changed readings onto
+    /// The fifth narrow sink: commits a tick's changed readings onto
     /// their sessions and triggers the whole-file persist. The concrete impl
     /// (`lib.rs`) owns the `SessionManager` handle; the scraper holds only this.
     persist: Arc<dyn ContextPersistSink>,
@@ -267,7 +267,7 @@ impl ContextScraper {
 
     /// Retire under an already-held sequence lock. Returns whether a final `None`
     /// badge was emitted (true only when the session had a live last reading), so the
-    /// tick loop can persist that same clear through the #1088 sink: the gate that
+    /// tick loop can persist that same clear through the sink: the gate that
     /// drives the badge drives the persist.
     fn retire_session_under_sequence(&self, id: Uuid) -> bool {
         let last_emitted = self
@@ -403,7 +403,7 @@ impl ContextScraper {
             ids.rotate_left(start);
         }
 
-        // #1088 - accumulate this tick's changed readings, handed to the persist
+        // Accumulate this tick's changed readings, handed to the persist
         // sink exactly once after the loop (coalesced: <=1 whole-file write per
         // tick regardless of how many sessions changed).
         let mut changed_readings: Vec<(Uuid, Option<u8>)> = Vec::new();
@@ -455,7 +455,7 @@ impl ContextScraper {
             self.samples.observe(sample);
 
             if session_over {
-                // #1088 - if retirement cleared a live reading it emits the final
+                // If retirement cleared a live reading it emits the final
                 // `None` badge; persist that same clear so the CLI value tracks the
                 // badge. An already-cleared session emits nothing and persists nothing.
                 if self.retire_session_under_sequence(id) {
@@ -482,13 +482,13 @@ impl ContextScraper {
                     session_id: id.to_string(),
                     percent: reading,
                 });
-                // #1088 - same change-gate that drives the badge drives the
+                // Same change-gate that drives the badge drives the
                 // persist, so the CLI value tracks the badge point-for-point.
                 changed_readings.push((id, reading));
             }
         }
 
-        // #1088 - hand this tick's changed readings to the persist sink exactly
+        // Hand this tick's changed readings to the persist sink exactly
         // once. The `registered` std Mutex and the per-iteration `sequence` guard
         // are both scoped inside the loop and released before this `.await`, so no
         // std guard is held across the commit. Empty vector => no commit call, so an

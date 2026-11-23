@@ -1,7 +1,7 @@
 import { Component } from "solid-js";
 
 /**
- * #592 - the drift "Reload" affordance, shown when a session's loaded profile
+ * The drift "Reload" affordance, shown when a session's loaded profile
  * cell no longer matches its current configuration (the backend-computed
  * profileOutdated flag). Clicking relaunches the session with the current
  * config, which re-stamps the content hash and clears the flag.

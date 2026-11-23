@@ -388,7 +388,7 @@ pub async fn overlay_state<H: ScreenshotHost>(
                         session_name: c.target_session_name.clone(),
                         // Strip the Windows `\\?\` verbatim prefix that `canonicalize`
                         // leaves on the resolved root, so the overlay shows a clean save
-                        // location (shared #730 helper; internal PathBuf checks keep the
+                        // location (shared helper; internal PathBuf checks keep the
                         // raw canonical value).
                         target_directory:
                             crate::path_utils::path_to_string_without_windows_verbatim_prefix(

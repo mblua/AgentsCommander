@@ -53,10 +53,10 @@ const activeHotkey = (status: unknown): string | null => {
     : null;
 };
 
-// #2774 - the camera chip is always visible in the native app and a click
+// The camera chip is always visible in the native app and a click
 // starts a capture; the key appears only when the backend reports the hotkey
 // active (startup read below, then `screenshot_hotkey_status_changed`).
-// #1398 - the backend now registers the hotkey at the top of setup, so the
+// The backend now registers the hotkey at the top of setup, so the
 // first read almost always lands after registration. This bounded re-read is
 // the hardening that keeps a slow boot from showing no key for the rest of
 // the session; the ceiling exists so a permanently undecided runtime cannot

@@ -1,4 +1,4 @@
-//! #942 - spawn diagnostics for local PTY sessions.
+//! Spawn diagnostics for local PTY sessions.
 //!
 //! Diagnostics only. Nothing in this module changes how a session is spawned,
 //! killed or read; it only records evidence so an intermittent coding-agent
@@ -49,8 +49,8 @@
 //! - `portable_pty::Child::try_wait` cannot tell "running" from "we cannot query this
 //!   handle": `WinChild::is_complete` swallows a failed `GetExitCodeProcess` and
 //!   returns `Ok(None)`, and its `STILL_ACTIVE` sentinel (259) is also a legal exit
-//!   code. AV/EDR stripping query rights off our handles is a known scenario here
-//!   (#647). The Windows probe in `local_backend` therefore calls
+//!   code. AV/EDR stripping query rights off our handles is a known scenario here.
+//!   The Windows probe in `local_backend` therefore calls
 //!   `WaitForSingleObject` directly and reports [`ChildLiveness::Unqueryable`] when the
 //!   OS refuses to answer. The kill path still uses `try_wait`, so a child that exits
 //!   with code 259 stays invisible to it: an upstream limitation, documented here
@@ -61,7 +61,7 @@
 //! Container sessions produce **nothing** here: no spawn record, no deadline report, no
 //! exit event (`container_backend` registers no record, so `mark_ac_stop` is a genuine
 //! no-op for them). A containerised coding-agent hang leaves zero evidence. That is an
-//! accepted gap: #942 is a local-spawn bug. It never `MISreports` a container session, it
+//! accepted gap: this is a local-spawn bug. It never `MISreports` a container session, it
 //! simply says nothing about one.
 //!
 //! ## Exit attribution: where the witness comes from, and the one path without it

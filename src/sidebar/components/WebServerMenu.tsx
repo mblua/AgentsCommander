@@ -38,7 +38,7 @@ function browserUrlHost(bind: string): string {
   return bind.includes(":") ? `[${bind}]` : bind;
 }
 
-// #1453 - strict IPv4 shape (0-255 per octet), the same regex as the approved
+// Strict IPv4 shape (0-255 per octet), the same regex as the approved
 // prototype. It rejects leading zeros exactly like Rust's parser, so a string
 // that passes is already canonical and safe to cross-check against the
 // canonical addresses reported by list_web_server_interfaces.
@@ -61,7 +61,7 @@ interface BindOptionProps {
   onSelect: (address: string) => void;
 }
 
-/** #1453 - one selectable address row of the bind chooser. Presets, detected
+/** One selectable address row of the bind chooser. Presets, detected
  *  adapters and the revealed virtual adapters all share this markup. */
 const BindOption: Component<BindOptionProps> = (props) => (
   <button
@@ -99,7 +99,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   const [interfaces, setInterfaces] = createSignal<WebServerInterfaceInfo[] | null>(null);
   const [editingAddr, setEditingAddr] = createSignal(false);
   const [addrDraft, setAddrDraft] = createSignal("");
-  // #1453 - user override of the collapsed virtual group; null = untouched.
+  // User override of the collapsed virtual group; null = untouched.
   const [virtualExpandedOverride, setVirtualExpandedOverride] =
     createSignal<boolean | null>(null);
   let busyDepth = 0;
@@ -129,7 +129,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   const bindFailure = createMemo(() => status()?.bindFailure ?? null);
   const physicalInterfaces = createMemo(() => (interfaces() ?? []).filter((i) => !i.isVirtual));
   const virtualInterfaces = createMemo(() => (interfaces() ?? []).filter((i) => i.isVirtual));
-  // #1453 - if the stored bind IS one of the virtual addresses the group must
+  // If the stored bind IS one of the virtual addresses the group must
   // open expanded, or the chooser would hide the only selected row. A memo and
   // not a signal: the list resolves asynchronously and the chooser can open
   // before it arrives, so this has to re-evaluate when the list lands.
@@ -141,7 +141,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   const bindIsPreset = createMemo(
     () => configuredBind() === ALL_INTERFACES || configuredBind() === LOCALHOST
   );
-  // #1453 - an empty list is ABSENCE OF EVIDENCE, not evidence of absence. It
+  // An empty list is ABSENCE OF EVIDENCE, not evidence of absence. It
   // covers the failed fetch (null) and the successful fetch with zero rows
   // ([], a machine whose only addresses are loopback and link-local) alike.
   // Every memo that ASSERTS something about availability gates on this.
@@ -185,7 +185,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   const showBindAlert = createMemo(
     () => bindFailure() !== null && !ownedActive() && status()?.externalListening !== true
   );
-  // #1453 - the IPV4_RE gate is mandatory. Without it every InvalidAddr failure
+  // The IPV4_RE gate is mandatory. Without it every InvalidAddr failure
   // (whose bind, by construction, is not an address) would print the confident
   // "Address no longer on this machine" headline over a value that is not an
   // address at all.
@@ -253,7 +253,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
     }
   };
 
-  // #1453 - the catch has a LIVE production path and a defensive one.
+  // The catch has a LIVE production path and a defensive one.
   // LIVE, on the desktop today: list_web_server_interfaces returns Err when
   // if_addrs::get_if_addrs() fails (config.rs:2179), so this is what turns an
   // enumeration failure into interfaces() === null, the designed degradation
@@ -268,7 +268,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
   // no web server commands, so a future non-Tauri render site would throw here
   // too. Neither path is anything a browser user can observe: there is no
   // chooser in a browser to degrade, and documenting it as one was the false
-  // claim #1453 removed from docs/features/remote-web-ui.md.
+  // claim since removed from docs/features/remote-web-ui.md.
   const loadInterfaces = async (expectedRevision = webServerIntentRevision) => {
     try {
       const nextInterfaces = await SettingsAPI.listWebServerInterfaces();
@@ -451,7 +451,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
     }, stopRequested);
   };
 
-  // #1453 - the single path for presets, detected rows and manual entry.
+  // The single path for presets, detected rows and manual entry.
   const applyBind = (nextBind: string) => {
     const wasOwnedActive = ownedActive();
     const shouldStart = !wasOwnedActive && webServerEnabled();
@@ -555,7 +555,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
           // that no component in the mounted tree does that, because its
           // zoom-listener scrub depends on it. This binds the element directly.
           on:keydown={(event) => {
-            // #1453 - this change adds ~10 focusable buttons plus a text input
+            // This change adds ~10 focusable buttons plus a text input
             // to a popover that only closed on outside click, so keyboard users
             // would otherwise have no way out.
             if (event.key !== "Escape") return;
@@ -821,7 +821,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
           <Show when={ownershipAmbiguous() && statusUnavailable()}>
             <div class="webserver-error">Ownership status unavailable</div>
           </Show>
-          {/* #1453 - suppressed while the alert is up: the alert already carries
+          {/* Suppressed while the alert is up: the alert already carries
               the verbatim reason, and two stacked amber blocks in a 236px column
               add noise, not information. */}
           <Show when={error() && !showBindAlert()}>

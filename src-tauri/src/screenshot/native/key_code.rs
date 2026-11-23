@@ -1,4 +1,4 @@
-//! #2774 Hotkey key-char to global-shortcut `Code` mapping (a leaf, moved out of
+//! Hotkey key-char to global-shortcut `Code` mapping (a leaf, moved out of
 //! `native.rs` for its line budget).
 
 use tauri_plugin_global_shortcut::Code;

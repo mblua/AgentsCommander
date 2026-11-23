@@ -106,7 +106,7 @@ impl RemoteSweeper {
     }
 
     pub(super) fn carry_staleness(&self, groups: &BTreeMap<QueryKey, Vec<usize>>) {
-        // #2141: retire keys no path maps to any more, carrying the STALENESS
+        // Retire keys no path maps to any more, carrying the STALENESS
         // axis to a live key on the same `(nwo, branch)` first. A local commit
         // moves `head_sha`, so it retires the old key and creates a new one that
         // would otherwise start at `confirmed = None`; `None -> Stale` is not the
@@ -395,7 +395,7 @@ impl RemoteSweeper {
             self.lock_state().last_payload = Some(payload);
         }
 
-        // #2374 - publish the neutral whole-file snapshot. The entries are
+        // Publish the neutral whole-file snapshot. The entries are
         // cloned from the same post-GC snapshot the payload was built from, and
         // this runs AFTER transitions were processed and the payload was emitted,
         // so persistence can never delay or suppress either. The publication

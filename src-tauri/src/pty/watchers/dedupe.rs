@@ -1,4 +1,4 @@
-//! #1171 - layer 2 of the three deduplication layers: key suppression with a TTL.
+//! Layer 2 of the three deduplication layers: key suppression with a TTL.
 //!
 //! Layer 1 is the frame diff, and it does the work: a logical row is evaluated on the one tick
 //! it becomes final. This layer exists only for the residual cases layer 1 cannot separate -

@@ -15,7 +15,7 @@ use crate::pty::spawn_diagnostics::{ChildLiveness, SpawnRecord};
 
 use super::PtyInstance;
 
-/// #942 - the body of `probe_child`, free over the map so #1032's liveness gate can be
+/// The body of `probe_child`, free over the map so the liveness gate can be
 /// driven by a test against a real `ConPTY` child.
 ///
 /// The guard is a local and `ChildLiveness` is owned, so the `ptys` lock is released at the
@@ -35,7 +35,7 @@ pub(super) fn probe_child_in(ptys: &Mutex<HashMap<Uuid, PtyInstance>>, id: Uuid)
     probe_child_contained(child)
 }
 
-/// #1032 - a local session's screen rows, gated on its child actually being alive.
+/// A local session's screen rows, gated on its child actually being alive.
 ///
 /// Why a gate at all: a coding agent's statusline SURVIVES on the frozen grid after the
 /// child dies. Verbatim, ~8s after a confirmed `code: 0`, on every exit path that matters -
@@ -73,7 +73,7 @@ pub(super) fn screen_rows_if_child_alive(
             None => ScreenRowsRead::Unavailable,
         },
         ChildLiveness::Exited { .. } | ChildLiveness::Gone => ScreenRowsRead::SessionOver,
-        // "We could not ask" is NOT "the child is dead". #942 built a three-valued oracle
+        // "We could not ask" is NOT "the child is dead". The oracle is three-valued
         // exactly so those two never merge, and this is the arm that keeps them apart: the
         // same running process reads Alive through a full-rights handle and Unqueryable
         // through one stripped of SYNCHRONIZE. Reporting that as over would deregister a
@@ -82,7 +82,7 @@ pub(super) fn screen_rows_if_child_alive(
     }
 }
 
-/// #942 - probe a child while the caller holds the `ptys` guard, and CONTAIN any panic.
+/// Probe a child while the caller holds the `ptys` guard, and CONTAIN any panic.
 ///
 /// portable-pty locks a mutex of its own inside the child and unwraps it (`try_wait`,
 /// `do_kill`, `process_id` and `as_raw_handle` all do). If that mutex is ever poisoned,
@@ -99,7 +99,7 @@ pub(super) fn probe_child_contained(
         })
 }
 
-/// #942 - ask Windows directly instead of going through `portable_pty::Child::try_wait`.
+/// Ask Windows directly instead of going through `portable_pty::Child::try_wait`.
 /// `WinChild::is_complete` cannot answer honestly: it swallows a failed
 /// `GetExitCodeProcess` and returns "not exited" (so a handle whose query rights were
 /// stripped by AV/EDR, a known scenario here, reads as ALIVE), and its `STILL_ACTIVE`
@@ -148,7 +148,7 @@ pub(super) fn probe_child_liveness(
     }
 }
 
-/// #942 - on Unix `try_wait` is `waitpid(WNOHANG)`: it reports a failed poll as `Err`,
+/// On Unix `try_wait` is `waitpid(WNOHANG)`: it reports a failed poll as `Err`,
 /// so it can be trusted to tell "running" from "we could not ask".
 #[cfg(not(windows))]
 pub(super) fn probe_child_liveness(
@@ -169,7 +169,7 @@ pub(super) fn reap_child_in_background(
 ) -> std::thread::JoinHandle<Result<(), String>> {
     std::thread::spawn(move || match child.wait() {
         Ok(status) => {
-            // #942 - the exit AC asked for. The monitor may have reported this child
+            // The exit AC asked for. The monitor may have reported this child
             // first (it died a hair before our stop); then the event is already on
             // record with the right cause and we only leave a reap crumb.
             let liveness = ChildLiveness::from(&status);

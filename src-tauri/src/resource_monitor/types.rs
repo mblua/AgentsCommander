@@ -125,13 +125,13 @@ impl From<&ObservedProcess> for ResourceProcessSnapshot {
 pub struct ResourceAgentGroupSnapshot {
     pub session_id: String,
     pub name: String,
-    /// #516 - human-readable workgroup label (e.g. "wg-5-dev-team"), or `None`
+    /// Human-readable workgroup label (e.g. "wg-5-dev-team"), or `None`
     /// for non-WG launches. Root-agent groups carry "Root agent".
     pub workgroup: Option<String>,
-    /// #516 - human-readable agent name (e.g. "dev-rust"), or `None` when the
+    /// Human-readable agent name (e.g. "dev-rust"), or `None` when the
     /// launch cwd carries no replica identity.
     pub agent: Option<String>,
-    /// #566 - project folder name (e.g. `"AgentsCommander_ac"`), or `None` for
+    /// Project folder name (e.g. `"AgentsCommander_ac"`), or `None` for
     /// origin / ad-hoc / unparseable launches. Always serialized (no
     /// `skip_serializing_if`) for parity with `workgroup`/`agent`, so the
     /// frontend sees `null` rather than `undefined`.
@@ -161,7 +161,7 @@ pub struct ResourceSnapshot {
     pub app_working_set_bytes: Option<u64>,
     pub groups: Vec<ResourceAgentGroupSnapshot>,
     pub warnings: Vec<String>,
-    /// #2581 - per-agent memory warnings, keyed by session so the UI can name
+    /// Per-agent memory warnings, keyed by session so the UI can name
     /// the agent and link to its row. Not duplicated into `warnings`.
     #[serde(default)]
     pub group_warnings: Vec<ResourceGroupWarning>,
@@ -198,13 +198,13 @@ pub struct ResourceKillResult {
     pub killed_processes: Vec<ProcessIdentity>,
     pub quarantined: bool,
     pub message: String,
-    /// #647 D: true when the kill quarantined AND ANY failure carried the exact
+    /// True when the kill quarantined AND ANY failure carried the exact
     /// `ACCESS_DENIED` code (`win32 error 5`), i.e. a security product is stripping
     /// `PROCESS_TERMINATE`. The per-PID detail stays in `message`; this only ADDS the
     /// AV-exclusion guidance in the UI, so a non-security failure is never hidden.
     #[serde(default)]
     pub blocked_by_security: bool,
-    /// #647 (Step 7): true ONLY when `kill_resource_group` itself finalized the kill,
+    /// True ONLY when `kill_resource_group` itself finalized the kill,
     /// i.e. it verified the tree dead, tore down the PTY/job, and flipped the session
     /// tile to `Exited`. The FE keys success off THIS, not `!quarantined`: a
     /// `Terminating` early-return (a concurrent kill still settling) reports
@@ -230,12 +230,12 @@ pub struct ResourceLaunchMetadata {
     pub name: String,
     pub agent_id: Option<String>,
     pub agent_label: Option<String>,
-    /// #516 - workgroup label derived from the spawn cwd (e.g. "wg-5-dev-team"),
+    /// Workgroup label derived from the spawn cwd (e.g. "wg-5-dev-team"),
     /// "Root agent" for root-agent launches, or `None` for non-WG launches.
     pub workgroup: Option<String>,
-    /// #516 - agent name derived from the spawn cwd (e.g. "dev-rust"), or `None`.
+    /// Agent name derived from the spawn cwd (e.g. "dev-rust"), or `None`.
     pub agent: Option<String>,
-    /// #566 - project folder name derived from the spawn cwd, or `None`.
+    /// Project folder name derived from the spawn cwd, or `None`.
     pub project: Option<String>,
 }
 #[cfg(test)]

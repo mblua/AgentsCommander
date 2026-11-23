@@ -161,14 +161,14 @@ fn run_cli(cmd: Commands, owners: &agentscommander_lib::AppOwners) -> ! {
         // Install the same logger backend the GUI uses so
 
         // every `log::*` call from CLI verbs (the `[task]`
-        // audit lines in particular — plan #137 §3a HIGH-1
+        // audit lines in particular — the HIGH-1
         // mitigation) reaches stderr + <config_dir>/app.log.
         // GATED on `cli.command.is_some()` so the GUI branch
         // below initializes via `lib::run()` exactly once.
         agentscommander_lib::logging::init_logger();
         agentscommander_lib::log_naming_migration_summary(owners.startup_summary.as_ref());
 
-        // Issue #609 Phase 2 - one-line "update available" notice for
+        // One-line "update available" notice for
         // terminal runs. Cache-only (no network, no blocking). M1: gate
         // on an INTERACTIVE stderr, not the AC_MACHINE_OUTPUT allowlist -
         // that allowlist (above) covers only ListPeers/ListPeersLean/
@@ -227,7 +227,7 @@ fn try_acquire_single_instance() -> bool {
     // for the lifetime of the process to hold the mutex.
 }
 
-/// #4788: Linux holds a per-identity lock file instead of the mutex.
+/// Linux holds a per-identity lock file instead of the mutex.
 #[cfg(target_os = "linux")]
 fn try_acquire_single_instance() -> bool {
     agentscommander_lib::config::profile::try_acquire_single_instance_lock()

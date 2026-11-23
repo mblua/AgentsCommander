@@ -164,7 +164,7 @@ pub(crate) fn log_standard_payload(session_id: Uuid, msg: &OutboxMessage, payloa
     );
 }
 
-/// #4309 - gate for rendered peer wake text. The fixed leading `\n` and trailing
+/// Gate for rendered peer wake text. The fixed leading `\n` and trailing
 /// `\n\r` are framing; the rest is data. The whole block stays within the bound.
 pub(crate) fn checked_peer_payload(payload: String) -> Result<String, String> {
     let data = payload
@@ -183,21 +183,21 @@ pub(crate) fn checked_peer_payload(payload: String) -> Result<String, String> {
         .map(|()| payload)
         .map_err(|reason| format!("{ERR_INVALID_PEER_TEXT}: {reason}"))
 }
-/// #4309 - true when the written body depends on the recipient backend: only a
+/// True when the written body depends on the recipient backend: only a
 /// container recipient inlines a FilesystemPoller file notification.
 pub(crate) fn body_depends_on_backend(msg: &OutboxMessage, origin: WakeDeliveryOrigin) -> bool {
     msg.command.is_none()
         && origin == WakeDeliveryOrigin::FilesystemPoller
         && crate::phone::messaging::parse_file_notification(&msg.body).is_some()
 }
-/// #4309 - true when a session created from `plan` runs in a container.
+/// True when a session created from `plan` runs in a container.
 pub(crate) fn plan_is_container(plan: &ResolvedWakeSpawnPlan) -> bool {
     plan.configured_spawn.as_ref().is_some_and(|spawn| {
         crate::pty::backend::SessionBackendKind::from(&spawn.backend)
             == crate::pty::backend::SessionBackendKind::ContainerTransport
     })
 }
-/// #4309 - pre-actuation gate for the exact peer text a wake writes when its
+/// Pre-actuation gate for the exact peer text a wake writes when its
 /// standard body is `body`. Production peer wakes inject interactively
 /// (`inject_wake_into_pty` passes `true`), so response markers never render.
 pub(crate) fn admit_peer_text(

@@ -37,7 +37,7 @@ impl PtySubmissionAgent {
             Some(Self::Codex)
         } else if stem == "agy" || stem == "antigravity" {
             // Exact stems only — no `configured_wrapper` prefix allowance for
-            // Antigravity (plan #1482 §5.1).
+            // Antigravity.
             Some(Self::Antigravity)
         } else if stem == "agent" {
             Some(Self::CursorAgent)
