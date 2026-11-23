@@ -95,12 +95,12 @@ const HOST_FINAL_NONCE: &str = "cfe821546eab901d4b548d56b77f42d5587865d709a76a31
 const HOST_PANIC_NONCE: &str = "d4ce25af58bfe2f151aebfa3b5865a627a52da87eb8d4ad303049568dc718d33";
 const PROJECT: &str = "project";
 const WORKGROUP: &str = "wg-1-dev-team";
-/// #1614 section 9.1 "API and snapshot fixture twins". Added BESIDE
+/// Section 9.1 "API and snapshot fixture twins". Added BESIDE
 /// `WORKGROUP`, never replacing it: a legacy fixture is the only way
 /// dual-prefix acceptance is testable at all (Rule P2), so this file keeps
 /// exercising `wg-1-dev-team` and gains the Room case.
 const ROOM: &str = "room-1-dev-team";
-/// #2317: a second room, distinct workgroup, used by a foreign-room
+/// A second room, distinct workgroup, used by a foreign-room
 /// coordinator to prove cross-room denial.
 const ROOM2: &str = "room-2-dev-team";
 
