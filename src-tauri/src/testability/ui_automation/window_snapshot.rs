@@ -13,19 +13,28 @@ const SNAPSHOT_AWAIT_LIMIT: Duration = Duration::from_secs(4);
 pub(crate) const MAX_SNAPSHOT_PNG_BYTES: usize = 33_554_432;
 
 // Only the Linux adapter builds these; tests build them on every OS.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "only the Linux adapter builds it outside tests")
+)]
 pub(crate) struct WindowSnapshotPng {
     pub png: Vec<u8>,
     pub width: u32,
     pub height: u32,
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "only the Linux adapter builds it outside tests")
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WindowSnapshotError {
     WindowNotFound,
     // Built only by the non-Linux adapter.
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    #[cfg_attr(
+        target_os = "linux",
+        allow(dead_code, reason = "built only by the non-Linux adapter")
+    )]
     Unsupported,
     Timeout,
     Failed(String),
