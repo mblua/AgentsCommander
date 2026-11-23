@@ -48,7 +48,7 @@ impl ResourceMonitorState {
                     .groups
                     .iter()
                     .filter_map(|(id, group)| {
-                        // #647 C: include Quarantined so its process list is
+                        // Include Quarantined so its process list is
                         // re-observed each snapshot (unfreezes the display for the
                         // root-alive / EDR-residual case). Reap-safe: merge_sample
                         // only strike-counts/nominates Running groups.
@@ -81,7 +81,7 @@ impl ResourceMonitorState {
         joined
     }
 
-    /// #559 (H1) - snapshot-path merge. Advances the missing-root strike counter and,
+    /// Snapshot-path merge. Advances the missing-root strike counter and,
     /// when it reaches `REAP_STRIKES`, NOMINATES the group for reap (returns its root
     /// identity) without reaping: the reap is gated by a direct `observe_identity`
     /// confirm done outside the lock in `snapshot()`. Preserves `merge_tree`'s warning
@@ -103,7 +103,7 @@ impl ResourceMonitorState {
             return none;
         };
 
-        // #559 (H1) - read the signal from the structured errors BEFORE moving the tree.
+        // Read the signal from the structured errors BEFORE moving the tree.
         let root_missing = tree
             .errors
             .iter()
@@ -113,7 +113,7 @@ impl ResourceMonitorState {
             .iter()
             .any(|p| p.identity == group.root_identity);
 
-        // #632 B2b - capture the live identity set and whether the sample is CLEAN
+        // Capture the live identity set and whether the sample is CLEAN
         // before merge_observed consumes the tree. "Clean" = no enumeration errors at
         // all (no missing root, no per-pid "identity unavailable" placeholder), so a
         // partial/racy toolhelp snapshot can never drop a live descendant.
@@ -124,16 +124,16 @@ impl ResourceMonitorState {
         group.descendants_observed |= tree.processes.len() > 1;
         merge_observed(&mut group.observed_processes, tree.processes);
 
-        // #632 B2b - on a CLEAN sample with the root observed alive, the fresh tree is
+        // On a CLEAN sample with the root observed alive, the fresh tree is
         // the authoritative live set, so drop entries no longer present. Gated on
         // `root_alive && sample_clean` (MED-3): a missing-root, partial, or
         // ACCESS_DENIED-placeholder sample keeps the last-known set - that case is
-        // owned by the #559 strike/reap logic below, and keeping it avoids dropping a
+        // owned by the strike/reap logic below, and keeping it avoids dropping a
         // live child a racy snapshot momentarily missed (which would weaken the no-job
         // reaper fallback). A clean tree always contains the root, so the root is
         // retained.
         //
-        // KNOWN RESIDUAL (#637): a still-alive grandchild whose intermediate parent
+        // KNOWN RESIDUAL: a still-alive grandchild whose intermediate parent
         // exited is unreachable from the root in this BFS (Windows does not reparent)
         // yet the sample still looks clean, so it is pruned here. Harmless for jobbed
         // sessions (the Job Object kills the whole tree regardless of reachability);
@@ -167,7 +167,7 @@ impl ResourceMonitorState {
         }
     }
 
-    /// #559 (H1) - perform the confirmed reap under the lock. Re-checks the group is
+    /// Perform the confirmed reap under the lock. Re-checks the group is
     /// still Running, still at the strike threshold, and still the same root, so a
     /// concurrent `kill_group` that already terminated it wins and this becomes a no-op.
     pub(super) fn apply_reap(&self, session_id: Uuid, root: ProcessIdentity) {
@@ -194,7 +194,7 @@ impl ResourceMonitorState {
         }
     }
 
-    /// #559 (H1) - the confirm said the root is alive (or was unverifiable); clear the
+    /// The confirm said the root is alive (or was unverifiable); clear the
     /// strikes so a future genuine exit starts counting fresh.
     pub(super) fn reset_missing_root_strikes(&self, session_id: Uuid, root: ProcessIdentity) {
         if let Ok(mut inner) = self.inner.lock() {
@@ -207,7 +207,7 @@ impl ResourceMonitorState {
         }
     }
 
-    /// #559 (H3) - bound retained Terminated rows so inner.groups cannot grow without
+    /// Bound retained Terminated rows so inner.groups cannot grow without
     /// limit. Keeps the `MAX_TERMINATED_RETAINED` most recent; evicts the oldest.
     /// Released-permit Terminated groups never count toward `active_count`, so eviction
     /// never affects the cap.

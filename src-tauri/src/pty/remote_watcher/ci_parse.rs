@@ -15,7 +15,7 @@ use super::{
 };
 
 /// The compare answer for one key: the staleness state, `behind_by`, `ahead_by`
-/// and whether GitHub said `identical`. `ahead_by` is #2141's suppression input:
+/// and whether GitHub said `identical`. `ahead_by` is the suppression input:
 /// `Some(0)` means the branch carries no commit of its own, and `None` means the
 /// field was absent or out of range, which fails open.
 pub(crate) type CompareAnswer =
@@ -23,7 +23,7 @@ pub(crate) type CompareAnswer =
 
 /// The CI answer for one branch: the filtered state plus whether that branch
 /// has any run at all, which the identical-to-default rule reads. `run_ids`
-/// and `pull_requests` (#2473) come from the kept rows that are not completed.
+/// and `pull_requests` come from the kept rows that are not completed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CiAnswer {
     pub(crate) state: CiState,
@@ -418,7 +418,7 @@ pub(crate) async fn corroborate_ci_run(
 /// said `identical`, which is the same statement the CI suppression rule needs.
 /// `ahead_by` is read with the same shape as `behind_by` and is NOT part of the
 /// classification: an absent or out-of-range value is `None`, never an error,
-/// because #2141 fails open on it.
+/// because the suppression fails open on it.
 pub(crate) fn parse_compare_response(body: &str) -> CompareAnswer {
     let value: serde_json::Value = serde_json::from_str(body).map_err(|_| FailureKind::Other)?;
     let status = value

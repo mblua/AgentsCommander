@@ -539,7 +539,7 @@ impl ResponseCloseState {
             && route.generation == b.member.generation
     }
 
-    /// #3317 - read-only: the route still carries this ticket's exact committed close.
+    /// Read-only: the route still carries this ticket's exact committed close.
     pub(crate) fn discarded_close_is_current(&self, ticket: &ResponseCloseTicket) -> bool {
         self.with_inner(|inner| {
             inner
@@ -550,7 +550,7 @@ impl ResponseCloseState {
         .unwrap_or(false)
     }
 
-    /// #3317 - retire this ticket's exact committed close after a quiescent discard.
+    /// Retire this ticket's exact committed close after a quiescent discard.
     pub(crate) fn retire_discarded_close(
         &self,
         ticket: &ResponseCloseTicket,

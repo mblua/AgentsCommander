@@ -59,7 +59,7 @@ fn is_exact_pi_executable(value: &str) -> bool {
     )
 }
 
-/// #1873 - true only for a direct shell whose exact, case-sensitive file stem is
+/// True only for a direct shell whose exact, case-sensitive file stem is
 /// `muse` (`muse`, `/opt/muse/bin/muse`, `muse.exe`). Prefix names (`muse-agent`,
 /// `musee`) and mixed case (`Muse`) are rejected; arguments are never inspected.
 pub(super) fn is_exact_muse_executable(shell: &str) -> bool {
