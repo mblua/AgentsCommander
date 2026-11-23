@@ -10,7 +10,7 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 
-// #1347 — the Gemini API Key and each Telegram Bot Token carry a red notice
+// The Gemini API Key and each Telegram Bot Token carry a red notice
 // saying the value is persisted unencrypted, naming the instance settings.30.instance.no-git.json.
 // The notice is informational only: it never blocks saving.
 

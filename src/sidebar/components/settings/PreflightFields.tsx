@@ -1,4 +1,4 @@
-// #3516 - the collapsed "Preflight" block of a Coding Agent card or a Profile cell.
+// The collapsed "Preflight" block of a Coding Agent card or a Profile cell.
 // Controlled: the modal owns every value and draft; this block keeps no state.
 import { type Component, Show, createUniqueId } from "solid-js";
 import { INVALID_TIMEOUT_TEXT } from "./preflightModel";

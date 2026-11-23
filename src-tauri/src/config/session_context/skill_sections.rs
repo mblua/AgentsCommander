@@ -194,7 +194,7 @@ const AMENDMENT_START: &str = "Filesystem authorization amendment: You MAY READ"
 const AMENDMENT_END: &str =
     "This read authorization also applies when no preceding filesystem rule exists.\n\n";
 
-// #4752: with Lifted, drop the amendment sentence group and keep the text around it.
+// With Lifted, drop the amendment sentence group and keep the text around it.
 fn apply_amendment_policy(text: String, restrictions: WorkspaceRestrictions) -> String {
     if restrictions == WorkspaceRestrictions::Enforced {
         return text;

@@ -101,7 +101,7 @@ async fn issue_1937_selection_api_bulk_assign_and_lock_requires_decision() {
     )
     .await
     .expect_err("a force decision still needs the reviewed fingerprint");
-    // #2051 - a missing fingerprint is reported as missing, never stale.
+    // A missing fingerprint is reported as missing, never stale.
     assert!(error.contains("confirmationMissing"), "{error}");
     assert!(!error.contains("Target selection changed"), "{error}");
     assert_eq!(config_bytes(&anchor), bytes_before);

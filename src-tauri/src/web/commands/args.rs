@@ -12,10 +12,10 @@ pub(super) fn require_str(args: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Missing required field: {key}"))
 }
 
-/// #973 - a terminal dimension off the wire, for `pty_resize`.
+/// A terminal dimension off the wire, for `pty_resize`.
 ///
 /// This is a network-facing input path, and `as u16` SILENTLY TRUNCATES: `cols: 65536` arrives
-/// at the PTY as **0**, and `cols: 65537` as **1**. A zero-column `ConPTY` is precisely what #973
+/// at the PTY as **0**, and `cols: 65537` as **1**. A zero-column `ConPTY` is what this type
 /// exists to keep out, and a one-column one is not much better - both from a number that looked
 /// perfectly plausible on the wire.
 ///

@@ -12,7 +12,7 @@ pub(super) fn assert_no_issue_1330_temp_files(directory: &std::path::Path) {
     }
 }
 
-/// #2058 - put `settings` on disk in exactly the bytes a production save
+/// Put `settings` on disk in exactly the bytes a production save
 /// produces, and return them. The file is absent beforehand, so D3's
 /// `disk_read == None` arm skips rotation and no slot exists on return.
 fn seed_settings_with_production_bytes(

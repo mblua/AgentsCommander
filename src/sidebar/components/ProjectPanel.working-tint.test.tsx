@@ -22,7 +22,7 @@ import { splitRoomsByActive, splitRoomsByWorking } from "./room-session";
 import RoomGroupRail from "./RoomGroupRail";
 import type { CiState } from "../../shared/types";
 
-// #1755 leg 2 — ProjectPanel must put `working` on the right elements in the
+// ProjectPanel must put `working` on the right elements in the
 // right states and take it off again. Every test below carries its idle control
 // INSIDE the same run, so a detector that tints everything fails rather than
 // passing on a lucky positive.
@@ -47,7 +47,7 @@ const ORCHESTRATOR = "orchestrator";
 const WORKER = "worker";
 const BYSTANDER = "bystander";
 
-// #1783 - the second room. It exists to separate "this room is working" from
+// The second room. It exists to separate "this room is working" from
 // "something somewhere is working". With a single room those are the same
 // proposition in every frame, so no single-room test can tell them apart. It is
 // mutation M6 in the plan's section 8 that this room kills, and nothing else in
@@ -64,7 +64,7 @@ const sessionId = (name: string): string => `session-${name}`;
 const rowTestId = (context: string, replica: string, wg = wgName): string =>
   `replica.row.${automationIdPart(context)}.${automationIdPart(replicaPath(replica, wg))}`;
 
-// #2131 - the repo every row in the CI tint block points at. `ciRepoPath()` is the
+// The repo every row in the CI tint block points at. `ciRepoPath()` is the
 // exact string the remote-activity payload is keyed by, which is why it is written
 // once and shared by the discovery and the publish helper.
 const CI_REPO_DIR = "repo-AgentsCommander";
@@ -495,7 +495,7 @@ describe("ProjectPanel working tint (#1755)", () => {
   });
 
   it("8. a quick-access row tints when a room member works and its own session is idle", async () => {
-    // #1783 acceptance criteria 1 and 2. Three controls live in this one render:
+    // Acceptance criteria 1 and 2. Three controls live in this one render:
     // the control room's quick row (kills a constant-true predicate, a
     // project-wide "anything is working" predicate, and a room-wide check
     // hand-rolled off raw session status), and the SAME orchestrator's
@@ -540,7 +540,7 @@ describe("ProjectPanel working tint (#1755)", () => {
   });
 
   it("9. the room-wide rule does not leak into either .ac-wg-subgroup context", async () => {
-    // #1783 acceptance criteria 4 and 5. renderReplicaItem is a shared factory,
+    // Acceptance criteria 4 and 5. renderReplicaItem is a shared factory,
     // so an edit that forgets to condition on rowContext tints every member row
     // of a working room. TWO rowContext values render inside .ac-wg-subgroup,
     // "workgroups" (ProjectPanel.tsx:2870) and "selected" (:2810), and this test
@@ -804,7 +804,7 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
         expect(row(rendered.root, "workgroups", ORCHESTRATOR).classList.contains("working")).toBe(true)
       );
 
-      // #2202 - the session-only primitive is unchanged: neither room is WORKING.
+      // The session-only primitive is unchanged: neither room is WORKING.
       const split = splitRoomsByWorking(projectStore.projects[0].workgroups);
       expect(split.working.map((group) => group.name)).toEqual([]);
       expect(split.notWorking.map((group) => group.name)).toEqual([wgName, IDLE_ROOM]);
@@ -842,7 +842,7 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
         replicaSession(ORCHESTRATOR, "idle"),
         replicaSession(WORKER, "idle"),
       ]);
-      // #2151 - the strip row must exist before it is asserted on, or an absent row
+      // The strip row must exist before it is asserted on, or an absent row
       // would let the assertion below fail (or pass) for the wrong reason.
       await waitFor(() =>
         expect(

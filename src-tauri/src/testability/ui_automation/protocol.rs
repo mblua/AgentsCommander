@@ -113,7 +113,7 @@ pub enum UiAutomationAction {
 }
 
 impl UiAutomationAction {
-    /// #944 - exhaustive on purpose. A new variant is a COMPILE error here, and the
+    /// Exhaustive on purpose. A new variant is a COMPILE error here, and the
     /// `None` terminator bounds the walk, so a variant cannot be silently left out of
     /// the iteration the way a hand-written `[UiAutomationAction; N]` array lets it be
     /// (name the variant in the forced match arm, forget the array, and the parity test

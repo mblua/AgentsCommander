@@ -15,7 +15,7 @@ import { sessionsStore } from "./stores/sessions";
 import { isSessionWorking } from "../shared/session-activity";
 import type { Session, SessionCommunication } from "../shared/types";
 
-// #1856: the sidebar's view of session.communication is fed ONLY by the
+// The sidebar's view of session.communication is fed ONLY by the
 // session_communication_changed event, so any missed edge (a backend clobber, a
 // dropped event, a transport reconnect, a reload) latches a wrong notice forever
 // because the backend does not republish while the screen is quiet. The five

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4810 - the one sidebar filter row follows the stuck group header.
+// The one sidebar filter row follows the stuck group header.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot } from "solid-js";
 import { createSidebarFilterHost, pickHostIndex, placeFilterRow } from "./sidebar-filter-host";

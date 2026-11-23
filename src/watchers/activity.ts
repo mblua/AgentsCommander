@@ -8,7 +8,7 @@ import type {
 } from "../shared/types";
 
 /**
- * #1171 - the pure half of the activity window: merging, freezing and filtering.
+ * The pure half of the activity window: merging, freezing and filtering.
  *
  * Kept out of the TSX so the merge in particular can be tested directly. It is the piece
  * that decides whether a match arriving while the snapshot is in flight is shown once,

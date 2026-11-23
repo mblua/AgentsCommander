@@ -14,7 +14,7 @@ import { replicaVolatileStore } from "../stores/replica-volatile";
 import { remoteActivityByPath, remoteActivityStore } from "../stores/remote-activity";
 import type { CiState, StalenessState } from "../../shared/types";
 
-// #2064 Phase C — the CI ring and the stale bar on the orchestrator repo chip.
+// The CI ring and the stale bar on the orchestrator repo chip.
 //
 // These render the real ProjectPanel through the FakeTransport harness and assert the
 // DOM, per the frontend-visual-verification discipline. They cover the CLASS and the

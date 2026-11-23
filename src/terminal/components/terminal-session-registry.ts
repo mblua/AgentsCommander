@@ -1,5 +1,5 @@
 /**
- * #1283 - terminal instance registry: the bounded four-entry LRU and the
+ * Terminal instance registry: the bounded four-entry LRU and the
  * exact-once synchronous resource-disposal rule (plan 5.1 / 5.5 / 14.4).
  *
  * This deep module owns the terminal map, LRU recency, DOM removal, Xterm
@@ -40,10 +40,10 @@ export interface SessionTerminalEntry {
   readonly fitAddon: FitAddon;
   webglAddon: WebglAddon | null;
   readonly replayStatus: HTMLDivElement;
-  /** #1682 - the last-agent-message stamp element in the status strip. Hidden
+  /** The last-agent-message stamp element in the status strip. Hidden
    *  and empty until a value arrives. */
   readonly agentMessageStatus: HTMLDivElement;
-  /** #1682 - epoch ms of the rendered stamp, or `null` before the first one.
+  /** Epoch ms of the rendered stamp, or `null` before the first one.
    *  The monotonic watermark that keeps a late hydration from overwriting a
    *  newer event that already landed on this same entry. */
   agentMessageAtMs: number | null;
@@ -59,7 +59,7 @@ export interface SessionTerminalEntry {
   resizeRetryAttempts: number;
   /** Seed settle warning timer; cancelled at disposal. */
   snapshotSettleTimer: ReturnType<typeof setTimeout> | null;
-  /** #961 seed/reconcile state. While an attach is in flight the live events
+  /** Seed/reconcile state. While an attach is in flight the live events
    *  are BOTH written and retained, so the seed that lands afterwards can be
    *  applied by reset-then-replay instead of gating the live bytes behind it. */
   snapshotReplayPending: boolean;

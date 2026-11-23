@@ -145,7 +145,7 @@ fn a_session_id_that_is_not_a_uuid_is_rejected() {
     assert!(get_watcher_activity(app.handle().clone(), "nope".into(), None).is_err());
 }
 
-/// #2566 - no engine managed is the feature being off: an empty map, never a panic.
+/// No engine managed is the feature being off: an empty map, never a panic.
 #[test]
 fn get_agent_quota_readings_answers_an_empty_map_when_the_engine_is_unmanaged() {
     let app = settings_app(AppSettings::default());
@@ -156,7 +156,7 @@ fn get_agent_quota_readings_answers_an_empty_map_when_the_engine_is_unmanaged() 
     );
 }
 
-/// #2566 - one session on `a1` fills every agent on its command, `a2` included.
+/// One session on `a1` fills every agent on its command, `a2` included.
 #[test]
 fn get_agent_quota_readings_returns_every_agent_on_the_command() {
     use crate::pty::agent_quota::source::SourceSpec;

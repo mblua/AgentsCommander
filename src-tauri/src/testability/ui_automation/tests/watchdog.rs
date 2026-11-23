@@ -38,7 +38,7 @@ impl ProcessTreeBackend for UnsupportedAutomationBackend {
     }
 }
 
-/// #1151 - supported process-tree backend for the automation tests. `observe_tree`
+/// Supported process-tree backend for the automation tests. `observe_tree`
 /// synthesises a root plus one child from the requested root identity, so every
 /// registered group gets distinct identities and a private-bytes total above the
 /// kill thresholds these tests configure. A pid marked stubborn fails
@@ -320,7 +320,7 @@ fn build_kill_results_app(
         .expect("build kill-results automation app")
 }
 
-// #1151 (A3) - the automation `killResults` contract for the two split outcomes.
+// (A3) - the automation `killResults` contract for the two split outcomes.
 // `alreadyPending` keeps its value and type byte-identical so no existing automation
 // breaks; `reason` is the additive discriminator that makes the split observable.
 #[tokio::test]
@@ -421,7 +421,7 @@ async fn watchdog_kill_results_preserve_already_pending_contract() {
     let _ = waiter.await;
 }
 
-/// #1151 - registers a group, quarantines its cleanup on a stubborn child, and leaves
+/// Registers a group, quarantines its cleanup on a stubborn child, and leaves
 /// the retry backoff already satisfied. No public session row is ever created, which
 /// is precisely what makes the group an orphan.
 fn orphan_automation_group(
@@ -471,7 +471,7 @@ async fn automation_app_with_coordinator(
     (app, coordinator)
 }
 
-// #1151 (A1) - the deterministic native artifact for a successful reclaim. Everything
+// (A1) - the deterministic native artifact for a successful reclaim. Everything
 // is read from quarantineRetries[0], NEVER from diagnostics.snapshot, which is captured
 // before the action loop and would still read activeAgentGroups = 1 on a correct build.
 #[tokio::test]
@@ -514,7 +514,7 @@ async fn quarantine_retry_mode_reports_completed_orphan_cleanup() {
     coordinator.close_and_join().await;
 }
 
-// #1151 (A2) - the safety artifact. An owned descendant that is still unverifiable
+// (A2) - the safety artifact. An owned descendant that is still unverifiable
 // keeps blocking capacity, and the report says so instead of claiming a reclaim.
 #[tokio::test]
 async fn quarantine_retry_mode_reports_still_blocked_group() {
@@ -550,7 +550,7 @@ async fn quarantine_retry_mode_reports_still_blocked_group() {
     coordinator.close_and_join().await;
 }
 
-// #1151 (A4) - an unsupported backend stays at zero admission and zero enforcement
+// (A4) - an unsupported backend stays at zero admission and zero enforcement
 // calls in the new mode too.
 #[tokio::test]
 async fn unsupported_backend_quarantine_retry_is_disabled() {

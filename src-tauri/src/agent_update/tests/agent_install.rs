@@ -1,7 +1,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------
-// #2736 - silent coding-agent install runner
+// Silent coding-agent install runner
 // ---------------------------------------------------------------------
 
 const INSTALL_FRAME_CAP: Duration = Duration::from_secs(30);

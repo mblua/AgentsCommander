@@ -181,7 +181,7 @@ fn issue_id_is_stable_across_index_and_resolved_paths() {
 
 #[test]
 fn snapshot_carries_the_instance_settings_file_path() {
-    // #1347: the UI names the file that holds the plaintext secrets. Assert
+    // The UI names the file that holds the plaintext secrets. Assert
     // agreement with config_dir() rather than a literal path, so the test is
     // independent of where the test binary happens to live.
     let snap = settings_snapshot_from(&AppSettings::default(), None);

@@ -174,7 +174,7 @@ describe("ProjectPanel restart-failure toast (#574)", () => {
       // and the actionable tail exist ONLY in launchErrorMessage's output, never in
       // the raw "...: 16/16 agent groups are active" reject. A regression swapping
       // launchErrorMessage(e) for String(e) would fail here, so this genuinely
-      // guards that the catch funnels through normalization (#573's path).
+      // guards that the catch funnels through normalization.
       const toastText = q("toast.item")?.textContent ?? "";
       expect(toastText).toContain("Resource Monitor cap reached (16/16).");
       expect(toastText).toContain("Close an agent or raise the limit in Settings > Resources.");

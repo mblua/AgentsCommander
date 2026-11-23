@@ -1,4 +1,4 @@
-// #2410 - generic guard: every class token used in markup must have a CSS rule.
+// Generic guard: every class token used in markup must have a CSS rule.
 // Origin defect: #2409 (a literal class in new markup with no stylesheet rule).
 //
 // Used classes are PARSER-BACKED (TypeScript compiler API, same approach as

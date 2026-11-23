@@ -23,9 +23,9 @@ import { defaultGroupsConfig } from "../stores/workgroup-groups";
 import { sessionsStore } from "../stores/sessions";
 import type { Session } from "../../shared/types";
 
-// #2271 phase 8 - the three components that paint the circle today must carry
+// The three components that paint the circle today must carry
 // the new state: SessionItem, RootAgentBanner and the ProjectPanel replica row.
-// #2408 - Co-managed is an additive `comanaged` ring class: the dot keeps its
+// Co-managed is an additive `comanaged` ring class: the dot keeps its
 // real activity class, and clearing the flag removes only `comanaged`.
 // The Co-managed flag lives in the store's sidecar map, keyed by session id, so
 // every leg drives the map through the public setter instead of a Session field.
@@ -254,7 +254,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  // #2408 - each site's dot classes are exactly `session-item-status <activity>`
+  // Each site's dot classes are exactly `session-item-status <activity>`
   // plus `comanaged`; clearing the flag removes only the ring class.
   // `active` is SessionItem-only: the store the other two sites read from
   // settles a live session's status to `running`.
@@ -327,7 +327,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  // #2408 round 4 - a reactive `class` rewrite must not drop the ring. Solid's
+  // A reactive `class` rewrite must not drop the ring. Solid's
   // `class` wipes classList-owned names and an unchanged classList value does
   // not restore them, so each site is driven through an activity change with
   // capture held, then through a capture toggle with activity held.
@@ -445,7 +445,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
       const pendingDot = dotOf(itemRow(rendered.root, pending.id));
       expect(waitingDot.classList.contains("comanaged")).toBe(true);
       expect(pendingDot.classList.contains("comanaged")).toBe(true);
-      // #2408 - the ring never hides the real activity colour.
+      // The ring never hides the real activity colour.
       expect(waitingDot.classList.contains("waiting")).toBe(true);
       expect(pendingDot.classList.contains("pending")).toBe(true);
 
