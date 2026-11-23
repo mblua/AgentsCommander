@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatAgentMessageStamp, formatClockTime } from "./time-format";
 
 /**
- * #1171 test 76: `at` parses with `new Date(value)` and the clock is zero-padded 24-hour
+ * `at` parses with `new Date(value)` and the clock is zero-padded 24-hour
  * `HH:MM:SS`, not the viewer's locale.
  */
 describe("formatClockTime (#1171)", () => {
@@ -41,7 +41,7 @@ describe("formatClockTime (#1171)", () => {
 });
 
 /**
- * #1682 - the terminal status strip's stamp: local `MM-DD HH:MM`, no year and no
+ * The terminal status strip's stamp: local `MM-DD HH:MM`, no year and no
  * seconds, and the empty string rather than a placeholder when there is nothing
  * to show. Inputs are built from LOCAL parts so the assertions pin the FORMAT and
  * not the runner's timezone.

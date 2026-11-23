@@ -50,8 +50,8 @@ pub(crate) async fn prepare_default_spec_directory(repo: &Path) -> Result<PathBu
     Ok(default_dir)
 }
 
-/// #4590 - UTF-8 decode errors of spec files. Each variant keeps the
-/// `FromUtf8Error` as `source()`; the text equals the pre-#4590 string.
+/// UTF-8 decode errors of spec files. Each variant keeps the
+/// `FromUtf8Error` as `source()`; the text equals the previous string.
 #[derive(Debug, thiserror::Error)]
 enum SpecTextError {
     #[error("Spec file must be valid UTF-8")]

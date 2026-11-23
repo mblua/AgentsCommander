@@ -16,7 +16,7 @@ use uuid::Uuid;
 /// session's attach count is `set.len()`.
 ///
 /// The count is what stops a second window from stealing or releasing the first window's
-/// delivery, which is the whole of #1363. The label is what makes the count count OWNERS
+/// delivery, which is the whole point. The label is what makes the count count OWNERS
 /// rather than CALLS: a bare counter cannot tell a decrement owed by window 1 from one issued
 /// by window 2, so a single over-detach out of the frontend's several disposal paths would
 /// silently mute a session another window is still watching. With labels every one of those

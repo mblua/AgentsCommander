@@ -7,7 +7,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { AgentConfig, ProfileCellConfig } from "../../shared/types";
 
-// #3516 - the Preflight blocks inside Settings: save round-trip, key removal,
+// The Preflight blocks inside Settings: save round-trip, key removal,
 // invalid timeout drafts that block Save even when collapsed, refetch survival,
 // and Escape ownership while the test panel is open.
 

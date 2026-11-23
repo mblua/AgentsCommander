@@ -171,7 +171,7 @@ describe("toastStore (#574)", () => {
   });
 });
 
-// #1857: the aggregated blocked-menu notice is a single PINNED toast. These
+// The aggregated blocked-menu notice is a single PINNED toast. These
 // pin the two measured ways the old per-session toasts were lost: eviction past
 // MAX_VISIBLE, and the dismiss animation deleting a freshly re-pushed message.
 describe("pinned toasts and the dismiss/re-push race (#1857)", () => {

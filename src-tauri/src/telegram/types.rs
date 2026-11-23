@@ -15,7 +15,7 @@ pub struct TelegramBotConfig {
     pub color: String,
 }
 
-/// Manual `Debug` so `{:?}` never prints the bot token (#4319).
+/// Manual `Debug` so `{:?}` never prints the bot token.
 /// Serialization is unchanged: `settings.json` still stores the token.
 impl std::fmt::Debug for TelegramBotConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
