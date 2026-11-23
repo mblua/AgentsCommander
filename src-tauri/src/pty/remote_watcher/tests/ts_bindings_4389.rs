@@ -1,4 +1,4 @@
-//! #4389: TypeScript form of the remote-activity payload, generated from Rust.
+//! TypeScript form of the remote-activity payload, generated from Rust.
 //! A normal run compares it with the committed file; `AC_TS_BINDINGS_WRITE=1` rewrites it.
 use super::*;
 use ts_rs::{Config, TS};

@@ -1,6 +1,6 @@
 use super::*;
 
-/// Regression for the #1080 CI failure: on a Windows runner whose `%TEMP%` is
+/// Regression for a CI failure: on a Windows runner whose `%TEMP%` is
 /// an 8.3 short name (`RUNNER~1`), `tempdir()` yields short-form paths and a
 /// relative `.` archive absolutises to that short form. Storing the raw
 /// (short) path lets the lexical archive lookup match, while the archived
@@ -331,7 +331,7 @@ async fn archive_project_inner_absolutizes_relative_path_and_emits_archive_event
     // Store the RAW path so the relative "." archive lookup (which absolutises
     // against the CWD, and on a runner whose %TEMP% is an 8.3 short name is the
     // short form) still matches lexically. The archived RUNTIME field is the
-    // decoder's SELECTED canonical form (#1077 §3.4), which the assertion
+    // decoder's SELECTED canonical form, which the assertion
     // below expects; the event still carries the raw absolutised input.
     let path = project.to_string_lossy().to_string();
     let archived_expected = canonical_display(&project);
@@ -612,7 +612,7 @@ async fn archive_project_inner_rolls_back_vanished_project_without_validation() 
     .expect_err("late liveness should roll back vanished project");
 
     assert!(err.contains("open session"), "{err}");
-    // #1077: the rollback is disk-authoritative. The vanished project is
+    // The rollback is disk-authoritative. The vanished project is
     // active again on disk, but excluded from the SELECTED active runtime
     // (session restoration must not restore an unvalidated directory) and it
     // is not archived, so both in-memory lists are empty.

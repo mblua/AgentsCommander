@@ -31,7 +31,7 @@ fn root_help_lists_public_subcommands() {
         "new-project",
         "telegram-send-image",
         "telegram-send-message",
-        // #1614: `room` is the canonical subcommand; `workgroup` remains an
+        // `room` is the canonical subcommand; `workgroup` remains an
         // accepted deprecated alias, and D9 hides an alias from help on purpose,
         // so root help must list `room` and must NOT list `workgroup`.
         "room",
@@ -43,9 +43,9 @@ fn root_help_lists_public_subcommands() {
             "root help missing {command}:\n{stdout}"
         );
     }
-    // #654 (`d20f5ea`) hid these internal verbs from `--help` via `hide = true`.
-    // They must NOT appear in root help. (#657 test-debt fix: the expected list
-    // above still required them after #654 landed, leaving this test red on main.)
+    // Commit `d20f5ea` hid these internal verbs from `--help` via `hide = true`.
+    // They must NOT appear in root help. (test-debt fix: the expected list
+    // above still required them after it landed, leaving this test red on main.)
     for hidden in ["role-experiment", "test-reset", "window-info"] {
         assert!(
             !stdout.contains(hidden),
@@ -441,10 +441,10 @@ fn read_only_json_commands_missing_config_contracts() {
     }
 }
 
-/// #698 raisedHand contract with negative cases; #747 flipped the exited row:
+/// RaisedHand contract with negative cases; a later change flipped the exited row:
 /// a coordinator row with `{"exited":0}` + visible raise-hand is EXACTLY the
 /// dormant-restored shape (every real-exit path clears communication in
-/// `mark_exited`, so it can only be produced by the #747 restore) and now
+/// `mark_exited`, so it can only be produced by the restore) and now
 /// reports `raisedHand: true`.
 #[test]
 fn list_sessions_outputs_raised_hand_boolean_with_negative_cases() {

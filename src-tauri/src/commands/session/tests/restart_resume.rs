@@ -1,6 +1,6 @@
 use super::*;
 
-// (#1793) Phase 1b: restart auto-resume wake policy and target selection.
+// Phase 1b: restart auto-resume wake policy and target selection.
 
 fn restart_resume_info(id: &str, status: SessionStatus, waiting_for_input: bool) -> SessionInfo {
     SessionInfo {

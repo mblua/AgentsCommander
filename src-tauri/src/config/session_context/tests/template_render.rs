@@ -165,7 +165,7 @@ fn default_agent_template_keeps_coarse_placeholder_order_after_summarization() {
     assert!(template.ends_with('\n'));
 }
 
-/// #2031: the shipped default carries the Answering rule exactly once, after
+/// The shipped default carries the Answering rule exactly once, after
 /// the messaging token, byte-for-byte, with no U+2014.
 #[test]
 fn default_agent_template_carries_answering_section_once_after_messaging() {

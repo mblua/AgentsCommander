@@ -82,13 +82,13 @@ pub(crate) const FIELD_PROJECT_PATHS_REL: &str = "projectPathsRelativeToInstance
 pub(crate) const FIELD_ARCHIVED: &str = "archivedProjectPaths";
 pub(crate) const FIELD_ARCHIVED_REL: &str = "archivedProjectPathsRelativeToInstance";
 pub(crate) const FIELD_TERMINAL_SNAPSHOTS_ENABLED: &str = "terminalSnapshotsEnabled";
-/// #2348 - the two keys owned by `commands::window::set_main_window_placement`.
+/// The two keys owned by `commands::window::set_main_window_placement`.
 /// A whole-settings `Preserve` write copies a PRESENT disk value for each key
 /// independently, and never removes one that disk does not have.
 pub(crate) const FIELD_MAIN_GEOMETRY: &str = "mainGeometry";
 pub(crate) const FIELD_MAIN_DISPLAY_STATE: &str = "mainWindowDisplayState";
 
-/// #1737 (D7a) - top-level settings keys whose authority is the on-disk file, not
+/// (D7a) - top-level settings keys whose authority is the on-disk file, not
 /// the in-memory struct, and which `settings.local.json` therefore may not override.
 pub(crate) const OVERLAY_INELIGIBLE_DISK_KEYS: &[&str] = &[
     "agentFileSourceByMenu",
@@ -102,7 +102,7 @@ pub(crate) const OVERLAY_INELIGIBLE_DISK_KEYS: &[&str] = &[
     FIELD_TERMINAL_SNAPSHOTS_ENABLED,
 ];
 
-/// #1737 (D7b) - legacy keys that exist only as a one-time migration source. AC
+/// (D7b) - legacy keys that exist only as a one-time migration source. AC
 /// translates each into a different key, and one of them is removed from memory by
 /// the migration itself, so an override would write a key the restore plan does not
 /// own or would resurrect a key the #248 migration exists to delete.
@@ -114,7 +114,7 @@ pub(crate) const OVERLAY_INELIGIBLE_LEGACY_KEYS: &[&str] = &[
     "terminalGeometry",
 ];
 
-/// #1737 (D13) - a repair that creates one object per element id of a source
+/// (D13) - a repair that creates one object per element id of a source
 /// array. When the overlay introduces an id into `source_key` that the base
 /// array did not carry, `<derived_prefix>/<id>` joins the restore plan with the
 /// base file's value at that path, so a repair driven by an overlay value can
@@ -136,18 +136,18 @@ pub(crate) const OVERLAY_DERIVED_ID_CLOSURES: &[DerivedIdClosure] = &[
     },
 ];
 
-/// #1737 (D7c) - migration destination keys. Each names a top-level key that a
+/// (D7c) - migration destination keys. Each names a top-level key that a
 /// migration WRITES after the merge, so a migration whose destination the overlay
 /// owns would silently overwrite the override in memory. Owning the destination
 /// suppresses the migration (plan D7c, evidence 2.11b). Four of the five are
 /// written from a legacy source key on the typed struct; `agents` is the
-/// exception, rewritten in place by `apply_issue_1757_migration` (#1757 D12).
+/// exception, rewritten in place by `apply_issue_1757_migration` (D12).
 /// Every suppression names one of these constants; the array is what S29 pins
 /// and what a future author greps.
 pub(crate) const OVERLAY_KEY_AGENTS: &str = "agents";
 pub(crate) const OVERLAY_KEY_MAIN_ALWAYS_ON_TOP: &str = "mainAlwaysOnTop";
 pub(crate) const OVERLAY_KEY_MAIN_GEOMETRY: &str = "mainGeometry";
-/// #2348 - the placement command refuses while the overlay owns this key or
+/// The placement command refuses while the overlay owns this key or
 /// `mainGeometry`, because `restore_base` is the last writer over the base file.
 pub(crate) const OVERLAY_KEY_MAIN_DISPLAY_STATE: &str = "mainWindowDisplayState";
 pub(crate) const OVERLAY_KEY_MAIN_ZOOM: &str = "mainZoom";
@@ -162,7 +162,7 @@ pub(crate) const OVERLAY_MIGRATION_DESTINATION_KEYS: &[&str] = &[
     OVERLAY_KEY_RESTORE_COORDINATOR_WAKE_STATE,
 ];
 
-/// #1737 (D16) - top-level keys whose value before the project decode differs from
+/// (D16) - top-level keys whose value before the project decode differs from
 /// the value `parse_settings_json` produces, so `read_merged_top_level_key` may not
 /// serve them. The six project keys are rewritten or removed by
 /// `apply_project_decode_to_value`. S26 derives this set from that function and fails
@@ -176,7 +176,7 @@ pub(crate) const OVERLAY_PREMIGRATION_UNSAFE_KEYS: &[&str] = &[
     FIELD_PROJECT_PATHS_REL,
 ];
 
-/// #1737 (D22) - the single site in this file that renders overlay diagnostics.
+/// (D22) - the single site in this file that renders overlay diagnostics.
 /// `local_overlay` returns typed state and never logs, which is what lets the
 /// tests assert the level and the text of every record without installing a
 /// global logger. `session_context.rs` has the twin of this three-line match for
@@ -192,7 +192,7 @@ pub(crate) fn report_overlay_diagnostics(source: &str, overlay: &LocalSettingsOv
     }
 }
 
-/// #1737 (D16) - one top-level key of the effective (base plus overlay) settings
+/// (D16) - one top-level key of the effective (base plus overlay) settings
 /// object, read without migrations, without auto-token-gen and without any save.
 /// Deliberately pre-migration AND pre-project-decode, exactly as these readers
 /// were before #1737. Valid ONLY for keys outside
@@ -525,7 +525,7 @@ pub(crate) enum TerminalSnapshotGateWriteMode {
     Explicit(bool),
 }
 
-/// #2348 - the main-window placement write mode, parallel to
+/// The main-window placement write mode, parallel to
 /// `TerminalSnapshotGateWriteMode`. `Preserve` is for every whole-settings
 /// caller: a present disk value wins per key, while an absent one does not erase
 /// the caller value (the load-time `terminalGeometry` -> `mainGeometry`
@@ -711,7 +711,7 @@ pub(crate) fn resynced_selected_pair(
     }
 }
 
-/// #1077: after an explicit project mutation updated the three runtime lists,
+/// After an explicit project mutation updated the three runtime lists,
 /// rebuild the hidden state to match while retaining any unresolved
 /// (conflict/missing/invalid) pairs from the pre-mutation state value-for-value,
 /// so a register/remove/archive/unarchive never drops a preserved conflict or
@@ -815,7 +815,7 @@ pub(crate) fn validate_non_project_settings(disk: &Map<String, Value>) -> Result
         root.remove(FIELD_PROJECT_PATH_REL);
         root.remove(FIELD_PROJECT_PATHS_REL);
         root.remove(FIELD_ARCHIVED_REL);
-        // #2716 (B3) trap four: `agents` lives in the agents file once migrated.
+        // (B3) trap four: `agents` lives in the agents file once migrated.
         root.entry(AGENTS_INSTANCE_KEYS[0])
             .or_insert_with(|| Value::Array(Vec::new()));
     }
@@ -828,7 +828,7 @@ pub(crate) fn validate_non_project_settings(disk: &Map<String, Value>) -> Result
         })
 }
 
-/// #1077 automatic reconciliation boundary (§4.3): reconcile the requested
+/// Automatic reconciliation boundary (§4.3): reconcile the requested
 /// eligible project group(s) from `settings`' hidden state to `path`, returning
 /// the fresh-decoded settings. A structurally-corrupt or no-eligible-repair
 /// state performs no write and returns the settings unchanged.

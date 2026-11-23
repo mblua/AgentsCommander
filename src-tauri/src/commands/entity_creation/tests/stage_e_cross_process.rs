@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Stage E (#1064) cross-process lock-order inversion PARENTS.
+// Cross-process lock-order inversion PARENTS.
 //
 // Stage E owns the parent side of the deterministic cross-process lock-order
 // proof (plan section 10.4 item 22, acceptance items 43/44): it spawns Stage D's

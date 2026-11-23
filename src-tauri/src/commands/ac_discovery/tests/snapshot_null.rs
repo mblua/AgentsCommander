@@ -46,7 +46,7 @@ fn poll_partial_only_and_clean_seed_deliver_explicit_null_with_new_revision() {
     assert!(missing.task_title.is_none());
 }
 
-// --- Project file difference (#3060) ---
+// --- Project file difference ---
 
 /// Runs fixture Git with a local identity and no signing; global config is never written.
 fn fixture_git(dir: &Path, args: &[&str]) {

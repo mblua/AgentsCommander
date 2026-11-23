@@ -120,7 +120,7 @@ fn the_registry_names_nothing_at_all() {
     );
 }
 
-/// #1273 criterion 8: the constant moved, it was not copied. Two definitions
+/// Criterion 8: the constant moved, it was not copied. Two definitions
 /// would drift, and `\"the arc is gone\"` would be satisfied while the fact the
 /// arc was about had been duplicated instead of relocated.
 ///

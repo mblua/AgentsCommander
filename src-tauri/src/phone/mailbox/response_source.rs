@@ -481,12 +481,12 @@ impl MailboxPoller {
         }
     }
 
-    /// (#1399 G2) A poller for the delivery tail only. Field-by-field and
+    /// (G2) A poller for the delivery tail only. Field-by-field and
     /// NEVER via `Self::new()` or struct-update over it: `new()` constructs the
     /// registering `SnapshotMailboxScanner::default()`, which writes itself
     /// into the process-global shutdown-owner slot and would leave the
     /// long-lived poller's scanner tasks unsealed and undrained at shutdown
-    /// (#1403 tracks the pre-existing dispatcher case).
+    /// (a separate issue tracks the pre-existing dispatcher case).
     pub(crate) fn delivery_only(
         messages: Arc<crate::config::injected_messages::MessageWarnings>,
     ) -> Self {

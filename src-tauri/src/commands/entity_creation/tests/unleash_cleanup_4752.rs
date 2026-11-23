@@ -1,4 +1,4 @@
-// #4752 P07: each delete helper clears the Unleash flags of what it removed.
+// Each delete helper clears the Unleash flags of what it removed.
 const CALL: &str = "crate::config::unleashed_replicas::forget_under(";
 
 // Text of `fn <name>` up to the next top-level `fn`.

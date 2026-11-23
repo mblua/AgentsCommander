@@ -45,7 +45,7 @@ pub(crate) fn build_replica_context_with_activation(
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<Option<String>, String> {
-    // #979: Root has a dedicated builder. This must stay the FIRST executable
+    // Root has a dedicated builder. This must stay the FIRST executable
     // line, ahead of the missing-config early return below: a Root without a
     // config.json would otherwise still get `Ok(None)` and fall back into the
     // token-aware generic path.
@@ -193,7 +193,7 @@ pub(crate) fn build_replica_context_from_config(
     Ok(Some(file_path))
 }
 
-/// #979: the Root Agent's dedicated context builder.
+/// The Root Agent's dedicated context builder.
 ///
 /// Root never enters `build_replica_context`, so the global sentinel token can
 /// never reach that builder's `$AGENTSCOMMANDER_CONTEXT` branch and no

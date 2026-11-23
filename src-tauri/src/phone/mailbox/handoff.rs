@@ -178,7 +178,7 @@ pub(crate) struct RetryPruneProbeBarrier {
     pub(crate) restore_complete: std::sync::Arc<std::sync::Barrier>,
 }
 
-/// (#1399) Drop retry state only after both durable source spellings were
+/// Drop retry state only after both durable source spellings were
 /// successfully observed absent. An observation error is pending state, not
 /// evidence that an already-counted delivery attempt disappeared.
 pub(crate) fn prune_retry_tracker(
@@ -222,7 +222,7 @@ pub(crate) fn prune_retry_tracker(
     );
 }
 
-/// (#1399 R1) The worker's outcome report, as a guard. `live_claims` is
+/// (R1) The worker's outcome report, as a guard. `live_claims` is
 /// released only by the drain, and the drain only runs for outcomes that
 /// arrive, so the send must survive an unwind: without it, one panicking
 /// worker (a poisoned `PtyManager` lock is a reachable production panic on
@@ -272,7 +272,7 @@ impl Drop for WakeOutcomeReport {
     }
 }
 
-/// (#1399) Outcome of trying to hand one validated message to a worker.
+/// Outcome of trying to hand one validated message to a worker.
 /// `LaneBusy` leaves the file untouched in the outbox for the next cycle;
 /// `ClaimFailed` feeds the existing retry block as an ordinary transient error.
 pub(crate) enum WakeHandoff {
@@ -281,7 +281,7 @@ pub(crate) enum WakeHandoff {
     ClaimFailed(String),
 }
 
-/// #617 - sustained-idle window before a deferred provider-resolved logical
+/// Sustained-idle window before a deferred provider-resolved logical
 /// clear. `pub(crate)` so the CLI prose and response JSON single-source the
 /// gate, the response `settle_secs`, and the CLI's conditional wording).
 pub(crate) const SELF_CLEAR_SETTLE_SECS: u64 = 30;
@@ -301,7 +301,7 @@ pub(crate) const SELF_CLEAR_POLL: std::time::Duration = std::time::Duration::fro
 #[cfg(not(test))]
 pub(crate) const SELF_CLEAR_MAX_DEFER: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// #626 - the `OutboxMessage` `action` value for self-handoff-and-clear. Single-sourced so the CLI
+/// The `OutboxMessage` `action` value for self-handoff-and-clear. Single-sourced so the CLI
 /// emit, the early-dispatch match, and the response body cannot drift (a drift would make early
 /// dispatch silently not fire and the command would be lost with no agent-visible error).
 /// `pub(crate)` so
@@ -311,17 +311,17 @@ pub(crate) const SELF_CLEAR_ACTION: &str = "self-handoff-and-clear";
 pub(crate) const RAISE_HAND_ACTION: &str = "raise-hand";
 
 /// The canonical handoff filename at the agent root; also the prompt fallback when the
-/// pre-inject archive did not happen (#749).
+/// pre-inject archive did not happen.
 pub(crate) const SELF_HANDOFF_ROOT_NAME: &str = "SELF-HANDOFF.md";
 
 /// Timestamp prefix for `self-clear/<timestamp>_<stem>.md` archives. Part of the naming
-/// contract the #749 prompt and the CLI help expose to agents, so single-sourced.
+/// contract the prompt and the CLI help expose to agents, so single-sourced.
 pub(crate) const ARCHIVE_TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S";
 
-/// #626/#749 - shared body of the Phase-2 resume prompt (the clear and switch variants differ
+/// Shared body of the Phase-2 resume prompt (the clear and switch variants differ
 /// only in the opening clause). `handoff_path` is the file the agent must read, relative to its
 /// root: the EXACT archived `self-clear/<ts>_SELF-HANDOFF.md` when the pre-inject archive
-/// succeeded (#749), or the plain root `SELF-HANDOFF.md` when it did not (source absent or
+/// succeeded, or the plain root `SELF-HANDOFF.md` when it did not (source absent or
 /// rename failed). Must stay a SINGLE line (an embedded newline would submit early) and
 /// self-contained (the agent's context was just wiped). Tests assert it is non-empty,
 /// single-line, em-dash-free, and names the file in both the read instruction and the
@@ -341,10 +341,10 @@ pub(crate) fn self_clear_handoff_base_prompt(handoff_path: &str) -> String {
     )
 }
 
-/// #668 - the `OutboxMessage` `action` value for self-handoff-and-switch.
+/// The `OutboxMessage` `action` value for self-handoff-and-switch.
 pub(crate) const SELF_SWITCH_ACTION: &str = "self-handoff-and-switch";
 
-/// #1632 - the `OutboxMessage` `action` value for self-handoff-and-restart. Single-sourced like the
+/// The `OutboxMessage` `action` value for self-handoff-and-restart. Single-sourced like the
 /// other two so the CLI emit, the early-dispatch match, and the response body cannot drift.
 pub(crate) const SELF_RESTART_ACTION: &str = "self-handoff-and-restart";
 
@@ -352,7 +352,7 @@ pub(crate) const SELF_RESTART_ACTION: &str = "self-handoff-and-restart";
 /// like the other self-scoped actions: there is no single recipient to route to.
 pub(crate) const PURGE_WG_ACTION: &str = "purge-wg";
 
-/// #668/#749 - Phase-2 prompt for the switch variant; see `handoff_base_prompt`.
+/// Phase-2 prompt for the switch variant; see `handoff_base_prompt`.
 pub(crate) fn self_switch_handoff_base_prompt(handoff_path: &str) -> String {
     handoff_base_prompt(
         "Your session was just switched by the self-handoff-and-switch command.",
@@ -360,7 +360,7 @@ pub(crate) fn self_switch_handoff_base_prompt(handoff_path: &str) -> String {
     )
 }
 
-/// #1632 - Phase-2 prompt for the restart variant; see `handoff_base_prompt`.
+/// Phase-2 prompt for the restart variant; see `handoff_base_prompt`.
 pub(crate) fn self_restart_handoff_base_prompt(handoff_path: &str) -> String {
     handoff_base_prompt(
         "Your session was just restarted by the self-handoff-and-restart command.",
@@ -461,7 +461,7 @@ pub(crate) fn is_summary_format_control(ch: char) -> bool {
     )
 }
 
-/// #4309 - handoff prompts carry an archive path and an agent-written summary.
+/// Handoff prompts carry an archive path and an agent-written summary.
 pub(crate) fn checked_handoff_prompt(prompt: String) -> Result<String, String> {
     crate::pty::inject::validate_pty_input_text(&prompt)
         .map(|()| prompt)
@@ -492,7 +492,7 @@ pub(crate) fn build_self_handoff_resume_prompt(
     )
 }
 
-/// #749 - `handoff_path` is the file the prompt tells the agent to read (see
+/// `handoff_path` is the file the prompt tells the agent to read (see
 /// `self_clear_handoff_base_prompt`).
 pub(crate) fn build_self_clear_handoff_prompt(
     handoff_path: &str,
@@ -504,7 +504,7 @@ pub(crate) fn build_self_clear_handoff_prompt(
     )
 }
 
-/// #749 - `handoff_path` is the file the prompt tells the agent to read (see
+/// `handoff_path` is the file the prompt tells the agent to read (see
 /// `self_switch_handoff_base_prompt`).
 pub(crate) fn build_self_switch_handoff_prompt(
     handoff_path: &str,
@@ -516,7 +516,7 @@ pub(crate) fn build_self_switch_handoff_prompt(
     )
 }
 
-/// #1632 - `handoff_path` is the file the prompt tells the agent to read (see
+/// `handoff_path` is the file the prompt tells the agent to read (see
 /// `self_restart_handoff_base_prompt`).
 pub(crate) fn build_self_restart_handoff_prompt(
     handoff_path: &str,
@@ -583,7 +583,7 @@ pub(crate) fn unknown_coding_agent_message(settings: &AppSettings, id: &str) -> 
     )
 }
 
-/// #1632 - the per-flavor strings the shared respawn driver needs. Switch and restart differ only
+/// The per-flavor strings the shared respawn driver needs. Switch and restart differ only
 /// in their log label, their phase-1 verb, their phase-2 verb, and their resume-prompt builder;
 /// everything else, the two-phase gate, the pending-set alias bookkeeping, and the archive-first
 /// phase-2 tail, is identical and must not fork.
@@ -609,7 +609,7 @@ pub(crate) const SELF_HANDOFF_FLAVOR_RESTART: SelfHandoffFlavor = SelfHandoffFla
     build_prompt: build_self_restart_handoff_prompt,
 };
 
-/// #1632 - the live recipe a restart must reproduce. `agent` is required: with no coding-agent
+/// The live recipe a restart must reproduce. `agent` is required: with no coding-agent
 /// identity there is nothing to pin, and passing None would hand the choice back to
 /// `resolve_restart_selected_agent_id`, which ranks the replica `currentCodingAgent` cell ABOVE
 /// the agent the live session was launched with (commands/session.rs:3626-3641). `profile` is
@@ -636,7 +636,7 @@ pub(crate) fn resolve_self_restart_recipe(
     Ok(SelfRestartRecipe { agent, profile })
 }
 
-/// #1632 - the driver seam carries the profile as a `String` (the `Restart` closure's second
+/// The driver seam carries the profile as a `String` (the `Restart` closure's second
 /// profile argument), so an absent profile letter must cross it as a sentinel. The empty string is
 /// that sentinel: it is not a valid profile (`normalize_switch_profile_fallback` rejects it) so it
 /// cannot collide with a real letter. These two are inverses and are pinned as such by T20;
@@ -650,7 +650,7 @@ pub(crate) fn decode_restart_profile_from_seam(profile: &str) -> Option<String> 
     trimmed_nonempty(Some(profile))
 }
 
-/// #1632 - operator-facing rendering of the same seam value. The sentinel must never reach a log
+/// Operator-facing rendering of the same seam value. The sentinel must never reach a log
 /// line as `profile ''`. Third member of the sentinel's family, so it lives with its inverses
 /// rather than as an inline conditional in the shared driver body.
 pub(crate) fn display_profile_for_log(profile: &str) -> &str {
@@ -841,13 +841,13 @@ pub(crate) fn wake_action_for(status: &SessionStatus) -> WakeAction {
 /// the positive-form `spawn_with_resume` flag so call sites read naturally.
 ///
 /// Pinned via this helper to fence against a future refactor that "simplifies"
-/// `!spawn_with_resume` to `spawn_with_resume` and silently regresses #82.
+/// `!spawn_with_resume` to `spawn_with_resume` and silently regresses.
 /// See plan §8.2 / round-2 R2.7 / round-3 R3.2.
 pub(crate) fn wake_spawn_skip_auto_resume(spawn_with_resume: bool) -> bool {
     !spawn_with_resume
 }
 
-/// #2411 Internal-system wake resume rule: a surviving exited record resumes
+/// Internal-system wake resume rule: a surviving exited record resumes
 /// (unchanged); with no record, resume only if idle auto-close closed it.
 pub(crate) fn internal_wake_resumes(had_exited_record: bool, auto_closed: bool) -> bool {
     had_exited_record || auto_closed
@@ -864,7 +864,7 @@ pub(crate) fn internal_wake_resumes(had_exited_record: bool, auto_closed: bool) 
 /// - All other statuses (`Active`/`Running`/`Idle`) require `has_pty == true`.
 ///   A `SessionManager` record with one of these statuses but no `PtyManager`
 ///   entry is a desync phantom — the inject path is guaranteed to fail with
-///   `AppError::SessionNotFound`, so the router must skip it (issue #223).
+///   `AppError::SessionNotFound`, so the router must skip it.
 ///
 /// Exhaustive `match` (not `matches!`) — a future `SessionStatus` variant
 /// forces a deliberate compile-error decision rather than silently routing
@@ -880,7 +880,7 @@ pub(crate) fn is_viable_wake_candidate(status: &SessionStatus, has_pty: bool) ->
 /// for delivery. Stricter than `is_viable_wake_candidate`: rejects
 /// `SessionStatus::Exited(_)` outright.
 ///
-/// The Root Agent is user-launched and never auto-respawned (#293 §3 contract).
+/// The Root Agent is user-launched and never auto-respawned (§3 contract).
 /// `deliver_wake`'s deferred-destroy block fires for any candidate that hit
 /// the `RespawnExited` arm, which would silently destroy the user's Root
 /// Agent session record before the no-spawn guard fires. Returning `false`
@@ -897,7 +897,7 @@ pub(crate) fn is_viable_root_recipient(status: &SessionStatus, has_pty: bool) ->
     }
 }
 
-/// One tick of the #611 sustained-idle gate for a freshly spawned wake session.
+/// One tick of the sustained-idle gate for a freshly spawned wake session.
 ///
 /// A cold-starting agent (notably Claude) can hit a quiet window longer than the
 /// idle threshold mid-startup and be marked `waiting_for_input` before its TUI
@@ -912,7 +912,7 @@ pub(crate) fn is_viable_root_recipient(status: &SessionStatus, has_pty: bool) ->
 /// `None` if it is currently busy / has not yet been observed idle) and returns
 /// the next `idle_since` plus whether idle has now held for `settle`:
 /// - not ready (`waiting_for_input == false`) resets the clock to `None`: a late
-///   startup render restarts the settle window. #1388: the cold-spawn caller now
+///   startup render restarts the settle window. The cold-spawn caller now
 ///   passes the composed `wake_settle_ready`, so `false` also means "idle with a
 ///   blank screen", and the reset makes the settle window measure idle-AND-rendered
 ///   held continuously.
@@ -937,14 +937,14 @@ pub(crate) fn next_sustained_idle_state(
     (Some(since), settled)
 }
 
-/// (#1001 PR2 / B) Extra settle beyond `idle_threshold` for the live-inject gate.
+/// (PR2 / B) Extra settle beyond `idle_threshold` for the live-inject gate.
 /// A session only reports `waiting_for_input == true` after `idle_threshold`
 /// (~2500ms) of quiet, so a settle <= `idle_threshold` never bites (grinch G3).
 /// The guard makes B gate exactly the `[idle_threshold, idle_threshold +
 /// FRESH_IDLE_GUARD]` window where a just-idle TUI may not be paste-ready yet.
 pub(crate) const FRESH_IDLE_GUARD: std::time::Duration = std::time::Duration::from_millis(1000);
 
-/// (#1001 PR2 / B) The action `settle_until_ready` takes on one tick.
+/// (PR2 / B) The action `settle_until_ready` takes on one tick.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SettleAction {
     /// Inject now: busy fast-path, sustained idle reached, or the `max_wait` cap

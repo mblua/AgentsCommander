@@ -18,7 +18,7 @@ fn determine_next_wg_number_returns_next_after_contiguous_block() {
     assert_eq!(determine_next_wg_number(tmp.path()), 4);
 }
 
-/// Gap reuse — the load-bearing case from issue #177.
+/// Gap reuse — the load-bearing case.
 /// `room-1` and `room-3` exist (someone destroyed `room-2`) → next slot is 2.
 #[test]
 fn determine_next_wg_number_reuses_lowest_internal_gap() {
@@ -88,7 +88,7 @@ fn determine_next_wg_number_ignores_files_named_like_workgroups() {
 /// Regression for the suffix-overlaps-prefix slice case: a directory
 /// named `room-{team}` (no number, e.g. `room-dev-team`) passes both the
 /// prefix and the `ends_with("-{team}")` check, but an index-based digits
-/// slice would be `&name_str[3..2]` — invalid, and #1614 makes that worse
+/// slice would be `&name_str[3..2]` — invalid, and the Room prefix makes that worse
 /// because `"room-".len()` is 5, not 3. `strip_entity_prefix` plus
 /// `strip_suffix` removes the index arithmetic entirely and cannot panic.
 /// This test locks in the no-panic behavior for both prefixes.
@@ -101,7 +101,7 @@ fn determine_next_wg_number_does_not_panic_on_no_number_dir() {
 }
 
 /// In-flight `.deleting-room-N-team-<uuid>` directories must NOT be
-/// counted as occupying slot N. Locks the contract that #177 relies
+/// counted as occupying slot N. Locks the contract that gap reuse relies
 /// on: the leading `.` of the temp name (set in `try_atomic_delete_wg`
 /// at line 1535 — `.deleting-{wg_name}-{uuid}`) dodges the widened
 /// `entity_prefix::has_entity_prefix` filter, so a freed slot is reusable on the
@@ -129,7 +129,7 @@ fn determine_next_wg_number_handles_subset_team_suffixes_globally() {
     assert_eq!(determine_next_wg_number(tmp.path()), 2);
 }
 
-// ── #1614 — the Room slot namespace is independent of the legacy one ──
+// ── the Room slot namespace is independent of the legacy one ──
 
 /// AC3 and requirement (B), the load-bearing case: in a `.ac` root that
 /// already holds `wg-1-<team>`, the next Room is `room-1-<team>`, NOT
@@ -218,4 +218,4 @@ fn collect_team_dirs_finds_room_and_legacy_and_survives_long_team_names() {
     assert!(collect_team_workgroup_dirs(tmp.path(), long).is_empty());
 }
 
-// ── #271 — build_role_content (Role.md template merge) ──
+// ── build_role_content (Role.md template merge) ──

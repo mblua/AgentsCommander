@@ -167,7 +167,7 @@ fn sweep_pause_hook(stage: &str, dir: &Path) {
     naming_migration::pause::hook(stage, dir);
 }
 
-/// #2717 (B4a) 4.4 - appends to `<ac_root>/.gitignore` the project-settings
+/// B4a 4.4: appends to `<ac_root>/.gitignore` the project-settings
 /// rows it lacks. An appending write, never a rewrite, so no line another
 /// writer added can be lost; retirement of the old row stays with the writer
 /// at registration.
@@ -182,7 +182,7 @@ fn project_settings_scope_key(ac_root: &Path) -> String {
     format!("project-settings:{}", ac_root.display())
 }
 
-/// #2717 (B4a) - moves `project-settings.json` to `PROJECT_SETTINGS_FILE` in
+/// B4a: moves `project-settings.json` to `PROJECT_SETTINGS_FILE` in
 /// `ac_root`, under both lock sidecars, journalled in `journal_dir`. `Ok` is
 /// always the new name; every refusal is an `Err`, so no caller ever writes the
 /// old name. Both names present: the new file wins and the old one is set aside.
@@ -216,7 +216,7 @@ fn migrate_project_settings_name(
         naming_migration::MIGRATION_LOCK_BUDGET,
     )
     .map_err(refused)?;
-    // #2717 4.4: the new names are ignored before anything takes them; a failed
+    // 4.4: the new names are ignored before anything takes them; a failed
     // sweep refuses, so nothing is renamed into an unignored state.
     ensure_project_settings_ignore_rows(ac_root).map_err(refused)?;
     if let naming_migration::Outcome::Refused(refusal) = naming_migration::rename_step(
@@ -243,7 +243,7 @@ fn migrate_project_settings_name(
     Ok(PROJECT_SETTINGS_FILE)
 }
 
-/// #2717 (B4a) - the chokepoint: both production entries resolve their path
+/// B4a: the chokepoint: both production entries resolve their path
 /// here, so the migration runs before any read or write, and the name returned
 /// is the one the migration decided.
 fn project_settings_path_in(
@@ -260,7 +260,7 @@ fn normalize_groups_config(mut config: WorkgroupGroupsConfig) -> WorkgroupGroups
     if !config.show_all && !config.show_ungrouped {
         config.show_all = true;
     }
-    // (#777 B3) Repair an out-of-range Non-stop config in place instead of failing
+    // Repair an out-of-range Non-stop config in place instead of failing
     // validation. A bad `nonStop` must never nuke the user's real groups, so these
     // are lossless-to-the-user fixes: they only touch already-invalid data.
     if let Some(ns) = config.non_stop.as_mut() {
@@ -339,7 +339,7 @@ fn load_workgroup_groups_in(
     load_groups_file(&path)
 }
 
-/// #4805 - load, normalize and validate a groups file at `path`; default when absent.
+/// Load, normalize and validate a groups file at `path`; default when absent.
 pub(crate) fn load_groups_file(path: &Path) -> Result<WorkgroupGroupsConfig, String> {
     if !documents::config_document_exists(path) {
         return Ok(WorkgroupGroupsConfig::default());
@@ -383,7 +383,7 @@ fn save_workgroup_groups_in(
     save_groups_file(&path, config)
 }
 
-/// #4805 - validate `config` and persist it into the groups file at `path`.
+/// Validate `config` and persist it into the groups file at `path`.
 pub(crate) fn save_groups_file(
     path: &Path,
     config: WorkgroupGroupsConfig,
@@ -404,7 +404,7 @@ pub(crate) fn save_groups_file(
             "showUngrouped".to_string(),
             Value::Bool(config.show_ungrouped),
         );
-        // (#777 G2) Persist the built-in Non-stop group. Some -> write it; None ->
+        // Persist the built-in Non-stop group. Some -> write it; None ->
         // REMOVE the on-disk key so it is truly absent on reload. The merge helper
         // would otherwise preserve a stale `nonStop` and resurrect it as `Some`.
         // `remove` is a no-op when the key was never present, so legacy configs

@@ -34,7 +34,7 @@ pub(crate) enum WakeDelivery<'a> {
     Peer {
         message: &'a OutboxMessage,
         origin: WakeDeliveryOrigin,
-        /// #2232 phase 7: display-only attribution for a Co-managed-origin
+        /// Phase 7: display-only attribution for a Co-managed-origin
         /// message. False for every pre-existing caller.
         comanaged: bool,
         response: Option<&'a ResponseWakeWork>,
@@ -504,7 +504,7 @@ pub(crate) struct MailboxTestHooks {
         Arc<Mutex<Option<Arc<crate::session::selection::ReplacementFixtureControl>>>>,
     pub(crate) pty_presence: Arc<Mutex<HashMap<Uuid, bool>>>,
     pub(crate) inject_results: Arc<Mutex<VecDeque<Result<(), String>>>>,
-    /// (#1001 PR1 / G6) Scripted consumption verdicts, mirroring
+    /// (PR1 / G6) Scripted consumption verdicts, mirroring
     /// `inject_results`. When non-empty, the `inject_wake_into_pty` hook arm
     /// pops one after a successful inject and runs the SHARED `verdict_to_result`
     /// - so the AC3 hooked test exercises the real conversion, not a copy.
@@ -514,7 +514,7 @@ pub(crate) struct MailboxTestHooks {
     /// Sessions whose hooked live-settle step removes the `SessionManager`
     /// record, deterministically exercising the post-preflight race path.
     pub(crate) remove_session_on_settle: Arc<Mutex<std::collections::HashSet<Uuid>>>,
-    /// (#1399 T9) Sessions whose hooked inject panics instead of returning,
+    /// (T9) Sessions whose hooked inject panics instead of returning,
     /// reproducing the poisoned-PtyManager-lock unwind on the real delivery
     /// path so the `WakeOutcomeReport` guard is testable.
     pub(crate) panic_on_inject: Arc<Mutex<std::collections::HashSet<Uuid>>>,
@@ -532,16 +532,16 @@ pub(crate) struct MailboxTestHooks {
     pub(crate) spawn_calls: Arc<Mutex<Vec<MailboxSpawnCall>>>,
     pub(crate) attach_calls: MailboxAttachCalls,
     pub(crate) events: Arc<Mutex<Vec<MailboxTestEvent>>>,
-    /// (#747) `is_coordinator` for sessions created by the test spawn hook
+    /// `is_coordinator` for sessions created by the test spawn hook
     /// (default false, matching the historical harness). Production
     /// `create_session_inner` recomputes the flag from teams discovery, so a
     /// wake that respawns a coordinator target yields a coordinator record;
     /// tests exercising the raised-hand carry set this to mirror that.
     pub(crate) spawn_is_coordinator: Arc<Mutex<bool>>,
-    /// (#2411) One-shot error for the test spawn arm, returned after the real
+    /// One-shot error for the test spawn arm, returned after the real
     /// coordinator-create clear runs, mirroring a create that fails after it.
     pub(crate) internal_spawn_error: Arc<Mutex<Option<String>>>,
-    /// #3263 P03 - overrides `WAKE_DELIVERY_DEADLINE` for claimed wake delivery.
+    /// P03 - overrides `WAKE_DELIVERY_DEADLINE` for claimed wake delivery.
     pub(crate) wake_delivery_deadline: Arc<Mutex<Option<std::time::Duration>>>,
 }
 
@@ -579,7 +579,7 @@ pub(crate) struct MailboxSpawnCall {
     pub(crate) shell: String,
     pub(crate) shell_args: Vec<String>,
     pub(crate) skip_auto_resume: bool,
-    /// #1635-2 D5: true when the wake carried dispatch flags and the spawn
+    /// True when the wake carried dispatch flags and the spawn
     /// suppressed the config.json tooling writes. The test-hook boundary is
     /// the observable decision surface (the hook short-circuits to the
     /// in-memory `mgr.create_session` and never writes config.json).

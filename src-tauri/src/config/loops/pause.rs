@@ -1,6 +1,6 @@
-//! #2682 - the handshake behind the lock tests. In-process legs arm a
+//! The handshake behind the lock tests. In-process legs arm a
 //! `(stage, dir)` pair; a cross-process child is armed by environment (a
-//! rendezvous directory with ready/release files, as in the #1938 harness).
+//! rendezvous directory with ready/release files).
 
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 

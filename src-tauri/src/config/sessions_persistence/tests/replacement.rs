@@ -478,7 +478,7 @@ fn rename_after_released_contention(
 }
 
 /// Retries only `Retry`: process-wide publication locks are shared with
-/// parallel tests (#4147). `next` stays `Some` on `Retry`, so retry is safe.
+/// parallel tests. `next` stays `Some` on `Retry`, so retry is safe.
 fn rename_retrying_contention(
     dir: &Path,
     slot: &super::super::carrier::PublicationSlot,

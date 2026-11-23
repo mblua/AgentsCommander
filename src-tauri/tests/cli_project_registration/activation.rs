@@ -2,7 +2,7 @@ use super::*;
 use agentscommander_lib::config::seeded_context_templates;
 
 // ---------------------------------------------------------------------------
-// #1065 Stage F - real-boundary activation coverage for the project-context
+// Stage F - real-boundary activation coverage for the project-context
 // boundaries (Grinch Finding 1).
 //
 // The per-module unit tests drive each boundary's INNER `*_recorded` / `*_impl`

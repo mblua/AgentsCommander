@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-/// #2736 - resolved install commands with a running install task. Keyed by the
+/// Resolved install commands with a running install task. Keyed by the
 /// command string, so two catalog keys sharing one command never run it twice.
 pub struct AgentInstallState {
     commands: Mutex<HashSet<String>>,
@@ -41,7 +41,7 @@ pub(crate) fn contains_install_command(owner: &AgentInstallState, command: &str)
         .contains(command)
 }
 
-/// #2736 - RAII entry in `AgentInstallState`; dropping it releases the command.
+/// RAII entry in `AgentInstallState`; dropping it releases the command.
 pub(crate) struct InstallInFlight {
     command: String,
     owner: Arc<AgentInstallState>,
@@ -73,7 +73,7 @@ impl Drop for InstallInFlight {
     }
 }
 
-/// #2736 - run ONE install command for a coding agent with no visible window.
+/// Run ONE install command for a coding agent with no visible window.
 /// Reuses the updater step primitives; deliberately does NOT touch
 /// `AgentUpdateGate`, the `agent_update_*` events, or the update overlay, so a
 /// first-run install stays silent.
@@ -90,7 +90,7 @@ where
     start_agent_install_with_timeout(app, owner, key, command, cwd, UPDATE_STEP_TIMEOUT)
 }
 
-/// #2736 - `start_agent_install` with the step timeout injected. Production
+/// `start_agent_install` with the step timeout injected. Production
 /// always passes `UPDATE_STEP_TIMEOUT`; only tests pass a shorter one.
 pub(crate) fn start_agent_install_with_timeout<E>(
     app: &E,
@@ -135,7 +135,7 @@ where
     Ok(())
 }
 
-/// #2736 - the outcome of one install run. `ok` is true only for a successful
+/// The outcome of one install run. `ok` is true only for a successful
 /// exit with a clean process-tree settlement.
 pub(crate) struct AgentInstallRun {
     pub(crate) ok: bool,
@@ -151,7 +151,7 @@ pub(crate) struct AgentInstallRun {
     pub(crate) detail: String,
 }
 
-/// #2736 - the AWAITABLE body. This is the test seam: `start_agent_install`
+/// The AWAITABLE body. This is the test seam: `start_agent_install`
 /// takes the in-flight guard, spawns a detached task and returns; the task
 /// awaits this, then releases the guard and emits. Tests await it directly and
 /// read the outcome instead of racing a detached task.
@@ -196,7 +196,7 @@ pub(crate) fn install_run_from_spawn_failure(outcome: UpdaterStepOutcome) -> Age
     }
 }
 
-/// #2736 - section 2b of the plan. Defects are checked FIRST, as the updater
+/// Section 2b of the plan. Defects are checked FIRST, as the updater
 /// does, so a zero exit with a defective cleanup is never a success.
 pub(crate) fn install_run_from_settlement(
     waited: TargetWait,
@@ -247,14 +247,14 @@ pub(crate) fn install_run_from_settlement(
     }
 }
 
-/// #2736 - the COMPLETE captured output goes to the log, never `output_tail`.
+/// The COMPLETE captured output goes to the log, never `output_tail`.
 pub(crate) fn log_agent_install_run(key: &str, command: &str, run: &AgentInstallRun) {
     for (level, line) in agent_install_log_lines(key, command, run) {
         log::log!(level, "{line}");
     }
 }
 
-/// #2736 - the exact lines `log_agent_install_run` writes, pure so tests can
+/// The exact lines `log_agent_install_run` writes, pure so tests can
 /// read them without installing a process-wide logger.
 pub(crate) fn agent_install_log_lines(
     key: &str,
@@ -291,7 +291,7 @@ pub(crate) fn agent_install_log_lines(
     lines
 }
 
-/// #2736 - one stream for the event: the last `OUTPUT_TAIL_BYTES`, behind one
+/// One stream for the event: the last `OUTPUT_TAIL_BYTES`, behind one
 /// marker line when the stream was cut. The log keeps the full output.
 pub(crate) fn event_output(bytes: &[u8]) -> String {
     let tail = output_tail(bytes);
@@ -305,7 +305,7 @@ pub(crate) fn event_output(bytes: &[u8]) -> String {
     }
 }
 
-/// #2736 - the ONLY builder of the `coding_agent_install_finished` frame. A
+/// The ONLY builder of the `coding_agent_install_finished` frame. A
 /// successful run carries no output.
 pub(crate) fn install_finished_payload(key: &str, command: &str, run: &AgentInstallRun) -> Value {
     let (stdout, stderr) = if run.ok {

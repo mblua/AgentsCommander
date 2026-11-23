@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- #1318 v1 -> v2 coverage migration + catalog row -------------------
+// ---- v1 -> v2 coverage migration + catalog row -------------------
 
 /// A byte-exact v1 manifest (context row + replica-config row with distinct
 /// timestamps), exactly what an old build wrote.
