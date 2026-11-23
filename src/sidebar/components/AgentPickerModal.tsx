@@ -48,7 +48,7 @@ import {
   targetProfileFqn,
 } from "../../shared/profile-utils";
 
-/** #1943 - the lock glyph. Exported so the sidebar lock chip draws the same
+/** The lock glyph. Exported so the sidebar lock chip draws the same
  *  shape without a second definition; ProjectPanel already imports this module,
  *  so it adds no dependency edge. */
 export const LockIcon: Component<{ class?: string }> = (props) => (
@@ -70,12 +70,12 @@ export type AgentPickerScopeContext = {
   targetReplicaName?: string;
   currentCodingAgentId?: string | null;
   currentProfile?: string | null;
-  /** #1943 - the persisted protected pair from discovery. `undefined` is an
+  /** The persisted protected pair from discovery. `undefined` is an
    *  older backend: unsupported/unknown, never proven unlocked. */
   savedPair?: SavedPair | null;
-  /** #1943 - strict protection state from discovery; absent is unknown. */
+  /** Strict protection state from discovery; absent is unknown. */
   selectionState?: SelectionState;
-  /** #1943 - strict-read diagnostic carried beside an `invalid` state. */
+  /** Strict-read diagnostic carried beside an `invalid` state. */
   selectionError?: string | null;
 };
 
@@ -106,19 +106,19 @@ const SELECTION_PILL_LABEL: Record<Exclude<ProfileBadgeKind, "invalid">, string>
 const REDUNDANT_REPLICA_ASSIGN_TOOLTIP =
   "This replica already uses this Coding Agent + Profile.";
 
-/** #2306 - the one reason both surfaces disable moves when the local overlay owns
+/** The one reason both surfaces disable moves when the local overlay owns
  *  top-level `agents`. Kept identical here and in SettingsModal. */
 const MOVE_OVERLAY_REASON =
   "Agent order is controlled by the local settings overlay (settings.50.personal.no-git.json).";
 
-/** #2577 - why every grip is disabled while the agent filter hides cards. */
+/** Why every grip is disabled while the agent filter hides cards. */
 const REORDER_FILTER_REASON = "Clear the filter to reorder.";
 
-/** #1943 - the three scopes, in the order the lock radios and the independent
+/** The three scopes, in the order the lock radios and the independent
  *  "Remove lock from" group both render them. */
 const LOCK_SCOPES: ProfileAssignmentScope[] = ["replica", "kind", "workgroup"];
 
-/** #2555 - instrumentation only: picker open timings. */
+/** Instrumentation only: picker open timings. */
 const COUNTS_DOM_MARK = "agentPicker.countsDom";
 const COUNTS_FRAME_MARK = "agentPicker.countsFrame";
 const timingMs = (ms: number) => ms.toFixed(1);
@@ -127,7 +127,7 @@ const markOnce = (name: string) => {
   performance.mark(name);
 };
 
-/** #2555 - sync timer: reads the clock now and when done(ok) is called. Adds no microtask. */
+/** Sync timer: reads the clock now and when done(ok) is called. Adds no microtask. */
 export function startSettleTimer(
   onSettle: (ms: number, ok: boolean) => void,
 ): (ok: boolean) => void {
@@ -135,7 +135,7 @@ export function startSettleTimer(
   return (ok) => onSettle(performance.now() - start, ok);
 }
 
-/** #2555 - Event.timeStamp -> performance clock. Browser: perf origin; jsdom: Unix epoch. */
+/** Event.timeStamp -> performance clock. Browser: perf origin; jsdom: Unix epoch. */
 export function clickToSetup(
   setupAt: number,
   eventTs: number | undefined,
@@ -161,7 +161,7 @@ const LOCK_SCOPE_TEST_ID: Record<ProfileAssignmentScope, string> = {
   workgroup: "workgroup",
 };
 
-/** #1943 - the one sentence a complete removal reports. A partial run still
+/** The one sentence a complete removal reports. A partial run still
  *  states the count that actually landed; the error rows carry the rest. */
 function removalOutcomeMessage(result: ApplySelectionLockRemovalResult): string {
   const noun = result.removedCount === 1 ? "replica" : "replicas";
@@ -180,7 +180,7 @@ const AgentPickerModal: Component<{
   onSelect: (selection: AgentPickerSelection) => void | Promise<void>;
   onClose: () => void;
 }> = (props) => {
-  // #2555 - instrumentation only.
+  // Instrumentation only.
   const setupAt = performance.now();
   const openEvent = typeof window !== "undefined" ? window.event : undefined;
   const [settings, setSettings] = createSignal<AppSettings | null>(null);
@@ -193,11 +193,11 @@ const AgentPickerModal: Component<{
   const [profileResolving, setProfileResolving] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal("");
-  // #2306/#2577 - snapshot metadata and the modal-local reorder state. One
+  // Snapshot metadata and the modal-local reorder state. One
   // reorder per gesture: one request in flight, every grip disabled until the
   // authoritative refetch lands.
   const [overlayOwnsAgents, setOverlayOwnsAgents] = createSignal(false);
-  // #2716 - null while the agents layer is readable, else notice 2.
+  // Null while the agents layer is readable, else notice 2.
   const [agentsUnreadableReason, setAgentsUnreadableReason] = createSignal<string | null>(null);
   const [moveBusy, setMoveBusy] = createSignal(false);
   const [moveError, setMoveError] = createSignal("");
@@ -239,15 +239,15 @@ const AgentPickerModal: Component<{
   const [applyErrors, setApplyErrors] = createSignal<ProfileAssignmentError[]>([]);
   const [toastMsg, setToastMsg] = createSignal<string | null>(null);
 
-  // #1943 - the operation is one mutually exclusive selection of (scope, mode):
+  // The operation is one mutually exclusive selection of (scope, mode):
   // the ordinary scope the picker always had, plus the same scope with `+ lock`.
   const [assignmentMode, setAssignmentMode] = createSignal<AssignmentMode>("ordinary");
-  // #1943 - a reviewed conflict policy is only ever echoed with the fingerprint
+  // A reviewed conflict policy is only ever echoed with the fingerprint
   // the backend issued for that exact decision.
   const [conflictDecision, setConflictDecision] = createSignal<ConflictDecision | null>(null);
   const [conflictOpen, setConflictOpen] = createSignal(false);
 
-  // #1943 - "Remove lock from" keeps its OWN scope, previews and counts: it is
+  // "Remove lock from" keeps its OWN scope, previews and counts: it is
   // deliberately independent of the `Apply to` selection above.
   const [removeScope, setRemoveScope] = createSignal<ProfileAssignmentScope>("replica");
   const emptyRemovePreviews: Record<ProfileAssignmentScope, PreviewSelectionLockRemovalResult | null> = {
@@ -264,7 +264,7 @@ const AgentPickerModal: Component<{
   const [removePreviewErrorMap, setRemovePreviewErrorMap] = createSignal<
     Record<ProfileAssignmentScope, string>
   >({ replica: "", kind: "", workgroup: "" });
-  // #2555 - instrumentation only; nothing here changes what the picker shows or does.
+  // Instrumentation only; nothing here changes what the picker shows or does.
   const [timingDetail, setTimingDetail] = createSignal<string | undefined>(undefined);
   const appendTiming = (part: string) =>
     setTimingDetail((prev) => (prev ? `${prev} ${part}` : part));
@@ -303,7 +303,7 @@ const AgentPickerModal: Component<{
   const [removeErrors, setRemoveErrors] = createSignal<SelectionError[]>([]);
   const [removeBusy, setRemoveBusy] = createSignal(false);
 
-  // #1943 - the Matrix default for FUTURE replicas. The persisted snapshot and
+  // The Matrix default for FUTURE replicas. The persisted snapshot and
   // the user's unsaved draft stay separate: nothing here saves on change.
   const [selectionDefault, setSelectionDefault] = createSignal<ReplicaSelectionDefaultResult | null>(null);
   const [defaultDraftLocked, setDefaultDraftLocked] = createSignal(false);
@@ -333,7 +333,7 @@ const AgentPickerModal: Component<{
     if (toastTimer) clearTimeout(toastTimer);
   });
 
-  // #2306 - the picker renders the backend's vector order verbatim: no
+  // The picker renders the backend's vector order verbatim: no
   // alphabetical copy and no local re-ordering. Explicit `order` ordinals
   // already won backend-side (P1/P2), so the received array IS the effective
   // order.
@@ -459,7 +459,7 @@ const AgentPickerModal: Component<{
         index,
         preview,
         status,
-        // #2014 - the line the panel shows: command + the EFFECTIVE profile
+        // The line the panel shows: command + the EFFECTIVE profile
         // cell's arguments, never the final spawn argv (plan D1).
         launchLine: command,
         active: index === highlightIndex(),
@@ -469,7 +469,7 @@ const AgentPickerModal: Component<{
   const launchLineByAgentId = createMemo(
     () => new Map(comparisonRows().map((row) => [row.agent.id, row.launchLine]))
   );
-  // #2014 - the agent filter is a LEFT-COLUMN view concern: it never
+  // The agent filter is a LEFT-COLUMN view concern: it never
   // re-indexes orderedAgents(), so highlightIndex keeps addressing the full list.
   const [agentFilter, setAgentFilter] = createSignal("");
   const filterQuery = createMemo(() => agentFilter().trim().toLowerCase());
@@ -517,7 +517,7 @@ const AgentPickerModal: Component<{
   const backendWarnings = createMemo(() => backendPreview()?.warnings ?? []);
   const hasBackendWarnings = createMemo(() => backendWarnings().length > 0);
 
-  // #2306 - one modal-local coalesced refresh. Concurrent settings events (or an
+  // One modal-local coalesced refresh. Concurrent settings events (or an
   // event racing a move's own refetch) collapse into at most one extra fetch, so
   // this modal never opens a second refresh owner for the same state.
   let settingsRefreshInFlight: Promise<void> | null = null;
@@ -576,7 +576,7 @@ const AgentPickerModal: Component<{
   const reorderDisabled = () =>
     moveBusy() || overlayOwnsAgents() || agentsUnreadableReason() !== null || filterQuery() !== "";
   const reorderHandleTestId = (agentId: string) => `agentPicker.provider.${agentId}.dragHandle`;
-  /** #2577 - position-aware accessible name; the overlay reason wins over the
+  /** Position-aware accessible name; the overlay reason wins over the
    *  filter reason because clearing the filter cannot fix it. */
   const reorderHandleLabel = (agent: AgentConfig, index: number) => {
     const base = `Reorder ${agent.label || agent.id}, position ${index + 1} of ${orderedAgents().length}`;
@@ -606,7 +606,7 @@ const AgentPickerModal: Component<{
     });
   };
 
-  /** #2577 - one reorder per gesture through the narrow command. The returned id
+  /** One reorder per gesture through the narrow command. The returned id
    *  order is a consistency check only; the authoritative state always comes from
    *  the follow-up get_settings, and a mismatch never applies a speculative order. */
   const reorderAgent = async (agentId: string, targetIndex: number, restoreFocus: boolean) => {
@@ -648,7 +648,7 @@ const AgentPickerModal: Component<{
     }
   };
 
-  /** #2577 - Alt+ArrowUp / Alt+ArrowDown move one step (Settings keys and wording).
+  /** Alt+ArrowUp / Alt+ArrowDown move one step (Settings keys and wording).
    *  Stopped so the overlay handleKeyDown does not also move the highlight. */
   const onReorderHandleKeyDown = (e: KeyboardEvent, agentId: string) => {
     if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
@@ -679,7 +679,7 @@ const AgentPickerModal: Component<{
     );
     appendTiming(`clickToSetupMs=${clickMs} clickClock=${click.clock} setupToMountMs=${setupToMount}`);
     overlayRef?.focus();
-    // #1943 - reload this modal's own previews and default on external updates.
+    // Reload this modal's own previews and default on external updates.
     // App already owns the global project/settings refresh; these listeners are
     // modal-scoped and add no second refresh owner.
     let disposed = false;
@@ -699,7 +699,7 @@ const AgentPickerModal: Component<{
         handleExternalSelectionUpdate();
       }),
     );
-    // #2306 - a move or any external coding-agent mutation refetches this modal
+    // A move or any external coding-agent mutation refetches this modal
     // through its own coalesced path; the app-lifetime store listener is not the
     // owner of this modal's draft state.
     bind(
@@ -727,9 +727,9 @@ const AgentPickerModal: Component<{
     }
     settleDone(true);
     if (disposed) return;
-    // #2306 - vector order decides the initial selection: no alphabetical remap.
+    // Vector order decides the initial selection: no alphabetical remap.
     const agentIndex = loaded.agents.findIndex((agent) => agent.id === props.currentAgentId);
-    // #2484 - one batch so the snapshot and the requested profile trigger one preview round.
+    // One batch so the snapshot and the requested profile trigger one preview round.
     batch(() => {
       if (agentIndex >= 0) setHighlightIndex(agentIndex);
       installLoadedSnapshot(loaded, false);
@@ -784,7 +784,7 @@ const AgentPickerModal: Component<{
       });
   });
 
-  /** #2051 - a replica apply never restarts through this toggle (#537, the
+  /** A replica apply never restarts through this toggle (the
    *  post-assign prompt owns it), so the replica preview must hash the same
    *  `false` the apply sends. Bulk scopes keep the toggle. */
   const selectionRestart = (scope: ProfileAssignmentScope) =>
@@ -924,8 +924,8 @@ const AgentPickerModal: Component<{
   const isRedundantReplicaSelection = createMemo(() => {
     if (!props.disableRedundantReplicaAssign) return false;
     if (selectedScope() !== "replica") return false;
-    // #1943 - writing the SAME pair while ALSO setting the lock is a real change,
-    // so the #551 no-op guard must not swallow it.
+    // Writing the SAME pair while ALSO setting the lock is a real change,
+    // so the no-op guard must not swallow it.
     if (assignmentMode() === "assignAndLock") return false;
     if (props.targetProfileOutdated) return false;
     const agent = selectedAgent();
@@ -937,7 +937,7 @@ const AgentPickerModal: Component<{
   });
 
   /** A backend-owned mutation is in flight. Every mutating control waits for it;
-   *  #1942 keeps the promise open until the operation really settles. */
+   *  A later fix keeps the promise open until the operation really settles. */
   const mutating = createMemo(() => busy() || removeBusy() || defaultBusy());
 
   /** The persisted protection snapshot. `null` means this build did not report
@@ -959,7 +959,7 @@ const AgentPickerModal: Component<{
     if (assignmentMode() === "assignAndLock" && !lockStateUsable()) return false;
     const scope = selectedScope();
     if (scope === "replica") {
-      // #2051 - the fingerprint IS that confirmation, so the lock button waits
+      // The fingerprint IS that confirmation, so the lock button waits
       // for its own preview exactly like the bulk scopes below.
       if (assignmentMode() === "assignAndLock" && (scopePreviewBusy() || !scopePreview())) {
         return false;
@@ -972,7 +972,7 @@ const AgentPickerModal: Component<{
     return false;
   });
 
-  // ── #1943 selection lock: persisted state, removal scope, Matrix default ──
+  // ── Selection lock: persisted state, removal scope, Matrix default ──
 
   const persistedPair = createMemo<SavedPair | null>(() => props.scopeContext?.savedPair ?? null);
   const lockStateDiagnostic = createMemo(() => {
@@ -1304,7 +1304,7 @@ const AgentPickerModal: Component<{
     const reviewedFingerprint = decision
       ? conflictProjection(decision)?.fingerprint ?? null
       : null;
-    // #2051 - "This replica + lock" is confirmed by the replica-scope preview's
+    // "This replica + lock" is confirmed by the replica-scope preview's
     // own fingerprint; the legacy replica ordinary apply deliberately sends none
     // (the backend still accepts a missing fingerprint for replica + ordinary).
     const previewFingerprint = scopePreview()?.targetFingerprint ?? null;
@@ -1334,7 +1334,7 @@ const AgentPickerModal: Component<{
     target: string | null | undefined,
     agentId: string
   ) => {
-    // #2051 - a rejected replica + lock needs the same fresh review the bulk
+    // A rejected replica + lock needs the same fresh review the bulk
     // scopes get; the old fingerprint must never be replayed. Replica ordinary
     // keeps today's behavior.
     const needsFreshReview = scope !== "replica" || mode === "assignAndLock";
@@ -1430,7 +1430,7 @@ const AgentPickerModal: Component<{
       props.onClose();
       return;
     }
-    // #2014 - keys typed in the agent filter must never move the profile
+    // Keys typed in the agent filter must never move the profile
     // (ArrowLeft/Right) or the selection (ArrowUp/Down). Escape still closes.
     if (
       e.target instanceof HTMLElement &&
@@ -1499,7 +1499,7 @@ const AgentPickerModal: Component<{
               </div>
               <span class="agent-profile-step cyan" data-ac-role="status">step 1</span>
             </div>
-            {/* #2014 - the requested filter, immediately above the first Coding
+            {/* The requested filter, immediately above the first Coding
                 Agent card. It hides non-matching cards only; the comparison
                 panel always keeps every row and nothing here assigns. */}
             <Show when={orderedAgents().length > 0}>
@@ -1549,7 +1549,7 @@ const AgentPickerModal: Component<{
                           classList={{ "is-drag-source": drag.dragSourceId() === agent.id }}
                           data-ac-testid={`agentPicker.providerWrap.${agent.id}`}
                         >
-                          {/* #2577 - the grip is a SEPARATE button drawn inside the card border (no nested buttons); the filter disables it. */}
+                          {/* The grip is a SEPARATE button drawn inside the card border (no nested buttons); the filter disables it. */}
                           <button
                             type="button"
                             class="agent-profile-provider-drag-handle"
@@ -1873,7 +1873,7 @@ const AgentPickerModal: Component<{
           </div>
         </div>
 
-        {/* #1943 - the persisted selection lock. The pair shown is the STORED
+        {/* The persisted selection lock. The pair shown is the STORED
             one, never the unsaved picker selection, and the `Remove lock from`
             scope keeps its own state, previews and counts. */}
         <Show when={showBroadScope()}>
@@ -2251,7 +2251,7 @@ const AgentPickerModal: Component<{
             </div>
           </Show>
 
-          {/* #537: prominent, persistent failure banner. The toast (loud, fades
+          {/* Prominent, persistent failure banner. The toast (loud, fades
               after 3s) flags the failure; this banner keeps the backend's
               human-readable message and a replica-scope retry on screen. */}
           <Show when={applyErrors().length > 0}>
@@ -2294,7 +2294,7 @@ const AgentPickerModal: Component<{
           </Show>
 
           <div class="agent-picker-bar">
-            {/* #537: replica scope is restarted via the post-assign "Restart now?"
+            {/* Replica scope is restarted via the post-assign "Restart now?"
                 modal, not this toggle. The toggle stays for kind/workgroup scope
                 (no per-replica prompt makes sense for a multi-target apply). */}
             <Show when={isWgReplica() && selectedScope() !== "replica"}>
@@ -2350,12 +2350,12 @@ const AgentPickerModal: Component<{
 
         </div>
       </div>
-      {/* #1943 conflict review. A bulk assign-and-lock over protected replicas
+      {/* Conflict review. A bulk assign-and-lock over protected replicas
           is decided here, never silently downgraded or upgraded; Cancel and
           Escape both send nothing at all. */}
       <Show when={conflictOpen() && scopePreview()}>
         <div class="lock-conflict-overlay" data-ac-testid="agentPicker.conflict">
-          {/* #1943 P1 - decorative scrim only, deliberately WITHOUT a click
+          {/* P1 - decorative scrim only, deliberately WITHOUT a click
               handler: the approved v3 prototype has no dismissal here, and a
               click-only div is what raised Sonar typescript:S1082 (Reliability
               New Code B) plus S6848. Cancel and Escape own dismissal. */}
@@ -2445,7 +2445,7 @@ const AgentPickerModal: Component<{
         </div>
       </Show>
     </div>
-    {/* #537: viewport-level toast so the failure is unmissable even with the
+    {/* Viewport-level toast so the failure is unmissable even with the
         modal scrolled. Mirrors SidebarApp/SettingsModal `.toast-error`. */}
     <Show when={toastMsg()}>
       <div class="toast-error" data-ac-testid="agentPicker.toast" data-ac-role="alert">

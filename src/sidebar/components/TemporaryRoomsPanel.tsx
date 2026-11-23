@@ -674,7 +674,7 @@ const TemporaryRoomsPanel: Component = () => {
                 </div>
                 <div
                   class="replica-item"
-                  role="presentation"
+                  role="none"
                   classList={{
                     active: !!session() && session()?.id === sessionsStore.activeId,
                     unleashed: unleashed(room),

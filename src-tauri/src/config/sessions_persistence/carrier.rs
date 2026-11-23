@@ -707,7 +707,7 @@ fn drop_session_protections(slots: Vec<PublicationSlot>, id: Uuid) -> bool {
     true
 }
 
-/// #3317 - retire the exact Closing protection of `carrier` for an explicit discard
+/// Retire the exact Closing protection of `carrier` for an explicit discard
 /// whose owner proved quiescence. False (nothing changed) on unreadable state, any
 /// Preparing that names the id, or anything but exactly one Closing of the id
 /// matching token, target and nonce.

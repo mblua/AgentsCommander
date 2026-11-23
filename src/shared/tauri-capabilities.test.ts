@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 
-// Same narrow URL overload as src/shared/raw-html-sinks.test.ts (no @types/node, #1167).
+// Same narrow URL overload as src/shared/raw-html-sinks.test.ts (no @types/node).
 declare module "node:fs" {
   export function readdirSync(path: URL, o: { recursive: true; encoding: "utf8" }): string[];
 }
 
-/** #4330 - least-privilege Tauri capabilities: one file per window type. The expected map
+/** Least-privilege Tauri capabilities: one file per window type. The expected map
  *  mirrors the call-site evidence in the #4330 plan. Change both together. */
 type Capability = { identifier: string; windows: string[]; permissions: string[] };
 
@@ -58,7 +58,7 @@ const CREATED_LABELS = [
   "watchers",
   "screenshot-overlay-1-0",
 ];
-/** Labels that must get no capability: web-browser loads an External URL (#4289); the
+/** Labels that must get no capability: web-browser loads an External URL; the
  *  unsuffixed sidebar/terminal windows are never created. */
 const UNGRANTED_LABELS = ["web-browser", "sidebar", "terminal"];
 const NEVER_GRANTED = [w("create"), w("set-title"), w("show"), w("hide"), w("unminimize")];

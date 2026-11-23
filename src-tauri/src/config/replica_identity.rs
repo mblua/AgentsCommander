@@ -451,7 +451,7 @@ pub fn read_and_repair_wg_replica_config(
     expected_wg_replica_identity(replica_dir)?;
     let config_path = crate::config::config_file_path(replica_dir);
     let mut repaired_identity: Option<WgReplicaIdentity> = None;
-    // #2816 (C3) - the returned value is the decisions object as published,
+    // The returned value is the decisions object as published,
     // captured inside the guard: no re-read and no state overlay.
     let mut published: Option<Value> = None;
     crate::config::agent_config::update_existing_agent_config(&config_path, |obj, _state| {
@@ -475,7 +475,7 @@ pub fn read_and_repair_wg_replica_config(
     Ok((config, identity))
 }
 
-/// #2475 - test-only count of strict-reader calls, scoped to registered
+/// Test-only count of strict-reader calls, scoped to registered
 /// fixture roots so that concurrent tests reading their own tempdirs never move
 /// a fixture's count. The condition is the path, not the thread.
 #[cfg(test)]

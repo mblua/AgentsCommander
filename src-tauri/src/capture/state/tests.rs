@@ -638,7 +638,7 @@ fn a_baseline_is_consumed_but_never_routed() {
         let (seq, key) = arm(&slot, Arc::clone(&record), 0);
 
         // A starved runner can age `pre` past STALE_PRECONDITIONS before the
-        // check (#2389). Retry only when that is measurably what happened;
+        // check. Retry only when that is measurably what happened;
         // a stale abstain mutates nothing, and test 19 pins the staleness path.
         let mut attempts = 0;
         let committed = loop {

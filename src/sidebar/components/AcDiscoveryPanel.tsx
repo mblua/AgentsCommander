@@ -181,7 +181,7 @@ const AcDiscoveryPanel: Component = () => {
     setNewCtxPath("");
   };
 
-  // #2655 - Escape = backdrop click while the panel is open (AgentMatrixNoticeModal idiom).
+  // Escape = backdrop click while the panel is open (AgentMatrixNoticeModal idiom).
   createEffect(() => {
     if (!ctxFilesReplica()) return;
     const onEscape = (e: KeyboardEvent) => {
@@ -401,7 +401,7 @@ const AcDiscoveryPanel: Component = () => {
             currentAgentId={pendingLaunch()!.currentAgentId}
             onSelect={async (selection) => {
               const pending = pendingLaunch()!;
-              // #516 — await create so a rejection (e.g. the Resource Monitor
+              // Await create so a rejection (e.g. the Resource Monitor
               // cap) reaches AgentPickerModal.apply()'s catch instead of being
               // a swallowed unhandled rejection. Hide Home / clear the picker
               // only after the session is created.

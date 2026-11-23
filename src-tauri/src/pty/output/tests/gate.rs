@@ -51,7 +51,7 @@ fn issue_3029_cursor_position_respects_reader_token() {
 const TUI_PROLOGUE: &[u8] =
     b"\x1b[?25l\x1b[2J\x1b[?1049h\x1b[H\x1b]0;cmd.exe\x07\x1b[?1000h\x1b[?1006h\x1b[m";
 
-/// #973 (B), (a) - CHUNK BOUNDARIES. The trigger must survive the prologue arriving in two
+/// (B), (a) - CHUNK BOUNDARIES. The trigger must survive the prologue arriving in two
 /// reads, split anywhere.
 ///
 /// The old predicate could not. `strip_ansi_csi` is stateless and keeps no residue between
@@ -116,7 +116,7 @@ fn the_gate_holds_a_prologue_split_at_any_chunk_boundary() {
     );
 }
 
-/// #973 (B), (b) - THREE-BYTE ESCAPES. `ESC ( B` is what ncurses and half the TUI world emit
+/// (B), (b) - THREE-BYTE ESCAPES. `ESC ( B` is what ncurses and half the TUI world emit
 /// on the way up. The old stripper consumed `ESC` plus exactly ONE char, so the `B` survived
 /// and read as printable, and the gate opened on a blank screen. Same for `ESC ) 0` (leaks
 /// `0`) and `ESC % G` (leaks `G`).
@@ -182,7 +182,7 @@ fn a_blank_viewport_is_not_content_but_a_coloured_one_is() {
     );
 }
 
-/// #973 / #955 - a degenerate size must never reach the vt100 parser.
+/// A degenerate size must never reach the vt100 parser.
 ///
 /// Red before the guard, and not with an assertion - with a **panic**:
 ///

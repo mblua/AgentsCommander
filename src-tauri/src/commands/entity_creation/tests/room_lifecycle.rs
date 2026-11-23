@@ -8,7 +8,7 @@ fn workgroup_removal_clears_clock_key_and_cache_sibling_intact() {
     use crate::config::session_context::sweep_context_cache_dir;
     use std::time::{Duration, SystemTime};
 
-    // (#621 E4) inline timestamp; no helper exists in this module.
+    // Inline timestamp; no helper exists in this module.
     let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
 
     let tmp = tempfile::tempdir().expect("temp dir");
@@ -144,7 +144,7 @@ fn failed_wg_delete_keeps_clock_key() {
     );
 }
 
-/// #1795 `T15` (`AC-17`). The new shared directories must be invisible to room
+/// `T15` (`AC-17`). The new shared directories must be invisible to room
 /// discovery. `room-shared` is the one name that needs the argument rather than
 /// a prefix mismatch: `has_entity_prefix("room-shared")` IS true, so it is never
 /// created under an `.ac` root, only under a room root. Both scanners below are
@@ -198,7 +198,7 @@ fn shared_directories_are_invisible_to_room_discovery() {
     );
 }
 
-// ── #2507 room number mask ──
+// ── room number mask ──
 
 #[test]
 fn default_mask_reproduces_todays_names() {
@@ -268,7 +268,7 @@ fn invalid_or_missing_mask_falls_back_to_the_default_width() {
     }
 }
 
-/// C4 (#2470) E3, sites 5, 6 and 7, each on its own seeded directory: none
+/// Sites 5, 6 and 7, each on its own seeded directory: none
 /// writes a state key to the tracked file and none touches the state file.
 #[test]
 fn c4_sites_5_6_7_leave_no_state_key() {

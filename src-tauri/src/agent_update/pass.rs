@@ -125,14 +125,14 @@ impl<E: ManagedBroadcastEvents> TargetTerminalizer<E> {
     }
 }
 
-/// #1551 - the two effects of the pass end, named fields so the supervisor cannot
+/// The two effects of the pass end, named fields so the supervisor cannot
 /// pass them in the wrong slots.
 pub(crate) struct PassEnd<I: FnOnce(), E: FnOnce()> {
     pub(crate) invalidate: I,
     pub(crate) emit: E,
 }
 
-/// #1551 - the ONLY production transition to `finished`. Order is load-bearing:
+/// The ONLY production transition to `finished`. Order is load-bearing:
 /// invalidate cache -> store the final snapshot while unfinished -> enqueue the
 /// pass-finished event -> atomically open terminal fences/mark finished -> notify
 /// admission. Post-update probe scheduling happens only after this returns.
@@ -347,7 +347,7 @@ pub(crate) async fn run_update_target<E: ManagedBroadcastEvents + Clone>(
     terminalizer.publish(candidate).await
 }
 
-/// #1551 - a task that panicked never ran `mark_command_finished`: settle it here so the
+/// A task that panicked never ran `mark_command_finished`: settle it here so the
 /// row leaves `running` and every surface receives its `command_finished`.
 #[cfg(test)]
 pub(crate) fn settle_joined_update(
@@ -377,11 +377,11 @@ pub(crate) fn settle_joined_update(
     }
 }
 
-/// #1551/#1967 - the agents of this boot's pass in catalog order: every target of
+/// The agents of this boot's pass in catalog order: every target of
 /// `plan.updates` (decided `true`) and `plan.prompts` (to be asked), one node per
 /// command (first catalog occurrence, like `build_update_plan`). A command whose
 /// first effective entry has an empty sequence gets no node at all: empty
-/// winners produce no prompt, update, row or probe (#1967). Pure; the order is
+/// winners produce no prompt, update, row or probe. Pure; the order is
 /// the timeline order on every surface.
 pub fn pass_nodes(
     catalog: &[CodingAgentDefinition],
@@ -413,7 +413,7 @@ pub fn pass_nodes(
     nodes
 }
 
-/// #1551 - a prompted target leaves the pass (answered No, or expired): prune its node and tell
+/// A prompted target leaves the pass (answered No, or expired): prune its node and tell
 /// every surface, exactly once. Called by the prompt loop only, after that prompt's closure.
 pub(crate) fn skip_prompted_target(
     app: &impl ManagedBroadcastEvents,
@@ -425,7 +425,7 @@ pub(crate) fn skip_prompted_target(
     }
 }
 
-/// #1551 round 5 - after the pass is finished, re-read the install state of every UPDATED
+/// Round 5 - after the pass is finished, re-read the install state of every UPDATED
 /// command in the background through the cache (single-flight with any Settings-triggered
 /// probe), so the timeline's finished nodes can show `<before> -> <after>` and Settings sees
 /// the post-update state without asking. Runs only after `finish_pass` returned (program
@@ -466,7 +466,7 @@ pub(crate) struct PassSupervisor<E> {
     pub(crate) gate: Arc<AgentUpdateGate>,
 }
 
-/// #4804 - remove from `registered_commands` every command whose resolved binary is
+/// Remove from `registered_commands` every command whose resolved binary is
 /// mise-managed, so it is never prompted nor updated (its vendor update fails on a
 /// mise install). Only commands the plan could update: the FIRST catalog entry with
 /// that command must have non-empty `update_commands`. Sorted order; one info line each.
@@ -529,7 +529,7 @@ where
         let catalog = match load_catalog_for_settings(&settings) {
             Ok(catalog) => catalog,
             Err(unavailable) => {
-                // #1967 P4 - never substitute embedded commands and never run a
+                // P4 - never substitute embedded commands and never run a
                 // vendor command or install probe for an unavailable catalog.
                 // Return through the normal supervisor completion/cleanup path;
                 // `finalize` still releases the gate and invalidates the cache.

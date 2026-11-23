@@ -1,4 +1,4 @@
-//! #2064 Phase B - the remote-activity notifier.
+//! The remote-activity notifier.
 //!
 //! Phase A's sweeper publishes a [`RemoteTransition`] stream and `lib.rs` hands
 //! its receiver here. This module owns POLICY and DELIVERY, never the transition

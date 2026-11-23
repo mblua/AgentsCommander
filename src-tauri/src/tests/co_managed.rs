@@ -1,7 +1,7 @@
 use super::*;
 
 // ══════════════════════════════════════════════════════════════════════
-// #2232 phase 7: Co-managed supervisor tests
+// Phase 7: Co-managed supervisor tests
 // ══════════════════════════════════════════════════════════════════════
 
 /// Test 1: idle edge with the room disabled makes zero Jev calls, writes

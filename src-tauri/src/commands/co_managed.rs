@@ -101,8 +101,8 @@ pub async fn co_managed_get<R: tauri::Runtime>(
 ///
 /// The read-modify-write is a blocking, lock-bearing operation, so it runs on
 /// the blocking pool rather than stalling the async runtime.
-/// Toggling the flag on a **live** session must take effect immediately
-/// (#2232 phase 4 section 5.1, epic section 3.2): without this, a user turning
+/// Toggling the flag on a **live** session must take effect immediately:
+/// without this, a user turning
 /// the flag on for a running orchestrator would get no reader until the next
 /// spawn. Every raise and release goes through the SCC-member functions in
 /// `commands::session`, so this module keeps **outgoing arcs only**.
@@ -162,7 +162,7 @@ async fn live_sessions_in_room<R: tauri::Runtime>(
                     // candidate is derived from the session's stored cwd, which is not.
                     // On Windows `canonicalize` yields a `\\?\` verbatim path, so
                     // comparing a raw candidate with a canonical root drops every live
-                    // session and the toggle starts no reader (#2267 phase 4, Windows
+                    // session and the toggle starts no reader (Windows
                     // CI `toggling_the_flag_on_a_live_session_starts_and_stops_the_reader`).
                     let candidate = canonical_project_path(&root).unwrap_or(root);
                     crate::path_identity::paths_equivalent(&candidate, room_root)
@@ -195,7 +195,7 @@ pub async fn co_managed_effective_state<R: tauri::Runtime>(
 /// is written, nothing is enqueued and no request is issued (plan section 7);
 /// the outcome carries only the detector's reason and the candidate length.
 ///
-/// #2232 phase 6: NOT a `#[tauri::command]`. This phase's tests call it. The phase-7
+/// NOT a `#[tauri::command]`. Its tests call it. The
 /// supervisor calls `capture::jev` directly, never `commands::co_managed`. Registering it
 /// would add `lib.rs` to this phase and
 /// would put a network-calling entry point on the IPC surface with no UI asking for it.

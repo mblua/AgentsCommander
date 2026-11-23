@@ -265,7 +265,7 @@ fn daemon_path_queues_request_and_never_saves() {
     assert!(!dir.path().join("settings.json").exists());
 }
 
-// ---- #1967 P4: persisted-only catalog resolution -----------------------
+// ---- P4: persisted-only catalog resolution -----------------------
 
 fn write_cli_catalog(project: &Path, agents_json: &str) {
     let dir = project.join(".ac").join("coding-agents");
@@ -336,7 +336,7 @@ fn help_text_documents_coding_agent() {
     assert!(help.contains("coding-agent"), "help missing verb: {help}");
 }
 
-/// #2716 (B3, option C) E37: `list` and `show` report an unreadable agents
+/// E37: `list` and `show` report an unreadable agents
 /// layer, naming the path, instead of an empty list or an unknown id.
 #[test]
 fn an_unreadable_layer_is_not_an_empty_list() {

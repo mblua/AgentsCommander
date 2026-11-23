@@ -1,6 +1,6 @@
 use super::*;
 
-/// #2064 - the six remote-activity dials are additive: an older settings.json
+/// The six remote-activity dials are additive: an older settings.json
 /// without them must deserialize to the documented defaults, and a serialized
 /// default must carry all six keys (guarding against an accidental
 /// `skip_serializing_if`).
@@ -63,7 +63,7 @@ fn remote_activity_dials_round_trip_through_serde() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// #2306 P1 - registered-agent explicit order model.
+// P1 - registered-agent explicit order model.
 // ─────────────────────────────────────────────────────────────────────────
 
 fn order_2306_decode_settings(agents: serde_json::Value) -> AppSettings {
@@ -232,7 +232,7 @@ fn agent_order_legacy_load_writes_nothing_and_next_save_persists_positions() {
         std::fs::read(super::super::agents_instance_path(&path)).unwrap(),
         exported_sidecar
     );
-    // #2716 (B3) r12l: the one-shot export rotates exactly once, and slot 1
+    // (B3) r12l: the one-shot export rotates exactly once, and slot 1
     // keeps the legacy file byte for byte.
     assert_eq!(
         std::fs::read(super::super::settings_backup_path(&path, 1)).expect("slot 1"),
@@ -433,7 +433,7 @@ fn agent_order_unparseable_base_with_overlay_still_finalizes_the_effective_view(
     assert_eq!(std::fs::read(&path).unwrap(), corrupt);
 }
 
-/// #2430: the worked table from the phase plan. Every row is what
+/// The worked table from the phase plan. Every row is what
 /// `executableTokenBasename` (`src/shared/profile-utils.ts`) returns.
 const STEM_TWIN_TABLE: &[(&str, &str)] = &[
     (r"C:\tools\claude.exe", "claude"),

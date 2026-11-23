@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1795 (plan 8.0). A replica that `resolve_replica_matrix_root` accepts.
+/// Plan 8.0. A replica that `resolve_replica_matrix_root` accepts.
 /// Returns the tempdir-derived `.ac` root, the room root, the replica root and
 /// the matrix root, each canonicalized and rendered with `display_path`, exactly
 /// as production does at `:992`.

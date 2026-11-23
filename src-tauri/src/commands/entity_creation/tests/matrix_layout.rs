@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1245: the writer and `config::teams::team_members` enforced mutually
+/// The writer and `config::teams::team_members` enforced mutually
 /// exclusive invariants over the same `agents` array, so every team config
 /// the application was able to write was rejected by the privileged
 /// validator. The two assertions below cannot both hold unless the writer
@@ -557,5 +557,5 @@ fn create_replica_writes_expected_local_identity_for_portable_ref() {
 }
 
 // ------------------------------------------------------------------
-// #1939 replica config initialization (guarded, lossless, default).
+// Replica config initialization (guarded, lossless, default).
 // ------------------------------------------------------------------

@@ -134,7 +134,7 @@ function discoveryResult(taskTitle = "Restart prompt") {
             path: replicaPath,
             repoPaths: [],
             isCoordinator: true,
-            // #1943 - a full persisted selection-lock payload: the replica is
+            // A full persisted selection-lock payload: the replica is
             // unprotected, so no lock chip and an actionable lock row.
             savedPair: null,
             selectionState: "unlocked",
@@ -145,7 +145,7 @@ function discoveryResult(taskTitle = "Restart prompt") {
   });
 }
 
-// #1943 - the four selection-lock commands the picker drives. Each payload is
+// The four selection-lock commands the picker drives. Each payload is
 // the fully populated shape the backend emits, not a partial stub.
 function removalPreviewResult(scope: ProfileAssignmentScope): PreviewSelectionLockRemovalResult {
   return {
@@ -256,7 +256,7 @@ async function driveToRestartPrompt(root: HTMLElement): Promise<void> {
   click(findButtonByText("Coding Agent"));
 
   await waitFor(() => expect(q("agentPicker.modal")).toBeTruthy());
-  // #551: the picker opens pre-selected to the live session's current Coding Agent
+  // The picker opens pre-selected to the live session's current Coding Agent
   // (codex), so "Assign to this replica" starts disabled (re-assigning the same
   // pair is a no-op). Switch to a different coding agent to make it a real
   // re-assignment that enables apply and pops the post-assign restart prompt.
@@ -300,7 +300,7 @@ describe("ProjectPanel post-assign restart prompt (#537)", () => {
 
       // A discovery poll re-discovers the project WITH changed data and
       // replaces its object reference (projectStore.reloadProject), re-creating
-      // the projects <For> row. (#748 made an identical snapshot a no-op, so
+      // the projects <For> row. (An earlier fix made an identical snapshot a no-op, so
       // the poll must carry a real change to exercise re-creation.) Before the
       // fix this disposed the per-row signal and the modal vanished; hoisted to
       // the stable root, it must survive.
@@ -310,7 +310,7 @@ describe("ProjectPanel post-assign restart prompt (#537)", () => {
       expect(q("restartPrompt.modal")).toBeTruthy();
 
       // The same resilience must hold for a replica-branch event, which now
-      // lands in the volatile store (#748) without touching row identity.
+      // lands in the volatile store without touching row identity.
       replicaVolatileStore.setRepoBranch(replicaPath, "feature/x");
       expect(q("restartPrompt.modal")).toBeTruthy();
 
@@ -353,7 +353,7 @@ describe("ProjectPanel post-assign restart prompt (#537)", () => {
     }
   });
 
-  // #573: a rejected SessionAPI.restart used to be swallowed (consume-and-clear +
+  // A rejected SessionAPI.restart used to be swallowed (consume-and-clear +
   // bare console.error), so the user thought the new agent applied while the old
   // one kept running. The modal must now stay open and surface the failure.
   it("keeps the prompt open and surfaces the error when the restart fails, then closes on a successful retry", async () => {
@@ -391,7 +391,7 @@ describe("ProjectPanel post-assign restart prompt (#537)", () => {
     }
   });
 
-  // #573 (grinch Step-7, Finding 1): a backend `restart_session` that neither
+  // Grinch Step-7, Finding 1: a backend `restart_session` that neither
   // resolves nor rejects (write-lock stall, ConPTY respawn hang, dropped IPC
   // reply) must not trap the modal. The Tauri IPC transport has no timeout, so
   // without the bounded race `restarting()` would stay true forever — and with

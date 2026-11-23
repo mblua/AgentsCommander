@@ -29,7 +29,7 @@ function replica(roomName: string): AcAgentReplica {
   };
 }
 
-// #2202 - the CI half. `repoPaths` carries the EXACT string the remote-activity
+// The CI half. `repoPaths` carries the EXACT string the remote-activity
 // payload is keyed by, because the map applies no normalization.
 const ciRepoPath = (roomName: string): string => `${projectPath}\\.ac\\${roomName}\\repo-AgentsCommander`;
 

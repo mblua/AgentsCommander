@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #2297 phase 3 - Spec Board quit gate, consent modal and registration lock.
+// Spec Board quit gate, consent modal and registration lock.
 //
 // The board is mounted for real; only the Tauri window API and the heavy
 // mermaid renderer are stubbed. jsdom does not implement `inert`, so this file

@@ -158,7 +158,7 @@ pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
 
     merge_root_agent_config(&crate::config::config_file_path(root_dir))?;
 
-    // #979: BEST-EFFORT, never `?`. `ensure_root_agent_dir` is fatal at
+    // BEST-EFFORT, never `?`. `ensure_root_agent_dir` is fatal at
     // commands/session.rs:2741 and :3276, so a retirement error here would make the
     // Root Agent permanently uncreatable and unrestartable while the app itself
     // starts fine (lib.rs:798-800 and :1283-1289 only log and continue). A
@@ -320,7 +320,7 @@ pub(crate) fn migrate_root_role(role_path: &Path) -> Result<(), String> {
             role_path.display()
         )
     })?;
-    // #979: Root provisioning no longer seeds the project templates
+    // Root provisioning no longer seeds the project templates
     // (`Context.AgentsCommander.md` / `Context.coordinator.md`). Only the Root
     // supplement below is seeded. `create_default_context_templates` itself stays:
     // project discovery (`commands/ac_discovery.rs`) and project registration

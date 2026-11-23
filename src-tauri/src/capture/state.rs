@@ -1,5 +1,5 @@
 //! Per-room capture state: epochs, watermark, recent set, cut and budget, plus
-//! the single synchronous effect commit (#2232 phase 3).
+//! the single synchronous effect commit.
 //!
 //! Leaf module. It names `capture::key`, `capture::record`, `config::co_managed`
 //! (for the room's `.co-managed` directory and its advisory lock path), serde

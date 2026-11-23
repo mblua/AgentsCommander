@@ -133,7 +133,7 @@ use write::{
 #[cfg(test)]
 pub(crate) use retained_prompt::initialize_prompt_retention_in_dir;
 
-// ── Issue #206: working-state derivation from sessions.json ──────────
+// ── working-state derivation from sessions.json ──────────
 
 pub(crate) struct CandidateSession {
     pub(crate) id: String,
@@ -143,10 +143,10 @@ pub(crate) struct CandidateSession {
     pub(crate) context_percent: Option<u8>,
     pub(crate) agent_id: Option<String>,
     pub(crate) effective_profile: Option<String>,
-    /// #1669 - the row is parked on a blocking terminal menu
+    /// The row is parked on a blocking terminal menu
     /// (`communication.kind == BlockedMenu && visible`).
     pub(crate) blocked_menu: bool,
-    /// #1669 - the agent-specific notice for that menu, when the row carries one.
+    /// The agent-specific notice for that menu, when the row carries one.
     pub(crate) blocked_menu_message: Option<String>,
 }
 
@@ -160,9 +160,9 @@ pub(crate) struct PeerStatus {
     pub(crate) context_percent: Option<u8>,
     pub(crate) agent_id: Option<String>,
     pub(crate) effective_profile: Option<String>,
-    /// #1669 - the chosen session is parked on a blocking terminal menu.
+    /// The chosen session is parked on a blocking terminal menu.
     pub(crate) blocked_menu: bool,
-    /// #1669 - the agent-specific notice for that menu, when there is one.
+    /// The agent-specific notice for that menu, when there is one.
     pub(crate) blocked_menu_message: Option<String>,
 }
 
@@ -214,7 +214,7 @@ pub(crate) fn build_session_index_from(
             continue;
         };
         let key = canon_or_norm(&ps.working_directory);
-        // #1669: a blocked terminal is a visible BlockedMenu communication. RaiseHand
+        // A blocked terminal is a visible BlockedMenu communication. RaiseHand
         // and cleared/invisible communications are not blocked terminals.
         let blocked_menu = ps
             .communication
@@ -298,8 +298,8 @@ pub(crate) fn compute_peer_status(
             }
         };
 
-    // #1669: `snapshot_sessions` deliberately preserves `communication` for exited
-    // rows (#747), so a crash between the block and the exit can leave a stale
+    // `snapshot_sessions` deliberately preserves `communication` for exited
+    // rows, so a crash between the block and the exit can leave a stale
     // BlockedMenu on a session whose terminal is gone. A terminal that exited is
     // not waiting on a menu, so suppress the pair rather than report a false
     // positive alongside sessionStatus == "exited".

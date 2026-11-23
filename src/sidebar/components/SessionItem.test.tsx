@@ -521,7 +521,7 @@ describe("SessionItem profile-outdated badge (#592)", () => {
   });
 });
 
-// #1167 - the badge must be one constant style in every row. jsdom does not apply
+// The badge must be one constant style in every row. jsdom does not apply
 // sidebar.css, so the pin is on the emitted classes and attributes, which is what
 // the CSS keys off: exactly `ac-discovery-badge agent`, no data-agent, no running.
 describe("SessionItem coding-agent badge is style-invariant (#1167)", () => {
@@ -567,7 +567,7 @@ describe("SessionItem coding-agent badge is style-invariant (#1167)", () => {
   }
 });
 
-// #1730 - the agent name is now a chip inside the row's badge strip, and the
+// The agent name is now a chip inside the row's badge strip, and the
 // strip itself renders unconditionally. jsdom applies no stylesheet, so every
 // pin here is on the emitted DOM: the chip's text and title, its position in
 // the strip, its double-click, and the voice states that suppress its
@@ -959,7 +959,7 @@ describe("SessionItem orphan notice (#2568)", () => {
     }
   });
 
-  // #2659 - reuses this block's DOM and store lifecycle.
+  // Reuses this block's DOM and store lifecycle.
   describe("row keyboard access (#2659)", () => {
     const press = (el: Element, key: string) =>
       el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));

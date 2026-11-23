@@ -152,7 +152,7 @@ fn open_without_delete_share(path: &Path) -> std::fs::File {
         .expect("open with restricted share mode")
 }
 
-/// #1773: a harness-owned handle to a named mutex. Closed on drop, so a panic
+/// A harness-owned handle to a named mutex. Closed on drop, so a panic
 /// between creation and the end of the test cannot leave the mutex held for the
 /// rest of this test binary's run.
 #[cfg(target_os = "windows")]
@@ -403,7 +403,7 @@ fn symlink_target_refuses_and_deletes_nothing() {
     );
 }
 
-/// #1773 positive control. This harness process holds the mutex and is a different
+/// Positive control. This harness process holds the mutex and is a different
 /// process from the binary under test, so the refusal must name it: our PID, our
 /// image name and the exact handle value we hold. The harness also holds a decoy,
 /// a second Mutant handle to a different named object; a lookup that reports
@@ -510,7 +510,7 @@ fn junction_target_refuses_and_deletes_nothing() {
     );
 }
 
-/// #1773: the guard must release the handle on the panic path, not only on the
+/// The guard must release the handle on the panic path, not only on the
 /// happy path. Uses its own mutex name so it never interacts with the real gate.
 /// Every prerequisite is asserted outside `catch_unwind`, so a failed setup fails
 /// the test instead of being caught; the closure contains nothing but the move and

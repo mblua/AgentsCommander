@@ -77,7 +77,7 @@ fn non_object_json_returns_two() {
     assert_eq!(interpret_purge_response_exit_code("true"), 2);
 }
 
-// (#885 F-8) The exit-code function reads ONLY `status`, never `would_purge`.
+// The exit-code function reads ONLY `status`, never `would_purge`.
 #[test]
 fn exit_code_never_reads_would_purge() {
     let resp = r#"{"status":"dry_run_blocked","would_purge":true}"#;

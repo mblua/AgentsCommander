@@ -172,7 +172,7 @@ impl LoopScheduler {
         if !loop_is_current_for_delivery(dir, config)? {
             return Ok(state);
         }
-        // #2733 - an unresolved target repeating the previous result is not a
+        // An unresolved target repeating the previous result is not a
         // new transition: no audit row, no event.
         let repeat_unresolved = report.kind == LoopAuditKind::TargetUnresolved
             && state.last_result.as_ref().map(|r| r.kind.as_str()) == Some("targetUnresolved");
@@ -314,7 +314,7 @@ impl LoopScheduler {
             .remove(&generation_key(dir))
     }
 
-    /// #2698: commit a delivered run's recorded state and audit row, with no
+    /// Commit a delivered run's recorded state and audit row, with no
     /// new delivery. The caller proved the on-disk state is the one the
     /// failed commit started from or the one it wrote.
     pub(super) async fn retry_unrecorded_delivery(

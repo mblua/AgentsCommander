@@ -1,9 +1,9 @@
-//! Plan #137 follow-up: pin runtime emission of `[task]` audit log lines
+//! Pin runtime emission of `[task]` audit log lines
 //! from the CLI path.
 //!
 //! Pre-fix bug: `main.rs` jumped straight into `cli::handle_cli` without
 //! initializing any `log` backend, so every `log::info!("[task] ...")` call
-//! in `task_set_title` / `task_append_body` was silently dropped. Plan #137
+//! in `task_set_title` / `task_append_body` was silently dropped. The plan
 //! §3a HIGH-1 risk acceptance was conditional on those lines being grep-able
 //! at `<config_dir>/app.log`.
 //!

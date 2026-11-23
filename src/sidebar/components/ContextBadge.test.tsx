@@ -141,7 +141,7 @@ describe("ContextBadge (#1033)", () => {
   });
 });
 
-// #3532 P11 - the scoped badge reads the P10 owner and colors only bg/border.
+// The scoped badge reads the P10 owner and colors only bg/border.
 describe("ContextBadge history scope (#3532 P11)", () => {
   const SCOPE = {
     projectPath: "C:/proj",

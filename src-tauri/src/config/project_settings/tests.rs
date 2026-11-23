@@ -9,7 +9,7 @@ fn project_with_ac_root() -> tempfile::TempDir {
     temp
 }
 
-// #2717 (B4a) - literal oracles: no test here composes either name from a
+// B4a: literal oracles: no test here composes either name from a
 // production constant, so a rename to the wrong name cannot stay green.
 fn settings_path(project: &Path) -> PathBuf {
     project.join(".ac").join("settings.50.personal.no-git.json")
@@ -62,7 +62,7 @@ fn favorite_flag_round_trips_through_save_load() {
     )
     .expect("parse");
     assert_eq!(persisted["groups"][0]["favorite"], true);
-    // (#965) A NON-favorited group must still emit `false` on disk. Guard against a
+    // A NON-favorited group must still emit `false` on disk. Guard against a
     // `skip_serializing_if` creeping in later and handing the frontend `undefined`
     // where it expects a concrete boolean.
     assert_eq!(persisted["groups"][1]["favorite"], false);
@@ -82,7 +82,7 @@ fn populated_non_stop() -> NonStopGroupConfig {
             enabled: true,
             seconds: 5,
         },
-        // (#1257) Deliberately `true`, not `false`: `false` here would be
+        // Deliberately `true`, not `false`: `false` here would be
         // indistinguishable from the serde default, so the existing round trips
         // would not actually exercise the new field.
         favorite: true,
@@ -360,7 +360,7 @@ fn non_object_root_returns_clear_error() {
     assert!(err.contains("must be a JSON object"), "{err}");
 }
 
-// ---- #777 Non-stop config (Change B) ----
+// ---- Non-stop config (Change B) ----
 
 #[test]
 fn non_stop_defaults_none_for_legacy_json() {
@@ -511,7 +511,7 @@ fn non_stop_favorite_round_trips_and_emits_false_when_unset() {
     .expect("parse");
     assert_eq!(persisted["nonStop"]["favorite"], true);
 
-    // (#965 convention, #1257) A NON-favorited Non-stop must still emit an
+    // A NON-favorited Non-stop must still emit an
     // explicit `false` on disk, or a later `skip_serializing_if` would hand the
     // frontend `undefined` where it expects a concrete boolean.
     let mut off = config;
@@ -576,7 +576,7 @@ fn normalize_clamps_out_of_range_non_stop_and_keeps_groups() {
     assert_eq!(ns.sound.seconds, 60, "sound seconds clamped down to 60");
 }
 
-/// #2717 (B4a) E5: the three-way layer-50 chain. Deliberately absent from
+/// B4a E5: the three-way layer-50 chain. Deliberately absent from
 /// `live_names_are_the_target_names` (`config/instance_gitignore.rs`): naming
 /// `project_settings` there would widen the frozen super-reference table of
 /// `tests/instance_gitignore_layering.rs`, which keeps that module at arm's

@@ -11,7 +11,7 @@ import {
   telegramUi,
 } from "./SessionItem";
 
-// #2611 — the SessionItem JSX ternaries moved into these helpers. The expected
+// The SessionItem JSX ternaries moved into these helpers. The expected
 // strings are byte-equal to the old inline templates (double spaces included).
 
 describe("SessionItem helpers (#2611)", () => {

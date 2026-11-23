@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #2349 - deterministic unit tests for the renderer-side main-window placement
+// Deterministic unit tests for the renderer-side main-window placement
 // observation and the bounded quit flush. The real `window-geometry` module, the
 // real IPC funnel and the real `FakeTransport` are used; only the Tauri window
 // API and the platform flag are stubbed.

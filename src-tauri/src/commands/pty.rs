@@ -41,7 +41,7 @@ pub struct PtyScreenSnapshotPayload {
     pub sequence: u64,
 }
 
-/// (#871) Classifies user-input notifications so fresh-intent clearing can be
+/// Classifies user-input notifications so fresh-intent clearing can be
 /// gated on substantive post-boundary submissions.
 pub(crate) enum UserInputSource<'a> {
     /// xterm terminal keystrokes from the Tauri `pty_write` command.
@@ -62,7 +62,7 @@ pub async fn pty_write(
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
-    // (#885 J1) Keystrokes into a session being purged would flip it busy
+    // (J1) Keystrokes into a session being purged would flip it busy
     // between the readiness snapshot and its destroy. Scoped to the purge's
     // target set, so typing in unrelated sessions is unaffected.
     if let Some(g) = app.try_state::<std::sync::Arc<crate::session::purge_guard::PurgeGuard>>() {
@@ -114,7 +114,7 @@ pub async fn pty_write(
     mark_successful_pty_write_busy(&app, uuid, data.len()).await;
     drop(permit);
 
-    // #552 user input -> silence touch (+ badge reset if coordinator). Resolves
+    // User input -> silence touch (+ badge reset if coordinator). Resolves
     // all state from `app`, so the same helper serves Telegram and web.
     note_user_message_to_session(&app, uuid, UserInputSource::Terminal(&data)).await;
 
@@ -127,7 +127,7 @@ pub(crate) async fn mark_successful_pty_write_busy<R: tauri::Runtime>(
     byte_count: usize,
 ) {
     if let Some(idle) = app.try_state::<Arc<crate::pty::idle_detector::IdleDetector>>() {
-        // #1682 - every caller of this helper is a PTY write that is not, by
+        // Every caller of this helper is a PTY write that is not, by
         // itself, a delivered message: xterm and web keystrokes, the injection
         // text write (whose own arming block clears the mark a few lines later)
         // and the graceful-close `exit`. Marking here rather than in
@@ -147,7 +147,7 @@ pub(crate) async fn mark_successful_pty_write_busy<R: tauri::Runtime>(
     }
 }
 
-/// #1682 - arming an agent turn cancels any standing control-write mark for this
+/// Arming an agent turn cancels any standing control-write mark for this
 /// session. Called from TWO of the three arming sites: `note_user_message_to_session`
 /// here, and `pty::inject::inject_text_into_session_impl`. The third,
 /// `SessionManager::prepare_pty_input_boundary`, clears through
@@ -160,11 +160,11 @@ pub(crate) fn clear_control_write_mark<R: tauri::Runtime>(app: &AppHandle<R>, se
     }
 }
 
-/// (#1793) True iff this session has emitted PRINTABLE PTY output strictly
+/// True iff this session has emitted PRINTABLE PTY output strictly
 /// after `since`. The restart-resume pass pairs this with `waiting_for_input`
 /// to tell "the agent painted its prompt and went quiet" apart from "the agent
 /// has printed nothing at all since spawn": `IdleDetector::register_session`
-/// SEEDS `activity[id]` at spawn (#260), so the idle flag on its own reaches
+/// SEEDS `activity[id]` at spawn, so the idle flag on its own reaches
 /// `true` for a session that never printed.
 ///
 /// Lives in this module, not in `commands::session`, purely for the module
@@ -187,7 +187,7 @@ pub(crate) fn session_printed_since<R: tauri::Runtime>(
     }
 }
 
-/// #552 Record a real user message to `session_id`: always reset the auto-close
+/// Record a real user message to `session_id`: always reset the auto-close
 /// silence clock; if the session is a coordinator, reset its badge clock and
 /// emit `coordinator_clock_updated` (and clear any "auto-closed" marker).
 /// Resolves all state from `app`, so every user-input surface (xterm
@@ -214,7 +214,7 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         idle.touch_silence(session_id);
     }
 
-    // (#2232 phase 3, section 10.1) The automatic-action budget recharge has
+    // (phase 3, section 10.1) The automatic-action budget recharge has
     // exactly one call site, this one, and it reuses the source filter computed
     // one screen above rather than adding an event: `coordinator_clock_updated`
     // carries no source and fires for Telegram and web alike, so the specified
@@ -228,10 +228,10 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         }
     }
 
-    // (#630/#631 + #698) Apply both user-input state transitions and persist them
+    // Apply both user-input state transitions and persist them
     // atomically. On the FIRST substantive post-boundary submission we re-arm the
     // resume intent, and a submitted line (Enter) lowers any visible raise-hand
-    // communication; other writes persist nothing (#4778). This is the unified
+    // communication; other writes persist nothing. This is the unified
     // user-input choke point
     // (xterm/Telegram/web); injection and auto-resume never call it, and it runs
     // before the coordinator-only early return below so non-coordinator members
@@ -248,7 +248,7 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         let guard = mgr.read().await;
         guard.clone()
     };
-    // #1682 - a substantive message arms this session; the busy->idle edges that
+    // A substantive message arms this session; the busy->idle edges that
     // follow stamp `tooling.lastAgentMessageAt`. Non-substantive writes (arrow
     // keys, focus reports, a bare Enter, a cancelled line) never arm.
     if substantive {
@@ -285,10 +285,10 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let changed = guard.note_user_message(&fqn, now);
-        // #552 a real user message reopens the coordinator -> clear any
+        // A real user message reopens the coordinator -> clear any
         // "auto-closed" marker (idempotent; no-op if not marked).
         let cleared_auto = guard.clear_auto_closed(&fqn);
-        // (#871/#756) Drop the fresh-intent mirror only on a substantive
+        // Drop the fresh-intent mirror only on a substantive
         // post-boundary submission. Non-substantive terminal writes leave it set
         // so an app restart still restores fresh.
         let cleared_fresh = if substantive {
@@ -311,7 +311,7 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
         );
     }
     if cleared_fresh {
-        // (#756) Persist immediately: this transition must survive an app close
+        // Persist immediately: this transition must survive an app close
         // inside the 60s flush tick window (mirrors close_coordinator's
         // explicit save; the exit flush in lib.rs only covers clean exits).
         let snapshot = {
@@ -367,7 +367,7 @@ async fn persist_user_input_transitions(
     cleared
 }
 
-/// (#2232 phase 3) Does this user input recharge the room's automatic-action
+/// (phase 3) Does this user input recharge the room's automatic-action
 /// budget?
 ///
 /// Human keystrokes only. Web and inbound Telegram (`CompleteMessage`) are
@@ -380,8 +380,8 @@ fn recharges_capture_budget(substantive: bool, source: &UserInputSource<'_>) -> 
     substantive && matches!(source, UserInputSource::Terminal(_))
 }
 
-/// #4778 - does this user input persist session state (lower the hand, clear the
-/// fresh intent)? Only a submitted line does (user decision, #4778). A complete
+/// Does this user input persist session state (lower the hand, clear the
+/// fresh intent)? Only a submitted line does (user decision). A complete
 /// message is always a submitted line.
 fn persists_session_state(source: &UserInputSource<'_>) -> bool {
     match source {
@@ -392,7 +392,7 @@ fn persists_session_state(source: &UserInputSource<'_>) -> bool {
     }
 }
 
-/// (#2232 phase 3) The room root of the orchestrator terminal `session_id` was
+/// (phase 3) The room root of the orchestrator terminal `session_id` was
 /// typed into, or `None` when the session is not an orchestrator.
 ///
 /// The resolution is async and happens **before** the leaf call, so
@@ -410,7 +410,7 @@ async fn room_root_of_orchestrator<R: tauri::Runtime>(
     crate::config::co_managed::room_root_for_path(std::path::Path::new(&cwd?))
 }
 
-/// (#871) Run the substantive-submission classifier for a raw keystroke chunk.
+/// Run the substantive-submission classifier for a raw keystroke chunk.
 /// Locks the managed tracker briefly with no await held. Fail-open to true if
 /// the tracker state is absent, preserving the historical clear contract.
 fn classify_substantive<R: tauri::Runtime>(
@@ -427,7 +427,7 @@ fn classify_substantive<R: tauri::Runtime>(
     tracker.feed(session_id, data)
 }
 
-/// #2336 - record a desktop keystroke for the typing hold. ONLY `pty_write`
+/// Record a desktop keystroke for the typing hold. ONLY `pty_write`
 /// calls this: web writes and every injection path must not arm the natural
 /// window. Called while the per-session writer permit is still held, so a peer
 /// injection that acquires the permit next observes the key.
@@ -447,7 +447,7 @@ fn response_close_hold_publisher<R: tauri::Runtime>(
         .map(|state| state.inner().clone())
 }
 
-/// #2336 - confirm a session exists before reading or flipping its padlock, so
+/// Confirm a session exists before reading or flipping its padlock, so
 /// an invalid or absent session errors instead of silently touching nothing.
 async fn ensure_session_exists<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -469,7 +469,7 @@ async fn ensure_session_exists<R: tauri::Runtime>(
     }
 }
 
-/// #2336 - read the per-session typing-hold snapshot. `closed` is the effective
+/// Read the per-session typing-hold snapshot. `closed` is the effective
 /// hold (manual or natural window); `heldCount` is the unique deferred peer wake
 /// message count. Pure in-memory read: no filesystem, DB or source-side
 /// reconciliation, and no mutation of the count.
@@ -484,7 +484,7 @@ pub async fn get_typing_hold(
     Ok(typing_hold_snapshot(&app, session_id, window))
 }
 
-/// #2336 - flip one session's manual padlock and return the post-toggle
+/// Flip one session's manual padlock and return the post-toggle
 /// snapshot. An effective-closed session releases (suppressing the current
 /// natural window so the next poll may deliver); an open one takes the manual
 /// hold. Per-session only: an unknown session errors and leaves every other
@@ -540,7 +540,7 @@ pub fn pty_resize<R: tauri::Runtime>(
     rows: u16,
 ) -> Result<(), String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    // #1439: the only record of who drove a grid change; the incident was
+    // The only record of who drove a grid change; the incident was
     // diagnosable only by inference because no pty resize was ever logged.
     log::info!(
         "[pty] resize session={uuid} cols={cols} rows={rows} from={}",
@@ -553,7 +553,7 @@ pub fn pty_resize<R: tauri::Runtime>(
         .map_err(|e| e.to_string())
 }
 
-/// #955/#956 - the backend half of the snapshot round-trip measurement.
+/// The backend half of the snapshot round-trip measurement.
 ///
 /// The frontend logs the whole trip (`[terminal] snapshot <id> settled in Nms`). This logs
 /// what the backend spent inside it, and between them they say WHERE the time went. Read
@@ -676,7 +676,7 @@ pub(crate) fn detach_terminal_output<R: tauri::Runtime>(
     Ok(())
 }
 
-/// #1032 - the last context reading for a session, for a frontend that just mounted and
+/// The last context reading for a session, for a frontend that just mounted and
 /// missed the `session_context` event.
 ///
 /// `None` covers every unavailable case there is - no regex, no match, a truncated row, a
@@ -690,7 +690,7 @@ pub fn get_session_context(app: AppHandle, session_id: String) -> Result<Option<
     Ok(scraper.last_reading(uuid))
 }
 
-/// #2566 - every published weekly-quota reading, keyed by AGENT id, for a frontend that just
+/// Every published weekly-quota reading, keyed by AGENT id, for a frontend that just
 /// mounted and missed the `agent_quota` events. Agents sharing one command share one value. A
 /// `None` value and an ABSENT key both mean unavailable, NEVER 0 and NEVER 100, and are
 /// interchangeable to the caller: an agent published as null and still configured keeps a
@@ -707,7 +707,7 @@ pub fn get_agent_quota_readings<R: tauri::Runtime>(
     Ok(engine.published())
 }
 
-/// #1171 - one session's watcher activity, for the window on mount and on every poll.
+/// One session's watcher activity, for the window on mount and on every poll.
 ///
 /// SYNCHRONOUS, and it takes exactly one per-session mutex. That is possible only because the
 /// engine publishes `activeWatchers`, `possiblyMissedFrames` and `warmedUp` into the history at
@@ -730,7 +730,7 @@ pub fn get_watcher_activity<R: tauri::Runtime>(
     Ok(history.snapshot(uuid, limit))
 }
 
-/// #1171 - what a pattern does, before it is saved.
+/// What a pattern does, before it is saved.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WatcherPatternPreview {
@@ -753,7 +753,7 @@ pub struct WatcherPatternPreview {
 /// How many matched rows the preview shows.
 const WATCHER_PREVIEW_SAMPLES: usize = 3;
 
-/// #1171 - compile a candidate pattern and, optionally, run it against a live session.
+/// Compile a candidate pattern and, optionally, run it against a live session.
 ///
 /// `session_id: None` compiles only. That is the COMMON case: a user opens Settings and writes
 /// a regex with no agent session running, and without this the only signal for a syntax error
@@ -875,7 +875,7 @@ async fn read_watcher_preview_frame(
     .flatten()
 }
 
-/// #1171 - resolve the WHOLE Settings draft, watchers and agents, and report per row which
+/// Resolve the WHOLE Settings draft, watchers and agents, and report per row which
 /// agents its selector reaches and which of those it holds a slot on.
 ///
 /// This exists so the Settings UI reimplements neither stem normalization nor the budget rule.

@@ -1,7 +1,7 @@
 use super::*;
 
 /// §224 D.2 — the strip drops every runtime field but preserves the recipe
-/// fields needed for the next-startup restore attempt. Since #747 a raised
+/// fields needed for the next-startup restore attempt. A raised
 /// hand counts as durable intent, not runtime state: `communication`
 /// survives the strip so the retry can restore it.
 #[test]
@@ -130,10 +130,10 @@ fn communication_defaults_none_for_legacy_json() {
     assert!(back.communication.is_none());
 }
 
-/// Issue 698: a malformed/future typed `communication` field invalidates the
+/// A malformed/future typed `communication` field invalidates the
 /// entire raw load (serde fails the whole array, `unwrap_or_default` yields
 /// `[]`), exactly like other malformed typed persisted fields. This is the
-/// accepted behavior for #698; documented here so it is intentional, not a
+/// accepted behavior; documented here so it is intentional, not a
 /// silent regression. Revisit in a separate persistence-resilience issue.
 #[test]
 fn load_sessions_raw_returns_empty_for_malformed_communication() {
@@ -225,7 +225,7 @@ fn persisted_session_round_trips_effective_profile() {
     assert_eq!(back.effective_profile, None);
 }
 
-// (#630 fleet-safety) A pre-existing sessions.json record that predates this
+// A pre-existing sessions.json record that predates this
 // field must deserialize to `false` = resume, so no existing user is silently
 // flipped to "start fresh" on upgrade. Polarity guard for §3.1.
 #[test]
@@ -241,7 +241,7 @@ fn start_fresh_on_restore_defaults_false_for_legacy_json() {
     assert!(!back.start_fresh_on_restore);
 }
 
-// (#631) The durable fresh intent survives a serialize -> deserialize round-trip
+// The durable fresh intent survives a serialize -> deserialize round-trip
 // in both polarities, so "Restart Session" persists across an app restart. The
 // field has no `skip_serializing_if`, so it is always written explicitly.
 #[test]
@@ -288,7 +288,7 @@ async fn snapshot_sessions_preserves_telegram_bot_id() {
     assert_eq!(snapshot[0].telegram_bot_id.as_deref(), Some("bot-1"));
 }
 
-// ── #1088: context_percent rides Session -> SessionInfo -> snapshot into
+// ── context_percent rides Session -> SessionInfo -> snapshot into
 //    PersistedSession, and serializes additively (0 explicit, None absent). ──
 
 #[tokio::test]
@@ -390,7 +390,7 @@ async fn snapshot_pi_persists_configured_args_not_effective_resume() {
     assert_eq!(snapshot[0].shell_args, configured);
 }
 
-/// #1873 - every configured Muse recipe survives stripping byte-for-byte, and a
+/// Every configured Muse recipe survives stripping byte-for-byte, and a
 /// snapshot persists the configured argv, never the effective `resume --last`.
 #[tokio::test]
 async fn muse_recipes_and_snapshots_preserve_configured_args_not_effective_resume() {
@@ -501,7 +501,7 @@ async fn snapshot_sessions_preserves_raise_hand_communication() {
     assert_eq!(snapshot[0].communication, Some(expected));
 }
 
-// (#630/#631) The durable fresh intent flows Session -> SessionInfo carrier ->
+// The durable fresh intent flows Session -> SessionInfo carrier ->
 // PersistedSession through the real snapshot path, so a restart-fresh session's
 // intent reaches disk (and is not lost at the SessionInfo boundary).
 #[tokio::test]

@@ -16,7 +16,7 @@ fn root_prologue_does_not_grant_authority_to_a_merely_named_directory() {
 
 #[test]
 fn root_prologue_renders_every_mandatory_block_exactly_once() {
-    // #979 G.1: the builder-level proof that the code-owned prologue is complete.
+    // G.1: the builder-level proof that the code-owned prologue is complete.
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp
         .path()
@@ -35,7 +35,7 @@ fn root_prologue_renders_every_mandatory_block_exactly_once() {
         true,
     );
 
-    // The ten blocks, each exactly once (#979 G4: Core Concepts is block 2).
+    // The ten blocks, each exactly once.
     for heading in [
         "# AgentsCommander Root Runtime Context",
         "## Core Concepts",
@@ -108,7 +108,7 @@ fn root_prologue_renders_every_mandatory_block_exactly_once() {
     assert!(!out.contains("You are working inside a room replica."));
 }
 
-/// #2031 negative case: the canonical Root Agent never reads the global
+/// Negative case: the canonical Root Agent never reads the global
 /// template, so its code-owned prologue must not carry the Answering section.
 #[test]
 fn root_runtime_prologue_omits_answering_section() {
@@ -139,7 +139,7 @@ fn root_runtime_prologue_omits_answering_section() {
 
 #[test]
 fn root_prologue_core_concepts_does_not_drift_from_the_builtin_template() {
-    // #979 G4: CORE_CONCEPTS_SECTION is a byte-copy of the built-in template's
+    // G4: CORE_CONCEPTS_SECTION is a byte-copy of the built-in template's
     // section. get_default_agent_template() is deliberately NOT refactored to
     // interpolate it (its exact bytes are pinned by
     // is_known_generated_global_template and the seeded-state SHA machinery), so
@@ -152,7 +152,7 @@ fn root_prologue_core_concepts_does_not_drift_from_the_builtin_template() {
 
 #[test]
 fn root_prologue_repo_wording_leaves_non_root_output_byte_identical() {
-    // #979 G5: the is_root_agent flag changes ONLY the Root wording.
+    // G5: the is_root_agent flag changes ONLY the Root wording.
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo-demo");
     std::fs::create_dir_all(&repo).expect("create repo");
@@ -180,7 +180,7 @@ fn root_consts_avoid_em_dash_and_single_item_three() {
     // Note #4: the three new root consts must stay em-dash-free (U+2014).
     assert!(!ROOT_PROJECT_SCOPE_ENTRY.contains('\u{2014}'));
     assert!(!ROOT_AUTHORITY_SECTION.contains('\u{2014}'));
-    // #640: the gated self-maintenance directive must also stay em-dash-free.
+    // The gated self-maintenance directive must also stay em-dash-free.
     assert!(!SELF_MAINTENANCE_AUTO_SECTION.contains('\u{2014}'));
     // L2 at the output level: exactly one numbered item "3." in the root render.
     let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
@@ -198,9 +198,9 @@ fn root_git_scope_permits_project_repo_git_ops() {
     assert!(!out.contains("State-changing Git belongs in `repo-*`"));
 }
 
-// Stage E (#1064) #1072 Git-scope preservation sentinel (plan section 10.6,
+// Stage E Git-scope preservation sentinel (plan section 10.6,
 // acceptance item 47): the three current location-specific constants stay
-// distinct and location-correct, and the frozen pre-#1072 legacy snapshots
+// distinct and location-correct, and the frozen older legacy snapshots
 // remain separate recognition inputs, never reused for current output.
 #[test]
 fn stage_e_git_scope_constants_are_distinct_and_location_specific() {

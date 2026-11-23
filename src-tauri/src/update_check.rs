@@ -1,4 +1,4 @@
-//! Issue #609 - "npm update available" detection.
+//! "npm update available" detection.
 //!
 //! On startup a detached task (see `lib.rs` setup) reads the baked-in version,
 //! optionally queries the npm registry for the latest published version of
@@ -7,7 +7,7 @@
 //! `npm_update_available`. Everything is fail-silent: any error logs at debug
 //! and produces no notification. The task is detached, so startup never blocks.
 //!
-//! #1925 - the same detached, fail-silent startup shape also downloads the remote
+//! The same detached, fail-silent startup shape also downloads the remote
 //! blocking-menu patterns (`run_remote_blocking_menus_startup`); that download never
 //! notifies and applies at the next start.
 
@@ -339,7 +339,7 @@ pub fn read_cached_notice() -> Option<String> {
     cli_notice(&cache, current, enabled)
 }
 
-// ---- Remote blocking-menu download (#1925) --------------------------------
+// ---- Remote blocking-menu download ----------------------------------------
 
 /// What the remote blocking-menu download did, for the caller's log line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -389,7 +389,7 @@ async fn fetch_remote_blocking_menus(
     }
 }
 
-/// #1925 (D3 to D5) - the download itself. The flag is checked first so a disabled run
+/// The download itself. The flag is checked first so a disabled run
 /// touches no disk and no network; `NotDue` likewise. Every attempt that passes the due
 /// check stamps `now` afterwards, accepted, rejected or unreachable, so the 24 h throttle
 /// stays literal and a retry storm is impossible.
@@ -438,7 +438,7 @@ pub(crate) async fn run_remote_blocking_menus_check(
     outcome
 }
 
-/// #1925 (D3) - read the remote flag once, exactly as `run_startup_check` reads its own
+/// Read the remote flag once, exactly as `run_startup_check` reads its own
 /// flag, then hand the rest to `run_remote_blocking_menus_check`.
 pub(crate) async fn run_remote_blocking_menus_for_app<H: UpdateCheckHost>(
     app: &H,
@@ -455,7 +455,7 @@ pub(crate) async fn run_remote_blocking_menus_for_app<H: UpdateCheckHost>(
     run_remote_blocking_menus_check(&network, target, enabled, url, now).await
 }
 
-/// #1925 - the detached startup wrapper. Fail-silent: an accepted download logs one info
+/// The detached startup wrapper. Fail-silent: an accepted download logs one info
 /// line, every other outcome logs at debug, and this never returns an error to the caller.
 pub async fn run_remote_blocking_menus_startup<H: UpdateCheckHost>(app: H) {
     let Some(target) = crate::config::settings::instance_settings_target() else {
@@ -477,7 +477,7 @@ pub async fn run_remote_blocking_menus_startup<H: UpdateCheckHost>(app: H) {
     }
 }
 
-// ---- Remote per-agent help download (#2133) -------------------------------
+// ---- Remote per-agent help download ---------------------------------------
 
 /// What the remote agent-help download did, for the caller's log line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -526,7 +526,7 @@ async fn fetch_remote_agent_help(
     }
 }
 
-/// #2133 - the download itself, as `run_remote_blocking_menus_check`. The flag is checked
+/// The download itself, as `run_remote_blocking_menus_check`. The flag is checked
 /// first so a disabled run touches no disk and no network; `NotDue` likewise. Every attempt
 /// that passes the due check stamps `now` afterwards, accepted, rejected or unreachable, so
 /// the 24 h throttle stays literal and a retry storm is impossible.
@@ -566,7 +566,7 @@ pub(crate) async fn run_remote_agent_help_check(
     outcome
 }
 
-/// #2133 - the detached startup wrapper. Fail-silent: an accepted download logs one info line,
+/// The detached startup wrapper. Fail-silent: an accepted download logs one info line,
 /// every other outcome logs at debug, and this never returns an error to the caller.
 pub async fn run_remote_agent_help_startup<H: UpdateCheckHost>(app: H) {
     let Some(target) = crate::config::settings::instance_settings_target() else {

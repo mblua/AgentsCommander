@@ -191,4 +191,4 @@ fn build_index_groups_multiple_rows_at_same_cwd() {
     assert_eq!(bucket.len(), 2);
 }
 
-// ── §6 / §12 list-peers-lean (issue #252) ──────────────────────────────
+// ── §6 / §12 list-peers-lean ──────────────────────────────

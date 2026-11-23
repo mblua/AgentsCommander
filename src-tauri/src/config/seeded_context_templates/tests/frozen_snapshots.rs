@@ -244,8 +244,8 @@ fn issue_2832_state_persistence_failure_keeps_published_v9_and_backup() {
     assert_eq!(backup_files(temp.path()).len(), 1);
 }
 
-/// #1614 AC7.9 and AC7.11. #1748 retired the PROJECT global recognizer, so
-/// this constant's only recognizer is now the #979 standalone classifier; the
+/// AC7.9 and AC7.11. The PROJECT global recognizer is retired, so
+/// this constant's only recognizer is now the standalone classifier; the
 /// snapshot must still be accepted by it and be != the current default -- the
 /// `assert_ne` is what proves the rename actually moved the default rather than
 /// freezing a copy of something unchanged.
@@ -267,7 +267,7 @@ fn frozen_pre_room_rename_global_template_is_recognized() {
     );
 }
 
-/// #1614 AC7.1b: the merge-resolution guard for the #1605 collision. Two
+/// AC7.1b: the merge-resolution guard for the platform-rules collision. Two
 /// limbs, catching two different failures.
 ///
 /// The `||`-chain limb catches a three-way merge over two adjacent
@@ -284,8 +284,8 @@ fn frozen_pre_room_rename_global_template_is_recognized() {
 /// re-base both constants really were 539 bytes and F4406596...316A.
 #[test]
 fn both_frozen_global_generations_are_standalone_recognized_and_distinct() {
-    // The ||-chain limb: #1748 left one recognizer for these bytes, and neither
-    // generation may be dropped from it.
+    // The ||-chain limb: retiring the global recognizer left one recognizer
+    // for these bytes, and neither generation may be dropped from it.
     assert!(is_known_generated_standalone_global_template(
         GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES
     ));
@@ -293,7 +293,7 @@ fn both_frozen_global_generations_are_standalone_recognized_and_distinct() {
         GLOBAL_CONTEXT_TEMPLATE_BEFORE_ROOM_RENAME
     ));
 
-    // The != limb: the v4 body (main's, #1605) and the v5 body (this
+    // The != limb: the v4 body (main's) and the v5 body (this
     // plan's, re-based in 15.3) are two different generations.
     assert_ne!(
         GLOBAL_CONTEXT_TEMPLATE_BEFORE_HOST_PLATFORM_RULES,
@@ -332,7 +332,7 @@ fn frozen_pre_room_rename_coordinator_template_is_recognized() {
         .contains("workgroup"));
 }
 
-/// #1614 AC7.11 at the SPEC layer. The persisted-state layer is asserted by
+/// AC7.11 at the SPEC layer. The persisted-state layer is asserted by
 /// the `read_sync` tests, so the bump is pinned on both sides.
 #[test]
 fn seeded_template_versions_were_bumped() {
@@ -342,7 +342,7 @@ fn seeded_template_versions_were_bumped() {
     assert_eq!(root_spec().current_version, 10, "rootAgent 9 -> 10");
 }
 
-/// #1614 AC7.1 and AC7.2. The expected values come from the frozen base and
+/// AC7.1 and AC7.2. The expected values come from the frozen base and
 /// are written into the plan (section 3.12 Table B), NOT read back from the
 /// constants they check. That is what makes this criterion non-self-
 /// referential: a later coordinated rename that moved both the constant and
@@ -383,12 +383,12 @@ fn frozen_snapshots_are_byte_exact_at_d7008b34() {
     );
 }
 
-// Stage E (#1064) recognized-predecessor exhaustiveness sentinel (plan
+// Stage E recognized-predecessor exhaustiveness sentinel (plan
 // section 10.2 item 17, 10.6, acceptance item 31): the coordinator recognizer
 // must accept the current default AND every frozen generated predecessor
 // (pre-cross-workgroup v3, pre-token-minimization v2, pre-raise-hand), but not
 // custom content. A mutation that recognizes only one generation fails here.
-// #1748 retired the PROJECT global recognizer, so the arms that asserted its
+// The PROJECT global recognizer is retired, so the arms that asserted its
 // narrowness are gone; the standalone arms below are what remains.
 #[test]
 fn stage_e_all_recognized_coordinator_predecessors_are_generated_and_custom_is_not() {

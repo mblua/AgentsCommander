@@ -155,7 +155,7 @@ impl ContainerApiTokenManager {
         Ok(revoked)
     }
 
-    /// #992 - Has THIS config dir ever minted a container API client?
+    /// Has THIS config dir ever minted a container API client?
     ///
     /// SCOPED CLAIM. This answers "did this config dir ever create a labeled
     /// container", NOT "does this machine hold one". The registry is per config dir

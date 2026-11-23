@@ -41,7 +41,7 @@ fn install(
     cancel
 }
 
-/// #2516 T5: every release moves its own consumer's epoch, including one
+/// T5: every release moves its own consumer's epoch, including one
 /// that removed nothing, and `reader_release_all` moves both without
 /// clearing the map.
 #[tokio::test]

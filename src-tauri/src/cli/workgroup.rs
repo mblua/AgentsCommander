@@ -319,7 +319,7 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
 }
 
 fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
-    // #1065 Stage F: activated with the sole production token; no lock-order test barrier.
+    // Activated with the sole production token; no lock-order test barrier.
     let activation = crate::config::seed_manifest::ManifestActivationToken::production();
     remove_hooked(args, Some(&activation), |_| {})
 }
@@ -334,7 +334,7 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
 /// error. `remove` is synchronous, so no guard ever crosses `.await`.
 ///
 /// `activation` is `Some(ManifestActivationToken::production())` in production
-/// (#1065 Stage F); tests may pass `Some(for_test())` or `None`.
+/// and tests may pass `Some(for_test())` or `None`.
 /// `after_project_acquired` is a `#[cfg(test)]` inversion barrier that fires after
 /// the project gate is held; production passes a no-op.
 fn remove_hooked(
