@@ -346,7 +346,7 @@ pub(crate) fn api_bound_root_exists(path: &Path) -> bool {
     path.exists()
 }
 
-/// #4804 - paths of the entries of `dir`; empty on any error. Names only, no metadata.
+/// Paths of the entries of `dir`; empty on any error. Names only, no metadata.
 pub(crate) fn dir_entry_paths(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -354,7 +354,7 @@ pub(crate) fn dir_entry_paths(dir: &Path) -> Vec<PathBuf> {
     entries.flatten().map(|e| e.path()).collect()
 }
 
-/// #4804 - true when `dir` has an entry of ANY type (file, dir, symlink, broken
+/// True when `dir` has an entry of ANY type (file, dir, symlink, broken
 /// symlink) whose name has file stem `stem`. Never reads entry metadata.
 pub(crate) fn dir_has_entry_with_stem(dir: &Path, stem: &std::ffi::OsStr) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {

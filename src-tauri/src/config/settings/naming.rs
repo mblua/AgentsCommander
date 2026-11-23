@@ -35,7 +35,7 @@ fn refusal_reason(refusal: crate::config::naming_migration::Refusal) -> String {
     }
 }
 
-/// #2714 - the pre-migration names of the two single files, in rename order.
+/// The pre-migration names of the two single files, in rename order.
 pub(crate) const INSTANCE_FAMILIES_RENAMES: [crate::config::naming_migration::Rename; 2] = [
     crate::config::naming_migration::Rename {
         from: "settings.json",
@@ -47,7 +47,7 @@ pub(crate) const INSTANCE_FAMILIES_RENAMES: [crate::config::naming_migration::Re
     },
 ];
 
-/// #2714 - the four blocking-menus files, renamed after the settings families.
+/// The four blocking-menus files, renamed after the settings families.
 const BLOCKING_MENUS_RENAMES: [crate::config::naming_migration::Rename; 4] = [
     crate::config::naming_migration::Rename {
         from: "settings-blocking-menus.json",

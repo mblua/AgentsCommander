@@ -1,6 +1,6 @@
 //! Runtime values of the context-history configuration.
 //!
-//! The configuration comes from the app-wide Settings (#4049); this module
+//! The configuration comes from the app-wide Settings; this module
 //! reads no file and holds no cache. Legacy project files are ignored.
 
 /// Retention in force when history is disabled.

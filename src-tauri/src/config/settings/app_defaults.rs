@@ -19,7 +19,7 @@ fn default_shell_and_args() -> (String, Vec<String>) {
 impl Default for AppSettings {
     /// Every field default lives on its `#[serde(default...)]` attribute.
     /// Only required fields and fields whose `Default` differs from the
-    /// serde default are listed here (#4766).
+    /// serde default are listed here.
     #[allow(
         clippy::unwrap_used,
         clippy::expect_used,

@@ -15,7 +15,7 @@ use super::{
 /// in-memory migrations as `load_settings`, but does NOT auto-generate or
 /// persist a `root_token`. Used by CLI verbs that mutate settings
 /// (`open-project`, `new-project`) so error paths and pre-validation reads
-/// do NOT silently rewrite `settings.json` (Round-1 G5 in #191's plan).
+/// do NOT silently rewrite `settings.json`.
 ///
 /// The CLI verbs do not consume the `root_token`; if a future verb needs it,
 /// `settings.root_token == None` on a brand-new install is fine — the CLI
@@ -24,7 +24,7 @@ use super::{
 ///
 /// **Migration duplication is intentional for this PR.** Extracting an
 /// `apply_in_memory_migrations(&mut AppSettings)` helper that both loaders
-/// share is a clean follow-up, but pulls in scope outside #191 (touches
+/// share is a clean follow-up, but pulls in scope outside this change (touches
 /// `load_settings`'s control flow). Keep both copies in lockstep until
 /// then; if you add a new in-memory migration to `load_settings`, mirror
 /// it here too.
@@ -38,7 +38,7 @@ pub fn load_settings_for_cli() -> AppSettings {
     }
 }
 
-/// #2716 (B3) - `load_settings_for_cli` at an explicit path, so a test can drive
+/// `load_settings_for_cli` at an explicit path, so a test can drive
 /// the CLI loader over a tempdir.
 pub(crate) fn load_settings_for_cli_from_path(path: &Path) -> AppSettings {
     let mut settings = match capture_project_settings(path, false) {
@@ -48,7 +48,7 @@ pub(crate) fn load_settings_for_cli_from_path(path: &Path) -> AppSettings {
 
     // 0.8.0 unified-window migration — must mirror `load_settings` exactly,
     // EXCEPT for the root_token auto-gen + save_settings call.
-    // #1737 (D7c): the same three destination-ownership suppressions as the GUI loader.
+    // The same three destination-ownership suppressions as the GUI loader.
     if !settings
         .local_overlay_state
         .owns_top_level(OVERLAY_KEY_MAIN_GEOMETRY)
@@ -74,7 +74,7 @@ pub(crate) fn load_settings_for_cli_from_path(path: &Path) -> AppSettings {
         settings.main_always_on_top = true;
     }
 
-    // #248 migration — translate in-memory only. The CLI loader is forbidden
+    // Migration — translate in-memory only. The CLI loader is forbidden
     // from writing settings.json per the §463 contract (load_settings_for_cli
     // is the read-only variant used by mutating verbs like `open-project` and
     // `new-project`; it must not race with the GUI's settings writes). The
@@ -89,7 +89,7 @@ pub(crate) fn load_settings_for_cli_from_path(path: &Path) -> AppSettings {
     settings
 }
 
-/// #786 R1: strict CLI loader for MUTATING paths and `list`/`show`. Identical to
+/// R1: strict CLI loader for MUTATING paths and `list`/`show`. Identical to
 /// `load_settings_for_cli` EXCEPT it distinguishes an ABSENT settings.json (fine:
 /// start from default) from a PRESENT-but-unparseable one (Err: refuse to touch
 /// it). This closes the silent-wipe hole: `load_settings_for_cli` returns a
@@ -104,7 +104,7 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
     load_settings_for_cli_strict_from_path(settings_path().as_deref())
 }
 
-/// #2716 (B3) - `load_settings_for_cli_strict` at an explicit path, so a test can
+/// `load_settings_for_cli_strict` at an explicit path, so a test can
 /// drive the strict CLI loader over a tempdir.
 pub(crate) fn load_settings_for_cli_strict_from_path(
     path: Option<&Path>,
@@ -129,7 +129,7 @@ pub(crate) fn load_settings_for_cli_strict_from_path(
     };
 
     // Mirror `load_settings_for_cli`'s in-memory migrations (no disk write).
-    // #1737 (D7c): the same three destination-ownership suppressions.
+    // The same three destination-ownership suppressions.
     if !settings
         .local_overlay_state
         .owns_top_level(OVERLAY_KEY_MAIN_GEOMETRY)
