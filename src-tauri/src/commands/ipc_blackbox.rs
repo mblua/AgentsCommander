@@ -1,4 +1,4 @@
-//! Tauri command `ipc_blackbox_report` (#1652): harvests renderer IPC black-box records.
+//! Tauri command `ipc_blackbox_report`: harvests renderer IPC black-box records.
 //! Holds no state of its own; it forwards records to the managed `IpcObserver` from
 //! `crate::loops::ipc_observer` and returns the localStorage keys the caller must delete.
 //! Parsing, logging into `app.log` and run filtering are done by `IpcObserver`, not here.
@@ -9,7 +9,7 @@ use tauri::State;
 
 use crate::loops::ipc_observer::{IpcObserver, StoredRecord};
 
-/// #1652 - harvest the previous run's renderer black boxes into `app.log`.
+/// Harvest the previous run's renderer black boxes into `app.log`.
 ///
 /// Returns the localStorage keys the caller must delete: every key whose record
 /// was from a previous run (and has now been logged) plus every key that could

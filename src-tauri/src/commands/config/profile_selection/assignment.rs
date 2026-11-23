@@ -52,7 +52,7 @@ pub async fn preview_coding_agent_profile_selection(
     settings: State<'_, SettingsState>,
     request: PreviewCodingAgentProfileSelectionRequest,
 ) -> Result<PreviewCodingAgentProfileSelectionResult, String> {
-    // #1941 - a preview takes the shared operation turn for a consistent
+    // A preview takes the shared operation turn for a consistent
     // operation boundary; its owned task survives a dropped or timed-out caller
     // (the transport discards the late response) without cancelling the read.
     let session_mgr = Arc::clone(session_mgr.inner());
@@ -68,7 +68,7 @@ pub async fn preview_coding_agent_profile_selection(
 
 /// Enumerate the replicas a broad-scope profile assignment would touch and
 /// return the fingerprints the frontend echoes back on apply. Shared by the
-/// desktop command and the web dispatcher; the caller owns the #1940 turn and
+/// desktop command and the web dispatcher; the caller owns the turn and
 /// this function only reads settings, sessions and strict replica state.
 pub(crate) async fn preview_coding_agent_profile_selection_inner(
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -126,7 +126,7 @@ pub async fn apply_coding_agent_profile_selection(
     settings: State<'_, SettingsState>,
     request: ApplyCodingAgentProfileSelectionRequest,
 ) -> Result<ApplyCodingAgentProfileSelectionResult, String> {
-    // #1940 - the entire apply (enumeration, per-replica publication, every
+    // The entire apply (enumeration, per-replica publication, every
     // restart submission, its settlement and classification) is one owned
     // selection operation. Dropping this caller detaches the owned task instead
     // of releasing the turn while an accepted restart still settles.
@@ -164,11 +164,11 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
     settings: &SettingsState,
     request: ApplyCodingAgentProfileSelectionRequest,
 ) -> Result<(ApplyCodingAgentProfileSelectionResult, serde_json::Value), String> {
-    // #1940 - the caller owns the selection operation turn; this inner function
+    // The caller owns the selection operation turn; this inner function
     // neither reacquires it nor spawns another turn, and it does not release it
     // before the last restart reply, classification and publication.
     //
-    // #1941 - a conflict decision is only meaningful for a bulk assign-and-lock;
+    // A conflict decision is only meaningful for a bulk assign-and-lock;
     // every other scope/mode rejects it before any enumeration or write.
     validate_assignment_decision_scope(
         &request.scope,
@@ -189,7 +189,7 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
         &request.scope,
         &sessions,
     )?;
-    // #1941 - re-enumerate the complete candidate set under the owned turn and
+    // Re-enumerate the complete candidate set under the owned turn and
     // build fresh fingerprints from the strict per-candidate state; the client's
     // approval is compared against THIS snapshot before any write.
     let snapshot = assignment_snapshot(
@@ -258,7 +258,7 @@ pub(crate) async fn apply_coding_agent_profile_selection_inner(
         }
     }
 
-    // #1941 - refresh under the same turn so the reported remaining protection
+    // Refresh under the same turn so the reported remaining protection
     // never comes from the pre-write snapshot; an unknowable total is `null`.
     let locked_after_apply_count = refresh_locked_count(&enumeration);
     Ok(publication::assignment_publication(
@@ -343,7 +343,7 @@ fn write_profile_assignment(
         let target = &candidate.target;
         let key = canonical_compare_key(Path::new(&target.replica_path));
         if target.selection_state == SelectionState::Invalid {
-            // #1941 - an invalid protection state is an explicit error with no
+            // An invalid protection state is an explicit error with no
             // write and no restart; it is never read as an unlocked replica.
             invalid_paths.push(target.replica_path.clone());
             errors.push(ProfileAssignmentError {
@@ -361,7 +361,7 @@ fn write_profile_assignment(
         }
         if !write_eligible_paths.contains(&key) {
             if target.selection_state == SelectionState::Locked {
-                // #1939/#1941 - ordinary and unlocked-only policies never force
+                // Ordinary and unlocked-only policies never force
                 // a valid lock: skip it (no write, no restart) and report it.
                 skipped_locked_paths.push(target.replica_path.clone());
                 warnings.push(format!("Skipping locked replica '{}'", target.replica_path));
@@ -376,7 +376,7 @@ fn write_profile_assignment(
             coding_agent_id: request.coding_agent_id.clone(),
             requested_profile: normalized_profile.to_string(),
         };
-        // #1940/#1939 - the guarded callback re-reads the strict state and
+        // The guarded callback re-reads the strict state and
         // compares this expectation inside the OS write lock, so a target that
         // changed after enumeration fails its own CAS instead of being
         // overwritten; earlier writes stay committed and accurately reported.
@@ -396,7 +396,7 @@ fn write_profile_assignment(
                     == crate::config::coding_agent_profiles::SelectionWriteIntent::BulkForceReviewed
                     && expected.locked
                 {
-                    // #1941 - forceApplied means a protected target was actually
+                    // forceApplied means a protected target was actually
                     // overwritten, never merely that a decision was selected.
                     force_applied = true;
                 }

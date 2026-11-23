@@ -33,10 +33,10 @@ pub struct DiscoveryBranchWatcher {
     /// `settings.project_paths` entries (which may be parent dirs holding many projects).
     /// Keying by the direct parent prevents both (a) the original overwrite-across-projects
     /// bug (Grinch #1) and (b) the double-registration that occurs when `project_paths`
-    /// contains both a parent and a child (Grinch #12).
+    /// contains both a parent and a child.
     pub(crate) replicas: Mutex<HashMap<String, Vec<ReplicaBranchEntry>>>,
     /// Last-emitted `ac_discovery_branch_updated` payload per replica, gating that
-    /// emission (panel UI + the #943 B2 per-repo branches). Holds the whole payload,
+    /// emission (panel UI + the per-repo branches). Holds the whole payload,
     /// not just the single-repo branch it held before B2, so the gate fires on
     /// per-repo drift and on a repo-set change: the same branch text under a
     /// different repo list is not the same event.

@@ -31,7 +31,7 @@ impl crate::agent_update::AgentUpdateState for AppHandle {
     }
 }
 
-/// Issue #609 - return the pending "npm update available" info, or null if the
+/// Return the pending "npm update available" info, or null if the
 /// running build is current / the check has not finished / it is disabled.
 /// Pure read of the cached `UpdateCheckState` (set by the startup task in
 /// `update_check::run_startup_check`). The sidebar queries this on mount to
@@ -43,7 +43,7 @@ pub async fn get_update_status(
     Ok(cache.get().cloned())
 }
 
-/// #1327 - snapshot of the startup coding-agent update run (in progress flag +
+/// Snapshot of the startup coding-agent update run (in progress flag +
 /// the currently registered-but-unanswered prompt + per-command results). The
 /// sidebar queries it on mount to cover events that fired before its listeners
 /// registered (mirrors `get_update_status`).
@@ -54,7 +54,7 @@ pub async fn get_agent_update_status(
     Ok(gate.snapshot())
 }
 
-/// #1327/#1551 - the user answered the startup prompt for one command, from any
+/// The user answered the startup prompt for one command, from any
 /// surface. The gate's serial section classifies, persists, claims the pending
 /// prompt, announces `agent_update_prompt_closed` to every surface and only then
 /// releases the prompt loop. Returns Ok(true) ONLY when THIS call resolved the
@@ -87,7 +87,7 @@ pub async fn agent_updates_cancel_all(
     agent_updates_cancel_all_inner(&app).await
 }
 
-/// #1551 - the managed startup gate, or a plain error string when an unmanaged
+/// The managed startup gate, or a plain error string when an unmanaged
 /// (test) app asks for it, so a missing state never panics a command.
 pub(crate) fn managed_agent_update_gate(
     app: &AppHandle,
@@ -96,7 +96,7 @@ pub(crate) fn managed_agent_update_gate(
         .ok_or_else(|| "agent update gate is not managed".to_string())
 }
 
-/// #1551 - shared by the Tauri command and the WebSocket router. `try_state` so an
+/// Shared by the Tauri command and the WebSocket router. `try_state` so an
 /// unmanaged test app errors instead of panicking.
 pub fn agent_update_status_inner(
     app: &AppHandle,
@@ -104,7 +104,7 @@ pub fn agent_update_status_inner(
     Ok(managed_agent_update_gate(app)?.snapshot())
 }
 
-/// #1551 - the only answer path: `agent_update::answer_prompt` with the existing
+/// The only answer path: `agent_update::answer_prompt` with the existing
 /// narrow persist injected. Classification, persist, and settlement all happen
 /// inside the gate's serial section.
 pub async fn agent_update_answer_inner(
@@ -139,9 +139,9 @@ pub async fn agent_updates_cancel_all_inner(
     Ok(crate::agent_update::cancel_all_updates(app, &gate).await)
 }
 
-/// #1551 - instant read of the Settings "Auto-update" table. Never awaits a probe;
+/// Instant read of the Settings "Auto-update" table. Never awaits a probe;
 /// probes are scheduled in the background only once the startup pass is finished.
-/// #1967 P4 - `Err` when the persisted catalog is unavailable (nothing is probed).
+/// `Err` when the persisted catalog is unavailable (nothing is probed).
 pub async fn agent_update_overview_inner(
     app: &AppHandle,
     settings: &SettingsState,
@@ -154,7 +154,7 @@ pub async fn agent_update_overview_inner(
         .map_err(|unavailable| unavailable.to_string())
 }
 
-/// #1551 - one row per update-capable catalog entry with its configured policy,
+/// One row per update-capable catalog entry with its configured policy,
 /// installed version, and this boot's live state.
 #[tauri::command]
 pub async fn get_agent_update_overview(

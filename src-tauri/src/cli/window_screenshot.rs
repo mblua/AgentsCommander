@@ -1,7 +1,6 @@
 //! `window-screenshot` CLI verb: captures one live native window to a PNG
-//! file by its canonical decimal window id, reusing the #1285 in-process
+//! file by its canonical decimal window id, reusing the in-process
 //! capture worker directly (no HTTP, no auth, no daemon). Windows only.
-//! Issue #1315.
 
 use std::path::PathBuf;
 

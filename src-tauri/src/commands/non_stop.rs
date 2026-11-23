@@ -1,4 +1,4 @@
-//! #777 Non-stop watchdog IPC command.
+//! Non-stop watchdog IPC command.
 //!
 //! The frontend pushes a full snapshot (one entry per project with an ACTIVE
 //! Non-stop group) whenever session state, the groups config, or the project
