@@ -179,7 +179,7 @@ pub(super) fn sweep_pause_hook(stage: &str, dir: &Path) {
     naming_migration::pause::hook(stage, dir);
 }
 
-/// #2718 (B4b) 4.5 - appends to `<ac_root>/.gitignore` the Loop state rows it
+/// B4b 4.5: appends to `<ac_root>/.gitignore` the Loop state rows it
 /// lacks. An appending write, never a rewrite, so no line another writer added
 /// can be lost; retirement of the old row stays with the writer at registration.
 pub(super) fn ensure_loop_state_ignore_rows(
@@ -191,7 +191,7 @@ pub(super) fn ensure_loop_state_ignore_rows(
     .map_err(naming_migration::Refusal::Io)
 }
 
-/// #2682 - the create section shared by the app command and the CLI: lock,
+/// The create section shared by the app command and the CLI: lock,
 /// existence check, validation, then the config+state pair as one unit.
 pub fn create_loop_files(
     project_dir: &Path,
@@ -210,7 +210,7 @@ pub fn create_loop_files(
     Ok((dir, state))
 }
 
-/// #2682 - the read-modify-write section shared by the app `update_loop` /
+/// The read-modify-write section shared by the app `update_loop` /
 /// `toggle_loop` and the CLI `update` / `enable` / `disable`.
 pub fn update_loop_files(
     project_dir: &Path,
@@ -239,7 +239,7 @@ pub fn update_loop_files(
     Ok((dir, config, state))
 }
 
-/// #2682 - the delete section shared by the app `delete_loop` and the CLI
+/// The delete section shared by the app `delete_loop` and the CLI
 /// `remove`. The sidecar lives outside the directory it deletes.
 pub fn remove_loop_files(ac_root: &Path, loop_id: &str) -> Result<PathBuf, String> {
     let _lock = acquire_loop_lock(ac_root, loop_id, LOOP_LOCK_TIMEOUT)?;

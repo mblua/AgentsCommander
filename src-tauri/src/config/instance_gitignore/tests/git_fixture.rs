@@ -44,7 +44,7 @@ const REQUIRED_PATHS: &[&str] = &[
     // Both ends of the rotation range (`APP_LOG_KEEP = 5`), so the
     // sample set proves the glob spans every generation rather than only
     // its first. `app.log.1` used to be a control asserting it must NOT
-    // be ignored; covering it is a declared reversal of that #1164
+    // be ignored; covering it is a declared reversal of that older
     // narrowness control, because it is a live rotated generation.
     "app.log.1",
     "app.log.5",
@@ -54,16 +54,16 @@ const REQUIRED_PATHS: &[&str] = &[
     // in one rule.
     "coding-agent-requests/req-1.json",
     "coding-agent-requests/results/res-1.json",
-    // #1968: the machine-local catalog children and every publication
+    // The machine-local catalog children and every publication
     // temporary shape, including the doubled-dot journal temporary.
     "coding-agents/agents.50.personal.no-git.json",
     "coding-agents/agents.migration-v1.backup.json",
     "coding-agents/.agents.migration-v1.json",
     "coding-agents/.agents.10.default.json.lock",
     "coding-agents/.agents.50.personal.no-git.json.4242.0.tmp",
-    // #2715: a catalog file the naming migration set aside.
+    // A catalog file the naming migration set aside.
     "coding-agents/agents.json.deprecated-1.no-git",
-    // #2715: the retired catalog lock sidecar the migration holds.
+    // The retired catalog lock sidecar the migration holds.
     "coding-agents/.agents.json.lock",
     "coding-agents/.agents.migration-v1.backup.json.4242.0.tmp",
     "coding-agents/..agents.migration-v1.json.4242.0.tmp",
@@ -88,16 +88,16 @@ const REQUIRED_PATHS: &[&str] = &[
     "pty-input-locks/operation-1.lock",
     "session-requests/create-1.json",
     "sessions.json",
-    // #2058: the first and last rotation slots, the `SETTINGS_BACKUP_KEEP` edge.
+    // The first and last rotation slots, the `SETTINGS_BACKUP_KEEP` edge.
     "settings.30.instance.no-git.backup.1.json",
     "settings.30.instance.no-git.backup.5.json",
     "settings.30.instance.no-git.json",
     "settings.30.instance.no-git.json.lock",
-    // #2714: the settings writer's temporary, and the retired lock the
+    // The settings writer's temporary, and the retired lock the
     // naming migration leaves on disk forever.
     "settings.30.instance.no-git.json.1.2.tmp",
     "settings.json.lock",
-    // #2714: the naming-migration journal, its lock, and two set-aside
+    // The naming-migration journal, its lock, and two set-aside
     // copies from different families.
     "naming-migration.state.no-git.json",
     ".naming-migration.state.no-git.json.lock",
@@ -106,14 +106,14 @@ const REQUIRED_PATHS: &[&str] = &[
     "blocking-menus.10.default.no-git.json",
     "blocking-menus.50.personal.no-git.json",
     "blocking-menus.20.remote.no-git.json",
-    // #2133: the operator-owned per-agent help overlay.
+    // The operator-owned per-agent help overlay.
     "agent-help.local.json",
-    // #2133: the shipped per-agent help, rewritten by AC at every start.
+    // The shipped per-agent help, rewritten by AC at every start.
     "agent-help.json",
-    // #2133: the remote per-agent help cache and its throttle stamp.
+    // The remote per-agent help cache and its throttle stamp.
     "agent-help-remote-check.json",
     "agent-help.remote.json",
-    // #1737: the operator-owned overlay and the two managed context
+    // The operator-owned overlay and the two managed context
     // template overrides. The settings row is an exact-name rule and does
     // not reach the personal overlay, which is why the row exists.
     "settings.50.personal.no-git.json",
@@ -132,7 +132,7 @@ const REQUIRED_PATHS: &[&str] = &[
 
 /// Paths the generated instance `.gitignore` must leave visible to git.
 const CONTROL_PATHS: &[&str] = &[
-    // #4779: the temp-room rules are anchored and the prefix is literal.
+    // The temp-room rules are anchored and the prefix is literal.
     "sub/temp-room-tr01/notes.md",
     "temp-room-x/notes.md",
     "cache/entry.bin",
@@ -152,9 +152,9 @@ const CONTROL_PATHS: &[&str] = &[
     // Load-bearing: this is what proves the `coding-agent-requests/` row
     // does not reach its byte-order neighbour.
     "coding-agents/agents.10.default.json",
-    // #1968: the tracked base and the tracked masters stay visible.
+    // The tracked base and the tracked masters stay visible.
     "coding-agents/_seed/.claude/settings.json",
-    // #1737: these two also prove the `*.local.md` glob does not reach the
+    // These two also prove the `*.local.md` glob does not reach the
     // tracked base templates whose overrides it covers.
     "Context.root-agent.md",
     // The standalone global context and both retirement-backup shapes:
@@ -176,7 +176,7 @@ const CONTROL_PATHS: &[&str] = &[
     "applog.1",
 ];
 
-/// #2714 E11: each of these is ignored by its own anchored rule, the two
+/// E11: each of these is ignored by its own anchored rule, the two
 /// set-aside copies by `SET_ASIDE_GLOB`.
 fn assert_e11_rows_match_their_own_rules(repo: &std::path::Path) {
     for (relative, rule) in [

@@ -44,8 +44,8 @@ fn config_scope(workgroup: &str, agent: &str, dest: &str) -> String {
 }
 
 fn setup_project() -> (tempfile::TempDir, PathBuf) {
-    // #1883 — install the shared crate logger instead of a raw
-    // `env_logger` builder, so the #264 error sink is the process-wide
+    // Install the shared crate logger instead of a raw
+    // `env_logger` builder, so the error sink is the process-wide
     // one the mailbox tests also probe.
     crate::logging::init_logger();
     let temp = tempfile::tempdir().expect("tempdir");

@@ -6,8 +6,8 @@
 #[cfg(test)]
 use super::DEFAULT_ROOT_SKILLS;
 
-/// #1005 S5: `role-skill-boundary-audit/SKILL.md` exactly as it shipped from
-/// #654 through base commit 409b7f90, frozen so a pristine copy on disk keeps
+/// S5: `role-skill-boundary-audit/SKILL.md` exactly as it shipped from
+/// its first build through base commit 409b7f90, frozen so a pristine copy on disk keeps
 /// self-repairing after the token-minimization rewrite. This makes the audit
 /// skill's `legacy_snapshots` non-empty for the first time. Never edit.
 ///
@@ -15,7 +15,7 @@ use super::DEFAULT_ROOT_SKILLS;
 /// git show 409b7f90:src-tauri/src/config/root_agent_defaults/role-skill-boundary-audit/SKILL.md
 /// printed len 3199, sha256
 /// b3237843e2a6e9ac3cb014735ab398ee552711b0c017f8858758c619b3344c3f. Raw string
-/// literal, never `include_str!` (#914): LF everywhere. Pinned by
+/// literal, never `include_str!`: LF everywhere. Pinned by
 /// `role_skill_boundary_audit_before_token_minimization_snapshot_is_byte_exact`
 /// against those externally captured values, never against this const itself.
 pub(crate) const ROLE_SKILL_BOUNDARY_AUDIT_BEFORE_TOKEN_MINIMIZATION: &str = concat!(
@@ -108,7 +108,7 @@ Risk / Notes:
 "#
 );
 
-/// #1005 S5: `agency-agents-roles/SKILL.md` exactly as it shipped from #909
+/// S5: `agency-agents-roles/SKILL.md` exactly as it shipped from the
 /// (the quoted-description fix) through base commit 409b7f90, frozen so a
 /// pristine copy on disk keeps self-repairing after the token-minimization
 /// rewrite. Never edit.
@@ -117,7 +117,7 @@ Risk / Notes:
 ///     git show 409b7f90:src-tauri/src/config/root_agent_defaults/agency-agents-roles/SKILL.md
 /// printed len 2578, sha256
 /// 9bc8a2cd565357bfeb85efac224917331e52821aba0b36ae2b831da6aaf657e5. Raw string
-/// literal, never `include_str!` (#914): LF everywhere. Pinned by
+/// literal, never `include_str!`: LF everywhere. Pinned by
 /// `agency_agents_roles_before_token_minimization_snapshot_is_byte_exact`
 /// against those externally captured values, never against this const itself.
 pub(crate) const AGENCY_AGENTS_ROLES_BEFORE_TOKEN_MINIMIZATION: &str = concat!(
@@ -183,7 +183,7 @@ Then present the candidate template(s) and create with `create-agent-matrix --ro
 "#
 );
 
-/// #909: the `agency-agents-roles/SKILL.md` we shipped from `00eca16` (PR #682) through
+/// The `agency-agents-roles/SKILL.md` we shipped from `00eca16` through
 /// `646aeac`. Its `description` is an unquoted YAML plain scalar containing an inner
 /// `": "`, so the YAML parser rejects it at line 2 column 105 and `discover_skill_index`
 /// drops the skill entirely. Frozen here so a pristine copy can be recognized and
@@ -193,7 +193,7 @@ Then present the candidate template(s) and create with `create-agent-matrix --ro
 ///     git show 646aeac:src-tauri/src/config/root_agent_defaults/agency-agents-roles/SKILL.md
 ///
 /// A raw string literal rather than an `include_str!` of a frozen `.md`, because
-/// `.gitattributes` pins `*.rs` to `text eol=lf` but carries no rule for `*.md` (#914).
+/// `.gitattributes` pins `*.rs` to `text eol=lf` but carries no rule for `*.md`.
 /// An `include_str!`ed `.md` would be CRLF on a Windows `autocrlf` checkout and LF on CI,
 /// so its raw digest would differ per machine. This literal is LF everywhere.
 ///

@@ -1,9 +1,9 @@
 use super::*;
 
-/// #1369 (C4) AC-4.5-C: population C, the edge case - a pristine v2 on disk
+/// AC-4.5-C: population C, the edge case - a pristine v2 on disk
 /// with NO `global` state entry. Failing-first proof for the v3 rename
-/// (`assert_ne`), the #979 standalone recognizer and the version bump,
-/// retargeted by #1748 at the scan.
+/// (`assert_ne`), the standalone recognizer and the version bump,
+/// retargeted at the scan.
 #[test]
 fn scan_replaces_pre_agent_repos_global_template() {
     assert_ne!(
@@ -56,7 +56,7 @@ fn scan_replaces_pre_agent_repos_global_template() {
     );
 }
 
-/// #1369 (C4) AC-4.5-B: population B, the dominant one - a pristine v2 on
+/// AC-4.5-B: population B, the dominant one - a pristine v2 on
 /// disk PLUS a `global` state entry whose `lastSeededSha256` is the v2 hash,
 /// which is what any project seeded by a normal build carries. Without the
 /// freeze this yields 1 pending update, i.e. the modal telling the user that
@@ -310,7 +310,7 @@ fn ensure_consumes_first_publication_before_the_next_target_error() {
     );
 }
 
-/// #1605: a fresh `.ac` root seeds the three platform files byte-equal to
+/// A fresh `.ac` root seeds the three platform files byte-equal to
 /// their embedded defaults with `platform.*` state entries carrying the
 /// default sha; a pre-existing custom platform file is never overwritten
 /// (absent-only) and is preserved silently.
@@ -460,7 +460,7 @@ fn assert_fresh_platform_state(parsed: &serde_json::Value) {
     }
 }
 
-/// #1625 T-3: `ensure_platform_context_templates` seeds ONLY the missing
+/// T-3: `ensure_platform_context_templates` seeds ONLY the missing
 /// platform files, byte-equal to their embedded defaults, with `platform.*`
 /// state entries at current versions carrying the default sha; global/coordinator templates
 /// are never touched (scope is platform-only). A pre-existing custom
@@ -538,7 +538,7 @@ fn ensure_platform_context_templates_seeds_only_missing_platform_files() {
     assert_platform_only_scope(&custom_root);
 }
 
-/// #1605: after seeding, an edit to a platform file is preserved by the
+/// After seeding, an edit to a platform file is preserved by the
 /// sync path (content unchanged) and lands in the observed posture
 /// (`lastObservedSha256` updated); a scan against the same default yields no
 /// pending update, and the file is never silently overwritten.
