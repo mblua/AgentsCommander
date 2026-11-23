@@ -98,7 +98,7 @@ function setupTransport(fake: FakeTransport, shape: RowShape): void {
   fake.resolve("switch_session", undefined);
 }
 
-// Always a fresh object: the store merges key by key (issue 1863).
+// Always a fresh object: the store merges key by key.
 function communication(
   kind: string,
   visible: boolean,
