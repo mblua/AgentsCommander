@@ -1,3 +1,6 @@
+//! Skill index: limits and section text for the generated skills list.
+//! It owns constants and rendering; it does not discover skill files.
+
 use super::{canonical_or_original, is_canonical_agent_matrix_dir};
 use std::collections::HashMap;
 use std::ffi::OsStr;

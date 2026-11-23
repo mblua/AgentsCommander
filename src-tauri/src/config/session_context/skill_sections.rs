@@ -1,3 +1,6 @@
+//! Finds project and team skill roots for a session and decides which
+//! skills it may see. It does not render the skills section text.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::{

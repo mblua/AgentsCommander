@@ -1,3 +1,6 @@
+//! Path normalization and project-scope checks used to filter saved
+//! sessions by project. It does not read or write the sessions file.
+
 use super::record::PersistedSession;
 use std::path::Path;
 

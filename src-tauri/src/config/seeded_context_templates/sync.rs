@@ -1,3 +1,7 @@
+//! Creates missing seeded context templates and updates generated ones,
+//! advancing their state only after a successful publish.
+//! It does not update templates the user has edited.
+
 use super::{
     create_backup, display_path, local_override_filename, read_validated_snapshot, sha256_hex,
     validate_existing_dir, validate_existing_file, ContextPublication, ContextTemplateExecution,

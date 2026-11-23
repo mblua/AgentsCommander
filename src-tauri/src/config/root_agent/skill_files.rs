@@ -1,3 +1,6 @@
+//! Creates the default Root agent skill files on disk and repairs pristine
+//! copies of known-bad versions. It does not touch user-edited skills.
+
 #[cfg(test)]
 use super::run_pre_publish_hook;
 use super::{

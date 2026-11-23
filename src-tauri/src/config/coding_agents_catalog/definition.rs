@@ -1,3 +1,6 @@
+//! Built-in coding agent catalog definitions: tested levels and per-OS
+//! install commands. It owns static data only; it does not run installs.
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 

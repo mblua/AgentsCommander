@@ -1,3 +1,6 @@
+//! Guarded write of a replica coding agent selection, with a strict reread
+//! and stale-state check first. It does not resolve profiles or sources.
+
 use super::paths::validate_profile_selection_agent_path;
 use super::selection_state::describe_selection_pair;
 use super::selection_state::{
