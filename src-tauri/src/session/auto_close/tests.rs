@@ -234,7 +234,7 @@ fn unprotected_member_selected_when_established_and_idle_past_timeout() {
     assert!(should_close_member(false, true, anchor, now, timeout));
 }
 
-// ---- orphan_anchor_secs (#582 orphan fallback anchor) ----
+// ---- orphan_anchor_secs ----
 
 #[test]
 fn orphan_anchor_uses_member_own_silence_and_becomes_closeable() {
@@ -264,7 +264,7 @@ fn orphan_anchor_untracked_is_min_and_not_closeable() {
     assert!(!team_is_closeable(true, i64::MIN, now, 3600));
 }
 
-// ---- resolve_member_anchor (#582 two-case anchor; HIGH-1 regression guard) ----
+// ---- resolve_member_anchor ----
 
 #[test]
 fn resolve_anchor_orphan_uses_member_silence() {
@@ -281,7 +281,7 @@ fn resolve_anchor_live_coordinator_empty_snapshot_stays_min() {
     // HIGH-1 GUARD: a LIVE coordinator (record present) whose FQN is NOT in the
     // snapshot (e.g. a team restored after restart, FQN not yet in the clock
     // file) must stay i64::MIN / not-closeable -- it must NOT fall back to the
-    // member's raw silence. This is the normal path, unchanged from before #582.
+    // member's raw silence. This is the normal path, unchanged.
     let now = ts(10_000).timestamp();
     let snap: std::collections::HashMap<String, ClockEntry> = std::collections::HashMap::new();
     let coord = ("proj:wg-1/tech-lead".to_string(), "C:/x".to_string());
@@ -314,10 +314,10 @@ fn resolve_anchor_live_coordinator_uses_team_clock() {
             last_user_message_at: Some(ts(10_000 - 3700)),
             last_activity_at: None,
             auto_closed_at: None,
-            // #588 added this required field to ClockEntry; the orphan-anchor
-            // path (#582) ignores it, so None keeps this test's intent intact.
+            // This required field was added to ClockEntry; the orphan-anchor
+            // path ignores it, so None keeps this test's intent intact.
             manually_closed_at: None,
-            // (#756) same reasoning: the anchor path ignores the fresh intent.
+            // Same reasoning: the anchor path ignores the fresh intent.
             start_fresh_at: None,
         },
     );
@@ -327,7 +327,7 @@ fn resolve_anchor_live_coordinator_uses_team_clock() {
     assert!(team_is_closeable(true, anchor, now, 3600));
 }
 
-// ---- destroyed_is_team_coordinator (#589 gated AUTO-CLOSED mark) ----
+// ---- destroyed_is_team_coordinator ----
 
 #[test]
 fn mark_gate_true_only_when_destroyed_is_the_coordinator() {
@@ -341,7 +341,7 @@ fn mark_gate_true_only_when_destroyed_is_the_coordinator() {
     );
 
     // A sibling member was reaped while the coordinator (coord) survives ->
-    // the live coordinator row must NOT be stamped. This is the #589 bug.
+    // the live coordinator row must NOT be stamped. This is the guarded bug.
     assert!(
         !destroyed_is_team_coordinator(member, Some(coord)),
         "a surviving coordinator must NOT be stamped when only a member is reaped"
@@ -852,7 +852,7 @@ fn tauri_state_adapter_preserves_required_panics_and_optional_clock_identity() {
     assert!(Arc::ptr_eq(&clocks, &handle.coordinator_clocks().unwrap()));
 }
 
-// #2158 team activity clock: real `advance_team_activity`, injected time.
+// Team activity clock: real `advance_team_activity`, injected time.
 use crate::config::coordinator_clocks::CoordinatorClocks;
 use crate::session::profile::IdleTuning;
 const U0: i64 = 1_700_000_000;

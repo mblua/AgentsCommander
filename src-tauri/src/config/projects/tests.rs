@@ -77,7 +77,7 @@ mod open_new;
 mod paths_resolve;
 mod registry;
 
-// ── #1077 instance-relative codec ────────────────────────────────────
+// ── instance-relative codec ────────────────────────────────────
 
 #[cfg(not(windows))]
 mod codec_posix;

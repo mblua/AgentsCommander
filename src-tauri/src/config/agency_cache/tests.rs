@@ -253,7 +253,7 @@ fn update_cache_at_reports_already_current_without_printed_json() {
     let live = agency_templates_dir(config_dir);
     write_valid_cache(&live);
     let current = current_manifest_if_valid(config_dir).expect("valid manifest");
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only, see the follow-up
     unsafe {
         std::env::set_var("AGENTSCOMMANDER_AGENCY_TEST_COMMIT", &current.commit);
     }
@@ -268,7 +268,7 @@ fn update_cache_at_reports_already_current_without_printed_json() {
     )
     .expect("already-current update should succeed");
 
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only, see the follow-up
     unsafe {
         std::env::remove_var("AGENTSCOMMANDER_AGENCY_TEST_COMMIT");
     }

@@ -49,7 +49,7 @@ fn production_claude_and_codex_reach_output_without_bridge() {
             "{module} must depend on {OUTPUT_MODULE} directly; observed {:?}",
             report.dependencies
         );
-        // #2232 phase 4 section 10: the supervisor drives the watchers, never
+        // Phase 4 section 10: the supervisor drives the watchers, never
         // the reverse. Phase 4 moved the reader out of `BridgeHandle.tasks`
         // into `telegram::manager`'s demand registry and gave it a destination
         // `watch` and a capture sink, so the three names a watcher must still

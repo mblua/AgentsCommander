@@ -14,7 +14,7 @@ async fn an_old_id_raise_resumed_after_old_row_removal_self_cleans() {
         .await;
     let old_key = old.to_string();
 
-    // #3420: the detached create-time raise must not win the race to the
+    // The detached create-time raise must not win the race to the
     // seam; its reader is re-raised below, once this raise is parked.
     h.settle_create_time_raise(old).await;
     h.release_all(old).await;
@@ -74,7 +74,7 @@ async fn an_old_id_raise_installed_before_commit_is_swept_after_it() {
         .await;
     let old_key = old.to_string();
 
-    // #3420: the detached create-time raise must not win the race to the
+    // The detached create-time raise must not win the race to the
     // seam; its reader is re-raised below, once this raise is parked.
     h.settle_create_time_raise(old).await;
     h.release_all(old).await;
@@ -335,7 +335,7 @@ async fn a_destroy_during_the_detached_room_raise_leaves_no_reader_state() {
     assert!(h.captures.slot(&key).is_none());
 }
 
-/// #2516 T1, the positive control: a disable landing between readiness
+/// T1, the positive control: a disable landing between readiness
 /// and install (slow path, no reader anywhere) installs no Room demand.
 #[tokio::test]
 async fn disabling_between_readiness_and_install_installs_no_room_demand() {
@@ -357,7 +357,7 @@ async fn disabling_between_readiness_and_install_installs_no_room_demand() {
     assert_no_room_reader_state(&h, raised, id).await;
 }
 
-/// #2516 T2 (fast path): the session already runs a reader for its Bot
+/// T2 (fast path): the session already runs a reader for its Bot
 /// demand, so the disable removes **nothing**. The raise must still see it
 /// and leave the reader Room-free.
 #[tokio::test]
@@ -398,7 +398,7 @@ async fn disabling_between_readiness_and_add_leaves_a_bot_reader_room_free() {
     assert!(tg.reader_is_running(id), "the Bot reader keeps running");
 }
 
-/// #2516 T3, the negative control: the same pause with **no**
+/// T3, the negative control: the same pause with **no**
 /// interference still installs the Room demand.
 #[tokio::test]
 async fn a_raise_with_no_interference_still_installs_the_room_demand() {
@@ -426,7 +426,7 @@ async fn a_raise_with_no_interference_still_installs_the_room_demand() {
     );
 }
 
-/// #2516 T4: a destroy-style `release_all` landing between readiness and
+/// T4: a destroy-style `release_all` landing between readiness and
 /// install installs no Room demand.
 #[tokio::test]
 async fn destroying_between_readiness_and_install_installs_no_room_demand() {
@@ -448,7 +448,7 @@ async fn destroying_between_readiness_and_install_installs_no_room_demand() {
     assert_no_room_reader_state(&h, raised, id).await;
 }
 
-/// #2516 T6: the raise clears the first bridge lock with an unmoved epoch
+/// T6: the raise clears the first bridge lock with an unmoved epoch
 /// and parks at the existing `reader_demand_seam`, between the two locks;
 /// a disable there must be caught by the second guard.
 #[tokio::test]
@@ -472,7 +472,7 @@ async fn disabling_between_the_two_bridge_locks_installs_no_room_demand() {
     assert_no_room_reader_state(&h, raised, id).await;
 }
 
-/// #2516 T7: a release landing after the epoch sample and before the
+/// T7: a release landing after the epoch sample and before the
 /// readiness read. `release_all` leaves the room config alone, so
 /// readiness still resolves `Ready` and the raise really reaches a guard.
 #[tokio::test]

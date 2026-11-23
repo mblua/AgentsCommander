@@ -22,7 +22,7 @@ fn settings_with_project_and_archived_paths(paths: &[&str], archived: &[&str]) -
     }
 }
 
-/// #1077: create a real AC project dir (`<parent>/<name>/.ac`) and return its
+/// Create a real AC project dir (`<parent>/<name>/.ac`) and return its
 /// display-canonical path, so the six-field decoder validates it and the
 /// SELECTED runtime path equals the stored string. Used by preserve/reconcile
 /// tests that assert the returned settings mirror the preserved disk list.
@@ -244,7 +244,7 @@ fn save_settings_preserve_keeps_disk_project_paths_on_passthrough() {
     // Marquee preserve: disk has [A, X] (X = an append this in-memory candidate
     // never saw); a whole-object save that changed only an unrelated field must
     // leave project_paths = [A, X] on disk (fail-safe) AND persist the field.
-    // #1077: real AC dirs so the selected runtime paths equal the preserved list.
+    // Real AC dirs so the selected runtime paths equal the preserved list.
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("settings.json");
     let a = real_ac_project_path(temp.path(), "A");
@@ -261,7 +261,7 @@ fn save_settings_preserve_keeps_disk_project_paths_on_passthrough() {
     assert_eq!(reloaded.project_path.as_deref(), Some(a.as_str()));
     assert_eq!(reloaded.sidebar_style, "deep-space"); // unrelated field persisted
 
-    // #1077: the returned settings carry the SELECTED (validated) projection,
+    // The returned settings carry the SELECTED (validated) projection,
     // which equals the preserved disk list because both dirs are real.
     assert_eq!(written.project_paths, vec![a.clone(), x.clone()]);
     assert_eq!(written.project_path.as_deref(), Some(a.as_str()));
@@ -657,7 +657,7 @@ fn watchers_round_trip_through_save_and_load_including_absent_versus_empty() {
     assert_eq!(written, expected);
 }
 
-/// #2482 - absent `quotaSources` stays absent on save; an unknown `kind` costs one
+/// Absent `quotaSources` stays absent on save; an unknown `kind` costs one
 /// skipped entry and round-trips verbatim.
 #[test]
 fn quota_sources_round_trip_and_an_unknown_kind_is_kept_verbatim() {
@@ -704,7 +704,7 @@ fn quota_sources_round_trip_and_an_unknown_kind_is_kept_verbatim() {
     );
 }
 
-/// #2686 - the remaining kind round-trips, defaults `enabled` to true, and the tag
+/// The remaining kind round-trips, defaults `enabled` to true, and the tag
 /// addition does not capture a `screenRegex` entry.
 #[test]
 fn a_remaining_kind_round_trips_and_defaults_enabled_true() {
@@ -870,7 +870,7 @@ fn main_sidebar_side_defaults_to_right_when_missing_from_json() {
 
 #[test]
 fn main_resource_monitor_attached_round_trips_and_defaults_false() {
-    // #587 - round-trips through serde as camelCase.
+    // Round-trips through serde as camelCase.
     let mut s = AppSettings::default();
     assert!(!s.main_resource_monitor_attached);
     s.main_resource_monitor_attached = true;

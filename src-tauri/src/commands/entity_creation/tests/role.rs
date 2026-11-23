@@ -1,8 +1,8 @@
 use super::*;
 
-/// Test #21 — byte-for-byte golden for the no-template scaffold. Baseline
-/// since #1005 S5: the token-minimized Source of Truth / Agent Memory Rule
-/// bodies (before that, the pre-#271 format). The format string is
+/// Test #21 — byte-for-byte golden for the no-template scaffold. The baseline
+/// is the token-minimized Source of Truth / Agent Memory Rule
+/// bodies. The format string is
 /// reproduced verbatim here (NOT imported from the helper) so the two
 /// transcriptions can cross-check each other — any drift in
 /// `build_role_content` instantly fails this test.

@@ -370,7 +370,7 @@ fn is_coordinator_rejects_legacy_unqualified_from() {
     assert!(is_coordinator("proj-a:wg-1-dev-team/tech-lead", &teams[0]));
 }
 
-/// #280 §3.4 — `note_missing_team_config` is a process-local one-shot
+/// §3.4 — `note_missing_team_config` is a process-local one-shot
 /// dedup keyed on `(project, team_dir)`. First sighting returns true so
 /// the caller emits the INFO; later sightings return false so the WARN
 /// storm collapses to a single line per unique pair per process.

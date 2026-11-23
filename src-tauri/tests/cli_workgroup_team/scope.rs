@@ -122,7 +122,7 @@ fn team_remove_member_does_not_create_a_manifest_when_no_scope_was_recorded() {
     );
 }
 
-// #1065 Stage F: with a pre-recorded config scope under the member's replica,
+// Stage F: with a pre-recorded config scope under the member's replica,
 // production CLI `team remove-member` acquires the project gate (then the
 // team-config guard), removes the replica, and prunes that scope's rows in the same
 // transaction (acceptance items 10/22/43). End-to-end proof that the sole production
@@ -208,7 +208,7 @@ fn team_remove_member_prunes_recorded_replica_config_scope() {
     );
 }
 
-// #1065 Stage F: creating a workgroup records no manifest (config seed runs at
+// Stage F: creating a workgroup records no manifest (config seed runs at
 // session spawn, not at workgroup creation), and removing it with no recorded scope
 // is a byte-stable no-op (plan section 8.2 cli_workgroup_team row, acceptance items
 // 10/22/46). Public-outcome only, no token or hook.
@@ -271,7 +271,7 @@ fn write_recorded_config_manifest(manifest_path: &Path, workgroup: &str, agent: 
     std::fs::write(manifest_path, manifest).expect("write recorded config manifest");
 }
 
-// #1065 Stage F: with a pre-recorded config scope under the workgroup, production
+// Stage F: with a pre-recorded config scope under the workgroup, production
 // CLI removal acquires the project gate, removes the workgroup, and prunes that
 // scope's rows in the same transaction. Because it was the only row, the manifest
 // becomes a valid empty v1 file. This is the end-to-end proof that the sole

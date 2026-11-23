@@ -34,7 +34,7 @@ pub(crate) struct PortTestBackend {
     native_exits: Mutex<std::collections::HashMap<Uuid, NativeExitMode>>,
 }
 
-/// #3317 - what the next `kill_observed` of a session proves about its native child.
+/// What the next `kill_observed` of a session proves about its native child.
 pub(crate) enum NativeExitMode {
     Observed,
     Reaping(std::sync::mpsc::Receiver<()>),

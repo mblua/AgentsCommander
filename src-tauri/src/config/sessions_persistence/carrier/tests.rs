@@ -84,7 +84,7 @@ async fn restore_bootstrap_isolates_mock_apps_but_keeps_same_scope_protection() 
     // No worker is started: after accepting the restore barrier, bootstrap
     // must wait for it. Public create admission proves it passed the carrier
     // check and reserved FIFO position one, without constructing a Tauri app.
-    // Before #3233 the bootstrap instead returns Busy immediately here.
+    // Without the carrier fix the bootstrap instead returns Busy immediately here.
     let bootstrap = other.submit_restore_first();
     tokio::pin!(bootstrap);
     tokio::time::timeout(std::time::Duration::from_secs(2), async {

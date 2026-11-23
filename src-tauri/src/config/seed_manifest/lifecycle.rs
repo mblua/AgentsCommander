@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 
-/// #1065 Stage F: soft project-gate acquisition for the automatic, fail-soft
+/// Stage F: soft project-gate acquisition for the automatic, fail-soft
 /// context and config publishers (discovery scan, session read/self-heal,
 /// explicit overwrite).
 ///
@@ -99,7 +99,7 @@ impl ManifestActivationToken {
 /// that no longer emit canonical rows, so this declaration is not a checklist of
 /// current production publishers or wiring evidence.
 ///
-/// #1318 - [`V1CoverageBoundary::CatalogSeed`] is the first coverage-v2-era
+/// [`V1CoverageBoundary::CatalogSeed`] is the first coverage-v2-era
 /// publisher; the enum keeps its historical name (minimal diff) while the
 /// declaration remains the exhaustive historical coverage-boundary checklist
 /// across coverage versions.
@@ -139,8 +139,8 @@ pub(crate) enum V1CoverageBoundary {
     /// Agent Matrix pending-inclusive delete protection staged-rollback prune.
     PendingInclusiveDeleteProtection,
     /// `config::coding_agents_catalog` per-project catalog seed + seed-manifest
-    /// publication (`ensure_seeded_for_project` / `record_catalog_publication`,
-    /// #1318). The first coverage-v2-era publisher: the catalog row kind only
+    /// publication (`ensure_seeded_for_project` / `record_catalog_publication`).
+    /// The first coverage-v2-era publisher: the catalog row kind only
     /// exists at `coverage_version = 2`.
     CatalogSeed,
 }

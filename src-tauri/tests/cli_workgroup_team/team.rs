@@ -264,7 +264,7 @@ fn workgroup_add_missing_team_without_legacy_flags_errors() {
     assert!(stderr.contains("Create it first with `team create`"));
 }
 
-// #1065 Stage F: these projects never spawn a session, so config seed never runs
+// Stage F: these projects never spawn a session, so config seed never runs
 // and no config scope is recorded. CLI removal therefore prunes nothing and, by the
 // empty-transaction rule, never spuriously creates a seed manifest. The
 // `workgroup_remove_prunes_recorded_config_scope` test below proves the prune fires

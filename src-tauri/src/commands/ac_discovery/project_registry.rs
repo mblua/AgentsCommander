@@ -340,11 +340,11 @@ pub(crate) async fn new_project_inner_with_settings_path_and_hooks(
         drop(transaction);
         let archived_changed = before_archived != current.archived_project_paths;
         drop(current);
-        // #1318 - capture the project root BEFORE release (`abs` is private;
+        // Capture the project root BEFORE release (`abs` is private;
         // `ac_root()` returns the `.ac` dir).
         let project_root = prepared.ac_root().parent().map(Path::to_path_buf);
         prepared.release();
-        // #1318 - a fresh registration seeds the catalog + masters immediately
+        // A fresh registration seeds the catalog + masters immediately
         // (no restart needed). INSIDE this blocking closure, so the gate acquire
         // runs on the blocking thread. Fail-soft: any error is logged and the
         // boot loop covers the project at the next boot.
@@ -357,7 +357,7 @@ pub(crate) async fn new_project_inner_with_settings_path_and_hooks(
     .map_err(|error| format!("new project blocking transaction failed: {error}"))?
 }
 
-/// #778 Part 3: targeted project removal. `project_paths` is disk-authoritative
+/// Targeted project removal. `project_paths` is disk-authoritative
 /// under Design S, so a removal cannot ride a whole-object settings save (the
 /// default `save_settings` preserves the on-disk list and would ignore the
 /// removal, and without a baseline the backend cannot tell a removal from a stale

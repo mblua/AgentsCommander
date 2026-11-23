@@ -1,4 +1,4 @@
-//! Co-managed supervisor (#2232 phase 7).
+//! Co-managed supervisor (phase 7).
 
 pub(crate) mod route;
 
@@ -59,7 +59,7 @@ pub(crate) trait CoManagedHost: Send + Sync + CoManagedEvents + SelectionEvents 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// #2232 phase 7: the Co-managed supervisor
+// Phase 7: the Co-managed supervisor
 //
 // Lives in a private root module: it joins the crate-root SCC, so the arcs the
 // effect needs (`config::teams`, `phone::messaging`, `phone::mailbox`,
@@ -82,7 +82,7 @@ pub(crate) const CO_MANAGED_EXCERPT_BYTES: usize = 500;
 
 /// A supervisor input. (a) is the orchestrator's idle edge, emitted from the
 /// real `IdleDetector` callback; (b) is a slot transition, which the slot
-/// watcher forwards for every record, invalidation and clearing. #2756 U2a
+/// watcher forwards for every record, invalidation and clearing. U2a
 /// `Recovery` re-offers a candidate that a not-ready trigger left pending, once
 /// the room is `Ready`; it takes the `SlotChanged` path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,7 +100,7 @@ impl CoManagedTrigger {
     }
 }
 
-/// #2756 U2a: a candidate dropped because the room was not `Ready`. Both legs
+/// U2a: a candidate dropped because the room was not `Ready`. Both legs
 /// must match the slot for a recovery: `seq`, and the retained `Arc`, which
 /// keeps the allocation alive so `Arc::ptr_eq` cannot alias a new record.
 pub(crate) struct PendingRecovery {
@@ -115,7 +115,7 @@ pub(crate) struct CoManagedSupervisorState {
     contended: HashMap<String, u64>,
     /// Sessions whose slot already has a watcher task.
     watching: HashSet<String>,
-    /// #2756 U2a: candidates dropped while not `Ready`, awaiting recovery.
+    /// U2a: candidates dropped while not `Ready`, awaiting recovery.
     pub(crate) pending_recovery: HashMap<String, PendingRecovery>,
 }
 

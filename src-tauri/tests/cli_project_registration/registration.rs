@@ -112,7 +112,7 @@ fn open_project_invalid_path_does_not_write_refresh() {
     assert!(project_refresh_request_paths(&config_dir).is_empty());
 }
 
-// #1065 Stage F ACTIVATED: registering a fresh project publishes its two project
+// Stage F ACTIVATED: registering a fresh project publishes its two project
 // context templates, so `new-project` emits `.ac/seed-manifest.toml` with one
 // `project_context_template` row each for `context:agentscommander` and
 // `context:coordinator`. A subsequent open of the already-registered project is a
@@ -181,7 +181,7 @@ fn copy_dir_recursive(from: &Path, to: &Path) {
     }
 }
 
-// #1065 Stage F: a cloned project (whose `.ac` was copied from an origin that a
+// Stage F: a cloned project (whose `.ac` was copied from an origin that a
 // fresh `new-project` seeded) carries the origin's committed seed manifest
 // byte-for-byte, and opening the clone (a no-op registration of an existing `.ac`)
 // preserves it without backfilling, re-timestamping, or pruning (plan section 5.4

@@ -220,7 +220,7 @@ fn upgrade_legacy_session_repos(sessions: &mut [PersistedSession]) {
     }
 }
 
-/// #280 §3.1 — diagnostic context captured when an atomic rename exhausts
+/// §3.1 — diagnostic context captured when an atomic rename exhausts
 /// its retry budget. Surfaced in the caller's error string so a single
 /// ERROR line carries enough state to investigate the AV / Indexer / second
 /// instance contention pattern.
@@ -292,14 +292,14 @@ pub(crate) struct RenameDiagnostics {
     pub(super) duration: std::time::Duration,
 }
 
-/// #280 §3.1 — number of `std::fs::rename` attempts. With the
+/// §3.1 — number of `std::fs::rename` attempts. With the
 /// `BACKOFFS_MS = [10, 50, 200]` schedule below, this gives a worst-case
 /// 260 ms blocking window before surfacing the error. G-MED-2 fix:
 /// 4 attempts so all three backoff entries are actually used (with
 /// `ATTEMPTS = 3` the 200 ms entry would be dead code).
 pub(super) const RENAME_ATTEMPTS: u32 = 4;
 
-/// #280 §3.1 — backoff schedule between rename attempts in milliseconds.
+/// §3.1 — backoff schedule between rename attempts in milliseconds.
 /// Tuned for Windows AV / Indexer holds which typically clear within
 /// ~50 ms but occasionally take >100 ms on cold caches. The terminal
 /// attempt has no backoff (we already failed `RENAME_ATTEMPTS - 1` times).
@@ -393,13 +393,13 @@ impl<'a> SnapshotStore<'a> {
     ///
     /// This retry loop targets *cross-process* contention on the destination
     /// (`sessions.json`): AV scanners, the Windows Indexer, or a second AC
-    /// instance briefly holding the file. It is NOT the mitigation for #291,
+    /// instance briefly holding the file. It is NOT the mitigation for the temp-name race,
     /// which was an in-process race on a shared *temp* filename — that one is
     /// solved upstream in `save_sessions_to_dir` by a per-call unique temp
     /// name plus `SAVE_SESSIONS_LOCK`, so by the time we get here the source
     /// path is guaranteed unique to this save.
     ///
-    /// Risk note (deliberately accepted for #280 scope): this uses
+    /// Risk note (deliberately accepted for this scope): this uses
     /// `std::thread::sleep`, which blocks the calling tokio worker thread for
     /// up to `sum(RENAME_BACKOFFS_MS)` = 260 ms during a contended rename.
     /// `save_sessions` is invoked from async Tauri command handlers, but the
@@ -407,7 +407,7 @@ impl<'a> SnapshotStore<'a> {
     /// so this does not introduce a new class of blocking — only enlarges an
     /// existing one. The clean fix (`tokio::task::spawn_blocking` for the
     /// whole persistence block) is a wider signature/caller refactor and is
-    /// out of scope for #280 (observability hardening, not concurrency
+    /// out of scope here (observability hardening, not concurrency
     /// rework). File a follow-up if the 260 ms tail latency becomes
     /// user-perceptible.
     #[allow(

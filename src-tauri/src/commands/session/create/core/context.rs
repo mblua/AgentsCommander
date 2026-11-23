@@ -533,8 +533,8 @@ async fn run_context_work<R: tauri::Runtime>(
         owned_replacement.and_then(|owned| owned.fixture_take_native_await_panic(false));
     let context_native = coordinator.run_blocking_seed_work({
         let cwd = cwd.to_owned();
-        // #1172 D5: capture the FINAL fresh-versus-resume decision. `skip_auto_resume`
-        // is a `mut` parameter of this function whose only mutation is the #756 mirror
+        // D5: capture the FINAL fresh-versus-resume decision. `skip_auto_resume`
+        // is a `mut` parameter of this function whose only mutation is the fresh-session mirror
         // at :1470, ~500 lines above, so the value read here is final. `true` means AC
         // is deliberately NOT resuming: a fresh conversation begins.
         let start_fresh = skip_auto_resume;
@@ -546,7 +546,7 @@ async fn run_context_work<R: tauri::Runtime>(
             if let Some(control) = context_fixture.as_ref() {
                 control.enter();
             }
-            // #1065 Stage F: production records the session-spawn context
+            // Stage F: production records the session-spawn context
             // read/sync and self-heal under the per-project gate (acquired
             // inside the blocking worker so the 10-second poll never blocks a
             // Tokio worker); a `#[cfg(test)]` lib build stays non-emitting.
@@ -567,7 +567,7 @@ async fn run_context_work<R: tauri::Runtime>(
                 container_repos.as_ref(),
                 activation.as_ref(),
             );
-            // #1172 - rotate the origin Agent Matrix's `memory/` for the fresh session
+            // Rotate the origin Agent Matrix's `memory/` for the fresh session
             // about to start, so it begins with a clean write target and the previous
             // session's memory is preserved under `memory-archive/memory_<ts>/`.
             //
@@ -673,7 +673,7 @@ pub(crate) async fn bind_and_check_target<R: tauri::Runtime>(
             return Ok(None);
         }
     }
-    // #1101: the restart replacement create runs while `teardown_old_for_restart`
+    // The restart replacement create runs while `teardown_old_for_restart`
     // has released the old PTY but RETAINED its canonical manager row (removed only
     // at the atomic commit's `mutations.remove(uuid)`, which runs after this gate).
     // For a live-session restart that row is non-Exited, so `appeared_session` is a
@@ -859,7 +859,7 @@ fn apply_resume_args(
         );
     }
 
-    // (#756) Rider: on Claude spawns where AC suppresses resume, mint the fresh
+    // Rider: on Claude spawns where AC suppresses resume, mint the fresh
     // session's identity at spawn. Uuid::new_v4() satisfies the "unused UUID"
     // requirement (Claude errors on a colliding --session-id; v4 collision is
     // negligible and a fresh one is minted per spawn). Mutually exclusive with

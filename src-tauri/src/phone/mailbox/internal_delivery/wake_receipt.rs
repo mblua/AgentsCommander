@@ -8,7 +8,7 @@ use crate::phone::mailbox::pty_claim::ResponseWakeWork;
 use crate::phone::types::OutboxMessage;
 use uuid::Uuid;
 
-// #2411 An idle auto-close destroys the record, so a no-session wake of an
+// An idle auto-close destroys the record, so a no-session wake of an
 // auto-closed orchestrator resumes its conversation. Same key as create and
 // auto-close. The std mutex is never held across an await.
 pub(super) fn background_resume(

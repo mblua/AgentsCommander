@@ -28,7 +28,7 @@ fn read_sync_updates_old_generated_coordinator_template() {
     assert_eq!(content, get_default_coordinator_template());
 }
 
-/// #1030 failing-first migration proof for the STATELESS population (E4 row 4):
+/// Failing-first migration proof for the STATELESS population (E4 row 4):
 /// the `assert_ne` is the only check that fails if the v4 rule edit is skipped
 /// while the freeze lands, and the assert! is the only one that fails if the
 /// const is never wired into `is_known_generated_coordinator_template`. The
@@ -73,7 +73,7 @@ fn read_sync_updates_pristine_v3_coordinator_template() {
     assert_eq!(content, get_default_coordinator_template());
 }
 
-/// #1030: the SEEDED population (E4 row 3), which is the branch every existing
+/// The SEEDED population (E4 row 3), which is the branch every existing
 /// workspace with a trusted state entry is in, so this is the test that proves
 /// the migration actually reaches them. A pristine v3 body whose
 /// lastSeededSha256 equals the file hash auto-updates and persists the bump.
@@ -290,7 +290,7 @@ fn dismiss_suppresses_same_file_and_default_hash() {
     );
 }
 
-/// #1748 retargeted this pair at the coordinator: `global` is distribution-owned
+/// This pair targets the coordinator: `global` is distribution-owned
 /// and has no ignore, dismiss or pending-update lifecycle any more (new test 5
 /// pins the rejection). The coordinator still has one, so the property survives.
 #[test]

@@ -9,7 +9,7 @@ use crate::session::manager::SessionManager;
 
 use crate::config;
 
-/// #2348 - check if at least 50px of a window (physical coords) is visible on any monitor.
+/// Check if at least 50px of a window (physical coords) is visible on any monitor.
 pub(crate) fn is_visible_on_monitors(
     geo: &config::settings::WindowGeometry,
     monitors: &[(f64, f64, f64, f64, f64)],
@@ -46,7 +46,7 @@ pub(crate) fn physical_to_logical(
     }
 }
 
-/// #2348 - the default "centered main" layout for the given LOGICAL monitor
+/// The default "centered main" layout for the given LOGICAL monitor
 /// metrics: at most 1400x900, centered on the monitor. With no primary monitor
 /// the caller passes the historical 1920x1080 fallback at the origin.
 pub(crate) fn centered_default_main_geometry(
@@ -65,7 +65,7 @@ pub(crate) fn centered_default_main_geometry(
     }
 }
 
-/// #2348 - the display state that applies at startup. A test placement always
+/// The display state that applies at startup. A test placement always
 /// overrides the saved state, so `saved` is consulted only when the test branch
 /// is absent; a test `maximized=false` therefore cannot inherit a saved maximize.
 pub(crate) fn effective_main_display_state(
@@ -79,7 +79,7 @@ pub(crate) fn effective_main_display_state(
     }
 }
 
-/// #2348 - apply the resolved display state after the window is built.
+/// Apply the resolved display state after the window is built.
 /// Maximizing is best effort: a failure is logged and the window stays usable in
 /// its normal state.
 pub(crate) fn apply_main_display_state<E: fmt::Display>(

@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1795 `T4`. Pins the pure three-check resolver of plan 4.2 against the
+/// `T4`. Pins the pure three-check resolver of plan 4.2 against the
 /// authoritative four-check `wg_replica_layout_from_agent_dir` on a layout where
 /// the authority check can succeed, so reusing only the three pure name checks
 /// cannot drift into a different answer than the validator gives.
@@ -62,7 +62,7 @@ fn replica_shared_roots_matches_wg_replica_layout_on_disk() {
     }
 }
 
-/// #1795 `T8`. An integration test through the real bootstrap call chain
+/// `T8`. An integration test through the real bootstrap call chain
 /// (`create_default_context_templates` ->
 /// `ensure_project_context_templates_with_clock`), not a direct call to
 /// `create_project_shared_dirs`: deleting the production call site must not
@@ -97,7 +97,7 @@ fn bootstrap_creates_project_shared_dirs() {
     );
 }
 
-/// #1795 `T6b`. The backstop creates for an authoritative replica and nothing
+/// `T6b`. The backstop creates for an authoritative replica and nothing
 /// for a Root Agent or a direct-Matrix agent.
 #[test]
 fn ensure_replica_shared_locations_creates_for_replica_and_nothing_for_root() {
@@ -143,7 +143,7 @@ fn ensure_replica_shared_locations_creates_for_replica_and_nothing_for_root() {
     }
 }
 
-/// #1795 `T10`. Pins the two-name Root guard against a Root Agent whose
+/// `T10`. Pins the two-name Root guard against a Root Agent whose
 /// directory is an alias onto a replica path: the raw basename is
 /// `ac-root-agent` and the canonical basename is `__agent_<name>`. Guarding on
 /// one name only would create directories on that Root Agent's behalf. The
@@ -189,7 +189,7 @@ fn root_agent_alias_creates_no_shared_locations() {
     }
 }
 
-/// #1795 `T1`. Renders through the production resolver from a template written
+/// `T1`. Renders through the production resolver from a template written
 /// to a real temp disk, and asserts on paths derived from that same disk. This
 /// is also the proof for row 1 of plan 3.7: the template is ALREADY
 /// MATERIALIZED before the resolve, so it exercises the replace chain, not a
@@ -333,7 +333,7 @@ fn assert_room_task_status_instructions(out: &str, room_root: &Path) {
     assert!(out.contains(&display_path(&room_root.join("TASK-status.jsonl"))));
 }
 
-/// #1795 `T2`. The Root Agent must render no room entries and no duplicated
+/// `T2`. The Root Agent must render no room entries and no duplicated
 /// project grant. Built under a `.ac` AND a room ancestor on purpose: the
 /// `temp_root_agent_dir` helper builds `temp/<ROOT_AGENT_DIR_NAME>` with
 /// neither, which is why round 1's control against it was dead.
@@ -375,7 +375,7 @@ fn golden_rule_root_agent_renders_no_shared_location_entries() {
     );
 }
 
-/// #1795 `T3`. A direct-Matrix agent is rejected at check 1: its basename is
+/// `T3`. A direct-Matrix agent is rejected at check 1: its basename is
 /// `_agent_`, not `__agent_`. One loop, one such range literal.
 #[test]
 fn golden_rule_direct_matrix_agent_renders_no_shared_location_entries() {
@@ -394,7 +394,7 @@ fn golden_rule_direct_matrix_agent_renders_no_shared_location_entries() {
     }
 }
 
-/// #1795 `T3b`, the fail-closed test. Four inputs, each of which ENTERS branch A
+/// `T3b`, the fail-closed test. Four inputs, each of which ENTERS branch A
 /// (so entry 4 renders and the test is not vacuous) but is not an authoritative
 /// replica. The `matrix_root` column is the entry-3 argument, not a resolver
 /// input: `replica_shared_roots` is a function of `agent_root` alone, so it
@@ -475,13 +475,13 @@ fn golden_rule_non_replica_under_a_room_keeps_the_four_entry_text() {
     }
 }
 
-/// #1795 `T7`. Pins row 2 of plan 3.7. A materialized template that has LOST
+/// `T7`. Pins row 2 of plan 3.7. A materialized template that has LOST
 /// `{{WRITE_RESTRICTIONS}}` but KEPT `{{AGENT_ROOT}}` keeps its stale inline
 /// Golden Rule block, because `coarse_section_dedup_safe` skips the fallback
 /// append for that shape, so it never gains entries 5 and 6.
 ///
 /// This is the EXPLICIT SCOPE REDUCTION ruled by the tech lead (plan 2.1): that
-/// template shape is out of scope for #1795 and the issue's acceptance criterion
+/// template shape is out of scope here and the issue's acceptance criterion
 /// was amended to match. This test pins the reduced behavior. It is NOT a claim
 /// that the outcome is desirable, and `coarse_section_dedup_safe` is unchanged.
 #[test]
@@ -522,7 +522,7 @@ fn materialized_template_without_write_restrictions_token_keeps_its_inline_block
     );
 }
 
-/// #1795 `T9`. `T1` pre-canonicalizes its own fixture, so it never exercises
+/// `T9`. `T1` pre-canonicalizes its own fixture, so it never exercises
 /// `ensure_session_context_with_config:157-159`. This one drives production
 /// canonicalization: the replica root is spelled with a DOUBLED separator, which
 /// `Path::components` skips and `std::fs::canonicalize` collapses on every
@@ -569,7 +569,7 @@ fn production_canonicalization_reaches_the_shared_location_entries() {
     );
 }
 
-/// #1795 `T11`. The session backstop is warn-and-continue: a shared directory
+/// `T11`. The session backstop is warn-and-continue: a shared directory
 /// that cannot be created must not fail the session. A regular FILE is placed
 /// where `plans` would go, so `create_dir_all` must fail.
 #[test]
@@ -595,7 +595,7 @@ fn shared_location_creation_failure_does_not_fail_the_session() {
     );
 }
 
-/// #1795 `T13`. Proves the P4 WIRING, not the helper: a test that called
+/// `T13`. Proves the P4 WIRING, not the helper: a test that called
 /// `ensure_replica_shared_locations` directly would stay green with the call
 /// site deleted, which is what control `C7` probes. The four project
 /// directories are asserted FIRST, because `C7` stops every creation at once and

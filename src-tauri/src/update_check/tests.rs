@@ -138,5 +138,5 @@ fn resolve_latest_fetch_fail_no_cache() {
 
 mod remote_blocking_menus_1925;
 
-/// #2133 (P7) - the agent-help download over an injected temp `settings_path`.
+/// (P7) - the agent-help download over an injected temp `settings_path`.
 mod remote_agent_help_2133;

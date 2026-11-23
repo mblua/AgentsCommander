@@ -1,6 +1,6 @@
 use super::*;
 
-// #1318: a fresh `new-project` registration seeds the coding-agent catalog +
+// A fresh `new-project` registration seeds the coding-agent catalog +
 // masters into `<project>/.ac/coding-agents/` immediately (no restart needed)
 // and records one `coding_agent_catalog` row in the seed manifest (production
 // binary: the token gate emits the row under `CatalogSeed`). Re-running
@@ -179,7 +179,7 @@ fn assert_seed_masters_and_manifest(project: &std::path::Path) {
     );
 }
 
-// #1318/#1967 CLI read contract: `coding-agent catalog` with no registered
+// CLI read contract: `coding-agent catalog` with no registered
 // project serves the legacy `<config_dir>/coding-agents/agents.10.default.json` when one
 // exists (read-only; pre-migration installs keep today's read behavior). With
 // no legacy catalog the persisted-only read is UNAVAILABLE: nonzero exit, the
@@ -246,7 +246,7 @@ fn cli_catalog_serves_legacy_then_unavailable_without_projects() {
     );
 }
 
-// #1967 P4 CLI contract: `add --from-catalog` resolves the PERSISTED catalog
+// P4 CLI contract: `add --from-catalog` resolves the PERSISTED catalog
 // only. An unknown key keeps the existing not-found error and must leave
 // settings byte-identical; a successful add seeds from the persisted sentinel
 // and leaves the unrelated pre-existing registration unchanged.
@@ -300,7 +300,7 @@ fn cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents() {
             "added-1967",
         ],
     );
-    // #2716 (B3): the saved `agents` live in the agents file beside the settings file.
+    // (B3): the saved `agents` live in the agents file beside the settings file.
     let after: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(config_dir.join("agents.30.instance.no-git.json"))
             .expect("read agents file"),
@@ -325,11 +325,11 @@ fn cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents() {
     assert_eq!(added["baseCommand"], "sentinel-1967-command");
     assert!(added.get("command").is_none());
     assert_eq!(added["color"], "#654321");
-    // #2306 P1 - the pre-existing record keeps position 0, the add lands at 1.
+    // P1 - the pre-existing record keeps position 0, the add lands at 1.
     assert_eq!(existing["order"], serde_json::json!(0));
     assert_eq!(added["order"], serde_json::json!(1));
 
-    // #2306 P1 - `list`/`show` surface the normalized explicit order after load.
+    // P1 - `list`/`show` surface the normalized explicit order after load.
     let (listed, _) = run_json(&bin, &["coding-agent", "list"]);
     let listed = listed.as_array().expect("list is a JSON array");
     assert_eq!(listed[0]["id"], "existing-1967");

@@ -1,7 +1,6 @@
 use super::*;
 
-// Stage E (#1064) Git-visibility conformance (plan section 10.5 items 3-4,
-// section 7.3). AC's managed `.ac/.gitignore` ignores the manifest, but a
+// Git-visibility conformance. AC's managed `.ac/.gitignore` ignores the manifest, but a
 // parent rule that excludes the `.ac/` directory still wins: Git does not
 // descend into an excluded directory. AC documents but does not override
 // this.
@@ -101,7 +100,7 @@ fn ensure_ac_root_gitignore_appends_team_config_lock_block_preserving_bytes_and_
     );
 }
 
-/// #1938: the local-config and project-settings write-lock sidecars get
+/// The local-config and project-settings write-lock sidecars get
 /// their own exact, narrow rules on a fresh workspace, and the config files
 /// themselves stay trackable.
 #[test]
@@ -158,7 +157,7 @@ fn ensure_ac_root_gitignore_writes_config_write_lock_blocks_on_create() {
     );
 }
 
-/// #1938: appending to an existing user-authored .gitignore preserves the
+/// Appending to an existing user-authored .gitignore preserves the
 /// original bytes, adds each exact lock block once, and a second ensure is
 /// byte-identical.
 #[test]
@@ -243,7 +242,7 @@ fn ensure_ac_root_gitignore_appends_config_write_lock_blocks_preserving_bytes_an
     );
 }
 
-/// #1938: the two new rules match exactly what they must - the config lock
+/// The two new rules match exactly what they must - the config lock
 /// sidecars - at every depth for `**/.config.json.lock` and only at the root
 /// for `/.project-settings.json.lock`; `config.json` itself stays trackable.
 #[test]

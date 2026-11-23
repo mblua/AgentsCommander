@@ -187,7 +187,7 @@ fn create_send_fixture(tmp: &Path, bin: &Path, config_dir: &Path) -> (PathBuf, P
             "Build",
         ],
     );
-    // #1614 requirement (A): creation produces `room-<N>-<team>`. This fixture
+    // Requirement (A): creation produces `room-<N>-<team>`. This fixture
     // names the directory the product CREATES, so it moves with the creation
     // prefix; the legacy `wg-*` fixtures that prove dual-prefix ACCEPTANCE are
     // untouched (Rule P2).
@@ -199,7 +199,7 @@ fn create_send_fixture(tmp: &Path, bin: &Path, config_dir: &Path) -> (PathBuf, P
     (project, sender)
 }
 
-// ── #738: task-set-title user-owned title output contract ───────────────────
+// ── task-set-title user-owned title output contract ───────────────────
 
 fn seed_master_token(config_dir: &Path, token: &str) {
     std::fs::create_dir_all(config_dir).expect("create config dir");

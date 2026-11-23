@@ -27,7 +27,7 @@ fn startup_unavailable_project_state_never_enters_session_load_or_purge() {
     assert!(result.unwrap().is_empty());
 }
 
-// #2714 (B1b) - the startup naming migration. Every test drives the inner
+// (B1b) - the startup naming migration. Every test drives the inner
 // functions against a tempdir; none calls `preflight_config_startup()`,
 // which would read the developer's own configuration directory. File names
 // are literals on purpose: an independent oracle, not the constants.

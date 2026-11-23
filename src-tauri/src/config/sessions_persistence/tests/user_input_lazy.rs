@@ -2,7 +2,7 @@ use super::*;
 use std::cell::Cell;
 use uuid::Uuid;
 
-// ---- #4778: load settings only when a user-input transition will apply ----
+// ---- load settings only when a user-input transition will apply ----
 
 async fn lazy_session(mgr: &SessionManager) -> Uuid {
     mgr.create_session(
