@@ -21,7 +21,7 @@ import {
   workgroupGroupsStore,
 } from "../stores/workgroup-groups";
 
-// #1624 - the coordinator tile order stays frozen while a sidebar context menu
+// The coordinator tile order stays frozen while a sidebar context menu
 // (or its flyout) is open, even with the pointer OUTSIDE the sidebar. The menu
 // renders through a Solid <Portal> under document.body, so the store's
 // DOM-derived `sidebarMenuOpen` lock (fed by a MutationObserver) is what holds

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { vi } from "vitest";
-// #944 - acceptance A and B, driven through the REAL automation bridge.
+// Acceptance A and B, driven through the REAL automation bridge.
 //
 // The whole chain runs here: executeAutomationRequest -> synthetic pointer/mouse
 // events -> Solid's directly-bound onMouseEnter/onMouseLeave -> the flyout. The

@@ -27,7 +27,7 @@ import { voiceRecorder } from "../../shared/voice-recorder";
 import { declValue, scanRules } from "../styles/css-test-helpers";
 import { initialSelection } from "../../shared/testing/session-selection";
 
-// #2236 phase 9 (#2284) - the banner's collapse/expand toggle, the row's real
+// The banner's collapse/expand toggle, the row's real
 // activation button and the hotkey hydration. jsdom applies no stylesheet, so
 // hit-testing claims are read from sidebar.css as text, never from a click.
 

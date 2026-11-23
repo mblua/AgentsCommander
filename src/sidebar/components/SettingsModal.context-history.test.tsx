@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// #3532/#4049 - both platforms are explicit: the seam flips `isTauri` per test.
+// Both platforms are explicit: the seam flips `isTauri` per test.
 const platform = vi.hoisted(() => ({ tauri: true }));
 vi.mock("../../shared/platform", () => ({
   get isTauri() { return platform.tauri; },
@@ -39,7 +39,7 @@ const CTX_KEYS = [
   "contextHistorySessionWindows",
   "contextHistoryColorSessions",
 ] as const;
-// #4091 The backend always serves a list; tests seed it like the Rust default.
+// The backend always serves a list; tests seed it like the Rust default.
 const SERVED = { contextHistorySessionWindows: [25, 100, 300], contextHistoryColorSessions: 300 };
 
 describe("SettingsModal Context Heat Map section (#4049)", () => {

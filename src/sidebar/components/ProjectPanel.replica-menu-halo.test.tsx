@@ -19,7 +19,7 @@ import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import type { AcDiscoveryResult, Session } from "../../shared/types";
 
-// #3027: right-clicking a replica row marks that exact row with a halo while
+// Right-clicking a replica row marks that exact row with a halo while
 // the replica context menu is open.
 
 // A variable base keeps the real file: URL under jsdom (see AgentUpdateOverlay.test.tsx).
@@ -791,7 +791,7 @@ describe("ProjectPanel replica context menu origin halo (#3027)", () => {
   });
 });
 
-// The harness fixture that gives jsdom replica rows visible bounds (#3027 B1).
+// The harness fixture that gives jsdom replica rows visible bounds.
 // Independent of the describe above: no ProjectPanel, no per-row spy.
 describe("installBrowserDomStubs replica menu geometry fixture (#3027)", () => {
   const cleanups: Array<() => void> = [];
