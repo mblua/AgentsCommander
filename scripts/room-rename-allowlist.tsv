@@ -2856,7 +2856,7 @@ P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	wg(),
 P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	// (c) H3 - registering the same wg/role drops the prior Terminated duplicate row.
 P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	Some("wg-1".into()),
 P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	// Relaunch the same wg/role with a fresh pid: the prior Terminated row is dropped.
-P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	// (c2) #566 - two different projects running the same wg/role must NOT dedup
+P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	// (c2) Two different projects running the same wg/role must NOT dedup
 P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	// Project A: register the (wg-1, tech-lead) group, then kill it so its
 P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	// Project B: same wg/role, different project. The predicate's
 P1-comment	src-tauri/src/resource_monitor/types.rs	/// Human-readable workgroup label (e.g. "wg-5-dev-team"), or `None`
@@ -2955,7 +2955,7 @@ P2-fixture	src-tauri/src/session/context_alerts/tests/resolution.rs	changed_cwd.
 P1-comment	src-tauri/src/session/manager/lookup.rs	/// `<project>:<wg>` (the agent FQN minus the trailing `/agent`). Ad-hoc user
 P1-comment	src-tauri/src/session/manager/lookup.rs	/// (Auto-closed badge) team key `<project>:<wg>` -> (coordinator FQN,
 P1-comment	src-tauri/src/session/manager/lookup.rs	/// Team key `<project>:<wg>` -> the coordinator session's `Uuid`, over
-P2-fixture	src-tauri/src/session/manager/tests/team.rs	// #552: a WG replica cwd that agent_fqn_from_path resolves to
+P2-fixture	src-tauri/src/session/manager/tests/team.rs	// A WG replica cwd that agent_fqn_from_path resolves to
 P2-fixture	src-tauri/src/session/manager/tests/team.rs	// `<project>:<wg>/<agent>`. team key = `<project>:<wg>`.
 P2-fixture	src-tauri/src/session/manager/tests/team.rs	const COORD_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_lead";
 P2-fixture	src-tauri/src/session/manager/tests/team.rs	const RUST_CWD: &str = "C:\\repos\\myproj\\.ac\\wg-1-team\\__agent_rust";
@@ -2973,7 +2973,7 @@ P0-identifier	src-tauri/src/session/session.rs	pub(crate) fn read_workgroup_task
 P0-identifier	src-tauri/src/session/session.rs	let path = find_workgroup_task_path_for_cwd(cwd)?;
 P0-identifier	src-tauri/src/session/session.rs	pub workgroup_task: Option<String>,
 P0-identifier	src-tauri/src/session/session.rs	workgroup_task: read_workgroup_task_for_cwd(&s.working_directory),
-P2-fixture	src-tauri/src/session/session/tests.rs	// ── find_workgroup_task_path_for_cwd — issue #107 ──
+P2-fixture	src-tauri/src/session/session/tests.rs	// ── find_workgroup_task_path_for_cwd ──
 P2-fixture	src-tauri/src/session/session/tests.rs	fn find_workgroup_task_path_returns_path_when_cwd_is_workgroup_root() {
 P2-fixture	src-tauri/src/session/session/tests.rs	let p = find_workgroup_task_path_for_cwd(r"C:\proj\.ac\wg-3-team");
 P2-fixture	src-tauri/src/session/session/tests.rs	Some(std::path::PathBuf::from(r"C:\proj\.ac\wg-3-team\TASK.md"))

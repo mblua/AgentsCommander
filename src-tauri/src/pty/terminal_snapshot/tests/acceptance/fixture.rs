@@ -225,7 +225,7 @@ impl ReplicaPaths {
             r#"{"identity":"../../_agent_worker"}"#,
         )
         .expect("tampered replica config");
-        // #2317: sibling Room trees beside the legacy workgroup. The same
+        // Sibling Room trees beside the legacy workgroup. The same
         // project, team config and agent matrices are reused, so the existing
         // wg sessions and tests stay untouched; only the room directories and
         // their replica configs are new.
