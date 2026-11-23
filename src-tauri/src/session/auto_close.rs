@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -18,9 +18,9 @@ use crate::session::manager::SessionManager;
 use crate::session::selection::{SelectionCoordinator, SelectionCoordinatorError};
 
 const TICK: Duration = Duration::from_secs(60);
-/// (#580) A just-woken session replays scrollback for ~1-2s; exclude its first
-/// `REPAINT_GRACE` of life from the idle-anchor advance so reopening an abandoned
-/// team cannot reset its persisted idle. Feeds `member_post_repaint_silence`.
+/// (#580) A just-woken session replays scrollback for ~1-2s. #2158 - the anchor advance now
+/// excludes repaint in `IdleDetector::team_silence_age_at`; this window keeps the final
+/// pre-close veto for a member that emitted recently.
 const REPAINT_GRACE: Duration = Duration::from_secs(10);
 /// (#580) A session is not kill-eligible until alive past `WAKE_GRACE`, so a
 /// just-woken (or wake-on-restore) team is visible >=30s before any auto-close.
@@ -60,28 +60,6 @@ impl AutoClose {
             }
         }
     }
-}
-
-/// (#580) Effective "post-repaint" silence for ONE live member, or None if the
-/// member must NOT advance the idle anchor this tick. None when:
-///   - untracked (`alive_age` or `silence_age` missing) -> spawn race, ignore;
-///   - alive <= `REPAINT_GRACE` (still inside the wake-repaint window);
-///   - the member's LAST output landed inside its repaint window
-///     (`silence_age` >= `alive_age` - `REPAINT_GRACE`) -> that output was scrollback
-///     replay (or nothing genuine has happened since), so it must not reset the
-///     persisted idle of an abandoned-then-reopened team.
-///
-/// `Some(silence_age)` ONLY when the last output is genuine post-repaint activity.
-/// Pure; this is the E1 fix and gets its own boundary-tested unit (§8.1).
-fn member_post_repaint_silence(
-    alive_age: Option<Duration>,
-    silence_age: Option<Duration>,
-    repaint_grace: Duration,
-) -> Option<Duration> {
-    let alive = alive_age?;
-    let silence = silence_age?;
-    let window = alive.checked_sub(repaint_grace)?; // None if alive <= grace
-    (silence < window).then_some(silence)
 }
 
 /// (#580) Per-team MIN post-repaint silence across the members, folding the
@@ -244,13 +222,16 @@ async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<Stri
     // one map but not the other simply yields no spurious mark).
     let coord_ids = session_mgr.read().await.coordinator_ids_by_team().await;
 
-    let now_secs = Utc::now().timestamp();
+    // #2158 - one monotonic/UTC pair per tick; `now_secs` derives from the UTC half.
+    let tick_at = Instant::now();
+    let tick_utc = Utc::now();
+    let now_secs = tick_utc.timestamp();
     let Some(clocks) = services.coordinator_clocks() else {
         return;
     };
 
-    // (1) ADVANCE last_activity_at from POST-REPAINT members (REPAINT_GRACE filter).
-    advance_team_activity(&clocks, &members, &idle, &coord_refs, now_secs);
+    // (1) ADVANCE last_activity_at from each member's eligible team-clock stamp (#2158).
+    advance_team_activity(&clocks, &members, &idle, &coord_refs, tick_at, tick_utc);
 
     // (2) BADGE: snapshot, RELEASE, then emit the unified anchor per team (deduped).
     let snap = {
@@ -520,24 +501,30 @@ fn advance_team_activity(
     members: &[(Uuid, String)],
     idle: &IdleDetector,
     coord_refs: &HashMap<String, (String, String)>,
-    now_secs: i64,
+    now: Instant,
+    now_utc: DateTime<Utc>,
 ) {
-    let team_sil = team_min_silence(members, &|id| {
-        member_post_repaint_silence(idle.alive_age(id), idle.silence_age(id), REPAINT_GRACE)
-    });
+    let team_sil = team_min_silence(members, &|id| idle.team_silence_age_at(id, now));
     {
         let mut g = clocks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (team, (fqn, _)) in coord_refs {
-            if let Some(sil) = team_sil.get(team) {
-                if let Some(c) = DateTime::<Utc>::from_timestamp(now_secs - sil.as_secs() as i64, 0)
-                {
-                    g.note_activity(fqn, c); // monotonic; dirties only on a real move
-                }
+            if let Some(c) = team_sil
+                .get(team)
+                .and_then(|sil| activity_second(now_utc, *sil))
+            {
+                g.note_activity(fqn, c); // monotonic; dirties only on a real move
             }
         }
     } // guard dropped before any emit
+}
+
+/// #2158 - the whole UTC second `age` before `now_utc`, rounded once after the full-precision
+/// subtraction. `None` when out of range.
+fn activity_second(now_utc: DateTime<Utc>, age: Duration) -> Option<DateTime<Utc>> {
+    let at = now_utc.checked_sub_signed(chrono::TimeDelta::from_std(age).ok()?)?;
+    DateTime::<Utc>::from_timestamp(at.timestamp(), 0)
 }
 
 fn closed_coordinator_teams(

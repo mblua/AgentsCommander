@@ -36,6 +36,35 @@ struct PendingBurst {
     printable: bool,
 }
 
+/// #2158 - output up to this long after a generation's first non-empty chunk is repaint.
+pub(crate) const TEAM_RESTORE_WINDOW: Duration = Duration::from_secs(10);
+
+/// #2158 - one PTY generation's team-clock projection; `eligible` may move the team anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TeamClock {
+    registered: Instant,
+    first_output: Option<Instant>,
+    resize: Option<Instant>,
+    eligible: Option<Instant>,
+}
+
+impl TeamClock {
+    fn new(registered: Instant) -> Self {
+        Self {
+            registered,
+            first_output: None,
+            resize: None,
+            eligible: None,
+        }
+    }
+
+    fn promote(&mut self, stamp: Instant) {
+        if self.eligible.is_none_or(|prev| stamp > prev) {
+            self.eligible = Some(stamp);
+        }
+    }
+}
+
 /// #2879 - one session's semantic activity registration. Its PRESENCE is the active
 /// registration; `observation` is the single token of the current consumer attach, and
 /// `last_valid` the last valid frame verdict that attach delivered.
@@ -122,38 +151,24 @@ pub struct IdleDetector {
     activity_log_owner: Arc<ActivityCoalescer>,
     raw_output_observer: std::sync::OnceLock<(usize, RawOutputObserver)>,
     activity: Arc<Mutex<ActivityState>>,
-    /// #552 auto-close silence clock. SEPARATE from `activity` (which drives the
-    /// #260 idle dot). Reset by user input, inter-agent delivery and PTY output
-    /// that the #2124 burst filter counts; a short burst after long silence is
-    /// ignored instead of resetting it. Never read by the idle-dot watcher, so
-    /// it cannot mask #260 idle detection.
+    /// #552 auto-close silence clock, SEPARATE from the #260 `activity` clock and never read
+    /// by its watcher. Reset by input, delivery and output the #2124 burst filter counts.
     silence: Arc<Mutex<HashMap<Uuid, Instant>>>,
-    /// (#580) Per-session "alive since" clock: the `Instant` the PTY was
-    /// registered (spawned). Mirrors `silence` (seeded in `register_session`,
-    /// cleared in `remove_session`). Read via `alive_age` so auto-close can apply
-    /// `WAKE_GRACE`: a freshly-woken session is neither kill-eligible nor allowed to
-    /// advance the persisted idle anchor until it is alive past the grace.
-    registered_at: Arc<Mutex<HashMap<Uuid, Instant>>>,
+    /// (#580) Per-session "alive since" clock (PTY registration), seeded and cleared like
+    /// `silence`, read via `alive_age` for `WAKE_GRACE`. #2158 - also the team clock.
+    registered_at: Arc<Mutex<HashMap<Uuid, TeamClock>>>,
     idle_set: Arc<Mutex<HashSet<Uuid>>>,
     resize_grace: Arc<Mutex<HashMap<Uuid, Instant>>>,
-    /// #1682 - per-session instant of the last PTY write that was NOT a delivered message and
-    /// that either FOUND this session idle, which is "re-opened its busy period" everywhere
-    /// except inside an active `resize_grace`, or arrived while a mark already stood. It is
-    /// NOT an exact "the current busy period is attributable to this write": R4 and R6 in
-    /// phase 03's D1 are the two ways it is not. Set and refreshed by
-    /// `record_control_write_activity`, cleared by `clear_control_write` at every ARMING site
-    /// and by `remove_session` on teardown, read by `control_write_age`. NEVER read by the
-    /// watcher, by `record_activity_with_bytes`, by `purge_readiness` or by auto-close, so it
-    /// cannot affect the #260 idle dot, the #552 silence clock or #885 readiness.
+    /// #1682 - instant of the last non-delivery PTY write that FOUND this session idle or
+    /// arrived while a mark stood (not exact attribution: phase 03 D1, R4/R6). Set by
+    /// `record_control_write_activity`, cleared at ARMING sites and teardown, read only by
+    /// `control_write_age`, so it cannot affect the idle dot, silence clock or readiness.
     control_write: Arc<Mutex<HashMap<Uuid, Instant>>>,
     /// Per-session idle tuning, populated by `register_session` at PTY spawn.
     /// A session missing here falls back to `IdleTuning::DEFAULT`.
     tuning: Arc<Mutex<HashMap<Uuid, IdleTuning>>>,
-    /// #2124 - pending short-burst candidates (see `record_output_at`): one
-    /// entry per session whose latest output chunk opened a burst that is not
-    /// yet confirmed as real work. Taken alone, never nested inside another
-    /// detector lock, and always released before `touch_silence` or
-    /// `record_activity_with_bytes` runs.
+    /// #2124 - pending, unconfirmed short-burst candidates (see `record_output_at`). Taken
+    /// alone and released before the silence or activity clocks are touched.
     burst: Arc<Mutex<HashMap<Uuid, PendingBurst>>>,
     on_idle: Callback,
     on_busy: Callback,
@@ -201,9 +216,7 @@ pub struct PurgeReadiness {
     /// The watcher has already crossed this session into the idle set.
     pub watcher_idle: bool,
     /// (#885 F-1) Age of the last `record_resize`, or `None` if never resized.
-    /// `activity_age` is FROZEN and untrustworthy for `resize_grace` after this
-    /// instant: `record_activity_with_bytes` early-returns without touching
-    /// `activity` inside the grace window (`:150-161`).
+    /// `activity_age` is FROZEN (untrustworthy) for `resize_grace` after this instant.
     pub last_resize_age: Option<Duration>,
     /// This session's resolved `resize_grace` and `idle_threshold`, so the
     /// caller's gate is per-session rather than against a global constant.
@@ -267,12 +280,14 @@ impl IdleDetector {
         })
     }
 
-    /// Register a session with the detector at PTY spawn time. Stores the
-    /// session's idle `tuning` and — when `tuning.seed_initial_activity` is
-    /// set (#260) — seeds `activity[id] = now` so the watcher evaluates the
-    /// session from t=0 even if no un-suppressed, printable PTY chunk ever
-    /// arrives (the grinch stuck-session bug — see plan §1).
+    /// Register a session at PTY spawn: stores its `tuning` and, with
+    /// `seed_initial_activity` (#260), seeds `activity[id] = now` so the watcher
+    /// evaluates it from t=0 even if no printable chunk ever arrives.
     pub fn register_session(&self, session_id: Uuid, tuning: IdleTuning) {
+        self.register_session_at(session_id, tuning, Instant::now());
+    }
+
+    pub(crate) fn register_session_at(&self, session_id: Uuid, tuning: IdleTuning, at: Instant) {
         debug_assert!(
             tuning.resize_grace >= tuning.idle_threshold,
             "resize_grace must be >= idle_threshold or a resize repaint can \
@@ -306,17 +321,25 @@ impl IdleDetector {
         lock(&self.silence).insert(session_id, Instant::now());
         // (#580) seed the alive-since clock alongside silence so auto-close can
         // apply WAKE_GRACE (kill-eligibility / anchor-advance gating) from spawn.
-        lock(&self.registered_at).insert(session_id, Instant::now());
+        lock(&self.registered_at).insert(session_id, TeamClock::new(at));
     }
 
     /// Mark that a resize just happened for this session.
     /// PTY output within `RESIZE_GRACE` will be ignored (prompt repaint noise).
     pub fn record_resize(&self, session_id: Uuid) {
+        self.record_resize_at(session_id, Instant::now());
+    }
+
+    /// #2158 - also marks the team clock, after releasing `resize_grace`.
+    pub(crate) fn record_resize_at(&self, session_id: Uuid, at: Instant) {
         log::debug!(
             "[idle] RESIZE recorded for {}",
             &session_id.to_string()[..8]
         );
-        lock(&self.resize_grace).insert(session_id, Instant::now());
+        lock(&self.resize_grace).insert(session_id, at);
+        if let Some(clock) = lock(&self.registered_at).get_mut(&session_id) {
+            clock.resize = clock.resize.max(Some(at));
+        }
     }
 
     /// #2124 - record one PTY output chunk (printable or escape-only),
@@ -331,11 +354,9 @@ impl IdleDetector {
         }
     }
 
-    /// #2124 - the injectable core of [`record_output`].
-    ///
-    /// A short periodic burst after long silence (a status-line repaint) must
-    /// neither reset the auto-close silence clock nor reopen the #260 busy
-    /// period. So a chunk that finds `burst_prior_silence` of silence opens a
+    /// #2124 - the injectable core of [`record_output`]. A short periodic burst after
+    /// long silence (a status-line repaint) must neither reset the auto-close silence
+    /// clock nor reopen the #260 busy period. So a chunk that finds `burst_prior_silence` of silence opens a
     /// PENDING burst instead of counting, and nothing is touched while one is
     /// pending. The burst is confirmed - and only then counted, with its TOTAL
     /// byte count - when it reaches `burst_max_bytes` or spans `burst_window`; a
@@ -352,14 +373,28 @@ impl IdleDetector {
         printable: bool,
         now: Instant,
     ) {
-        self.notify_raw_output_at(session_id, now);
+        self.record_output_classified_at(session_id, byte_count, printable, now, None);
+    }
+
+    /// #2158 - `classify_at` injects the classification instant; `now` stays the chunk stamp.
+    pub(crate) fn record_output_classified_at(
+        &self,
+        session_id: Uuid,
+        byte_count: usize,
+        printable: bool,
+        now: Instant,
+        classify_at: Option<Instant>,
+    ) {
         let tuning = lock(&self.tuning)
             .get(&session_id)
             .copied()
             .unwrap_or(IdleTuning::DEFAULT);
+        let team = self.classify_team_output(session_id, byte_count, now, &tuning, classify_at);
+        self.notify_raw_output_at(session_id, now);
         // 1. Filter off for this session: the exact pre-#2124 behavior.
         if tuning.burst_max_bytes == 0 || tuning.burst_window.is_zero() {
-            self.touch_silence(session_id);
+            self.touch_output_silence(session_id);
+            self.promote_team_output(session_id, team, now);
             if printable {
                 self.record_activity_with_bytes(session_id, byte_count);
             }
@@ -425,17 +460,72 @@ impl IdleDetector {
         }
 
         if counts_now {
-            self.touch_silence(session_id);
+            self.touch_output_silence(session_id);
+            self.promote_team_output(session_id, team, now);
             if printable {
                 self.record_activity_with_bytes(session_id, byte_count);
             }
         } else if let Some((bytes, saw_printable)) = confirmed {
             log::debug!("[idle] BURST CONFIRMED {sid} ({bytes} bytes)");
-            self.touch_silence(session_id);
+            self.touch_output_silence(session_id);
+            self.promote_team_output(session_id, team, now);
             if saw_printable {
                 self.record_activity_with_bytes(session_id, bytes as usize);
             }
         }
+    }
+
+    /// #2158 - classify a chunk before the observer and #2124. `Some(registration)` when it may
+    /// move the anchor: non-empty, not before registration, classified past the restore window
+    /// and stamped at least `resize_grace` after the latest resize mark.
+    fn classify_team_output(
+        &self,
+        session_id: Uuid,
+        byte_count: usize,
+        stamp: Instant,
+        tuning: &IdleTuning,
+        classify_at: Option<Instant>,
+    ) -> Option<Instant> {
+        let mut clocks = lock(&self.registered_at);
+        let clock = clocks.get_mut(&session_id)?;
+        if byte_count == 0 || stamp < clock.registered {
+            return None;
+        }
+        let at = classify_at.unwrap_or_else(Instant::now);
+        let first = *clock.first_output.get_or_insert(at);
+        let restored = at.saturating_duration_since(first) > TEAM_RESTORE_WINDOW;
+        let settled = clock
+            .resize
+            .is_none_or(|mark| stamp.saturating_duration_since(mark) >= tuning.resize_grace);
+        (restored && settled).then_some(clock.registered)
+    }
+
+    fn promote_team_output(&self, session_id: Uuid, team: Option<Instant>, stamp: Instant) {
+        let Some(registered) = team else {
+            return;
+        };
+        if let Some(clock) = lock(&self.registered_at)
+            .get_mut(&session_id)
+            .filter(|clock| clock.registered == registered)
+        {
+            clock.promote(stamp);
+        }
+    }
+
+    /// #2158 - input or delivery strictly past the restore window from registration.
+    fn promote_team_explicit(&self, session_id: Uuid, at: Instant) {
+        if let Some(clock) = lock(&self.registered_at).get_mut(&session_id) {
+            if at.saturating_duration_since(clock.registered) > TEAM_RESTORE_WINDOW {
+                clock.promote(at);
+            }
+        }
+    }
+
+    /// #2158 - age of the newest eligible stamp at `now` (a later stamp is zero).
+    pub(crate) fn team_silence_age_at(&self, session_id: Uuid, now: Instant) -> Option<Duration> {
+        let clocks = lock(&self.registered_at);
+        let stamp = clocks.get(&session_id)?.eligible?;
+        Some(now.saturating_duration_since(stamp))
     }
 
     /// #2124 - silence age against an injected instant. An untracked session
@@ -522,8 +612,18 @@ impl IdleDetector {
 
     /// #552 Reset the auto-close silence clock for a session. Does NOT touch
     /// `activity`/`idle_set`/`on_busy`, so it never affects the #260 idle dot.
-    /// Called for ANY PTY output, user input, and inter-agent delivery.
+    /// Called for user input and inter-agent delivery; #2158 - it also promotes the team clock.
     pub fn touch_silence(&self, session_id: Uuid) {
+        self.touch_silence_at(session_id, Instant::now());
+    }
+
+    pub(crate) fn touch_silence_at(&self, session_id: Uuid, at: Instant) {
+        lock(&self.silence).insert(session_id, at);
+        self.promote_team_explicit(session_id, at);
+    }
+
+    /// #2158 - output's silence reset; never promotes the team clock.
+    fn touch_output_silence(&self, session_id: Uuid) {
         lock(&self.silence).insert(session_id, Instant::now());
     }
 
@@ -535,14 +635,22 @@ impl IdleDetector {
         alive_age: Duration,
     ) {
         let now = Instant::now();
+        let silence = now.checked_sub(silence_age).unwrap_or(now);
         self.silence
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id, now.checked_sub(silence_age).unwrap_or(now));
+            .insert(session_id, silence);
+        // #2158 - the projection equivalent to this age pair.
+        let mut clock = TeamClock::new(now.checked_sub(alive_age).unwrap_or(now));
+        clock.first_output = Some(clock.registered);
+        clock.eligible = alive_age
+            .checked_sub(TEAM_RESTORE_WINDOW)
+            .filter(|window| silence_age < *window)
+            .map(|_| silence);
         self.registered_at
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id, now.checked_sub(alive_age).unwrap_or(now));
+            .insert(session_id, clock);
     }
 
     #[cfg(test)]
@@ -589,18 +697,9 @@ impl IdleDetector {
             .and_then(|&t| now.checked_duration_since(t))
     }
 
-    /// (#1001 PR1 / grinch G7) True iff this session's last PRINTABLE-output
-    /// instant is strictly after `t`. Compares the stored `activity` stamp to
-    /// `t` directly under a single lock, with NO synthesized `now`, so it avoids
-    /// the false-positive skew of a `now - activity_age` round-trip (a driver
-    /// `now` later than the accessor `now` would inflate the reconstructed
-    /// instant and read a stale echo as fresh). This is the timestamp-gate
-    /// candidate signal the wake-consumption harness evaluates; `activity_age`
-    /// (for B) is intentionally NOT reused here.
-    ///
-    /// CAVEAT (grinch G8): `activity` is frozen during `resize_grace`
-    /// (`record_activity_with_bytes` early-returns without stamping), so a
-    /// post-resize repaint does NOT count as activity here; callers needing
+    /// (#1001 PR1 / grinch G7) True iff the last PRINTABLE-output stamp is strictly after `t`,
+    /// compared directly under one lock with no synthesized `now` (no round-trip skew).
+    /// CAVEAT (G8): `activity` is frozen during `resize_grace`; callers needing
     /// resize-awareness must consult `last_resize_age` (via `purge_readiness`).
     pub fn has_printable_activity_since(&self, session_id: Uuid, t: Instant) -> bool {
         lock(&self.activity)
@@ -615,13 +714,8 @@ impl IdleDetector {
     /// thread can interleave. That is the strongest consistency available for the
     /// purge busy-gate.
     ///
-    /// LOCK ORDER. `tuning` and `resize_grace` are cloned under their own locks
-    /// and released before `activity` is taken, exactly as the watcher does with
-    /// `tuning` (`start`, `:251`). This introduces ZERO new nesting: the only
-    /// nested acquisition anywhere in this file is `activity -> idle_set`
-    /// (`:165-166`, `:252-253`), and `silence` is only ever taken alone
-    /// (`:112`, `:189`, `:199`, `:222`), so appending it at the tail cannot
-    /// deadlock.
+    /// LOCK ORDER. `tuning` and `resize_grace` are cloned and released before `activity`,
+    /// as the watcher does; `silence` is only ever taken alone, so appending it cannot deadlock.
     ///
     /// Reading `resize_grace` before `activity` can only MISS a resize newer than
     /// the `activity` value we read. Such a resize begins its freeze after that
@@ -711,6 +805,7 @@ impl IdleDetector {
         drop(resizes);
         drop(tuning);
         lock(&self.silence).insert(session_id, now);
+        self.promote_team_explicit(session_id, now);
         Ok((route, was_idle))
     }
 
@@ -728,7 +823,7 @@ impl IdleDetector {
         let now = Instant::now();
         lock(&self.registered_at)
             .get(&session_id)
-            .and_then(|&t| now.checked_duration_since(t))
+            .and_then(|clock| now.checked_duration_since(clock.registered))
     }
 
     /// Remove a session from tracking (called on session destroy).
@@ -849,15 +944,10 @@ impl IdleDetector {
             }
         }
 
-        // #1149 - the heartbeat, and the universal backstop for closing
-        // edges. A session that exits or is removed while working never
-        // reaches `mark_idle`, so it emits no closing record; it simply
-        // stops appearing here and the consumer closes it at the last
-        // heartbeat that listed it. This is the detector's own view
-        // deliberately, because this loop is a native thread and must not
-        // take the async manager lock. It may therefore list a session
-        // still pending creation, which is inert: the closing rule only
-        // ever closes an interval a `busy` record opened.
+        // #1149 - the heartbeat, and the backstop for closing edges: a session that exits
+        // while working stops appearing here and the consumer closes it at the last
+        // heartbeat that listed it. The detector's own view, since this native thread must
+        // not take the async manager lock; a session pending creation listed here is inert.
         heartbeat.then(|| {
             activity
                 .keys()
@@ -882,16 +972,9 @@ impl IdleDetector {
 
                 ticks = ticks.wrapping_add(1);
                 let heartbeat = detector.evaluate_tick(None, ticks.is_multiple_of(HEARTBEAT_TICKS));
-                // Both guards MUST be released before the append (`evaluate_tick`
-                // drops them before it returns). These are the
-                // two the PTY reader threads take together on every output chunk,
-                // so appending under them would stall every terminal in the fleet
-                // on a 60 s beat for the length of a file open, write and close,
-                // and once per rotation for four renames. On Windows the config
-                // directory is a real-time-scan target and may sit under a file
-                // watcher, so a rename that normally costs 1 ms can cost
-                // hundreds. Fleet-wide terminal jank with no log line explaining
-                // it is the one failure here a user would actually feel.
+                // Both guards MUST be released before the append (`evaluate_tick` drops
+                // them): PTY readers take them on every chunk, so file I/O under them
+                // (slow renames on Windows) would stall every terminal in the fleet.
                 if let Some(working_session_ids) = heartbeat {
                     crate::config::activity_log::append(
                         crate::config::activity_log::build_app_alive(
