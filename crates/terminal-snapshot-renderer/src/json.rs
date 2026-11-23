@@ -1,3 +1,6 @@
+//! Bounded, ASCII-safe JSON encoding and decoding for the snapshot protocol.
+//! It owns no state; it does not render images or validate PNG output.
+
 mod shape;
 
 use shape::JsonShapeScanner;
