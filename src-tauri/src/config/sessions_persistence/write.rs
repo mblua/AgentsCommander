@@ -119,19 +119,28 @@ where
         let result = operation.await;
         owner.complete(result);
     });
+    let mut reported = false;
     loop {
         let changed = cell.changed.notified();
-        let result = {
+        let (result, ambiguous) = {
             match cell.state.lock() {
                 Ok(mut state) => match &mut *state {
-                    PersistOperationState::Completed(result) => result.take(),
-                    PersistOperationState::Running | PersistOperationState::Ambiguous => None,
+                    PersistOperationState::Completed(result) => (result.take(), false),
+                    PersistOperationState::Running => (None, false),
+                    PersistOperationState::Ambiguous => (None, true),
                 },
-                Err(_) => None,
+                Err(_) => (None, true),
             }
         };
         if let Some(result) = result {
             return result;
+        }
+        if ambiguous && !reported {
+            reported = true;
+            log::error!(
+                "[persist] persist operation ended without a result \
+                    (task panicked or state lock poisoned); waiter parked"
+            );
         }
         changed.await;
     }
@@ -701,3 +710,6 @@ pub(super) struct FixturePublicationAction {
     pub(super) directory: PathBuf,
     pub(super) kind: FixturePublicationActionKind,
 }
+
+#[cfg(test)]
+mod tests;
