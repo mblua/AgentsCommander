@@ -31,7 +31,7 @@ import {
 } from "./state";
 import "./styles.css";
 
-// #3532 P06 - "Context by agent": agents on the left, the selected agent's
+// "Context by agent": agents on the left, the selected agent's
 // sessions and one session's timeline on the right. Every number shown comes
 // from the backend; refresh is manual and there is no polling.
 
@@ -136,7 +136,7 @@ function teamValues(agents: AgentSummary[], selected: string | null): string[] {
   return [...values].sort(byCodeUnit);
 }
 
-/** #4091 Team attribution of one count-mode scope, never a merged bucket. */
+/** Team attribution of one count-mode scope, never a merged bucket. */
 function scopeTeams(scope: ScopeWindowCoverage): string {
   if (scope.teamAttribution === "unknown") return TEXT.unknown;
   if (scope.teamAttribution === "ambiguous") return TEXT.ambiguous;
@@ -173,7 +173,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
   let detailRef: HTMLElement | undefined;
   let listRef: HTMLElement | undefined;
 
-  // #4091 Settings load before the first query and every manual refresh/retry;
+  // Settings load before the first query and every manual refresh/retry;
   // a missing or failed list shows the error and sends no history request.
   const [settingsError, setSettingsError] = createSignal(false);
   let loadGen = 0;

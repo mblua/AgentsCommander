@@ -8,7 +8,7 @@ import type { UnlistenFn } from "../shared/transport";
 import { homeStore } from "./stores/home";
 
 /**
- * Wires the Home auto-visibility contract for the main window (issue #183).
+ * Wires the Home auto-visibility contract for the main window.
  *
  * On mount: Home is shown unconditionally — every app open lands on Home
  * regardless of any restored active session.
@@ -19,14 +19,14 @@ import { homeStore } from "./stores/home";
  *   liveness reconciliation and other background transitions carry the
  *   required false value, so they leave Home visible. See
  *   `_plans/183-home-first-startup.md`.
- * - `session_destroyed`: shows Home when the LAST session goes away
- *   (issue #164 contract). Yields a microtask so TerminalApp's destroy
+ * - `session_destroyed`: shows Home when the LAST session goes away.
+ *   Yields a microtask so TerminalApp's destroy
  *   handler can settle before we re-query the session list.
  * - `onSessionViewRequested`: hides Home when the backend accepted a user
- *   click on an already-selected row (issue #2222). The backend emits it only
+ *   click on an already-selected row. The backend emits it only
  *   for a user switch it accepted, so there is no `userInitiated` filter here.
  *
- * The `session_created` listener was removed in #183: that event fires for
+ * There is no `session_created` listener: that event fires for
  * restored AND backend-driven creations (mailbox / web / coordinator
  * spawn), which would tear Home away from the user. User-driven create
  * sites either follow with `SessionAPI.switch(...)` or invoke

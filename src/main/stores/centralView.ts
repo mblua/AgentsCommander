@@ -2,11 +2,11 @@ import { createSignal } from "solid-js";
 import { isTauri } from "../../shared/platform";
 import { SettingsAPI } from "../../shared/ipc";
 
-// Issue #587 — the main central pane shows one of two views at a time: the
+// The main central pane shows one of two views at a time: the
 // always-mounted terminal, or the Resource Monitor overlaid on top of it (same
 // shape as the Home overlay, see home.ts). This tiny store owns that choice.
-// #3367 adds the embedded web browser as a third view; only the Resource
-// Monitor choice is persisted. #3532 adds the desktop context history as a
+// The embedded web browser is a third view; only the Resource
+// Monitor choice is persisted. The desktop context history is a
 // fourth view; like the browser it is never persisted.
 export type CentralView = "terminal" | "resourceMonitor" | "browser" | "contextHistory";
 

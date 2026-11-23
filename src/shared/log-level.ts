@@ -6,7 +6,7 @@ import type { LogLevel } from "./types";
 let wired = false;
 
 /**
- * #612 Initialize THIS window's console log-level gate from the persisted
+ * Initialize THIS window's console log-level gate from the persisted
  * setting and keep it live via the backend `log_level_changed` event.
  *
  * Called ONCE from `src/main.tsx` for every window root (main/terminal/

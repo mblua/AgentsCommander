@@ -10,7 +10,7 @@ interface LogEntry {
 
 const captured: LogEntry[] = [];
 
-// #612 Severity ranking for the runtime log-level gate. NOTE: these integers are
+// Severity ranking for the runtime log-level gate. NOTE: these integers are
 // a FRONTEND-LOCAL ordering (error=0 .. trace=4) and are intentionally NOT the
 // backend's `log::Level` u8 (Error=1 .. Trace=5). A console.* call is suppressed
 // (neither buffered nor forwarded to the real console) when its severity is
@@ -29,7 +29,7 @@ export function isDebugEnabled(): boolean {
   return currentLevel >= SEVERITY.debug;
 }
 
-/** #612 Set the active console verbosity. Called by `initLogLevelForWindow`
+/** Set the active console verbosity. Called by `initLogLevelForWindow`
  *  from the persisted setting and the live `log_level_changed` event. An
  *  unknown value falls back to Info. */
 export function setLogLevel(level: LogLevel): void {
@@ -60,7 +60,7 @@ function capture(
   origFn: (...args: unknown[]) => void,
   args: unknown[]
 ) {
-  // #612 Gate BOTH the ring buffer AND the real-console passthrough. At the
+  // Gate BOTH the ring buffer AND the real-console passthrough. At the
   // default Info level the downgraded [idle-fe] debug chatter is dropped, so it
   // neither floods the 500-entry buffer nor evicts real errors from "copy logs".
   // Errors (severity 0) survive every selectable level. To capture debug/trace,
@@ -87,7 +87,7 @@ console.debug = (...args: unknown[]) => capture("debug", SEVERITY.debug, origDeb
 console.trace = (...args: unknown[]) => capture("trace", SEVERITY.trace, origTrace, args);
 
 // Also capture unhandled errors and promise rejections. These are ERROR-level
-// signals and bypass the #612 severity gate entirely (always captured).
+// signals and bypass the severity gate entirely (always captured).
 if (typeof window !== "undefined") {
   window.addEventListener("error", (e) => {
     const msg = `${e.message} at ${e.filename}:${e.lineno}:${e.colno}`;
