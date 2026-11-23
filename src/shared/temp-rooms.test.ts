@@ -1,4 +1,4 @@
-// #4786 - which AC placeholders a temp-room agent uses that temp rooms lack.
+// Which AC placeholders a temp-room agent uses that temp rooms lack.
 import { describe, expect, it } from "vitest";
 import { FakeTransport } from "./testing/fake-transport";
 import { settingsSnapshot } from "./testing/ui-harness";

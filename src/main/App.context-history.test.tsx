@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #3532 P07 - the context history is hosted in the central pane next to the
+// The context history is hosted in the central pane next to the
 // always-mounted terminal and sidebar, desktop only, for the sidebar's
 // selected project and without any fallback project.
 import { render } from "solid-js/web";
