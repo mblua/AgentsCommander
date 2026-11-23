@@ -393,9 +393,8 @@ async fn issue_2158_container_resize_marks_before_publish() {
             Ok(())
         }));
         if full {
-            let authority = crate::pty::manager::BackendWriteAuthority::for_backend_test();
             for _ in 0..8 {
-                backend.write(&authority, id, b"x").expect("fill queue");
+                backend.send_ping(id).expect("fill queue");
             }
         } else {
             drop(rx);
