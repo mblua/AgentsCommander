@@ -446,7 +446,7 @@ impl ResourceMonitorState {
         if !inner.pending_permits.remove(&permit.generation) {
             return Err("resource monitor launch permit was not pending".to_string());
         }
-        // #559 (H3) - a relaunch of the same wg/role must not leave its prior
+        // (H3) - a relaunch of the same wg/role must not leave its prior
         // Terminated row behind as a duplicate. Only dedup concrete identities so
         // unrelated non-WG launches (workgroup = agent = None) are never merged.
         if workgroup.is_some() || agent.is_some() {
@@ -457,7 +457,7 @@ impl ResourceMonitorState {
                     // Also match project so two different projects running
                     // the same wg/role never dedup against each other's Terminated
                     // row. PREDICATE only; the gate above stays (wg|agent) so
-                    // unrelated non-WG launches are never merged (preserves #559).
+                    // unrelated non-WG launches are never merged.
                     && g.project == project)
             });
         }

@@ -696,7 +696,7 @@ impl MailboxPoller {
             ));
         }
 
-        // (#885 F-7) `purge-wg` dispatches pre-routing, after the anti-spoof block.
+        // (F-7) `purge-wg` dispatches pre-routing, after the anti-spoof block.
         // `msg.from` is anti-spoof-verified ONLY inside the `if !is_master` block
         // above, so it is unverified both for a tokenless message AND for a
         // master-token message. `saw_session_token` is the single bit that proves

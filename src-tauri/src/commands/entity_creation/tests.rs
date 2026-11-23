@@ -1,5 +1,5 @@
 //! Tests for Agent Matrix/replica layout invariants, the preflight-rename
-//! `delete_workgroup` helper added in the #113 follow-up dispatch, plus
+//! `delete_workgroup` helper added in a follow-up dispatch, plus
 //! the helper `parse_task_title`.
 
 use super::agent_delete_plan::{

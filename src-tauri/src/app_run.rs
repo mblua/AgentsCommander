@@ -532,7 +532,7 @@ fn prepare_runtime_state(
     // once at startup; flushed by the auto-close tick and on app exit).
     let coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
         Arc::new(Mutex::new(crate::config::coordinator_clocks::load()));
-    // (#621) Conservative backstop: drop clock keys for workgroups confirmed gone
+    // Conservative backstop: drop clock keys for workgroups confirmed gone
     // on disk (historical orphans + CLI-removed wgs). Keep-on-any-doubt.
     crate::config::coordinator_clocks::prune_orphaned_workgroups_and_persist(
         &coordinator_clocks,

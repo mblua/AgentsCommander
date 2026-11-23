@@ -1407,16 +1407,16 @@ P1-comment	src-tauri/src/commands/entity_creation/workgroup.rs	/// Activation-ga
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup.rs	workgroup: &str,
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup.rs	.join(workgroup)
 P1-comment	src-tauri/src/commands/entity_creation/workgroup.rs	/// Activation-gated prune of every replica config scope under one workgroup `.ac/<workgroup>`
-P1-comment	src-tauri/src/commands/entity_creation/workgroup.rs	/// (#1063, plan section 5.4 "AC removes a workgroup"). Used by GUI/CLI workgroup deletion.
+P1-comment	src-tauri/src/commands/entity_creation/workgroup.rs	/// (plan section 5.4 "AC removes a workgroup"). Used by GUI/CLI workgroup deletion.
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup.rs	pub(crate) fn prune_workgroup_config_scope(
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup.rs	let relative = Path::new(".ac").join(workgroup);
-P1-comment	src-tauri/src/commands/entity_creation/workgroup.rs	/// Activation-gated prune of every replica config scope for a set of workgroups (#1063, plan
+P1-comment	src-tauri/src/commands/entity_creation/workgroup.rs	/// Activation-gated prune of every replica config scope for a set of workgroups (plan
 P1-comment	src-tauri/src/commands/entity_creation/workgroup.rs	/// intent: successfully removed workgroups plus valid matching team workgroup
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup.rs	pub(crate) fn prune_team_workgroups_scope(
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup.rs	workgroups: Vec<String>,
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup.rs	if workgroups.is_empty() {
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup.rs	ManifestLifecycleFilter::workgroup_components(workgroups)
-P1-comment	src-tauri/src/commands/entity_creation/workgroup.rs	/// `__agent_<name>` across all workgroups (#1063, plan section 5.4 "AC deletes an
+P1-comment	src-tauri/src/commands/entity_creation/workgroup.rs	/// `__agent_<name>` across all workgroups (plan section 5.4 "AC deletes an
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup.rs	pub(crate) async fn clone_missing_repos_for_workgroup(
 P1-comment	src-tauri/src/commands/entity_creation/agent_matrix.rs	/// Extract `(workgroup, agent)` for a replica delete target so its config scope
 P0-identifier	src-tauri/src/commands/entity_creation/agent_matrix.rs	let workgroup = original_path
@@ -1466,7 +1466,7 @@ P1-comment	src-tauri/src/commands/entity_creation/team_delete.rs	// workgroups a
 P0-identifier	src-tauri/src/commands/entity_creation/team_delete.rs	for wg_name in &report.removed_workgroups {
 P0-identifier	src-tauri/src/commands/entity_creation/team_delete.rs	.remove_workgroup(project_name, wg_name);
 P1-comment	src-tauri/src/commands/entity_creation/workgroup_delete.rs	/// Delete a single workgroup directory from {project_path}/.ac/{wg_name}/
-P1-comment	src-tauri/src/commands/entity_creation/workgroup_delete.rs	/// Project-only gated workgroup-delete primitive (#1063, plan sections 5.4/6.3).
+P1-comment	src-tauri/src/commands/entity_creation/workgroup_delete.rs	/// Project-only gated workgroup-delete primitive (plan sections 5.4/6.3).
 P1-comment	src-tauri/src/commands/entity_creation/workgroup_delete.rs	/// workgroup config scope when the logical path was removed (`Deleted`/`Partial`),
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup_delete.rs	pub(crate) fn gated_workgroup_delete_with(
 P0-identifier	src-tauri/src/commands/entity_creation.rs	workgroup_name: &str,
@@ -1482,11 +1482,11 @@ P0-identifier	src-tauri/src/commands/entity_creation.rs	gated_workgroup_delete_w
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup_delete.rs	&workgroup,
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup_delete.rs	delete_workgroup_dir_backend_with_outcome(
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup_delete.rs	&workgroup_name,
-P1-comment	src-tauri/src/commands/entity_creation/workgroup_delete.rs	// (#621) Drop the workgroup's coordinator_clocks keys from the in-memory store
+P1-comment	src-tauri/src/commands/entity_creation/workgroup_delete.rs	// Drop the workgroup's coordinator_clocks keys from the in-memory store
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup_delete.rs	crate::config::coordinator_clocks::remove_workgroup_in_state(
 P4-log	src-tauri/src/commands/entity_creation/workgroup_delete.rs	"[entity_creation] Deleted workgroup: {} (force={})",
 P4-log	src-tauri/src/commands/entity_creation.rs	workgroup_name,
-P1-comment	src-tauri/src/commands/entity_creation/workgroup_delete.rs	// #1063: production `delete_workgroup` now runs the delete under the project gate
+P1-comment	src-tauri/src/commands/entity_creation/workgroup_delete.rs	// Production `delete_workgroup` now runs the delete under the project gate
 P1-comment	src-tauri/src/commands/entity_creation/workgroup_delete.rs	// via `gated_workgroup_delete_with` and interprets the outcome with
 P1-comment	src-tauri/src/commands/entity_creation/workgroup_delete.rs	// `delete_workgroup_dir_backend_with_outcome`, so this ungated convenience wrapper
 P0-identifier	src-tauri/src/commands/entity_creation/workgroup_delete.rs	pub(crate) async fn delete_workgroup_dir_backend(
@@ -1522,7 +1522,7 @@ P4-log	src-tauri/src/commands/entity_creation.rs	"[entity_creation] Renamed work
 P4-log	src-tauri/src/commands/entity_creation/workgroup_delete.rs	User-visible WG is gone; orphan remains on disk.",
 P1-comment	src-tauri/src/commands/entity_creation/room_number.rs	/// post-allocate `wg_dir.exists()` guard in `create_workgroup` will
 P1-comment	src-tauri/src/commands/entity_creation/room_number.rs	// A `0` may end up in `taken` (from a stray `wg-0-{team}`) but is never
-P2-fixture	src-tauri/src/commands/entity_creation/tests.rs	//! `delete_workgroup` helper added in the #113 follow-up dispatch, plus
+P2-fixture	src-tauri/src/commands/entity_creation/tests.rs	//! `delete_workgroup` helper added in a follow-up dispatch, plus
 P2-fixture	src-tauri/src/commands/entity_creation.rs	let wg_dir = ac_root.join("wg-1-dev-team");
 P2-fixture	src-tauri/src/commands/entity_creation.rs	"proj-a:wg-1-dev-team/dev-rust",
 P2-fixture	src-tauri/src/commands/entity_creation/tests/matrix_layout.rs	std::fs::create_dir_all(&wg_dir).expect("workgroup");
@@ -2420,7 +2420,7 @@ P2-fixture	src-tauri/src/config/teams/tests.rs	// Non-WG (origin) path: falls ba
 P2-fixture	src-tauri/src/config/teams/tests.rs	let cwd = "C:/repos/proj-a/.ac/wg-1-devs/__agent_alice/some/deep/subdir";
 P2-fixture	src-tauri/src/config/teams/tests.rs	let cwd = r"\\?\C:\repos\proj-a\.ac\wg-1-devs\__agent_alice";
 P2-fixture	src-tauri/src/config/teams/tests.rs	let cwd = "C:/.ac/repos/proj-a/.ac/wg-1-devs/__agent_alice";
-P2-fixture	src-tauri/src/config/teams/tests.rs	// ── #516 workgroup_and_agent_from_path ──
+P2-fixture	src-tauri/src/config/teams/tests.rs	// ── workgroup_and_agent_from_path ──
 P2-fixture	src-tauri/src/config/teams/tests.rs	fn workgroup_and_agent_from_path_wg_replica() {
 P2-fixture	src-tauri/src/config/teams/tests.rs	let cwd = "C:/repos/proj-a/.ac/wg-5-dev-team/__agent_dev-rust";
 P2-fixture	src-tauri/src/config/teams/tests.rs	workgroup_and_agent_from_path(cwd),
@@ -2538,7 +2538,7 @@ P2-fixture	src-tauri/src/config/teams/tests/walker_discovery.rs	assert_eq!(ident
 P2-fixture	src-tauri/src/config/teams/tests/walker_discovery.rs	/// the outer workgroup.
 P2-fixture	src-tauri/src/config/teams/tests/walker_discovery.rs	Some("nested-proj:wg-2-team/inner2".to_string())
 P1-comment	src-tauri/src/restore/native.rs	// §DR2: use `agent_fqn_from_path` so WG replicas get project-precise
-P1-comment	src-tauri/src/app_run.rs	// (#621) Conservative backstop: drop clock keys for workgroups confirmed gone
+P1-comment	src-tauri/src/app_run.rs	// Conservative backstop: drop clock keys for workgroups confirmed gone
 P0-identifier	src-tauri/src/app_run.rs	crate::config::coordinator_clocks::prune_orphaned_workgroups_and_persist(
 P1-comment	src-tauri/src/app_run/setup.rs	// workgroups AND caps the unbounded-growth secondary finding. Robust +
 P0-identifier	src-tauri/src/lib.rs	commands::entity_creation::create_workgroup,
@@ -2575,7 +2575,7 @@ P1-comment	src-tauri/src/phone/mailbox/notice.rs	/// `<wg-*>` → `<workspace>` 
 P1-comment	src-tauri/src/phone/mailbox/notice.rs	/// `__agent_* -> wg-* -> <workspace> -> <project>` walk-up is delegated to
 P1-comment	src-tauri/src/phone/mailbox/notice.rs	// canon = <project>/<workspace>/wg-*/__agent_*/<local-dir>/outbox/<file>.json
 P1-comment	src-tauri/src/phone/mailbox/handoff.rs	/// per path component plus its own handle work, roughly 14 syscalls for a WG
-P1-comment	src-tauri/src/phone/mailbox/handoff.rs	/// (#885) Bulk purge of the caller's own workgroup. Dispatched pre-routing,
+P1-comment	src-tauri/src/phone/mailbox/handoff.rs	/// Bulk purge of the caller's own workgroup. Dispatched pre-routing,
 P0-wire	src-tauri/src/phone/mailbox/handoff.rs	pub(crate) const PURGE_WG_ACTION: &str = "purge-wg";
 P4-log	src-tauri/src/phone/mailbox/settle.rs	"[mailbox] wake: resolved WG agent path from sibling session: {}",
 P1-comment	src-tauri/src/phone/mailbox.rs	// ── (#885) purge-wg gate types and pure evaluator ──────────────────────
@@ -2583,13 +2583,13 @@ P1-comment	src-tauri/src/phone/mailbox/wake_workers.rs	// One bounded startup sw
 P1-comment	src-tauri/src/phone/mailbox/outbox_auth.rs	// §AR2-norm D1-a augmentation: when the outbox file lives under a WG-replica
 P1-comment	src-tauri/src/phone/mailbox/outbox_auth.rs	// layout (`<project>/<workspace>/wg-*/__agent_*/<local-dir>/outbox/<file>.json`),
 P1-comment	src-tauri/src/phone/mailbox/outbox_auth.rs	// WG-peer FQNs written by `cli::send` (which performs the symmetric walk-up
-P1-comment	src-tauri/src/phone/mailbox/outbox_auth.rs	// (#885 F-7) `purge-wg` dispatches pre-routing, after the anti-spoof block.
+P1-comment	src-tauri/src/phone/mailbox/outbox_auth.rs	// (F-7) `purge-wg` dispatches pre-routing, after the anti-spoof block.
 P1-comment	src-tauri/src/phone/mailbox/outbox_auth.rs	// resolve against ANY workgroup on disk. Root has no workgroup.
 P1-comment	src-tauri/src/phone/mailbox/outbox_auth.rs	// branch uses (settings + the outbox file's WG-replica project
 P4-log	src-tauri/src/phone/mailbox.rs	"[context-alert] delivered coordinatorSession={} project={} workgroup={} member={} observed={} thresholds={:?}",
 P4-log	src-tauri/src/phone/mailbox.rs	notice.workgroup,
 P1-comment	src-tauri/src/phone/mailbox.rs	// ── (#885) purge-wg ──────────────────────────────────────────────────
-P1-comment	src-tauri/src/phone/mailbox/session_request.rs	/// (#885) Handle `purge-wg`: purge every peer in the caller's own workgroup.
+P1-comment	src-tauri/src/phone/mailbox/session_request.rs	/// Handle `purge-wg`: purge every peer in the caller's own workgroup.
 P1-comment	src-tauri/src/phone/mailbox/session_request.rs	// 2. Resolve WG scope and authorization, one call (§3.6).
 P0-identifier	src-tauri/src/phone/mailbox.rs	let wg = match crate::config::teams::verified_wg_coordinator_target(
 P0-identifier	src-tauri/src/phone/mailbox/session_request.rs	Some(wg) => wg,
@@ -2835,13 +2835,13 @@ P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/resource.rs	const REQUESTER
 P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/resource.rs	const TARGET: &str = "project:wg-1-team/member";
 P0-identifier	src-tauri/src/resource_monitor/registry.rs	workgroup: Option<String>,
 P0-identifier	src-tauri/src/resource_monitor/registry.rs	self.metadata.workgroup.clone(),
-P1-comment	src-tauri/src/resource_monitor/registry.rs	// #559 (H3) - a relaunch of the same wg/role must not leave its prior
+P1-comment	src-tauri/src/resource_monitor/registry.rs	// (H3) - a relaunch of the same wg/role must not leave its prior
 P1-comment	src-tauri/src/resource_monitor/registry.rs	// unrelated non-WG launches (workgroup = agent = None) are never merged.
 P0-identifier	src-tauri/src/resource_monitor/registry.rs	if workgroup.is_some() || agent.is_some() {
 P0-identifier	src-tauri/src/resource_monitor/registry.rs	&& g.workgroup == workgroup
 P1-comment	src-tauri/src/resource_monitor/registry.rs	// the same wg/role never dedup against each other's Terminated
 P1-comment	src-tauri/src/resource_monitor/registry.rs	// row. PREDICATE only; the gate above stays (wg|agent) so
-P1-comment	src-tauri/src/resource_monitor/registry.rs	// unrelated non-WG launches are never merged (preserves #559).
+P1-comment	src-tauri/src/resource_monitor/registry.rs	// unrelated non-WG launches are never merged.
 P0-identifier	src-tauri/src/resource_monitor/registry.rs	workgroup,
 P0-identifier	src-tauri/src/resource_monitor/registry/snapshot.rs	workgroup: group.workgroup.clone(),
 P2-fixture	src-tauri/src/resource_monitor/registry.rs	workgroup: None,
