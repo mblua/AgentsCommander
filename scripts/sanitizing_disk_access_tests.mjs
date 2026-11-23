@@ -1,4 +1,4 @@
-// #4014 gate 07 receiver_disk_sites matrix. Node built-ins only: each batch runs the gate
+// Gate 07 receiver_disk_sites matrix. Node built-ins only: each batch runs the gate
 // in a child process on in-memory trees, so no gate or shared-test internals are imported.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -253,7 +253,7 @@ test('07r direct calls, unsupported receivers and malformed input keep their ver
   assert.equal(unknown.approximation.head.sites, 1);
 });
 
-// #4025 extends only the local shapes above; old immediate and parameter controls remain.
+// Extends only the local shapes above; old immediate and parameter controls remain.
 const localC = 'std::path::Path::new("x")';
 const localP = 'p.join("x")';
 function localSource(seed, prefix = '', call = 'q.exists();', declaration = 'let q') {

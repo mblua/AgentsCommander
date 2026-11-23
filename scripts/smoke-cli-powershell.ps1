@@ -51,7 +51,7 @@ function Write-CaseLogs {
 }
 
 # Bug-reproducing harness: spawn a fresh PowerShell process with -NonInteractive -NoProfile
-# and run the AC exe via a direct call. This is the mandatory issue #129 shape.
+# and run the AC exe via a direct call. This is the mandatory shape.
 function Invoke-PSNonInteractiveDirect {
     param(
         [Parameter(Mandatory=$true)] [string]$ShellPath,
@@ -107,7 +107,7 @@ function Invoke-PSNonInteractiveDirect {
     }
 }
 
-# #1596: Git Bash is the required AC CLI carrier on Windows. bash.exe is
+# Git Bash is the required AC CLI carrier on Windows. bash.exe is
 # console-subsystem, so the outer PowerShell waits for it, captures its stdout,
 # AND propagates its exit code ($LASTEXITCODE) — which the GUI-subsystem AC
 # binary cannot provide through a bare PS `&` (see Invoke-BinaryDirect and the
@@ -217,7 +217,7 @@ function Invoke-BashRouted {
 # powershell.exe and pwsh.exe.
 #
 # Forcing a wait with a pipeline would work, but it routes stdout through PowerShell's
-# formatter, which is exactly the raw passthrough the issue #129 cases exist to check. So the
+# formatter, which is exactly the raw passthrough the smoke cases exist to check. So the
 # exit code is asserted here instead, and the shell-wrapped case keeps its stream assertions
 # untouched. Do not move this back inside the wrapper.
 function Invoke-BinaryDirect {
@@ -528,7 +528,7 @@ if (-not [string]::IsNullOrWhiteSpace($r1.Stdout)) {
     }
 }
 
-# Test 1b (#1596): same list-peers through the Git Bash carrier. Here the exit
+# Test 1b: same list-peers through the Git Bash carrier. Here the exit
 # code IS observable — bash.exe is console-subsystem, so $LASTEXITCODE
 # propagates out of the outer PowerShell — which the direct GUI-child case
 # above intentionally cannot assert. Missing bash.exe is an accepted SKIP.

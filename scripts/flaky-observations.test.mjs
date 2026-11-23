@@ -515,7 +515,7 @@ test('cargo 19: captured-output failures block is not a name list', () => {
   });
 });
 
-// Real libtest logs (local cargo test, #4527 P03 test 20), lines verbatim.
+// Real libtest logs (local cargo test, P03 test 20), lines verbatim.
 const REAL_STORE_LOG = [
   '   Compiling agentscommander v0.47.0 (D:\\0_repos\\AgentsCommander_iac\\.ac' +
     '\\room-43-ac-fixer-dev-team-v1\\repo-AgentsCommander\\src-tauri)',
