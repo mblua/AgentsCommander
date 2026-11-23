@@ -318,7 +318,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1193. The two labels name each other's concept, so both renames have to hold at once:
+   * The two labels name each other's concept, so both renames have to hold at once:
    * asserting all three strings in one test makes a half-applied swap -- which would leave
    * two controls labelled AGENT -- fail. The assertions read the source casing because
    * `text-transform: uppercase` is a paint-time rule jsdom does not apply to `textContent`.
@@ -843,7 +843,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1196 REVERSES what this test used to pin, deliberately.
+   * REVERSES what this test used to pin, deliberately.
    *
    * It used to assert that a failed subscribe stopped the mount where it stood
    * (`get_watcher_activity` length 0). That invariant is the defect: the arming of the poll
@@ -1117,7 +1117,7 @@ describe("the activity poll chain (#1188)", () => {
    * `installBrowserDomStubs` stubs `requestAnimationFrame` with a real `setTimeout`, which
    * under fake timers would never run. There is no `requestAnimationFrame` in `src/watchers/`.
    *
-   * #1196 raised it from 50. Bounding all eight mount awaits adds microtask hops per step --
+   * Raised it from 50. Bounding all eight mount awaits adds microtask hops per step --
    * `Promise.race` attaches a `then`, `.finally()` is specified as a `then` whose handler
    * returns `Promise.resolve(x).then(...)`, and each `step` async frame adds its own -- which
    * puts the mount over the old 50 and failed T1, T2, T3 and T6 at their FIRST assertion,

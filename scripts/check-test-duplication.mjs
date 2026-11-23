@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * #2155 - new test-code duplication gate.
+ * New test-code duplication gate.
  *
  * `npm run dup:changed` runs `jscpd` over the test files `.jscpd.json`
- * matches, scoped to new code: the 148 baseline clones recorded by #2155 do
+ * matches, scoped to new code: the 148 baseline clones recorded earlier do
  * not fail, but a PR that edits inside one of them or adds a new clone does.
  *
  * The duplicated-code decisions are jscpd's; this script only resolves inputs
@@ -14,7 +14,7 @@
  * - `--fail-on-empty` makes a scan of zero sources red instead of a warning.
  * - `--no-gitignore` keeps an ignore entry from silently shrinking the scan.
  *
- * The scan set is an explicit file list from git (#4115): `git ls-files
+ * The scan set is an explicit file list from git: `git ls-files
  * --cached --others --exclude-standard` over the config's `pattern`, minus
  * files missing from disk. Tracked files are listed even under a gitignored
  * path, untracked new tests are listed unless ignored, and only untracked
@@ -283,7 +283,7 @@ export async function runGate({
 }
 
 // ---------------------------------------------------------------------------
-// Self-test (#2155 plan section 5). Builds real temporary git repositories
+// Self-test (plan section 5). Builds real temporary git repositories
 // under os.tmpdir(), runs the shipped gate against them through the
 // { workRoot, baseRef } seam, and asserts the exit code plus the sources /
 // clones / new-clone counts from a parallel `--reporters json` run.
@@ -728,7 +728,7 @@ export async function runSelfTest() {
     });
     expectContains('--no-gitignore output', withFlagMeasured.stderr, 'found 2 new clones');
 
-    // #4115: the explicit git file list already holds the tracked file, so the
+    // The explicit git file list already holds the tracked file, so the
     // scan set no longer shrinks without the flag; the flag stays as a second
     // guard and this half pins that the list alone keeps the file.
     const flags = GATE_FLAGS.filter((flag) => flag !== '--no-gitignore');

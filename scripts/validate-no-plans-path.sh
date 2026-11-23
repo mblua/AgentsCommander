@@ -4,7 +4,7 @@
 # .github/workflows/validate-no-plans-path.yml (server, authoritative).
 #
 # Plans live in the AgentsCommander shared plans directory (`.ac/plans`), not in this
-# repository. See issue #2183: `/plans/` was in .gitignore while 105 files were tracked,
+# repository. Background: `/plans/` was in .gitignore while 105 files were tracked,
 # because .gitignore never applies to an already-tracked path and `git add -f` bypasses it
 # for new ones. This reads the git index, so neither loophole hides a violation.
 #

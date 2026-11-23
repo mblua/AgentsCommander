@@ -46,9 +46,9 @@ pub(super) async fn spawn_fixture_wake_session<S: MailboxHost>(
     }
 
     let spawn_is_coordinator = *hooks.spawn_is_coordinator.lock().unwrap();
-    // #2411 Mirror production create: the coordinator clear runs before the
+    // Mirror production create: the coordinator clear runs before the
     // create can fail, on both the failure and the success path.
-    // #2413 The ticket ends like production: `failed()` on the create error.
+    // The ticket ends like production: `failed()` on the create error.
     {
         let ticket = if spawn_is_coordinator {
             app.begin_coordinator_create(&cwd)

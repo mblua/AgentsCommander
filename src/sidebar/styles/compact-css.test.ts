@@ -28,7 +28,7 @@ const PLAIN_STYLES = ["deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit
 const PLAIN_INLINE = ["border", "border-left", "border-right", "margin", "margin-left", "margin-right"];
 const bannerFor = (style: string): string => `[data-sidebar-style="${style}"] .root-agent-banner`;
 
-// The lift rule names exactly these six, the #2271 dot included; the component
+// The lift rule names exactly these six, the status dot included; the component
 // census that catches a seventh control is phase 9's test 4d.
 const LIFTED = [
   ".root-agent-banner > .session-item-mic-cancel",

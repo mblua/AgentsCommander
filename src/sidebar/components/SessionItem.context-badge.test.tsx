@@ -138,7 +138,7 @@ describe("SessionItem CTX badge (#1033)", () => {
     }
   });
 
-  // Pins the gate at the only place #1033 could break #1031's key-by-id rule: two
+  // Pins the gate at the only place the badge could break the key-by-id rule: two
   // agents share a command, only one configures a pattern.
   it("keys the gate by agent id and never by command", async () => {
     const rendered = await renderRow(

@@ -342,7 +342,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
       expect(text).not.toContain(absent);
     }
     expect(menu.querySelector(".session-context-repo-option")).toBeNull();
-    // No dimmed class, no #4779 title.
+    // No dimmed class, no offline title.
     for (const suffix of [".groups.trigger", ".menu.editTaskTitle", ".menu.clearTaskTitle"]) {
       const item = byId(`${p}${suffix}`) as HTMLButtonElement;
       expect(item.className).not.toContain("context-option-disabled");

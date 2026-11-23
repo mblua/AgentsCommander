@@ -7,14 +7,14 @@
 # (warm-apt-linux), so the package list lives here once.
 #
 # Why: the runners' Ubuntu mirror is sometimes ~400x slower than usual, and a
-# 1-minute install then takes 13-46 minutes (#3190).
+# 1-minute install then takes 13-46 minutes.
 set -euo pipefail
 
 cache="${APT_DEB_CACHE:-$HOME/apt-debs}"
 mkdir -p "$cache/partial"
 
 sudo apt-get update
-# The four original packages are Tauri's own. The rest are the #1842
+# The four original packages are Tauri's own. The rest are the
 # xcap native chain: bindgen needs libclang; system-deps needs the
 # pkg-config metadata for libpipewire-0.3 AND libspa-0.2 (E1 proved
 # libspa-0.2-dev is a SEPARATE package that only arrives

@@ -57,7 +57,7 @@ impl CodingAgentKind {
             Err(_) => return None,
         }
 
-        // #1873 - Muse is a direct-shell-only identity and outranks the legacy
+        // Muse is a direct-shell-only identity and outranks the legacy
         // token scans below, so a Codex-looking argument value such as
         // `muse --workspace /tmp/codex` stays Muse. Wrappers (`env muse`,
         // `cmd /C muse`) never reach here as Muse: the shell is the wrapper.
@@ -101,7 +101,7 @@ impl CodingAgentKind {
     }
 
     /// Stable lowercase name of the CLI, for logs and for keying diagnostics by the
-    /// coding agent that is actually running (#942). Not the configured profile id.
+    /// coding agent that is actually running. Not the configured profile id.
     pub const fn as_str(self) -> &'static str {
         match self {
             CodingAgentKind::Claude => "claude",
@@ -124,8 +124,8 @@ impl CodingAgentKind {
     }
 }
 
-/// #2879 - which activity detector arbitrates a session's busy state. `Timed` is the
-/// pre-#2879 silence clock alone; `CodexWorking` additionally keeps the session busy while
+/// Which activity detector arbitrates a session's busy state. `Timed` is the
+/// earlier silence clock alone; `CodexWorking` additionally keeps the session busy while
 /// Codex's complete `Working (… • esc to interrupt)` indicator is visible. Selected per
 /// profile only: reverting `CODEX_PROFILE` to `Timed` reverts the feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,32 +148,32 @@ pub struct IdleTuning {
     /// Grace window after a resize during which PTY output is treated as
     /// prompt-repaint noise and does NOT reset the idle timer.
     pub resize_grace: Duration,
-    /// #260 BUG FIX. When `true`, `IdleDetector::register_session` seeds
+    /// BUG FIX. When `true`, `IdleDetector::register_session` seeds
     /// `activity[id] = Instant::now()` at PTY spawn. Without this seed, a
     /// session whose entire visible output is suppressed (resize grace) or
     /// escape-only (SKIPPED) is never inserted into the detector's `activity`
     /// map, so the watcher thread — which only iterates `activity` — never
     /// evaluates it and `mark_idle` never fires. See plan §1.
     pub seed_initial_activity: bool,
-    /// #2124 - byte total at which a pending output burst is confirmed as real
+    /// Byte total at which a pending output burst is confirmed as real
     /// work. `0` (or a zero `burst_window`) disables the filter for this
-    /// session and restores the pre-#2124 behavior exactly. #2156 - ON by
+    /// session and restores the earlier behavior exactly. ON by
     /// default for a recognised coding agent ([`IdleTuning::AGENT_DEFAULT`]);
     /// OFF for a plain shell ([`IdleTuning::DEFAULT`]).
     pub burst_max_bytes: u64,
-    /// #2124 - longest gap a pending burst may keep spanning. A burst still
+    /// Longest gap a pending burst may keep spanning. A burst still
     /// unconfirmed `burst_window` after its first chunk is discarded.
     pub burst_window: Duration,
-    /// #2124 - silence age a chunk must find before it may OPEN a burst
+    /// Silence age a chunk must find before it may OPEN a burst
     /// candidate. Shorter silences count immediately, so input and message
     /// delivery still register right away.
     pub burst_prior_silence: Duration,
-    /// #2879 - the activity detector for this session. Launch overrides only touch the burst
+    /// The activity detector for this session. Launch overrides only touch the burst
     /// fields, so this selector always survives `idle_tuning_for_launch`.
     pub(crate) activity_detector: ActivityDetectorKind,
 }
 
-/// #2124 defaults for an `idleBurst` object that omits a subfield.
+/// Defaults for an `idleBurst` object that omits a subfield.
 const IDLE_BURST_DEFAULT_MAX_BYTES: u64 = 1024;
 const IDLE_BURST_DEFAULT_MAX_SECS: f64 = 3.0;
 const IDLE_BURST_DEFAULT_PRIOR_SILENCE_SECS: f64 = 60.0;
@@ -184,8 +184,8 @@ const IDLE_BURST_MAX_PRIOR_SILENCE_SECS: f64 = 86_400.0;
 impl IdleTuning {
     /// Tuning for a plain shell / unrecognised agent (`idle_tuning_for(None)`).
     /// Also the per-field fallback when a session id is missing from the
-    /// detector's tuning map. Values are identical to the pre-#260
-    /// `idle_detector.rs` constants, with the #2124 burst filter disabled.
+    /// detector's tuning map. Values are identical to the earlier
+    /// `idle_detector.rs` constants, with the burst filter disabled.
     /// A recognised coding agent uses [`IdleTuning::AGENT_DEFAULT`] instead.
     pub const DEFAULT: IdleTuning = IdleTuning {
         idle_threshold: Duration::from_millis(2500),
@@ -197,7 +197,7 @@ impl IdleTuning {
         activity_detector: ActivityDetectorKind::Timed,
     };
 
-    /// #2156 - tuning for a recognised coding agent: `DEFAULT` plus the #2124
+    /// Tuning for a recognised coding agent: `DEFAULT` plus the
     /// burst filter ON by default. Values mirror the `IDLE_BURST_DEFAULT_*`
     /// constants (a test pins the two in sync).
     pub const AGENT_DEFAULT: IdleTuning = IdleTuning {
@@ -208,7 +208,7 @@ impl IdleTuning {
     };
 }
 
-/// #930 - per-coding-agent host credential source for container copy-in.
+/// Per-coding-agent host credential source for container copy-in.
 /// Static data only (all `&'static str`), so it is usable in the `const`
 /// profile table and carries no host-specific paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,13 +224,13 @@ pub struct ContainerCredentialSource {
     /// Container-side config dir relative to the bind-mount root (`host_root`),
     /// e.g. ".claude". Where the file is copied so the container reads it.
     pub container_dir: &'static str,
-    /// #930 - first-run state stamped next to the copied credential so the
+    /// First-run state stamped next to the copied credential so the
     /// agent's interactive TUI actually USES it instead of running its
     /// onboarding wizard. None = nothing is stamped for this agent.
     pub first_run: Option<ContainerFirstRunState>,
 }
 
-/// #930 - container-side first-run state a coding agent needs before its
+/// Container-side first-run state a coding agent needs before its
 /// interactive TUI will use a copied credential. Verified in a real container:
 /// Claude Code gates its onboarding wizard on `hasCompletedOnboarding` in
 /// `$CLAUDE_CONFIG_DIR/.claude.json`, and the folder-trust dialog on
@@ -267,9 +267,9 @@ pub struct CodingAgentProfile {
     /// - Antigravity: `["--continue"]` (prepended)
     /// - Pi: `["--continue"]` (inserted immediately after the executable)
     /// - Muse: `["resume", "--last"]` (appended to an EMPTY configured argv only;
-    ///   any configured argument suppresses injection, #1873)
+    ///   any configured argument suppresses injection)
     pub resume_tokens: &'static [&'static str],
-    /// #930 - host credential file this agent reuses in a container (None = no
+    /// Host credential file this agent reuses in a container (None = no
     /// copy-in for this agent).
     pub container_credential: Option<ContainerCredentialSource>,
     /// Whether generated auto-self-clear instructions are supported for this
@@ -277,8 +277,8 @@ pub struct CodingAgentProfile {
     pub auto_self_clear_supported: bool,
 }
 
-// #2156 - all five agents use `IdleTuning::AGENT_DEFAULT`: the pre-#260
-// hard-coded idle constants plus the #2124 burst filter ON, so a recognised
+// All five agents use `IdleTuning::AGENT_DEFAULT`: the earlier
+// hard-coded idle constants plus the burst filter ON, so a recognised
 // coding agent gets the filter regardless of what the persisted catalog
 // contains. The per-profile `idle` field exists so a future agent can diverge
 // (e.g. a longer `resize_grace` for a heavier TUI) without re-plumbing the
@@ -287,7 +287,7 @@ const CLAUDE_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Claude,
     idle: IdleTuning::AGENT_DEFAULT,
     resume_tokens: &["--continue"],
-    // #930 - verified end-to-end: host ~/.claude/.credentials.json copies to
+    // Verified end-to-end: host ~/.claude/.credentials.json copies to
     // <replica>/.claude/.credentials.json, read in-container as
     // /workspace/.claude/.credentials.json.
     container_credential: Some(ContainerCredentialSource {
@@ -295,7 +295,7 @@ const CLAUDE_PROFILE: CodingAgentProfile = CodingAgentProfile {
         host_dir_env: Some("CLAUDE_CONFIG_DIR"),
         file: ".credentials.json",
         container_dir: ".claude",
-        // #930 - without these, a valid copied token STILL shows the onboarding
+        // Without these, a valid copied token STILL shows the onboarding
         // wizard ("Select login method") and then the folder-trust dialog.
         // Reproduced in a real container; both prompts vanish once they are set.
         first_run: Some(ContainerFirstRunState {
@@ -309,13 +309,13 @@ const CLAUDE_PROFILE: CodingAgentProfile = CodingAgentProfile {
 };
 const CODEX_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Codex,
-    // #2879 - the only profile that selects the Working-indicator detector.
+    // The only profile that selects the Working-indicator detector.
     idle: IdleTuning {
         activity_detector: ActivityDetectorKind::CodexWorking,
         ..IdleTuning::AGENT_DEFAULT
     },
     resume_tokens: &["resume", "--last"],
-    // #930 follow-up (needs CODEX_HOME container wiring verified, Q3):
+    // Follow-up (needs CODEX_HOME container wiring verified, Q3):
     // Some(ContainerCredentialSource { host_dir: ".codex", host_dir_env: Some("CODEX_HOME"),
     //     file: "auth.json", container_dir: ".codex" })
     container_credential: None,
@@ -325,7 +325,7 @@ const ANTIGRAVITY_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Antigravity,
     idle: IdleTuning::AGENT_DEFAULT,
     resume_tokens: &["--continue"],
-    // #930 - no established container credential-file flow for Antigravity.
+    // No established container credential-file flow for Antigravity.
     container_credential: None,
     auto_self_clear_supported: true,
 };
@@ -336,7 +336,7 @@ const PI_PROFILE: CodingAgentProfile = CodingAgentProfile {
     container_credential: None,
     auto_self_clear_supported: false,
 };
-// #1873 - Muse Code. Workspace-latest resume (`muse resume --last`) is injected
+// Muse Code. Workspace-latest resume (`muse resume --last`) is injected
 // only by the trusted empty-argv local macOS/Linux seam in `commands::session`;
 // no container credential flow, no auto-self-clear, no logical PTY submission.
 const MUSE_PROFILE: CodingAgentProfile = CodingAgentProfile {
@@ -356,9 +356,9 @@ pub fn idle_tuning_for(kind: Option<CodingAgentKind>) -> IdleTuning {
     }
 }
 
-/// #2124 - the per-kind tuning plus the session's catalog `idleBurst` filter,
+/// The per-kind tuning plus the session's catalog `idleBurst` filter,
 /// as raw primitives (`maxBytes`, `maxSecs`, `priorSilenceSecs`). `None` (no
-/// catalog object) means NO OVERRIDE and equals `idle_tuning_for`, i.e. #2156
+/// catalog object) means NO OVERRIDE and equals `idle_tuning_for`, i.e. the
 /// leaves the filter ON for a recognised agent and OFF for a plain shell.
 /// Absent, non-finite or negative subfields take the documented defaults;
 /// `maxSecs` is capped at 600 s and `priorSilenceSecs` at 86400 s so

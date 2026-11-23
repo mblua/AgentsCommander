@@ -1954,9 +1954,9 @@ function resolvePathBase(segments, contextSegments, target, tree, ctx) {
     && tree.modules.get(moduleIdFor(target, contextSegments))?.children.has(first)) {
     // Rust 2018 resolves a relative first segment in the current module before
     // the crate root: `use process::X` inside `a::b` with `mod process;` names
-    // `a::b::process`, never a crate-root `process` (#3991). The path resolves
+    // `a::b::process`, never a crate-root `process`. The path resolves
     // against the current module, so the child arc is recorded and a same-name
-    // crate-root module can never receive a false arc (#3998).
+    // crate-root module can never receive a false arc.
     ctx.stats.barePathResolutions++;
     return { base: contextSegments.slice(), rest: segments.slice() };
   }
@@ -4491,7 +4491,7 @@ const FIXTURES = [
     },
   },
   {
-    // The one reachable closure hole, filed as #16: non-test code referencing a
+    // The one reachable closure hole, filed separately: non-test code referencing a
     // #[cfg(test)] mod file module. It does not compile, and this tool does not
     // require the analysed project to compile: a half finished refactor is
     // exactly when someone runs a dependency tool.
@@ -4730,7 +4730,7 @@ const FIXTURES = [
     },
   },
   {
-    // #3991: rustc resolves `x` inside `a` to its child `a::x`, not to `crate::x`.
+    // Rustc resolves `x` inside `a` to its child `a::x`, not to `crate::x`.
     name: 'F44 child use path never binds to a same-name crate-root module',
     files: Object.fromEntries([
       ['lib.rs', 'mod a;\nmod x;\n'],
@@ -4744,7 +4744,7 @@ const FIXTURES = [
     },
   },
   {
-    // #3995: compound predicates that provably require test exclude declared
+    // Compound predicates that provably require test exclude declared
     // file modules like direct cfg(test). Every gate here except multi was
     // missed by the old direct-only rule.
     name: 'F45 compound test cfg excludes file modules and their arcs',

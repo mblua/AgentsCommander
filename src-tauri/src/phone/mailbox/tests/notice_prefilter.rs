@@ -1,7 +1,7 @@
 use super::*;
 use crate::session::profile::IdleTuning;
 
-/// #1682 - both privileged planes cancel a standing control-write mark when
+/// Both privileged planes cancel a standing control-write mark when
 /// they arm a turn: (a) the injection funnel, which clears through
 /// `commands::pty::clear_control_write_mark`, and (b) the exact-agent-input
 /// boundary, which clears through `IdleDetector::clear_control_write` directly.
@@ -381,7 +381,7 @@ async fn issue_2113_case_differing_project_segment_destroys_exited_orchestrator(
     assert!(matches!(events[2], MailboxTestEvent::Inject(_)));
 }
 
-/// #2129 - T5: a qualified base reaches the sentence unchanged. The value
+/// T5: a qualified base reaches the sentence unchanged. The value
 /// is a literal here on purpose: `render_with_template` is pure token
 /// substitution, so this half cannot depend on how the field was produced.
 #[test]
@@ -440,7 +440,7 @@ fn issue_2129_branch_stale_line_renders_a_qualified_base() {
     assert_eq!(counterpart.matches("main").count(), 1);
 }
 
-// ── #2232 phase 7: the Co-managed origin, end to end ──────────────────
+// ── Phase 7: the Co-managed origin, end to end ──────────────────
 
 fn comanaged_origin_message(
     id: &str,
@@ -699,7 +699,7 @@ async fn assert_comanaged_sweep_rejects_privileged_pty(
     assert!(hooks.inject_calls.lock().unwrap().is_empty());
 }
 
-// #2716 (B3, option C) - rows E35, E36 and E38 of the phase plan.
+// (B3, option C) - rows E35, E36 and E38 of the phase plan.
 
 fn b3_unreadable(path: &Path) -> crate::config::settings::AgentsLayerState {
     crate::config::settings::AgentsLayerState::Unreadable {
@@ -821,7 +821,7 @@ fn the_provenance_read_is_exempt_from_the_refusal() {
     );
 }
 
-/// #2786 (C1) - the PTY-input state read keeps the config.json guard.
+/// (C1) - the PTY-input state read keeps the config.json guard.
 #[test]
 fn guarded_agent_state_read_rejects_unsafe_input() {
     use crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME;

@@ -1,4 +1,4 @@
-// #4527 P06: daily collector. Reads flaky observation artifacts of finished
+// P06: daily collector. Reads flaky observation artifacts of finished
 // `PR regression gates` runs, updates the 30-day history and writes the rate report.
 // All GitHub access goes through `flaky-github.mjs`.
 import fs from 'node:fs';

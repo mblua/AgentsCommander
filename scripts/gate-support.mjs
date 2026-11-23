@@ -1,4 +1,4 @@
-// Shared by the #2447 gates (check-module-arcs.mjs, check-module-cycles.mjs): the real detector
+// Shared by the module gates (check-module-arcs.mjs, check-module-cycles.mjs): the real detector
 // runner and the self-test loop.
 
 import { spawn } from 'node:child_process';

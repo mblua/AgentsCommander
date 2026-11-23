@@ -52,7 +52,7 @@ const ALLOWED_IMPORTS: Record<string, string[]> = {
 };
 
 /** Assertion 2: ContextMenuSurface is private to the folder. Two siblings,
- *  SessionRowMenu and #2143's SelectionCopyMenu; the surface test is black-box
+ *  SessionRowMenu and SelectionCopyMenu; the surface test is black-box
  *  through SessionRowMenu and imports nothing named ContextMenuSurface. */
 const ALLOWED_SURFACE_IMPORTERS = [
   "sidebar/components/context-menu/SelectionCopyMenu.tsx",

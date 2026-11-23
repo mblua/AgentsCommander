@@ -1,4 +1,4 @@
-// #4527 P05: rolling 30-day flaky history and the rate report. Pure module: no fs, no
+// P05: rolling 30-day flaky history and the rate report. Pure module: no fs, no
 // network. Callers (P06) read and write the files and pass text and dates in.
 
 export const WINDOW_DAYS = 30;

@@ -537,7 +537,7 @@ async fn accumulate_live_busy_session_stays_pending_and_survives() {
 
 /// AC-12 (mandatory) - a successful Fresh restart delivers into the new
 /// session. `fresh_at_spawn` is captured BEFORE the inject can clear it;
-/// the post-delivery clear is asserted separately (#756).
+/// the post-delivery clear is asserted separately.
 #[tokio::test]
 async fn fresh_live_restart_delivers_with_a_fresh_conversation() {
     let (_tmp, config, project, replica) = loop_delivery_fixture();
@@ -627,7 +627,7 @@ async fn fresh_live_restart_delivers_with_a_fresh_conversation() {
         .await;
 }
 
-/// #2733 T-B1 - an unresolved target is its own kind, never a session.
+/// T-B1 - an unresolved target is its own kind, never a session.
 #[tokio::test]
 async fn issue_2733_missing_room_reports_target_unresolved() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -660,7 +660,7 @@ async fn issue_2733_missing_room_reports_target_unresolved() {
     assert_eq!(report.target, None);
 }
 
-/// #2733 T-B9 - real delivery: unresolved while the room is away, then a
+/// T-B9 - real delivery: unresolved while the room is away, then a
 /// real spawn + inject once the room appears again.
 #[tokio::test]
 async fn issue_2733_real_delivery_resumes_after_room_appears() {
