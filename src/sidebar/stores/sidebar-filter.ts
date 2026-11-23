@@ -1,4 +1,4 @@
-// #4785 - the one sidebar regex filter. Module-level state shared by the
+// The one sidebar regex filter. Module-level state shared by the
 // Temporary Rooms header (which renders the control) and every project panel.
 import { createMemo, createRoot, createSignal } from "solid-js";
 

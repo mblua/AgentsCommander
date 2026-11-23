@@ -22,7 +22,7 @@ export function formatReplicaRepoBadgeLabel(repo: Pick<SessionRepo, "label" | "b
   return repo.branch ? `${repo.label}/${repo.branch}` : repo.label;
 }
 
-/** #2064 — the CI and staleness suffixes on the repo chip's tooltip. Only `running`
+/** The CI and staleness suffixes on the repo chip's tooltip. Only `running`
  *  CI adds text: `idle` and `unknown` are both SILENT on purpose (no `gh`, feature
  *  off, not yet swept, or a default branch that suppresses its answers), and the
  *  payload carries no suppression reason that could tell them apart. */

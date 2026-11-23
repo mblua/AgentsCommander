@@ -23,7 +23,7 @@ export function buildSnapshot(): NonStopReport[] {
     const members = project.workgroups.filter((wg) => nonStopMatchesWorkgroup(ns, wg));
     const total = members.length;
     if (total === 0) continue; // empty group, no disparity possible
-    // #2202 - a room whose repo is running CI is working: alerting about it would
+    // A room whose repo is running CI is working: alerting about it would
     // be a false alarm. `NonStopReport`'s field names and the Rust consumer are
     // unchanged.
     const { active, notActive } = splitRoomsByActive(project.path, members);
