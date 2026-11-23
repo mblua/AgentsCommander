@@ -397,6 +397,51 @@ impl CapabilityInventory {
         }
         self.site(&format!("literal:{ty}:{site}:test={}", self.test));
     }
+
+    fn inspect_sealed(&mut self, name: &str, node: &syn::ItemStruct) {
+        if self.file != DOMAIN {
+            self.reject("capability definition outside domain");
+        }
+        for field in &node.fields {
+            let field_name = field
+                .ident
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            if !matches!(field.vis, syn::Visibility::Inherited) {
+                self.reject(&format!("nonprivate field {name}.{field_name}"));
+            }
+            if name == "NonWritingRouteProof" && self.has_writing_authority(&field_name, field) {
+                self.reject("nonwriting proof has writing authority");
+            }
+        }
+        for attr in &node.attrs {
+            if !attr.path().is_ident("derive") {
+                continue;
+            }
+            let paths = attr
+                .parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+                )
+                .expect("derive paths");
+            for path in paths {
+                if ["Clone", "Copy", "Default"].contains(&self.path_type(&path).as_str()) {
+                    self.reject("authority derive");
+                }
+            }
+        }
+    }
+
+    fn has_writing_authority(&self, field_name: &str, field: &syn::Field) -> bool {
+        let mut field_types = TypePaths::default();
+        field_types.visit_type(&field.ty);
+        ["writer", "input", "token"]
+            .iter()
+            .any(|word| field_name.contains(word))
+            || ["RawPtyWriter", "PtyInputPermit", "BackendWriteAuthority"]
+                .iter()
+                .any(|word| field_types.0.iter().any(|name| self.resolve(name) == *word))
+    }
 }
 
 impl<'ast> Visit<'ast> for CapabilityInventory {
@@ -439,53 +484,7 @@ impl<'ast> Visit<'ast> for CapabilityInventory {
             self.site("adapter-definition");
         }
         if SEALED.contains(&name.as_str()) {
-            if self.file != DOMAIN {
-                self.reject("capability definition outside domain");
-            }
-            for field in &node.fields {
-                if !matches!(field.vis, syn::Visibility::Inherited) {
-                    self.reject(&format!(
-                        "nonprivate field {name}.{}",
-                        field
-                            .ident
-                            .as_ref()
-                            .map(ToString::to_string)
-                            .unwrap_or_default()
-                    ));
-                }
-                if name == "NonWritingRouteProof" {
-                    let field_name = field
-                        .ident
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_default();
-                    let mut field_types = TypePaths::default();
-                    field_types.visit_type(&field.ty);
-                    if ["writer", "input", "token"]
-                        .iter()
-                        .any(|word| field_name.contains(word))
-                        || ["RawPtyWriter", "PtyInputPermit", "BackendWriteAuthority"]
-                            .iter()
-                            .any(|word| {
-                                field_types.0.iter().any(|name| self.resolve(name) == *word)
-                            })
-                    {
-                        self.reject("nonwriting proof has writing authority");
-                    }
-                }
-            }
-            for attr in &node.attrs {
-                if attr.path().is_ident("derive") {
-                    let paths = attr.parse_args_with(
-                        syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated)
-                        .expect("derive paths");
-                    for path in paths {
-                        if ["Clone", "Copy", "Default"].contains(&self.path_type(&path).as_str()) {
-                            self.reject("authority derive");
-                        }
-                    }
-                }
-            }
+            self.inspect_sealed(&name, node);
         }
         visit::visit_item_struct(self, node);
     }

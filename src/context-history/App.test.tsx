@@ -32,7 +32,7 @@ vi.mock("../shared/platform", () => ({
   isWindows: false,
 }));
 
-// #3532 P06 - the history view renders backend numbers as served, separates
+// The history view renders backend numbers as served, separates
 // loading, empty and error, and keeps keyboard and narrow-layout affordances.
 
 const NOW = 30 * 86_400_000;
@@ -145,7 +145,7 @@ const changesResponse = {
 
 const WINDOWS = [25, 100, 300];
 
-/** #4091 The App reads the configured session windows before any history query. */
+/** The App reads the configured session windows before any history query. */
 function serveSettings(fake: FakeTransport, windows: number[] | null = WINDOWS) {
   const snapshot = settingsSnapshot(windows ? { contextHistorySessionWindows: windows } : {});
   if (!windows) delete snapshot.contextHistorySessionWindows;
@@ -506,7 +506,7 @@ describe("ContextHistoryApp", () => {
   });
 });
 
-// #3532 P18 - options keep a plain UTF-16 code-unit order (Sonar S2871), and
+// Options keep a plain UTF-16 code-unit order (Sonar S2871), and
 // the region's Escape listener is a native one with a clean lifecycle (S6847).
 describe("ContextHistoryApp P18 order and Escape lifecycle", () => {
   let cleanup: (() => void) | undefined;

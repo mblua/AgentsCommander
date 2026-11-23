@@ -19,13 +19,13 @@ const [frozenCoordinatorVisibleOrderByProject, setFrozenCoordinatorVisibleOrderB
 // an older wholesale list snapshot, even when the local membership is unchanged.
 let rowMembershipGeneration = 0;
 
-// #1779 - the counter advances on every setSessionWaiting call. A reconciliation
+// The counter advances on every setSessionWaiting call. A reconciliation
 // that read the backend session list BEFORE an edge landed must not apply its
 // stale snapshot on top of the fresher edge, so it captures this value before its
 // await and compares it exactly once after.
 let waitingEdgeGeneration = 0;
 
-// #1856 - the same shape for communication: the sidebar's notice is fed only by
+// The same shape for communication: the sidebar's notice is fed only by
 // session_communication_changed, so a reconciliation from the polled list must
 // not apply a snapshot that an edge already superseded.
 let communicationGeneration = 0;
@@ -61,7 +61,7 @@ function installSidebarMenuLockObserver(): void {
   sidebarMenuLockObserverInstalled = true;
   const observer = new MutationObserver(() => {
     if (typeof document === "undefined") {
-      observer.disconnect(); // #2504 - jsdom teardown removed `document`
+      observer.disconnect(); // jsdom teardown removed `document`
       return;
     }
     updateSidebarMenuOpen(
@@ -72,7 +72,7 @@ function installSidebarMenuLockObserver(): void {
 }
 installSidebarMenuLockObserver();
 
-// #2271 - types.ts is not widened for this field, so the sidecar is part of the
+// types.ts is not widened for this field, so the sidecar is part of the
 // local store type only; every reader goes through `comanagedBySessionId`.
 type SessionsStateWithComanaged = SessionsState & {
   comanagedBySessionId: Record<string, boolean>;
@@ -98,16 +98,16 @@ const [state, setState] = createStore<SessionsStateWithComanaged>({
   coordSortByActivity: false,
   lastActivityBySessionId: {},
   contextPercentBySessionId: {},
-  // #2271 - keyed sidecar, deliberately beside contextPercentBySessionId: a
+  // Keyed sidecar, deliberately beside contextPercentBySessionId: a
   // wholesale `state.sessions` replacement in projectStoredSelection cannot
   // touch it, so a list refresh never wipes an event-only Co-managed flag.
   comanagedBySessionId: {},
-  // #2482 - keyed sidecar for the same reason: a list refresh never wipes an
-  // event-only weekly quota reading. Keyed by AGENT id since #2566, which also
+  // Keyed sidecar for the same reason: a list refresh never wipes an
+  // event-only weekly quota reading. Keyed by AGENT id, which also
   // BOUNDS the map by the configured agent count instead of letting it grow
   // with every session id ever seen.
   weeklyQuotaUsedByAgentId: {},
-  // #2568 - keyed by agent (orphanNoticeKey), not session id, so a dismissal
+  // Keyed by agent (orphanNoticeKey), not session id, so a dismissal
   // survives a relaunch of the agent inside one app run. Only the dismiss
   // click writes it; never persisted.
   orphanNoticeDismissedByAgentKey: {},
@@ -401,7 +401,7 @@ export const sessionsStore = {
     // currently present; an older pending list may still contain that ID.
     advanceRowMembershipGeneration();
     projectStoredSelection(state.sessions.filter((session) => session.id !== id));
-    // #2271 - a removed session must not leave its sidecar entry behind, or the
+    // A removed session must not leave its sidecar entry behind, or the
     // event-fed map grows without bound across a long-lived sidebar.
     clearComanagedEntry(id);
     if (state.activeId === id) setState("activeId", null);

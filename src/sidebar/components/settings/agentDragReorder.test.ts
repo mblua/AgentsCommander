@@ -5,7 +5,7 @@ import { type AgentDragReorder, type AgentDragReorderOptions, createAgentDragReo
 import { reorderIndex } from "./agentReorderDnd";
 import { dispatchPointer, stubAgentRowGeometry } from "./agentReorderDnd.testkit";
 
-/** #2594 - the shared drag lifecycle over a hand-built list: a container with
+/** The shared drag lifecycle over a hand-built list: a container with
  *  three 40 px rows, each holding one grip. The factory only returns handlers,
  *  so they are wired to the grip here the way both components' JSX does. */
 describe("createAgentDragReorder", () => {

@@ -427,7 +427,7 @@ describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () =
   });
 });
 
-// #2143 - the COMMAND block reads the shared agent-help resolvers.
+// The COMMAND block reads the shared agent-help resolvers.
 function helpAgent(id: string, label: string, command: string): AgentConfig {
   return { id, label, command, color: "#334155", envs: [], isolatedHome: false };
 }

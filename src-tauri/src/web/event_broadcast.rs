@@ -1,7 +1,7 @@
 //! The dual-transport event emitter: one call reaches both the Tauri windows and
 //! the connected WebSocket clients.
 //!
-//! #1265: this module exists so a Tauri command never has to reach sideways into
+//! This module exists so a Tauri command never has to reach sideways into
 //! the browser command dispatcher just to announce a change. The dispatcher and
 //! `commands::project_settings` both depend downward on this module, which owns
 //! the emitter, so neither of them depends on the other in order to emit.

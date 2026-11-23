@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4843 - the sidebar start asks the sound sink status exactly once.
+// The sidebar start asks the sound sink status exactly once.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SidebarApp from "./App";
 import { checkAudioSink } from "./audio-sink-warning";

@@ -1,4 +1,4 @@
-// #4843 - sound button state, label, the one sink check and the sticky toast.
+// Sound button state, label, the one sink check and the sticky toast.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ tauri: true, getStatus: vi.fn() }));

@@ -16,7 +16,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { clockStore } from "../stores/clock";
 import { automationIdPart } from "./replica-repo-badges";
 
-// #748 — the lost-first-click root cause: volatile events (coordinator clock,
+// The lost-first-click root cause: volatile events (coordinator clock,
 // close markers, repo branch) used to replace every project object reference,
 // so the reference-keyed <For>s disposed and re-created the whole clickable
 // panel DOM. A click whose press straddled that swap never fired (Chromium

@@ -2,7 +2,7 @@ import { toastStore } from "../shared/stores/toasts";
 import type { UpdateInfo } from "../shared/types";
 
 /**
- * #2135 — `navigator.clipboard` is undefined in a non-secure context / a webview
+ * `navigator.clipboard` is undefined in a non-secure context / a webview
  * without the permission, so the property access itself throws SYNCHRONOUSLY,
  * before any promise exists. A dangling `.catch()` would not see it and the
  * TypeError would escape into ToastHost's click handler. try/catch around the
@@ -18,7 +18,7 @@ async function copyUpgradeCommand(command: string): Promise<void> {
 }
 
 /**
- * #609 — build a sticky "npm update available" toaster with per-version dedup.
+ * Build a sticky "npm update available" toaster with per-version dedup.
  *
  * The sidebar subscribes to the `npm_update_available` event BEFORE it snapshots
  * `get_update_status`, so a startup emit fired during mount is never dropped.
@@ -38,7 +38,7 @@ export function createUpdateToaster(): (info: UpdateInfo) => void {
       `Update available: v${info.latestVersion} (you have v${info.currentVersion}). Run: ${info.upgradeCommand}`,
       {
         durationMs: null,
-        // #2135: copying must NOT dismiss the sticky toast — the command stays
+        // Copying must NOT dismiss the sticky toast — the command stays
         // readable, and the copy can be repeated.
         action: {
           label: "Copy",

@@ -292,7 +292,7 @@ describe("room activity observer actual Solid lifecycle", () => {
   });
 });
 
-// #4805 P03 - temp rooms get the same idle confirmation as project rooms.
+// Temp rooms get the same idle confirmation as project rooms.
 describe("room activity - temp rooms", () => {
   const KEY = "agentscommander://temp-rooms";
   const ROOM = { name: "temp-room-tr01", path: "/cfg/temp-room-tr01", unleashed: false };

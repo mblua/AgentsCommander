@@ -58,7 +58,7 @@ interface MountedTitlebar {
 
 const cleanups: Array<() => void> = [];
 
-// --- #1093: always-on leaked zoom-listener tracking (plan §4) -----------------
+// --- Always-on leaked zoom-listener tracking (plan §4) -----------------
 // initZoom (src/shared/zoom.ts:136-137) attaches its wheel/keydown listeners on the
 // shared jsdom `document` only after two awaits. A test truncated mid-initZoom can
 // let that continuation resume later and attach an ORPHAN document listener whose
@@ -400,7 +400,7 @@ describe("Titlebar zoom stepper", () => {
     errorSpy.mockRestore();
   });
 
-  // #1093 — within-test deterministic gate (plan §9.1). Instance-agnostic, so it does
+  // Within-test deterministic gate (plan §9.1). Instance-agnostic, so it does
   // not depend on cross-test timing. Reproduce the 120% compounding with two
   // same-instance listeners, prove the full teardown scrubs the tracked orphan to an
   // empty registry, then show a freshly re-established single listener reads 110%. With
@@ -441,7 +441,7 @@ describe("Titlebar zoom stepper", () => {
     });
   });
 
-  // #1093 — cross-test boundary regression, part 1 of 2 (plan §9.2): this test leaks an
+  // Cross-test boundary regression, part 1 of 2 (plan §9.2): this test leaks an
   // orphan whose cleanup is never captured, modelling a test that timed out mid-initZoom.
   // The boundary scrub must remove it before the sibling test below runs.
   it("leaves a leaked initZoom listener for the boundary scrub to remove (#1093)", async () => {
@@ -452,7 +452,7 @@ describe("Titlebar zoom stepper", () => {
     expect(trackedZoomListeners.size).toBeGreaterThan(0);
   });
 
-  // #1093 — cross-test boundary regression, part 2 of 2 (plan §9.2). Runs immediately
+  // Cross-test boundary regression, part 2 of 2 (plan §9.2). Runs immediately
   // after the leaking test above.
   it("does not carry a leaked initZoom listener into the next test (#1093)", async () => {
     // Deterministic discriminator: the prior test's orphan must have been scrubbed at the
