@@ -1,6 +1,6 @@
 use super::*;
 
-// #529 - filename-based writer (materialize_agent_context_file_with_filename).
+// Filename-based writer (materialize_agent_context_file_with_filename).
 
 #[test]
 fn materialize_with_filename_writes_custom_and_cleans_builtins_and_extra() {
@@ -144,7 +144,7 @@ fn materialize_with_filename_refuses_to_write_through_file_symlink() {
 fn materialize_with_filename_replaces_dir_link_without_touching_target() {
     // G1: AGENTS.md is a DIRECTORY symlink/junction (a reparse point). The
     // writer must remove the link entry (not the target tree) and write a
-    // regular file. Pre-#529 this bricked the launch (remove_file on a dir
+    // regular file. Before the fix this bricked the launch (remove_file on a dir
     // failed -> Err -> "context files missing" + rollback).
     let temp = tempfile::tempdir().expect("tempdir");
     let ac_root = temp.path().join(".ac");

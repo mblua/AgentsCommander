@@ -48,16 +48,16 @@ pub(crate) use overlay::{
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
-/// #2716 (B3) - the two top-level groups that live in `agents.30.instance.no-git.json`
+/// The two top-level groups that live in `agents.30.instance.no-git.json`
 /// instead of the settings file. Serde names, so the file reuses the settings shape.
 pub(crate) const AGENTS_INSTANCE_KEYS: [&str; 2] = ["agents", "codingAgentProfiles"];
 
-/// #2716 (B3) - the agents file sits beside the settings file.
+/// The agents file sits beside the settings file.
 pub(crate) fn agents_instance_path(settings_path: &Path) -> PathBuf {
     settings_path.with_file_name(AGENTS_INSTANCE_FILE_NAME)
 }
 
-/// #2716 (B3) - `Ok(None)` when the file is absent. A file that is unreadable, is not
+/// `Ok(None)` when the file is absent. A file that is unreadable, is not
 /// a JSON object, or holds a group that does not decode as its `AppSettings` field is
 /// an `Err`: callers keep what they have and never replace it.
 pub(crate) fn read_agents_instance_file(path: &Path) -> Result<Option<Map<String, Value>>, String> {
@@ -107,7 +107,7 @@ pub(crate) fn parse_agents_instance_contents(
     Ok(map)
 }
 
-/// #2716 (B3) - the groups `object` actually holds, key by key.
+/// The groups `object` actually holds, key by key.
 pub(crate) fn agents_instance_groups(object: &Map<String, Value>) -> Map<String, Value> {
     AGENTS_INSTANCE_KEYS
         .iter()
@@ -115,7 +115,7 @@ pub(crate) fn agents_instance_groups(object: &Map<String, Value>) -> Map<String,
         .collect()
 }
 
-/// #2716 (B3) - load merge, on the raw base object before the overlay merge: each
+/// Load merge, on the raw base object before the overlay merge: each
 /// group the agents file holds replaces the base object's key. When no source
 /// supplies `agents`, `[]` is inserted, so a deleted or corrupt agents file costs
 /// the agent list and never every other setting. A corrupt file is logged, keeps
@@ -189,7 +189,7 @@ pub(crate) fn merge_agents_instance_groups(
     state
 }
 
-/// #2716 (B3) - writes the agents file through `<name>.<pid>.<op>.tmp`, synced, then
+/// Writes the agents file through `<name>.<pid>.<op>.tmp`, synced, then
 /// replaced onto the destination. The temporary is removed on any failure.
 pub(crate) fn write_agents_instance_file(
     groups: &Map<String, Value>,
@@ -239,7 +239,7 @@ pub(crate) fn write_agents_instance_file(
     result
 }
 
-/// #2716 (B3) - one-shot export of the legacy `agents` and `codingAgentProfiles`
+/// One-shot export of the legacy `agents` and `codingAgentProfiles`
 /// keys still in the settings file. Writes the agents file before anything is
 /// stripped and moves the disk values verbatim; true means "save", and that save
 /// strips the keys. Never overwrites or merges an existing agents file.
@@ -247,7 +247,7 @@ pub(crate) fn export_agents_to_instance_file(
     settings: &mut AppSettings,
     settings_path: &Path,
 ) -> bool {
-    // #2716 (B3) r12n: the read, the existence check and the write are one
+    // R12n: the read, the existence check and the write are one
     // decision, so they run under the settings lock. It is released on return,
     // before the loader's own save takes it again.
     let _lock = match SettingsFileLock::acquire_contextual(
@@ -329,7 +329,7 @@ pub(crate) fn export_agents_to_instance_file(
     }
 }
 
-/// #2716 (B3) - the agents-file half of a save, run under the settings lock before
+/// The agents-file half of a save, run under the settings lock before
 /// the settings file is written. Returns the groups the agents file now holds, which
 /// are exactly the keys the caller may strip from `out`. `Reconcile` never writes the
 /// caller's groups; `Preserve` writes them except a key the overlay owns.
@@ -618,7 +618,7 @@ pub(crate) fn collect_preserved_agents_groups(
     let (existing_groups, base_profiles) = physical;
     let mut groups = existing_groups.cloned().unwrap_or_default();
     // `out` is read after `write_identity_rows` and `restore_base`, so
-    // the #2450 identity rows and the base values reach the agents file.
+    // the identity rows and the base values reach the agents file.
     for key in AGENTS_INSTANCE_KEYS {
         // Publication eligibility comes from the original physical owner,
         // independently of whether profile conversion was possible. A

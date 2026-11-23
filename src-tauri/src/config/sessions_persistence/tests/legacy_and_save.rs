@@ -1,6 +1,6 @@
 use super::*;
 
-/// Validation #17: single-repo legacy → one `SessionRepo`; legacy fields cleared.
+/// Validation 17: single-repo legacy → one `SessionRepo`; legacy fields cleared.
 #[test]
 fn legacy_migration_single_repo_shape() {
     let mut ps = PersistedSession {
@@ -50,7 +50,7 @@ fn legacy_migration_single_repo_shape() {
     assert!(ps.git_branch_prefix.is_none());
 }
 
-/// Issue #248 — status round-trips through serialize/deserialize.
+/// Status round-trips through serialize/deserialize.
 /// Locks the field against future "ignored on restore" misreads now that
 /// `should_wake_on_restore` in `lib.rs` consumes it.
 #[test]
@@ -189,7 +189,7 @@ fn legacy_migration_multi_repo_shape() {
     assert!(ps.git_branch_prefix.is_none());
 }
 
-/// #280 §3.1 — happy path: rename a real tmp file over a real dst.
+/// §3.1 — happy path: rename a real tmp file over a real dst.
 /// Must succeed on the first attempt (no INFO emission, no diagnostic
 /// context returned).
 #[test]
@@ -203,7 +203,7 @@ fn rename_with_retry_succeeds_on_first_attempt() {
     assert!(!src.exists());
 }
 
-/// #280 §3.1 — the retry loop exhausts all attempts and returns the
+/// §3.1 — the retry loop exhausts all attempts and returns the
 /// diagnostic context. We force consistent failure by pointing `tmp`
 /// at a non-existent path (`NotFound` on both Windows and Unix).
 #[test]
@@ -224,7 +224,7 @@ fn rename_with_retry_returns_diagnostics_after_exhaustion() {
     assert!(diag.duration < std::time::Duration::from_secs(2));
 }
 
-/// #291 — direct regression for the shared-`sessions.json.tmp` race.
+/// Direct regression for the shared-`sessions.json.tmp` race.
 ///
 /// An `Arc<Barrier>` forces all writer threads to enter the
 /// write+rename critical section simultaneously, maximizing the
@@ -314,7 +314,7 @@ fn save_sessions_concurrent_calls_all_succeed_with_valid_snapshot_and_no_straggl
     );
 }
 
-/// #291 — a single save round-trips: file lands at `sessions.json`,
+/// A single save round-trips: file lands at `sessions.json`,
 /// deserializes back to the input, and no `.tmp` file is left behind.
 #[test]
 fn save_sessions_to_dir_round_trips_and_cleans_up_temp() {
