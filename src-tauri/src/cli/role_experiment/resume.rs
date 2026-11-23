@@ -1,3 +1,7 @@
+//! Resume of an existing role-experiment run: checks that run, report and
+//! attempt artifacts still match. Owns no state. Does not create new runs or
+//! render reports.
+
 use super::arguments::RunArgs;
 use super::artifacts::AttemptArtifact;
 use super::artifacts::AttemptOwnershipArtifact;

@@ -1,3 +1,7 @@
+//! Decides how a coding agent session resumes: transcript locations, config
+//! dir overrides and injected resume flags. Owns no state. Does not spawn
+//! sessions.
+
 use super::agent_command::executable_basename;
 use super::resume_args::{
     antigravity_tokens_have_resume, codex_has_explicit_subcommand, codex_tokens_have_resume,

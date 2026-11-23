@@ -1,3 +1,6 @@
+//! Tauri commands to read and update a team config and sync its room replica
+//! repos. Owns no long-lived state. Does not create teams.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::matrix_layout::{

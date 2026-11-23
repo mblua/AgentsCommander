@@ -1,3 +1,7 @@
+//! Role-experiment run directories and reports: run ids, artifact paths,
+//! attempt summaries and Markdown rendering. Owns no persistent state. Does not
+//! launch or resume attempts.
+
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 use super::artifacts::AttemptArtifact;
