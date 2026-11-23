@@ -210,7 +210,7 @@ fn issue_2475_enumeration_result_is_byte_identical_after_the_single_read() {
     assert_eq!(actual, expected);
 }
 
-/// #2557 - the #2475 byte-identity fixture: two invalid replicas
+/// The bench byte-identity fixture: two invalid replicas
 /// (`broken` is not JSON, `unreadable` has config.json as a directory).
 fn issue_2557_broken_room() -> (
     SelectionApiFixture,
