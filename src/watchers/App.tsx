@@ -55,7 +55,7 @@ export const POLL_UNFOCUSED_MS = 15_000;
 
 /** How long one activity round may take before it is abandoned.
  *
- *  #1188: a `finally` on the round is not enough on its own, because a promise that never
+ *  A `finally` on the round is not enough on its own, because a promise that never
  *  settles never reaches `finally` either. This deadline is what turns "never settles" into
  *  "settles as a failure", and every re-arm below depends on it.
  *
@@ -73,7 +73,7 @@ export const POLL_TIMEOUT_MESSAGE =
 
 /** How long the whole mount chain may take before what is left of it is abandoned.
  *
- *  #1196: shared across all eight startup awaits, not per await. A per-await deadline on a
+ *  Shared across all eight startup awaits, not per await. A per-await deadline on a
  *  sequential chain multiplies, and a backend that has stopped answering makes every
  *  remaining await time out in turn, so eight awaits at one deadline each is the expected
  *  case rather than the pathological one. Expressed as an absolute expiry taken once, so the
@@ -174,7 +174,7 @@ export async function registerAll(
  * Resolve with `work`, or reject with `message` once `ms` have elapsed, whichever is first.
  *
  * The rejection is the whole point. `work` is a Tauri `invoke`, nothing can cancel it, and a
- * lost reply leaves it pending forever; #1188 is that promise taking the only re-arm of the
+ * lost reply leaves it pending forever; the stall was that promise taking the only re-arm of the
  * poll down with it. Racing does not stop the call, it stops the WAIT, which is what every
  * `finally` downstream needs in order to run at all.
  *
@@ -223,7 +223,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
 
   /** At most one `get_settings` in flight from this window at a time.
    *
-   *  #1196: arming the poll means `runPollRound` refreshes the settings every period, and
+   *  Arming the poll means `runPollRound` refreshes the settings every period, and
    *  nothing on that path is bounded (`stores/settings.ts:28-32` -> `invoke("get_settings")`,
    *  `transport-tauri.ts:23-26`). Without this, a `get_settings` that never answers collects
    *  one abandoned call per period for the life of the window. The flag is cleared by
@@ -390,7 +390,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
     const ids = scopeIds();
     const limit = scopeLimit();
     try {
-      // #1188: the deadline goes INSIDE the map, not around the `Promise.all`. The two read
+      // The deadline goes INSIDE the map, not around the `Promise.all`. The two read
       // the same and differ only in what a lost reply keeps alive: an aggregate with one
       // element still pending holds its values list, and every already-resolved sibling
       // snapshot in it, reachable for the life of the window. Deadlining each element makes
@@ -431,7 +431,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
   /**
    * List the sessions and adopt the answer, REJECTING if the call fails.
    *
-   * #1196: split from `reloadSessions` because the mount has to see a failure in order to
+   * Split from `reloadSessions` because the mount has to see a failure in order to
    * report it, while the three session listeners want it swallowed. One function that catches
    * internally cannot serve both, and the version that did is exactly how a rejecting
    * `list_sessions` reached the user as a blank window with no banner at all.
@@ -509,7 +509,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
   /**
    * One poll round, re-armed on every path.
    *
-   * #1188: the re-arm used to live inside `refresh().then()`, so any outcome that was not a
+   * The re-arm used to live inside `refresh().then()`, so any outcome that was not a
    * fulfilment ended the chain for the life of the window, and the reported outcome was no
    * outcome at all. It is in `finally` now, and the fetch has a deadline (`withDeadline`),
    * because `finally` does not run for a promise that never settles either. The re-arm is
@@ -529,7 +529,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
         // The poll also refreshes the settings store, so a watcher saved from the modal turns
         // the "no watcher reaches this agent" state into "configured and waiting" without the
         // user reopening the window. There is no cross-window settings event to use instead.
-        // #1196: single-flighted, because arming the poll would otherwise collect one
+        // Single-flighted, because arming the poll would otherwise collect one
         // abandoned `get_settings` per period while the command is not answering.
         void loadSettingsOnce().catch((err) =>
           console.error("[watchers] settings refresh:", err)
@@ -551,7 +551,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
   };
 
   onMount(async () => {
-    // #1196: ONE budget for the whole startup chain, taken once and expressed as an absolute
+    // ONE budget for the whole startup chain, taken once and expressed as an absolute
     // expiry, so each step races what is LEFT of it. A per-await deadline would multiply on a
     // sequential chain, and a backend that has stopped answering makes every remaining await
     // time out in turn, so the multiplication is the expected case rather than the corner one.
@@ -560,7 +560,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
     /**
      * One step of the mount: bounded by the shared budget, and survivable.
      *
-     * #1196: the deadline is what turns "never settles" into "settles as a failure", and
+     * The deadline is what turns "never settles" into "settles as a failure", and
      * swallowing that failure is what lets the chain reach its arming point. The two are one
      * decision: a bound whose rejection still ends the mount only converts a silent dead window
      * into a loud one.
@@ -636,7 +636,7 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
 
         // `loadSessions`, not `reloadSessions`: the best-effort wrapper catches internally and
         // therefore FULFILS, so `step()` could not see a rejecting `list_sessions` and the
-        // notice would be absent in exactly the case that reproduces #1196's symptom.
+        // notice would be absent in exactly the case that reproduces the stuck-startup symptom.
         await step(loadSessions(), "list sessions");
         if (disposed) return;
 
@@ -650,11 +650,11 @@ const WatchersApp: Component<{ initialSessionId?: string }> = (props) => {
         if (disposed) return;
         if (pulled && scopeEventGeneration === generationAtIssue) setScopeSessionId(pulled);
       } finally {
-        // #1196: arming runs on EVERY path out of the chain -- a step that failed, a step
+        // Arming runs on EVERY path out of the chain -- a step that failed, a step
         // abandoned at the budget, or a `disposed` return above. The guarantee is two-part and
         // half of it is not enough: a `finally` does not run for a promise that never settles,
         // so it holds only because every await inside this `try` goes through `step()`. A ninth
-        // UNWRAPPED await added in here would reintroduce #1196 at a new position.
+        // UNWRAPPED await added in here would reintroduce the stall at a new position.
         //
         // It wraps only the chain, never the geometry block below: `trackGeometry()` awaits a
         // dynamic import outside its own `try`, and arming behind that would recreate this
