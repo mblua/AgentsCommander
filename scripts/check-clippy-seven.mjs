@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { normalizeFile } from './check-too-many-lines.mjs';
+import { normalizeFile, PATH_CATALOG, snapshotCatalog } from './check-too-many-lines.mjs';
 import { createSnapshot, isMain, gitRunner } from './sanitizing_baseline.mjs';
 
 export const CODES = ['doc_markdown', 'implicit_clone', 'map_unwrap_or', 'match_same_arms',
@@ -239,7 +239,13 @@ export function baselineDiff(ref, root = ROOT) {
     need(['origin/main', 'refs/remotes/origin/main'].includes(ref), 'adoption needs origin/main');
     need(!git(root, ['ls-tree', 'origin/main', '--', BASELINE]), 'main already adopted baseline');
     historical(root, b);
-    need(s.changed.every(c => OWNER.has(c.path)), 'unapproved initial authored scope');
+    // A catalog edit is a scope change: it can never authorize its own data paths.
+    need(s.baseTree.get(PATH_CATALOG)?.oid === s.headTree.get(PATH_CATALOG)?.oid,
+      'unapproved initial authored scope');
+    const data = new Set([...snapshotCatalog(s, s.baseTree, 'base'),
+      ...snapshotCatalog(s, s.headTree, 'HEAD')]);
+    need(s.changed.every(c => OWNER.has(c.path) || data.has(c.path)),
+      'unapproved initial authored scope');
   }
   s.assertStableHead();
 }
