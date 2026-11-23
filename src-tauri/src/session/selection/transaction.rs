@@ -1,3 +1,6 @@
+//! Selection transaction: the handle commands use to run one coordinated
+//! session selection change. It does not own session data.
+
 use std::sync::atomic::Ordering;
 
 use std::sync::{Arc, Weak};

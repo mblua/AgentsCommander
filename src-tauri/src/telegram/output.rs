@@ -1,3 +1,6 @@
+//! Telegram output events and error kinds reported to the app.
+//! It does not poll for updates.
+
 use tokio::time::Duration;
 
 use crate::config::instance_artifacts::{

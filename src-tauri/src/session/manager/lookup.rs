@@ -1,3 +1,6 @@
+//! Session manager lookups: finds sessions and builds read-only facts for
+//! terminal snapshot requests. It does not change sessions.
+
 use super::super::session::{Session, SessionInfo, SessionRepo, SessionStatus};
 use super::binding::binding_matches;
 use super::carrier::{acquire_carrier_mutation_permit, CarrierMutationPermit};
