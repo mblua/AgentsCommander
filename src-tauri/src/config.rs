@@ -18,6 +18,7 @@ pub(crate) mod agent_memory;
 pub(crate) mod agent_path;
 pub(crate) mod archive_gate;
 pub(crate) mod co_managed;
+pub(crate) mod coding_agent_files;
 pub(crate) mod coding_agent_mutations;
 pub(crate) mod coding_agent_profiles;
 pub(crate) mod coding_agents_catalog;

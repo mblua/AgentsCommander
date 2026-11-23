@@ -66,3 +66,39 @@ pub(crate) fn rename_backup(temp: &Path, backup: &Path) -> io::Result<()> {
 pub(crate) fn sync_parent(parent: &Path) -> io::Result<()> {
     File::open(parent).and_then(|directory| directory.sync_all())
 }
+
+/// Names of the regular files directly in `dir`, sorted; a missing `dir` lists nothing.
+pub(crate) fn list_file_names(dir: &Path) -> io::Result<Vec<String>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !is_regular_file(&entry.path()) {
+            continue;
+        }
+        if let Some(name) = entry.file_name().to_str() {
+            names.push(name.to_string());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[allow(dead_code, reason = "I4845 staged; removed in P10")]
+pub(crate) fn create_dir_all(dir: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(dir)
+}
+
+#[allow(dead_code, reason = "I4845 staged; removed in P10")]
+pub(crate) fn is_regular_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
+#[allow(dead_code, reason = "I4845 staged; removed in P10")]
+pub(crate) fn is_dir(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_dir())
+}
