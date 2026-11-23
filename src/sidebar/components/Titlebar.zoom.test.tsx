@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Component, JSX } from "solid-js";
 import type { AppSettings, WebServerOwnedStatus } from "../../shared/types";
 import type { FakeTransport } from "../../shared/testing/fake-transport";
+import { stubAutomationGeometry } from "../../shared/testing/automation-geometry";
 
 const tauriMocks = vi.hoisted(() => ({
   invoke: vi.fn(() => Promise.resolve("")),
@@ -315,6 +316,38 @@ describe("Titlebar zoom stepper", () => {
         mainZoom: 1.1,
       });
       expect(mounted.getSettings().mainZoom).toBe(1.1);
+    });
+  });
+
+  it("exposes titlebar.zoom as a named group fieldset to the automation bridge", async () => {
+    const mounted = await mountTitlebar({ mainZoom: 1 });
+    await initMainZoom(mounted);
+    stubAutomationGeometry();
+    const bridge = await import("../../shared/automation-bridge");
+    bridge.resetAutomationBridgeForTests();
+    const query = async () => {
+      const response = await bridge.executeAutomationRequest("main", {
+        requestId: "query-titlebar.zoom", token: "test", window: "main", action: "query",
+        selector: "titlebar.zoom", expiresAtUnixMs: Date.now() + 5000,
+      });
+      if (!response.ok) throw new Error(response.error + ": " + response.message);
+      return response.target;
+    };
+
+    const group = byTestId<HTMLFieldSetElement>("titlebar.zoom");
+    expect(group.getAttribute("aria-label")).toBe("UI zoom");
+    expect(Array.from(group.children, (child) => child.getAttribute("data-ac-testid")))
+      .toEqual(["titlebar.zoom.out", "titlebar.zoom.value", "titlebar.zoom.in"]);
+    expect(await query()).toMatchObject({
+      testId: "titlebar.zoom", role: "group", tag: "fieldset", text: "-100%+",
+    });
+
+    mounted.modules.click(byTestId("titlebar.zoom.in"));
+    await mounted.modules.waitFor(() => {
+      expect(byTestId("titlebar.zoom.value").textContent).toBe("110%");
+    });
+    expect(await query()).toMatchObject({
+      testId: "titlebar.zoom", role: "group", tag: "fieldset", text: "-110%+",
     });
   });
 
