@@ -99,7 +99,7 @@ async fn worker_task_local_rejects_recursive_external_submission() {
     assert!(coordinator.inner.critical_keys.lock().unwrap().is_empty());
 }
 
-/// #1940 - the owned operation turn serializes the whole persisted
+/// The owned operation turn serializes the whole persisted
 /// publication -> restart settlement span: a queued guarded mutation cannot
 /// acknowledge until the first operation releases it, and the release lands
 /// after the settlement step, never between publication and settlement.
@@ -162,7 +162,7 @@ async fn issue_1937_operation_turn_serializes() {
     );
 }
 
-/// #1940 - a submission from inside the selection worker must be rejected
+/// A submission from inside the selection worker must be rejected
 /// before waiting, for both the owned helper and the raw acquisition, and
 /// rejection must not consume the turn.
 #[tokio::test]
@@ -207,7 +207,7 @@ async fn issue_1937_operation_turn_rejects_worker() {
     drop(guard);
 }
 
-/// #1940 - dropping the outer caller detaches the owned task: the turn
+/// Dropping the outer caller detaches the owned task: the turn
 /// stays held until the accepted operation finishes, and the next guarded
 /// operation observes the final state instead of racing it.
 #[tokio::test]
@@ -369,7 +369,7 @@ async fn restart_failure_second_probe() -> impl Sized {
     (second_probe, second_app)
 }
 
-/// #1940 - coordinator-side restart failures (closed, admission-busy, dead
+/// Coordinator-side restart failures (closed, admission-busy, dead
 /// worker channel) and a failed owned task all surface as explicit errors;
 /// the persisted subset stays, nothing late is queued, and the turn is
 /// released only after the failure classification.

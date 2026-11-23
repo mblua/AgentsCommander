@@ -42,7 +42,7 @@ pub(crate) fn should_wake_on_restore(
     }
 }
 
-/// (#1793) The non-coordinator arm of the restore wake decision. #248's
+/// The non-coordinator arm of the restore wake decision. The
 /// `should_wake_on_restore` covers coordinators and is left unchanged. This is
 /// the ONLY rule that can wake a non-coordinator, and the two arms are disjoint
 /// on `is_coord`, so they can never both fire for one row.
@@ -161,7 +161,7 @@ impl RestoreObserverStartBarrier {
     }
 }
 
-/// (#630) Resolve coordinator status for a restore decision, backstopping a
+/// Resolve coordinator status for a restore decision, backstopping a
 /// transient empty `discover_teams()` with the snapshot's persisted
 /// `is_coordinator`. When live discovery returned teams we trust it. Only when
 /// discovery came back EMPTY do we fall back, so a real coordinator is not
@@ -176,7 +176,7 @@ pub(crate) fn resolve_is_coord_for_restore(
     live_is_coord || (teams_empty && persisted_is_coord)
 }
 
-/// (#630/#631) Bridge the persisted `start_fresh_on_restore` intent into the
+/// Bridge the persisted `start_fresh_on_restore` intent into the
 /// restore wake path's `skip_auto_resume` argument. The two are value-identical
 /// (both `true` => start fresh / suppress `--continue`); this is the single
 /// named seam the wake path reads. Anti-revert guard: CI runs
@@ -209,7 +209,7 @@ pub(crate) fn should_auto_create_root_agent_on_first_restore(
     commands::session::resolve_root_agent_command(settings, None, last_coding_agent).is_ok()
 }
 
-/// #1341 - releases the restore selection barrier and completes the observer
+/// Releases the restore selection barrier and completes the observer
 /// barrier. `complete()` is the normal path; `Drop` is the backstop for a
 /// panic anywhere in the spawned restore task, so the selection coordinator
 /// (which queues every webview session command behind the restore barrier)
@@ -261,7 +261,7 @@ pub(crate) fn load_startup_sessions(
 ) -> Result<Vec<sessions_persistence::PersistedSession>, String> {
     let paths = sessions_persistence::session_retention_project_paths(settings)?;
     let mut sessions = load(&paths);
-    // #4779 A1=B: temp rooms are never restored.
+    // A1=B: temp rooms are never restored.
     sessions.retain(|s| !config::temp_rooms::is_temp_room_path(&s.working_directory));
     Ok(sessions)
 }

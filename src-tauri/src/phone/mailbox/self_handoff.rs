@@ -52,7 +52,7 @@ impl MailboxPoller {
         }
     }
 
-    /// #668 - queue a deferred self switch for the session that owns `msg.token`.
+    /// Queue a deferred self switch for the session that owns `msg.token`.
     /// It shares the self context pending set with self-clear, so clear and switch
     /// requests cannot stack on the same live session.
     pub(crate) async fn handle_self_handoff_switch<S: MailboxHost>(

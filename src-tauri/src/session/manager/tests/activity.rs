@@ -199,7 +199,7 @@ async fn mark_idle_on_a_pending_create_session_yields_no_record() {
 
 /// `commands/session.rs` hands the PTY spawn `resolve_launch_idle_tuning`,
 /// whose `idle_threshold` is `idle_tuning_for(agent_kind)`'s (only the
-/// #2124 burst subfields can differ), and the detector registers exactly
+/// Burst subfields can differ), and the detector registers exactly
 /// that. The record must therefore report the same threshold for every
 /// kind, not a hardcoded constant.
 #[tokio::test]

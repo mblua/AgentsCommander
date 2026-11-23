@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- #2306 P1: explicit registered-agent order -------------------------
+// ---- P1: explicit registered-agent order -------------------------
 
 /// `a,b,c` with contiguous ordinals, the shape the loaders leave behind.
 fn ordered_2306() -> AppSettings {

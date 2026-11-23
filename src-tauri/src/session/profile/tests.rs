@@ -131,7 +131,7 @@ fn pi_serde_and_profile_contract_are_stable() {
     }
 }
 
-/// #1873 - Muse is a serde-stable first-class kind whose identity is a direct
+/// Muse is a serde-stable first-class kind whose identity is a direct
 /// shell with the exact stem `muse`; it never becomes a logical PTY
 /// submission agent and its profile carries the exact workspace-latest tokens.
 #[test]
@@ -410,8 +410,8 @@ fn detect_strips_known_exe_extension() {
 
 #[test]
 fn detect_space_in_shell_path_treats_shell_as_one_token() {
-    // #260 G3 — `detect` treats `shell` as a SINGLE token; it does NOT
-    // whitespace-split it the way pre-#260 `create_session_inner` split
+    // G3 — `detect` treats `shell` as a SINGLE token; it does NOT
+    // whitespace-split it the way the older `create_session_inner` split
     // the joined command string. A space-containing shell path whose real
     // executable is not an agent therefore resolves to `None` (the more
     // correct result — the executable here is `runner.exe`).
@@ -431,7 +431,7 @@ fn detect_strips_known_legacy_exe_extension() {
 
 #[test]
 fn idle_tuning_for_launch_resolves_burst_subfields() {
-    // #2156 - unrecognised-agent OFF contract.
+    // Unrecognised-agent OFF contract.
     assert_eq!(idle_tuning_for_launch(None, None), IdleTuning::DEFAULT);
     assert_eq!(idle_tuning_for_launch(None, None).burst_max_bytes, 0);
     assert_eq!(
@@ -502,7 +502,7 @@ fn idle_profiles_keep_existing_defaults() {
         CodingAgentKind::Muse,
     ] {
         assert!(kind.profile().idle.seed_initial_activity);
-        // #2879 - Codex differs from AGENT_DEFAULT only in its detector selector.
+        // Codex differs from AGENT_DEFAULT only in its detector selector.
         let idle = IdleTuning {
             activity_detector: ActivityDetectorKind::Timed,
             ..kind.profile().idle
@@ -524,7 +524,7 @@ fn idle_profiles_keep_existing_defaults() {
     );
 }
 
-/// #2156 - guards the const-literal durations against the
+/// Guards the const-literal durations against the
 /// `IDLE_BURST_DEFAULT_*` constants they duplicate.
 #[test]
 fn agent_default_burst_matches_the_documented_constants() {
@@ -542,7 +542,7 @@ fn agent_default_burst_matches_the_documented_constants() {
     );
 }
 
-/// #2879 - only an effective Codex launch selects `CodexWorking`; every other agent, a
+/// Only an effective Codex launch selects `CodexWorking`; every other agent, a
 /// plain shell and `DEFAULT` stay `Timed`, and burst launch overrides keep the selector.
 #[test]
 fn i2879_feature_selection() {

@@ -206,7 +206,7 @@ async fn shutdown_reports_the_exact_retained_blocking_seed_reason() {
     );
 }
 
-// Stage E (#1064) tracker mutation proofs (plan section 10.4 item 16): the
+// Stage E tracker mutation proofs (plan section 10.4 item 16): the
 // poison-recovery and id-overflow paths were previously unexercised.
 #[test]
 fn blocking_seed_tracker_recovers_from_mutex_poison_and_preserves_work() {

@@ -1,6 +1,6 @@
 use super::*;
 
-// #1151 (R9) - group_counts_toward_admission is the admission predicate itself, not
+// `group_counts_toward_admission` is the admission predicate itself, not
 // an inference, so the watchdog can report the fact without claiming authorship.
 // Compared against the active_count FILTER (the delta this group contributes), not
 // against active_agent_groups() directly, which also counts pending permits.
@@ -57,7 +57,7 @@ fn group_counts_toward_admission_matches_the_active_count_filter() {
     assert!(!state.group_counts_toward_admission(absent));
 }
 
-// #1151 (R10) - the restart shape at registry level. A restart replacement carries the
+// R10: the restart shape at registry level. A restart replacement carries the
 // same workgroup/agent/project under a NEW uuid, so register_group's relaunch dedup
 // WOULD have collected the old row and does not, because it is Quarantined rather
 // than Terminated. That is the accumulator; the retry is what drains it.
@@ -284,7 +284,7 @@ fn reaping_sample_sets_friendly_message_and_suppresses_warning() {
     );
 }
 
-// (T3) H1 never races H2: a Quarantined group IS sampled (#647 C) but merge_sample
+// T3: H1 never races H2: a Quarantined group IS sampled but merge_sample
 // only strike-counts/nominates Running groups, so it is still never reaped.
 #[test]
 fn reap_never_touches_quarantined_group() {
@@ -316,7 +316,7 @@ fn reap_never_touches_quarantined_group() {
 
     // Even with a missing-root signal + confirmed-gone root, merge_sample only
     // strike-counts/nominates Running groups, so H1 never reaps Quarantined to
-    // Terminated (even though #647 C now re-samples it).
+    // Terminated (even though C now re-samples it).
     backend.replace_tree(root, Vec::new(), missing_root_error(root));
     backend.mark_gone(root);
     state.snapshot(limits(1));
@@ -325,7 +325,7 @@ fn reap_never_touches_quarantined_group() {
     assert_eq!(state.active_agent_groups(), 1);
 }
 
-// #647 C: a Quarantined group IS included in sample_running_groups so its process
+// C: a Quarantined group IS included in sample_running_groups so its process
 // list is re-observed each snapshot (unfreezing the display). Pairs with
 // reap_never_touches_quarantined_group, which proves sampling it stays reap-safe.
 #[test]
@@ -363,7 +363,7 @@ fn quarantined_group_is_resampled() {
     );
 }
 
-// #647 D / E1: the ACCESS_DENIED signature must match the EXACT win32 code 5, so
+// D / E1: the ACCESS_DENIED signature must match the EXACT win32 code 5, so
 // unrelated codes that merely start with the digit 5 (50/53/567) never trip it.
 #[test]
 fn access_denied_signature_matches_exact_code_5_only() {
@@ -390,7 +390,7 @@ fn access_denied_signature_matches_exact_code_5_only() {
     ]));
 }
 
-// #647 D: blocked_by_security serializes as camelCase and, being serde(default),
+// D: blocked_by_security serializes as camelCase and, being serde(default),
 // a legacy payload without the field deserializes to false.
 #[test]
 fn kill_result_blocked_by_security_round_trips_and_defaults() {
@@ -407,7 +407,7 @@ fn kill_result_blocked_by_security_round_trips_and_defaults() {
     assert!(json.contains("\"blockedBySecurity\":false"));
     assert!(json.contains("\"finalized\":false"));
 
-    // Strip the field to simulate a pre-#647 payload; serde(default) -> false.
+    // Strip the field to simulate an older payload; serde(default) -> false.
     let legacy = json.replace(",\"blockedBySecurity\":false", "");
     assert!(!legacy.contains("blockedBySecurity"));
     let parsed: ResourceKillResult = serde_json::from_str(&legacy).unwrap();
@@ -447,7 +447,7 @@ fn terminated_rows_are_bounded_by_retention_cap() {
     assert_eq!(state.active_agent_groups(), 0);
 }
 
-// #632 B2a - the app-shutdown bulk path (kill_all_owned_groups -> fresh_targets_only)
+// B2a - the app-shutdown bulk path (kill_all_owned_groups -> fresh_targets_only)
 // targets only the fresh live tree, NOT the accumulated observed_processes. A child
 // that left the live tree but is still alive must therefore NOT be killed here.
 #[test]
@@ -490,7 +490,7 @@ fn kill_all_owned_groups_uses_fresh_tree_only() {
     );
 }
 
-// #632 B2a contrast - the per-session union path (kill_group, fresh_targets_only =
+// B2a contrast - the per-session union path (kill_group, fresh_targets_only =
 // false) DOES target the accumulated child. Same setup as the fresh-only test;
 // proves the flag is the only difference.
 #[test]
@@ -532,7 +532,7 @@ fn kill_group_union_still_targets_accumulated_child() {
     );
 }
 
-// #632 B2b - a CLEAN sample (root alive, no errors) prunes a descendant that has
+// B2b - a CLEAN sample (root alive, no errors) prunes a descendant that has
 // exited, so observed_processes tracks the live set instead of accumulating.
 #[test]
 fn clean_sample_prunes_exited_descendant() {
@@ -568,8 +568,8 @@ fn clean_sample_prunes_exited_descendant() {
     assert_eq!(snap.groups[0].process_count, 1);
 }
 
-// #632 B2b guard - a missing-root sample (empty tree + missing-root error) must NOT
-// prune; the last-known set is owned by the #559 strike/reap path.
+// B2b guard - a missing-root sample (empty tree + missing-root error) must NOT
+// prune; the last-known set is owned by the strike/reap path.
 #[test]
 fn missing_root_sample_retains_last_known_set() {
     let (state, backend) = state_with_fake();
@@ -609,7 +609,7 @@ fn missing_root_sample_retains_last_known_set() {
     );
 }
 
-// #632 B2b guard (MED-3) - a root-alive but ERRORED sample (e.g. a transient
+// B2b guard (MED-3) - a root-alive but ERRORED sample (e.g. a transient
 // "identity unavailable" for a child) must NOT prune, so a racy/partial snapshot
 // can never drop a still-live descendant.
 #[test]
@@ -654,7 +654,7 @@ fn errored_sample_does_not_prune() {
     );
 }
 
-// #2581 - per-agent memory warnings are structured (session id + level +
+// Per-agent memory warnings are structured (session id + level +
 // bytes + limit) and never duplicated as free text in `warnings`.
 fn snapshot_with_group_at(bytes: u32) -> (Uuid, ResourceSnapshot) {
     let (state, backend) = state_with_fake();

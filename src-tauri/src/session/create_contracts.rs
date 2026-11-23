@@ -11,7 +11,7 @@ use crate::pty::backend::ResolvedAgentHostShell;
 use crate::session::selection::TrustedCreateIntent;
 use crate::session::session::{SessionInfo, SessionRepo};
 
-/// #3263: a fallback wake create that retained without input; counted and retried.
+/// A fallback wake create that retained without input; counted and retried.
 pub(crate) const ERR_WAKE_CREATE_RETAINED: &str = "wake create retained without input";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +35,7 @@ impl CreateSelectionIntent {
 /// Creates a session record, spawns a PTY, and emits the `session_created` event.
 /// Auto-detects agent from shell command if not provided, and auto-injects provider-specific
 /// resume flags (Claude/Pi/Antigravity `--continue`, Codex `resume --last`, and for a
-/// trusted empty-argv local macOS/Linux Muse recipe `resume --last`, #1873)
+/// trusted empty-argv local macOS/Linux Muse recipe `resume --last`)
 /// when appropriate.
 /// If `skip_tooling_save` is true, skips writing to the repo's config.json (for temp sessions).
 ///

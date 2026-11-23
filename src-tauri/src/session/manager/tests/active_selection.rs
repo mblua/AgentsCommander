@@ -67,7 +67,7 @@ async fn clear_active_if_preserves_non_matching_active_session() {
     assert_eq!(second_stored.status, SessionStatus::Active);
 }
 
-// ── Issue #248 — set_active_only (Fix A) ──
+// ── set_active_only (Fix A) ──
 
 #[tokio::test]
 async fn set_active_only_preserves_dormant_status() {
@@ -159,7 +159,7 @@ async fn set_active_only_returns_session_not_found_for_unknown_id() {
     assert_eq!(mgr.get_active().await, None);
 }
 
-// ── Issue #248 / Grinch Z9 — defer + set_active_only + list_sessions chain ──
+// ── Grinch Z9 — defer + set_active_only + list_sessions chain ──
 
 #[tokio::test]
 async fn issue_248_defer_set_active_only_list_sessions_chain() {
@@ -200,7 +200,7 @@ async fn issue_248_defer_set_active_only_list_sessions_chain() {
     assert_eq!(mgr.get_active().await, Some(session.id));
 }
 
-/// #260 G1 — pins `mark_idle`'s contract: the terminal mutation the
+/// G1 — pins `mark_idle`'s contract: the terminal mutation the
 /// idle-detector `on_idle` callback performs. NOTE: `create_session`
 /// auto-activates the first session (status `Active`), and `mark_idle`
 /// only transitions `Running → Idle` — so demote via `clear_active` first.
@@ -240,7 +240,7 @@ async fn mark_idle_sets_waiting_for_input_and_running_to_idle() {
     );
 }
 
-// ── #1088: set_context_percent mutator ──
+// ── set_context_percent mutator ──
 
 #[tokio::test]
 async fn set_context_percent_round_trips_including_zero_and_clear() {

@@ -172,15 +172,15 @@ const CATALOG_MANIFEST_FILENAME: &str =
 /// Current manifest schema version.
 const CATALOG_SCHEMA_VERSION: u32 = 1;
 
-/// The embedded default catalog, authored byte-equal to the post-#766/#768
+/// The embedded default catalog, authored byte-equal to the
 /// frontend presets. This is the single source of truth AC ships; it is written
-/// to disk once (seed) and, since #1967 P4, is NEVER a runtime command donor:
+/// to disk once (seed) and, is NEVER a runtime command donor:
 /// every read resolves the persisted file through the report resolver below and
 /// cannot fall back to these bytes.
 const EMBEDDED_DEFAULT_CATALOG_JSON: &str =
     include_str!("../../resources/coding-agents/agents.default.json");
 
-/// #1912 - the ONLY place a built-in coding agent is turned on or off. One row
+/// The ONLY place a built-in coding agent is turned on or off. One row
 /// per key in `agents.default.json`, same order (a test pins both). `false` =
 /// de-supported: dropped by the persisted read gate on EVERY read path (the
 /// project and legacy persisted manifests; the embedded table is seed material
@@ -200,7 +200,7 @@ pub(crate) const BUILTIN_AGENT_SUPPORT: &[(&str, bool)] = &[
     ("muse", false),
 ];
 
-/// #2736 - how thoroughly `AgentsCommander` has tested each SUPPORTED built-in.
+/// How thoroughly `AgentsCommander` has tested each SUPPORTED built-in.
 /// CODE ONLY: never read from, and never patchable through, any catalog file.
 /// One row per ENABLED row of `BUILTIN_AGENT_SUPPORT`, in the same order (a test
 /// pins both). A key absent here (every user-authored key) has NO level.
@@ -235,7 +235,7 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// #1912 test-only: run `f` with `table` in force instead of
+/// Test-only: run `f` with `table` in force instead of
 /// `BUILTIN_AGENT_SUPPORT` on the CURRENT THREAD; the previous value is
 /// restored when `f` returns or panics. Sync closures only: never use it from
 /// a multi-thread `#[tokio::test]`.

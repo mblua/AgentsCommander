@@ -193,7 +193,7 @@ async fn raise_hand_mark_exited_clears_visible_state() {
     assert!(infos[0].communication.is_none());
 }
 
-/// #2232 phase 7: the Co-managed communication follows the same shape and
+/// Phase 7: the Co-managed communication follows the same shape and
 /// dedup rule as `set_blocked_menu`, and its kind serializes as `coManaged`.
 #[tokio::test]
 async fn set_co_managed_round_trips_and_dedups_identical_messages() {
@@ -275,7 +275,7 @@ async fn raise_hand_mark_exited_returns_false_without_visible_state() {
         .is_none());
 }
 
-/// (#747) The restore seam accepts an Exited coordinator record (the defer
+/// The restore seam accepts an Exited coordinator record (the defer
 /// arm calls it right after `mark_exited`) and keeps the original raise
 /// time so the indicator's age stays truthful.
 #[tokio::test]
@@ -320,7 +320,7 @@ async fn restore_communication_applies_visible_raise_hand_to_dormant_coordinator
     );
 }
 
-/// (#747) Restore gates: non-coordinator records, hidden payloads, and
+/// Restore gates: non-coordinator records, hidden payloads, and
 /// unknown ids are all rejected without mutating state.
 #[tokio::test]
 async fn restore_communication_rejects_non_coordinator_hidden_payload_and_unknown_id() {
@@ -390,7 +390,7 @@ async fn restore_communication_rejects_non_coordinator_hidden_payload_and_unknow
     );
 }
 
-/// #698 MEDIUM fix: `clear_user_input_transitions` lowers a visible raise-hand
+/// MEDIUM fix: `clear_user_input_transitions` lowers a visible raise-hand
 /// and, when gated, re-arms the fresh intent in ONE critical section,
 /// reporting which fields transitioned. A second call is a no-op, and an
 /// unknown id is a no-op.
@@ -441,7 +441,7 @@ async fn clear_user_input_transitions_clears_both_fields_atomically() {
     );
 }
 
-/// #698: the two transitions are independent. `clear_user_input_transitions`
+/// The two transitions are independent. `clear_user_input_transitions`
 /// reports each field's own true/false, so a session with only one set re-arms
 /// only that one.
 #[tokio::test]

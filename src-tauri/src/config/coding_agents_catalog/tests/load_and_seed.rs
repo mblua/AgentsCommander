@@ -21,7 +21,7 @@ fn validate_catalog_key_accepts_allowlist_and_rejects_others() {
 
 #[test]
 fn load_missing_manifest_is_unavailable_without_seeding() {
-    // #1967 P4: a missing persisted catalog is unavailable; the embedded
+    // P4: a missing persisted catalog is unavailable; the embedded
     // default is NOT substituted and nothing is created on disk.
     let dir = seed_dir();
     let unavailable = load_catalog(dir.path()).expect_err("absent catalog is unavailable");
@@ -302,7 +302,7 @@ fn master_dir_for_dest_is_under_seed_subdir() {
 
 #[test]
 fn managed_catalog_migrates_instance_legacy_into_absent_project_base() {
-    // #1968: an absent project base imports ONLY the instance agents.json.
+    // An absent project base imports ONLY the instance agents.json.
     // The ownership transfer keeps the source bytes exactly in the
     // project-local backup, and the instance source itself is never written.
     let project = seed_dir();
