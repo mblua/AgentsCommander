@@ -1,4 +1,4 @@
-/* #3532 P06 - context history view; reuses the sidebar theme tokens. It is
+/* Context history view; reuses the sidebar theme tokens. It is
  * a central-pane overlay: it fills its host pane (position: relative, like
  * the Resource Monitor pane) and leaves the sidebar and the rest of the
  * window visible and reachable. */

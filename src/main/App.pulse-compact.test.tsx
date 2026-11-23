@@ -224,7 +224,7 @@ function healthySampler(): MainTerminalLayoutPulseSample {
   };
 }
 
-describe("MainApp compact pulse (#2236 / #2279)", () => {
+describe("MainApp compact pulse", () => {
   let restoreDom: (() => void) | null = null;
   let frameQueue: FrameQueue;
   let consoleError: ReturnType<typeof vi.spyOn>;

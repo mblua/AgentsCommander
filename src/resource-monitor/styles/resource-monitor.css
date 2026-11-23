@@ -280,7 +280,7 @@ button {
   font-size: var(--font-size-sm);
 }
 
-/* #566 - right-aligned meta group so <h2> stays left and the "Showing X of Y"
+/* Right-aligned meta group so <h2> stays left and the "Showing X of Y"
    indicator + timestamp stay right (space-between with one grouped child). */
 .rm-section-header-meta {
   display: flex;
@@ -295,7 +295,7 @@ button {
   white-space: nowrap;
 }
 
-/* #566 - filter toolbar */
+/* Filter toolbar */
 .rm-filter-bar {
   display: flex;
   flex-wrap: wrap;
@@ -398,7 +398,7 @@ button {
   gap: 6px;
 }
 
-/* #2582 - the caption strip. Hidden in the unconditional base and brought back
+/* The caption strip. Hidden in the unconditional base and brought back
    only inside the 860px container block, because below that width the rows wrap
    and the captions would stand over nothing. This is the one entry in the CSS
    contract's BASE_HIDING_EXCEPTIONS: it hides a caption, never a value. */
@@ -503,7 +503,7 @@ button {
   white-space: nowrap;
 }
 
-/* #647 C: live "Verifying..." indicator under the group identity while a kill /
+/* Live "Verifying..." indicator under the group identity while a kill /
    re-sample is in flight (terminating | quarantined). */
 .rm-group-verifying {
   min-width: 0;
@@ -540,7 +540,7 @@ button {
   background: rgba(255, 59, 92, 0.12);
 }
 
-/* #647 C: the Force-kill variant on a quarantined row reads as a stronger
+/* The Force-kill variant on a quarantined row reads as a stronger
    affordance (the re-fire of the durable Job Object kill). Smaller weight-heavy
    text keeps the longer label inside the fixed-width button. */
 .rm-kill-btn-force {
@@ -594,7 +594,7 @@ button {
   color: var(--status-pending);
 }
 
-/* #2581 - per-agent warning: a button that jumps to the agent row. */
+/* Per-agent warning: a button that jumps to the agent row. */
 .rm-warning-link {
   display: block;
   width: 100%;
@@ -621,7 +621,7 @@ button {
   color: var(--status-exited);
 }
 
-/* #647 D: AV/security guidance — shown beside (never replacing) the per-PID
+/* AV/security guidance — shown beside (never replacing) the per-PID
    detail, using the danger accent so it reads as an actionable callout. */
 .rm-security-hint {
   color: var(--status-exited);
@@ -676,7 +676,7 @@ button {
   margin-top: var(--spacing-md);
 }
 
-/* #2245 - the wrap layout, disjoint legs.
+/* The wrap layout, disjoint legs.
    .rm-group-identity is itself a <span> and a DIRECT child of .rm-group-main,
    and the process name is the FIRST <span> child of its row and header, so a
    bare `.rm-group-main > span` would match the identity cell too and
@@ -730,7 +730,7 @@ button {
   white-space: nowrap;
 }
 
-/* #2245 - PID and search inputs */
+/* PID and search inputs */
 .rm-filter-pid-input,
 .rm-filter-search-input {
   min-height: 24px;
@@ -793,7 +793,7 @@ button {
   font-size: var(--font-size-sm);
 }
 
-/* #2245 - applied-PID chips. An unmatched chip is never auto-removed: it stays
+/* Applied-PID chips. An unmatched chip is never auto-removed: it stays
    dimmed so the user can see the filter is still on. */
 .rm-pid-chip {
   display: inline-flex;
@@ -822,7 +822,7 @@ button {
   font-weight: 400;
 }
 
-/* #2245 - sort controls, and the container that carries the margin-left:auto
+/* Sort controls, and the container that carries the margin-left:auto
    the Clear filters button used to own on its own. */
 .rm-filter-trailing {
   display: inline-flex;
@@ -869,13 +869,13 @@ button {
   opacity: 0.42;
 }
 
-/* #2245 - the process tree guide. No ASCII box characters: they break the
+/* The process tree guide. No ASCII box characters: they break the
    ellipsis. Indentation itself is an inline style computed in JS. */
 .rm-process-depth {
   border-left: 1px solid var(--sidebar-border);
 }
 
-/* #2245 - visual priority, weakest first so source order settles the ties:
+/* Visual priority, weakest first so source order settles the ties:
    alternating band, expanded row, then the PID match. The match is not colour
    alone — a 3px left bar plus the PID in bold. */
 .rm-process-row:nth-of-type(even) {
@@ -895,7 +895,7 @@ button {
   font-weight: 700;
 }
 
-/* #2245 - focus ring. The offset is negative on the two elements that fill the
+/* Focus ring. The offset is negative on the two elements that fill the
    group row, because .rm-group-row carries overflow: hidden and a positive
    offset would be clipped to invisibility while a byte test still passed. */
 .rm-action-btn:focus-visible,
@@ -933,7 +933,7 @@ button {
   }
 }
 
-/* #2245 - the ONE conditional block, and it is the one whose loss costs
+/* The ONE conditional block, and it is the one whose loss costs
    nothing. The trigger reads the CONTAINER, not the viewport: embedded, the
    monitor lives in a pane that is the window minus a 400-600px sidebar, so a
    viewport breakpoint switches to the one-line grid while the pane is far

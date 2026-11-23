@@ -41,7 +41,7 @@ import {
   __resetCentralViewStoreForTests,
 } from "./stores/centralView";
 
-describe("wireCentralViewListeners (issue #587)", () => {
+describe("wireCentralViewListeners", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetCentralViewStoreForTests();

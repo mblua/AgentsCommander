@@ -153,7 +153,7 @@ function sendPulseRequest(sampleNow: () => MainTerminalLayoutPulseSample | null)
 
 const COMPACT_WIDTH = "calc(var(--ac-rail-width) + 0px)";
 
-describe("MainApp compact host (#2236)", () => {
+describe("MainApp compact host", () => {
   let cleanupDom: (() => void) | null = null;
   let error: ReturnType<typeof vi.spyOn>;
 

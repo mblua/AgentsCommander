@@ -129,7 +129,7 @@ async function mountMain(): Promise<HTMLDivElement> {
 const pane = () => document.querySelector('[data-ac-testid="main.contextHistoryPane"]');
 const historyCalls = () => fake.calls.filter((call) => call.cmd.startsWith("get_context_history"));
 
-describe("MainApp context history host (#3532 P07)", () => {
+describe("MainApp context history host", () => {
   beforeEach(() => {
     h.isTauri = true;
     h.activeKey = null;
