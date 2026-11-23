@@ -319,6 +319,110 @@ fn api_enabled_settings() -> crate::config::settings::AppSettings {
     }
 }
 
+/// #2158 - the bridge's repaint, delivered as soon as the Resize is published, finds the
+/// resize mark already taken: it touches silence but keeps the team stamp. A failed queue
+/// reservation takes no mark and keeps its original error.
+async fn attached_with_idle(
+    id: Uuid,
+    root: &str,
+) -> (
+    ContainerTransportBackend,
+    Arc<IdleDetector>,
+    mpsc::Receiver<HostToBridgeFrame>,
+) {
+    let idle = IdleDetector::new(|_| {}, |_| {});
+    let senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+    let tuning = ContainerTransportTuning::default();
+    let backend =
+        ContainerTransportBackend::with_tuning(senders, Arc::clone(&idle), None, None, tuning);
+    let spec = test_spec(id, root, PtyOutputTarget::noop());
+    backend.spawn(spec).await.expect("spawn pending");
+    let ticket = backend.last_issued_ticket_for_test(id).expect("ticket");
+    let rx = attach(&backend, id, root, &ticket);
+    (backend, idle, rx)
+}
+
+#[tokio::test]
+async fn issue_2158_container_resize_marks_before_publish() {
+    let id = Uuid::new_v4();
+    let root = "C:/repo/.ac/wg-1/__agent_dev";
+    let (backend, idle, rx) = attached_with_idle(id, root).await;
+    let rx = Mutex::new(rx);
+    // Established: alive 31 min, silent 30 min, first chunk long outside the window.
+    let (silence, alive) = (Duration::from_secs(1800), Duration::from_secs(1860));
+    idle.set_auto_close_ages_for_test(id, silence, alive);
+    let team_before = idle
+        .team_silence_age_at(id, Instant::now())
+        .expect("eligible");
+    let delivered = Arc::new(AtomicBool::new(false));
+    let hook_delivered = Arc::clone(&delivered);
+    backend.set_resize_published_hook(Box::new(move |backend| {
+        let frame = rx.lock().unwrap().try_recv().expect("published Resize");
+        assert!(matches!(
+            frame,
+            HostToBridgeFrame::Text(HostToBridgeTextFrame::Resize { cols: 100, .. })
+        ));
+        backend
+            .handle_bridge_output(id, vec![b'x'; 4096])
+            .expect("repaint");
+        hook_delivered.store(true, Ordering::SeqCst);
+    }));
+    backend.resize(id, 100, 40).expect("resize");
+    assert!(delivered.load(Ordering::SeqCst));
+    assert!(
+        idle.silence_age(id).unwrap() < Duration::from_secs(60),
+        "repaint touched silence"
+    );
+    let team_after = idle
+        .team_silence_age_at(id, Instant::now())
+        .expect("eligible");
+    assert!(
+        team_after >= team_before,
+        "the repaint must not move the team stamp"
+    );
+    assert_eq!(backend.get_pty_size(id), Some((40, 100)));
+    assert_eq!(backend.resize_marks_for_test(), 1);
+
+    // Full and Closed: no mark, the original errors and cleanup.
+    for full in [true, false] {
+        let id = Uuid::new_v4();
+        let (backend, idle, rx) = attached_with_idle(id, root).await;
+        let (removed_tx, removed_rx) = std::sync::mpsc::channel();
+        backend.set_route_remover(Arc::new(move |session_id, _| {
+            let _ = removed_tx.send(session_id);
+            Ok(())
+        }));
+        if full {
+            for _ in 0..8 {
+                backend.send_ping(id).expect("fill queue");
+            }
+        } else {
+            drop(rx);
+        }
+        let error = backend.resize(id, 90, 30).expect_err("queue failure");
+        if full {
+            let full = "container transport outbound queue full";
+            assert!(matches!(error, AppError::PtyError(ref t) if t == full));
+        } else {
+            assert!(matches!(error, AppError::SessionNotFound(ref t) if t == &id.to_string()));
+        }
+        assert!(!backend.has_session(id), "queue failure keeps its cleanup");
+        assert_eq!(
+            backend.resize_marks_for_test(),
+            0,
+            "the prepublish mark never ran"
+        );
+        let removed = removed_rx.recv_timeout(Duration::from_secs(1));
+        assert_eq!(removed.ok(), Some(id), "route reconciliation");
+        assert_eq!(backend.get_pty_size(id), None, "dimensions unchanged");
+        let readiness = idle.purge_readiness(&[id]);
+        assert!(
+            readiness.iter().all(|r| r.last_resize_age.is_none()),
+            "no mark"
+        );
+    }
+}
+
 mod global_sweep;
 mod lifecycle;
 mod shutdown_work;
