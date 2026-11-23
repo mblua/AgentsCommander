@@ -1,6 +1,6 @@
 use super::*;
 
-// ── #2232 phase 4: hot attach, re-anchor and the local preamble (tests 4,
+// ── Hot attach, re-anchor and the local preamble (tests 4,
 // 9-codex and 18) ───────────────────────────────────────────────────────
 
 /// Append one fresh `final_answer` line whose timestamp is `now - 1s`, so
