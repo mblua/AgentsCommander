@@ -20,7 +20,7 @@ fn function_name(line: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-/// #1149 - the only functions allowed to write `Session::status` in
+/// The only functions allowed to write `Session::status` in
 /// production, alongside the lifecycle helper in manager/commit.rs. Each one
 /// either records the working-state edge it causes or is
 /// covered by the heartbeat backstop; an assignment anywhere else silently
@@ -59,7 +59,7 @@ fn line_violations(
     line: &str,
     violations: &mut Vec<String>,
 ) {
-    // #1149 - all four variants, not only `Active`. The birth-edge
+    // All four variants, not only `Active`. The birth-edge
     // writer, `record.status = SessionStatus::Running` in
     // `commit_selection_transition`, was unguarded, so a future
     // assignment of exactly that shape would have passed CI and

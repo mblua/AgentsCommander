@@ -410,7 +410,7 @@ async fn restore_transaction_publishes_rows_before_one_final_selection() {
     coordinator.close_and_join().await;
 }
 
-// #2451 - a restored dormant session was matched by nothing, and the tier
+// A restored dormant session was matched by nothing, and the tier
 // is session-lifetime state that `PersistedSession` does not carry.
 #[tokio::test]
 async fn restored_dormant_session_has_no_match_tier() {

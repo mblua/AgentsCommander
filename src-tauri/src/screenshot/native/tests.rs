@@ -152,7 +152,7 @@ fn resolve_rejects_regular_file() {
 fn resolve_rejects_dotdot_spoof_to_repo_sibling() {
     // A CWD that walks INTO the replica then back out via `..` into a `repo-*`
     // workgroup sibling must resolve (canonically) to the repo and be rejected,
-    // not spoof the `__agent_*` ancestor via a raw path-name walk (Grinch #714
+    // not spoof the `__agent_*` ancestor via a raw path-name walk (Grinch
     // MEDIUM). Requires real dirs so `canonicalize` can resolve `..`.
     let base = std::env::temp_dir().join(format!("ac-shot-spoof-{}", Uuid::new_v4().simple()));
     let wg = base.join("wg-6-dev-team");
@@ -175,7 +175,7 @@ fn resolve_rejects_dotdot_spoof_to_repo_sibling() {
 fn resolve_rejects_missing_child_of_replica() {
     // The replica exists, but the session CWD points to a now-missing child.
     // With no existing path to canonicalize, resolution must fail rather than
-    // fall back to the raw replica ancestor (Grinch #714 MEDIUM).
+    // fall back to the raw replica ancestor (Grinch MEDIUM).
     let base = std::env::temp_dir().join(format!("ac-shot-missing-{}", Uuid::new_v4().simple()));
     let replica = base.join("wg-6-dev-team").join("__agent_x");
     std::fs::create_dir_all(&replica).unwrap();
@@ -192,7 +192,7 @@ fn revalidate_rejects_plain_recreated_dir() {
     // A directory shaped like a replica root but WITHOUT the WG replica config
     // / matrix (models delete + recreate-as-plain between capture and confirm)
     // must be rejected at confirm time by the re-run identity checks, even
-    // though it passes the symlink/is_dir guard (Grinch #714 MEDIUM).
+    // though it passes the symlink/is_dir guard (Grinch MEDIUM).
     let base = std::env::temp_dir().join(format!("ac-shot-reval-{}", Uuid::new_v4().simple()));
     let replica = base.join("wg-6-dev-team").join("__agent_x");
     std::fs::create_dir_all(&replica).unwrap();
@@ -211,7 +211,7 @@ fn revalidate_rejects_plain_recreated_dir() {
 async fn finishing_gate_blocks_then_releases() {
     // The `Finishing` lifecycle is non-Idle, so begin_capture's Idle gate
     // rejects a new capture (returns Busy) until confirm_selection destroys the
-    // overlays and releases the gate (Grinch #714 HIGH finishing race).
+    // overlays and releases the gate (Grinch HIGH finishing race).
     let id = Uuid::new_v4();
     let state: ScreenshotCaptureState = std::sync::Arc::new(tokio::sync::Mutex::new(
         ScreenshotCaptureLifecycle::Finishing(id),
@@ -270,7 +270,7 @@ async fn busy_pregate_returns_busy_for_non_idle_before_resolution() {
     // AppHandle/SessionManager) it structurally cannot run the
     // active-session/CWD resolution begin_capture does afterwards, proving
     // the Busy no-op happens before any fallible resolution could surface an
-    // Err and raise AC mid-capture (Grinch #714 HIGH pre-gate ordering).
+    // Err and raise AC mid-capture (Grinch HIGH pre-gate ordering).
     let starting_id = Uuid::new_v4();
     let starting: ScreenshotCaptureState = std::sync::Arc::new(tokio::sync::Mutex::new(
         ScreenshotCaptureLifecycle::Starting(ScreenshotCaptureStarting {
@@ -329,7 +329,7 @@ fn hotkey_status_reflects_configured_shortcut_only() {
     // Failure (e.g. OS conflict): the configured shortcut is NOT active even if
     // an internal fallback stays registered. `registered` must be false and the
     // error present so the sidebar's `!registered && error` check warns that the
-    // configured combo does nothing (Grinch #714 LOW).
+    // configured combo does nothing (Grinch LOW).
     let err = hotkey_status_after_attempt("Ctrl+P", Err("hotkey already registered"));
     assert_eq!(err.configured, "Ctrl+P");
     assert!(!err.registered);
@@ -644,7 +644,7 @@ fn match_monitor_pairs_identical_twins_by_origin() {
 
 #[test]
 fn match_monitor_falls_back_to_nearest_origin() {
-    // Nothing inside tolerance (the sizes never agree), so the pre-#2173
+    // Nothing inside tolerance (the sizes never agree), so the older
     // behaviour stands: nearest origin wins.
     let at = |x: i32| MonitorGeometry {
         name: Some("Monitor #1".to_string()),
