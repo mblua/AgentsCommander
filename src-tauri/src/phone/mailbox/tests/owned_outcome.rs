@@ -4,7 +4,7 @@ use crate::pty::manager::{
     ResponseClosePublisher, ResponseCloseState, ResponseDeliveryProof, ResponseRouteIdentity,
 };
 
-/// (#1399 T7 / G4) The shared drain settles the full owned disk-state
+/// The shared drain settles the full owned disk-state
 /// matrix directly and requeues each failed settlement exactly once.
 #[tokio::test]
 async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {

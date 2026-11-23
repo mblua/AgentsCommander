@@ -130,7 +130,7 @@ async fn internal_same_fqn_at_another_root_is_not_injected_and_exact_target_spaw
     assert_eq!(hooks.destroy_calls.lock().unwrap().len(), 0);
 }
 
-// ── #2411 internal wake of an auto-closed orchestrator ──
+// ── internal wake of an auto-closed orchestrator ──
 
 fn manage_i2411_clocks(
     app: &tauri::AppHandle<tauri::test::MockRuntime>,

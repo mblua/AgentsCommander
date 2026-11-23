@@ -1,4 +1,4 @@
-//! #4780 P04: temp-room routes through the full `process_message` outbox path.
+//! P04: temp-room routes through the full `process_message` outbox path.
 use super::temp_room_route::{temp_address, temp_notice, TempRoomDir};
 use super::*;
 

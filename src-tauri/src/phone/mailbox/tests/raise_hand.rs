@@ -19,7 +19,7 @@ fn resolve_switch_targets_reports_empty_agent_list() {
     assert!(err.contains("<none configured>"));
 }
 
-// ── #626/#629 archive_root_md unit tests (tempdir, deterministic timestamp) ──
+// ── archive_root_md unit tests (tempdir, deterministic timestamp) ──
 
 #[test]
 fn archive_root_md_forget_absent_is_noop() {
@@ -35,7 +35,7 @@ fn archive_root_md_forget_absent_is_noop() {
 
 #[test]
 fn archive_root_md_forget_present_moves_to_self_clear_with_prefixed_name() {
-    // #636 - the archive now lands in <root>/self-clear/<ts>_SELF-FORGET.md (timestamp prefixed).
+    // The archive now lands in <root>/self-clear/<ts>_SELF-FORGET.md (timestamp prefixed).
     let temp = tempfile::TempDir::new().unwrap();
     let src = temp.path().join("SELF-FORGET.md");
     std::fs::write(&src, "old topic 1\nold topic 2").unwrap();
@@ -158,7 +158,7 @@ fn archive_root_md_forget_target_exists_errs_without_clobber() {
 
 #[test]
 fn archive_root_md_self_handoff_present_moves_to_self_clear_with_prefixed_name() {
-    // #629/#636 - the new consumer: SELF-HANDOFF.md is archived into self-clear/ with the same
+    // The new consumer: SELF-HANDOFF.md is archived into self-clear/ with the same
     // helper.
     let temp = tempfile::TempDir::new().unwrap();
     let src = temp.path().join("SELF-HANDOFF.md");
@@ -199,7 +199,7 @@ fn archive_root_md_self_handoff_absent_is_noop() {
     );
 }
 
-// ── #749 archive_handoff_for_inject / restore_handoff_after_failed_inject ──
+// ── archive_handoff_for_inject / restore_handoff_after_failed_inject ──
 
 #[test]
 fn archive_handoff_for_inject_moves_file_and_names_exact_relative_path() {

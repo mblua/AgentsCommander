@@ -237,7 +237,7 @@ impl DockerProcessState {
             });
         }
 
-        // #992 - AC is a GUI-subsystem process and owns no console. A console-
+        // AC is a GUI-subsystem process and owns no console. A console-
         // subsystem child spawned without CREATE_NO_WINDOW makes Windows allocate
         // a NEW console for it, which Win11 delegates to Windows Terminal: a
         // visible tab titled with docker.exe's resolved path, black because both

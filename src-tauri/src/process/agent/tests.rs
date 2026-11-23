@@ -28,7 +28,7 @@ fn blocked_script() -> &'static str {
     }
 }
 
-/// #4642 - wall-clock budget for probes that must finish; only a hang reaches it, so
+/// Wall-clock budget for probes that must finish; only a hang reaches it, so
 /// machine load in a parallel `cargo test` cannot turn a pass into a timeout.
 const LOAD_TOLERANT_BUDGET: Duration = Duration::from_secs(120);
 

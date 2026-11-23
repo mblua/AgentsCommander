@@ -217,7 +217,7 @@ impl ContainerTransportBackend {
     ) {
         if let Some(plan) = plan {
             match crate::pty::container_credentials::copy_in(plan) {
-                // #930 - a copied token is only USED if the agent skips its
+                // A copied token is only USED if the agent skips its
                 // interactive first-run wizard: Claude gates that on
                 // .claude.json flags, not on the credential file. Same gate as
                 // the copy, same best-effort contract.
@@ -458,7 +458,7 @@ impl ContainerTransportBackend {
         let canceled_cleanup_ownership = Arc::clone(&self.cleanup_ownership);
         let canceled_cleanup_epoch = self.cleanup_attempt_epoch.fetch_add(1, Ordering::Relaxed);
         let (start_result_sender, start_result_receiver) = oneshot::channel();
-        // #2413 - the runtime may start from here on; every later `Err` is fenced.
+        // The runtime may start from here on; every later `Err` is fenced.
         launch_witness.mark();
         start_producer.spawn_owned(Some(id), "runtime-start", move |control| {
             let result = (|| {
