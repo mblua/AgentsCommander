@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::binding::binding_matches;
 use super::carrier::{acquire_carrier_mutation_permit, CarrierMutationPermit};
 use super::{
@@ -19,6 +21,10 @@ pub(super) fn prompt_domain_exclusive(
         .all(|(id, candidate)| Some(*id) == owner || candidate != key)
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "prompt transfer targets are validated as pending rows before commit"
+)]
 pub(super) fn apply_commit_prompt_domains(
     state: &mut SessionManagerState,
     mutations: &LifecycleMutations,
@@ -94,6 +100,10 @@ pub(super) fn finalize_prompt_domain(
         .retained_prompts
         .entry(prepared.key.clone())
         .or_default();
+    #[allow(
+        clippy::expect_used,
+        reason = "the row was found by the same id earlier in this function"
+    )]
     let row = state.sessions.get_mut(&id).expect("pending row exists");
     if !exclusive {
         entry.blocked = true;

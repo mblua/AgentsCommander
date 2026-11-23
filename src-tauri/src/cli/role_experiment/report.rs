@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use super::artifacts::AttemptArtifact;
 use super::artifacts::CliError;
 use super::artifacts::LoadedExperiment;
@@ -140,6 +142,10 @@ pub(super) fn validate_replicates(replicates: u32) -> Result<(), Vec<CliError>> 
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "a 0..8 slice of a 16-byte UUID is always 8 bytes"
+)]
 pub(super) fn generated_seed_from_uuid(uuid: uuid::Uuid) -> u64 {
     let bytes = uuid.as_bytes();
     u64::from_le_bytes(bytes[0..8].try_into().expect("uuid slice is 8 bytes"))
