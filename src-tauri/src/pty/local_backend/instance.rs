@@ -64,7 +64,7 @@ pub(super) struct PtyInstance {
 /// carries state across reads and knows what an escape is, so both are closed by construction
 /// rather than by another special case.
 ///
-/// **Why not the spawn-diagnostics paint floor.** That floor is 256 bytes and the blank child sits at 345:
+/// **Why not the spawn paint floor.** That floor is 256 bytes and the blank child sits at 345:
 /// it would fire for a child that is hung.
 ///
 /// **Why there is no timeout escape.** A child that never renders is showing nothing, so a

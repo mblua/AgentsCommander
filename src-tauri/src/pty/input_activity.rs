@@ -46,7 +46,7 @@ pub struct SubstantiveInputTracker {
     /// sequence, a device reply, a bare control byte) must not refresh it, or
     /// nothing ever ages out in a terminal that is receiving anything.
     /// Maintained by `feed` and `reset`, back-dated in tests by
-    /// `backdate_pending_for_test`, read only by `pending_within`; the substantive-input gate never reads it.
+    /// `backdate_pending_for_test`, read only by `pending_within`; the classifier never reads it.
     pending_since: HashMap<Uuid, Instant>,
 }
 

@@ -112,7 +112,7 @@ impl PtyViewport {
     ///
     /// **Spawn only.** There is deliberately NO floor on the resize path. A user really can drag
     /// a window down to a handful of columns, and refusing to follow them there would strand the
-    /// PTY at a size the terminal is not - which is the exact bug class this type exists to close. The
+    /// PTY at a size the terminal is not - which is the exact bug class this type closes. The
     /// resize path refuses a degenerate size and nothing else.
     pub fn from_fit(cols: u16, rows: u16) -> Self {
         if cols < Self::PLAUSIBLE_MIN.cols || rows < Self::PLAUSIBLE_MIN.rows {
