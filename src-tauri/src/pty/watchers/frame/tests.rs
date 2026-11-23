@@ -445,7 +445,7 @@ fn selection_maps_physical_rows_onto_logical_rows_without_duplicates() {
     assert_eq!(selected[0].text, "bc");
 }
 
-/// #2879 - test-only instrument, not a product constant: the Codex status header with a
+/// Test-only instrument, not a product constant: the Codex status header with a
 /// complete `esc to interrupt` hint, upstream `fmt_elapsed_compact` durations, and an
 /// optional ` · ` context suffix.
 const I2879_PATTERN: &str = include_str!("tests/fixtures/working.regex");
@@ -534,7 +534,7 @@ fn i2879_snapshot_every_split(name: &str, bytes: &[u8]) -> I2879Snapshot {
     whole
 }
 
-/// #2879 - the seven offline fixtures, transcribed byte-exact from
+/// The seven offline fixtures, transcribed byte-exact from
 /// `room-shared/i2879-offline-evidence/fixtures/*.ans` (SHA-256 per `SHA256SUMS-fixtures`).
 /// CUP prefixes and the initial state are derived; f3 is synthetic, not recovered raw
 /// bytes. None of this is a full session replay.
@@ -630,7 +630,7 @@ fn i2879_offline_ansi() {
     assert_eq!(i2879_matches(&snapshot), vec![(16, 17)], "{name}: matches");
 }
 
-/// #2879 - upstream `fmt_elapsed_compact` shapes (`Ns`, `Nm SSs`, `Nh MMm SSs`) and the
+/// Upstream `fmt_elapsed_compact` shapes (`Ns`, `Nm SSs`, `Nh MMm SSs`) and the
 /// ` · ` context suffix, through the same pipeline, one independent 24x80 parser each.
 #[test]
 fn i2879_offline_elapsed() {
@@ -669,7 +669,7 @@ fn i2879_production_matches(snapshot: &I2879Snapshot) -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// #2879 - both activity-glyph prefixes, styled, with context, wrapped and at the top
+/// Both activity-glyph prefixes, styled, with context, wrapped and at the top
 /// edge, through ANSI -> vt100 -> `logical_rows` -> the production pattern, at every
 /// split point (CSI and UTF-8 cut anywhere). The row-0 wrap stays skipped: a known limit.
 #[test]

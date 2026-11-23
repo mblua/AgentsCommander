@@ -3,7 +3,7 @@ use super::*;
 /// 9.3.24 - **a session with no agent is never registered**, so a plain shell costs this
 /// engine nothing, ever: no entry, no read, no allocation.
 ///
-/// Asserted against the real registration site, which is one helper shared with the #1032
+/// Asserted against the real registration site, which is one helper shared with the
 /// scraper, rather than against a re-implementation of its condition.
 #[test]
 fn a_session_with_no_agent_is_never_registered() {

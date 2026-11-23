@@ -340,7 +340,7 @@ async fn full_queue_keeps_critical_kinds_distinct_and_deduplicates_each_kind() {
     assert!(coordinator.inner.worker.lock().unwrap().is_none());
 }
 
-// #1151 (S1) - an absent session UUID reports NoPublicSession, distinctly from the
+// An absent session UUID reports NoPublicSession, distinctly from the
 // in-flight case, and does so before any admission is reserved or job enqueued.
 #[tokio::test]
 async fn watchdog_kill_reports_no_public_session_for_absent_uuid() {
@@ -387,7 +387,7 @@ async fn watchdog_kill_reports_no_public_session_for_absent_uuid() {
     drop(reservations);
 }
 
-// #1151 (S2) - with the WatchdogKill critical key held for a PUBLIC uuid, the second
+// With the WatchdogKill critical key held for a PUBLIC uuid, the second
 // call reports AlreadyInFlight, never NoPublicSession. The orphan fallback keys off
 // the second variant only, so conflating them would re-enter a live cleanup.
 #[tokio::test]
@@ -463,7 +463,7 @@ async fn watchdog_kill_reports_already_in_flight_when_key_held() {
     );
 }
 
-// #1151 (S3) - the absent-session outcomes of the two SIBLING entry points are
+// The absent-session outcomes of the two SIBLING entry points are
 // deliberately inconsistent with each other and are left exactly as they are. A
 // dedicated WatchdogKillOutcome exists so nobody normalizes all three at once.
 #[tokio::test]

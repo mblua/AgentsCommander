@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1614 requirement (D) and (C), section 9.1 "API and snapshot fixture twins".
+/// Requirement (D) and (C), section 9.1 "API and snapshot fixture twins".
 ///
 /// This file is on section 6.1's PRESERVED list: no production line in it
 /// changes, and section 6.1's table authorizes exactly this `#[cfg(test)]`
@@ -34,7 +34,7 @@ const ROOM_ACCEPTANCE_TEST_NAME: &str = concat!(
     "room_targets::room_target_capture_and_cross_room_denial_use_the_discovered_fqn",
 );
 
-/// #2317: an authorized same-room coordinator captures the discovered room
+/// An authorized same-room coordinator captures the discovered room
 /// member FQN, while a different room's coordinator is denied without content.
 /// The target is the value discovery returned, not a hand-built string, so
 /// discovery and capture must agree on one identity.

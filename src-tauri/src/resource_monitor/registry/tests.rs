@@ -19,11 +19,11 @@ struct FakeProcessTreeBackend {
     exit_during_terminate: Mutex<BTreeSet<ProcessIdentity>>,
     remove_on_terminate: Mutex<HashMap<ProcessIdentity, Vec<ProcessIdentity>>>,
     terminated: Mutex<Vec<ProcessIdentity>>,
-    /// #559 (T1) - roots flagged here make `observe_tree` return Err, modelling a
+    /// Roots flagged here make `observe_tree` return Err, modelling a
     /// failed enumeration. The Err arm of `snapshot()` must never reach the strike
     /// counter or reap.
     fail_observe: Mutex<BTreeSet<ProcessIdentity>>,
-    /// #1151 - call counters so a test can assert that an ineligible orphan retry
+    /// Call counters so a test can assert that an ineligible orphan retry
     /// touched the backend zero times.
     observe_tree_calls: AtomicUsize,
     observe_identity_calls: AtomicUsize,
@@ -166,7 +166,7 @@ impl FakeProcessTreeBackend {
         self.terminated.lock().unwrap().clone()
     }
 
-    /// #1151 - (`observe_tree`, `observe_identity`, `terminate_verified`) call counts.
+    /// (`observe_tree`, `observe_identity`, `terminate_verified`) call counts.
     fn call_counts(&self) -> (usize, usize, usize) {
         (
             self.observe_tree_calls.load(Ordering::SeqCst),
@@ -343,7 +343,7 @@ fn assert_disabled_snapshot(snapshot: &ResourceSnapshot, expected_limits: Resour
     assert!(snapshot.warnings.is_empty());
 }
 
-// #559 - test-only accessors into the internal group state. `mod tests` is a child
+// Test-only accessors into the internal group state. `mod tests` is a child
 // of the registry module, so it can read the private `inner` field directly.
 impl ResourceMonitorState {
     fn test_strikes(&self, id: Uuid) -> Option<u8> {
@@ -359,7 +359,7 @@ impl ResourceMonitorState {
         self.inner.lock().unwrap().groups.get(&id).map(|g| g.state)
     }
 
-    /// #1151 - deterministic stand-in for a concurrent transition, so R6 can drive
+    /// Deterministic stand-in for a concurrent transition, so R6 can drive
     /// the Terminating classification without threads. Stays inside `mod tests`
     /// because its only caller is in this file.
     fn test_force_state(&self, id: Uuid, state: ResourceGroupState) {
@@ -375,7 +375,7 @@ fn missing_root_error(root: ProcessIdentity) -> Vec<String> {
 
 // (a) H1 - a naturally-exited root reaps after two strikes + a confirmed-gone check.
 
-/// #1151 - registers a group whose cleanup quarantines on a stubborn child, which is
+/// Registers a group whose cleanup quarantines on a stubborn child, which is
 /// the shape every orphan takes: the root and one descendant, the descendant refusing
 /// to verify gone at teardown. Returns the group's root and child identities.
 fn quarantined_group(

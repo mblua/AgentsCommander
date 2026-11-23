@@ -159,7 +159,7 @@ enum ResponseGroupWorker {
     ),
 }
 
-/// #3317 - a close stop whose completion is observed by a tokio task.
+/// A close stop whose completion is observed by a tokio task.
 #[derive(Clone, Copy)]
 pub(crate) enum StopLane {
     Telegram,
@@ -175,7 +175,7 @@ impl StopLane {
     }
 }
 
-/// #3317 - the exact-operation completion evidence of one close lane.
+/// The exact-operation completion evidence of one close lane.
 enum LaneEvidence {
     Missing,
     Quiescent,
@@ -211,7 +211,7 @@ impl LaneEvidence {
     }
 }
 
-/// #3317 - why `discard_quiescence` does not prove the close quiescent.
+/// Why `discard_quiescence` does not prove the close quiescent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DiscardHold {
     OwnerRecordUnreadable,
@@ -267,7 +267,7 @@ impl DiscardHold {
     }
 }
 
-/// #3317 - per lane (native, telegram, readers): the missing, running and ambiguous holds.
+/// Per lane (native, telegram, readers): the missing, running and ambiguous holds.
 const LANE_HOLDS: [[DiscardHold; 3]; 3] = [
     [
         DiscardHold::NativeExitMissing,
@@ -286,7 +286,7 @@ const LANE_HOLDS: [[DiscardHold; 3]; 3] = [
     ],
 ];
 
-/// #3317 - the complete stage sequence of a close that reached the auxiliary effects:
+/// The complete stage sequence of a close that reached the auxiliary effects:
 /// `kill` from `execute_response_close_core`, then the order `run_response_close_auxiliary`
 /// writes. Any change to that writer's order must change this list.
 const DISCARD_STAGES: [&str; 8] = [
@@ -298,7 +298,7 @@ struct ResponseEffectRecord {
     group: Option<ResponseEffectState<crate::resource_monitor::types::ResourceKillResult>>,
     group_worker: Option<ResponseGroupWorker>,
     sealed: bool,
-    /// #3317 - index 0 native exit, 1 telegram stop, 2 readers stop.
+    /// Index 0 native exit, 1 telegram stop, 2 readers stop.
     lanes: [LaneEvidence; 3],
 }
 
@@ -344,7 +344,7 @@ impl ResponseEffectOwner {
         .is_err());
     }
 
-    /// #3317 - sets a task lane back to `Missing` so a test can call the real
+    /// Sets a task lane back to `Missing` so a test can call the real
     /// `record_task_stop`; it never writes `Task`/`Quiescent` itself.
     #[cfg(test)]
     pub(crate) fn clear_task_lane_for_test(&self, lane: StopLane) {
@@ -400,7 +400,7 @@ impl ResponseEffectOwner {
         Some(())
     }
 
-    /// #3317 - records what the kill proved about the native child; first record wins.
+    /// Records what the kill proved about the native child; first record wins.
     pub(crate) fn record_native_exit(&self, exit: crate::pty::backend::NativeExit) -> Option<()> {
         use crate::pty::backend::NativeExit;
         let mut record = self.record.lock().ok()?;
@@ -416,7 +416,7 @@ impl ResponseEffectOwner {
         Some(())
     }
 
-    /// #3317 - records the stop observation of a task lane; first record wins.
+    /// Records the stop observation of a task lane; first record wins.
     pub(crate) fn record_task_stop(
         &self,
         lane: StopLane,
@@ -435,7 +435,7 @@ impl ResponseEffectOwner {
         Some(())
     }
 
-    /// #3317 - `Ok` only when the sealed record proves every close effect finished and
+    /// `Ok` only when the sealed record proves every close effect finished and
     /// every lane quiescent. Never blocks; settled lanes are stored back.
     pub(crate) fn discard_quiescence(&self) -> Result<(), DiscardHold> {
         let Ok(mut record) = self.record.lock() else {
