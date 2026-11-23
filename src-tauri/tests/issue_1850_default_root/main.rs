@@ -1,4 +1,4 @@
-//! #1868 R15 acceptance: an unsuffixed product executable selects
+//! R15 acceptance: an unsuffixed product executable selects
 //! `$HOME/.agentscommander` and never reads, copies, moves, imports, deletes
 //! or adopts a legacy root.
 //!
