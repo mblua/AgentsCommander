@@ -1059,7 +1059,7 @@ const UI_KEY_CHORD =
   /^(Ctrl\+)?(Alt\+)?(Shift\+)?(Meta\+)?(Escape|Enter|Space|Tab|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End)$/;
 
 function parseUiPointerOperation(value: string | null | undefined): UiPointerOperation | null {
-  if (typeof value !== "string" || !Object.prototype.hasOwnProperty.call(UI_POINTER_OPERATIONS, value)) return null;
+  if (typeof value !== "string" || !Object.hasOwn(UI_POINTER_OPERATIONS, value)) return null;
   return UI_POINTER_OPERATIONS[value] ?? null;
 }
 

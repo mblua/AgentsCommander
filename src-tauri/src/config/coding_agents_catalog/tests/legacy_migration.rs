@@ -458,7 +458,7 @@ fn reseed_with_no_primary_targets_legacy_config_dir() {
     // installs with zero registered projects: no primary root -> the legacy
     // `<config_dir>/coding-agents/_seed/<dest>` masters are the target.
     //
-    // #2001: this fixture dir stands in for the per-binary `config_dir()`.
+    // This fixture dir stands in for the per-binary `config_dir()`.
     // This test is the ONLY writer of the real `<config_dir>/coding-agents`
     // tree, and separate test processes share that path; an in-process lock
     // cannot serialize processes, so the real path is never resolved here.

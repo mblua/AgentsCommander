@@ -54,7 +54,7 @@ function codexAgent(): AgentConfig {
   };
 }
 
-// #551: a second coding agent so the test can make a *real* re-assignment.
+// A second coding agent so the test can make a *real* re-assignment.
 // Re-assigning the live session's current agent (codex) is now disabled, so the
 // restart prompt is reached by switching to a different coding agent.
 function claudeAgent(): AgentConfig {
@@ -224,7 +224,7 @@ function seedLiveSession(): void {
   ]);
 }
 
-/** #977: replica-menu items now lead with an icon (Restart Session and Coding
+/** Replica-menu items now lead with an icon (Restart Session and Coding
  *  Agent joined the folder/broom items), so match on the label with any leading
  *  icon stripped - the same normalization menuButtonLabels uses in
  *  ProjectPanel.context-menu.test.tsx. */

@@ -334,7 +334,7 @@ pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
     let script_path = temp.path().join("pty-child.ps1");
 
     std::fs::create_dir_all(&repo_root).expect("create repo root");
-    // #1077: a registered project path must resolve to a real AC project (a
+    // A registered project path must resolve to a real AC project (a
     // directory containing a `.ac` Project Root) for the six-field decoder to
     // select it into the runtime projectPaths. Without this `.ac`, the CLI loader
     // (`load_settings_for_cli`) validates repo_root as AcRootOrCollectionMissing,

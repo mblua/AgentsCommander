@@ -461,7 +461,7 @@ describe("ProjectPanel working tint (#1755)", () => {
   });
 
   it("7. a quick-access row still tints when its own orchestrator session is the only one working", async () => {
-    // Acceptance criterion 3. Since #1783 the quick-access predicate is
+    // Acceptance criterion 3. Since the change the quick-access predicate is
     // room-wide, so this test isolates the orchestrator: it is the ONLY working
     // agent in the room, which is the one case a peers-only implementation
     // (wiring the row to runningCoordinatorPeers) would get wrong. The two
@@ -516,7 +516,7 @@ describe("ProjectPanel working tint (#1755)", () => {
         replicaSession(IDLE_ORCHESTRATOR, "idle", false, IDLE_ROOM),
         replicaSession(IDLE_MEMBER, "running", true, IDLE_ROOM),
       ]);
-      // Gate only. True before and after #1783 and under every mutation probe,
+      // Gate only. True before and after the change and under every mutation probe,
       // so it settles the store without ever masking one.
       await waitFor(() =>
         expect(row(rendered.root, "workgroups", WORKER).classList.contains("working")).toBe(true)

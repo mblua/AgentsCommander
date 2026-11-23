@@ -1,4 +1,4 @@
-// #4300 - every raw-HTML sink in production code must be on ALLOWED,
+// Every raw-HTML sink in production code must be on ALLOWED,
 // scanning src/**/*.ts and src/**/*.tsx, except test files. Comments are scanned too.
 // Text scans miss computed properties, computed spread keys, and aliases such as d.write(x).
 // javascript: URL sinks are out of scope. Substring evidence needs human review on every edit.

@@ -28,7 +28,7 @@ pub(crate) fn default_context_dynamic_values(
         "root agent must not also have an origin matrix (single item-3 invariant)"
     );
 
-    // #923 D1: the Root Agent may read and write every agent's replica under a
+    // D1: the Root Agent may read and write every agent's replica under a
     // registered project (ROOT_PROJECT_SCOPE_ENTRY), so
     // the peer-replica prohibition is rendered for non-root agents only.
     let replica_usage = if is_root_agent {
@@ -102,7 +102,7 @@ pub(crate) fn default_context_dynamic_values(
         (String::new(), String::new())
     };
 
-    // #1795: both entries come from ONE resolution of the agent root, so they are
+    // Both entries come from ONE resolution of the agent root, so they are
     // empty together or populated together. No `debug_assert!` that entry 4 implies
     // entries 5 and 6: under the strict resolver a nested non-replica renders entry 4
     // and must NOT render entries 5 and 6, so that implication is false by design.
@@ -212,7 +212,7 @@ fn messaging_access_grants(messaging_mode: &MessagingContextMode) -> (String, St
         // Workgroup messaging renders in the standard entry-4 block and Root
         // messaging remains in its Narrow exception; neither uses this fine bullet.
         MessagingContextMode::Workgroup(_) | MessagingContextMode::Root(_) => String::new(),
-        // #923 D3: this session has no messaging directory of its own (no `wg-<N>-*`
+        // This session has no messaging directory of its own (no `wg-<N>-*`
         // ancestor, not the Root Agent), so `send --send` rejects it outright
         // (cli/send.rs:406). It can still be a delivery target, and the Inter-Agent
         // Messaging block tells it to read the notified path. Grant exactly that read,
@@ -230,7 +230,7 @@ fn messaging_access_grants(messaging_mode: &MessagingContextMode) -> (String, St
 }
 
 fn forbidden_read_scope(is_root_agent: bool, messaging_read_phrase: &str) -> String {
-    // #923: reads are now restricted to the same allowed entries as writes. The Root
+    // Reads are now restricted to the same allowed entries as writes. The Root
     // Agent already holds a project-wide read grant, so it gets a scope sentence rather
     // than the peer-privacy clause that applies to every other agent. D2: that scope is
     // defined by `project-paths.json`, which lives in the app config dir OUTSIDE every
@@ -307,7 +307,7 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
     }
 }
 
-// #4752 D5: the message file rules, rendered in the Integrity Rules block.
+// D5: the message file rules, rendered in the Integrity Rules block.
 fn messaging_integrity_rule(messaging_mode: &MessagingContextMode) -> String {
     match messaging_mode {
         MessagingContextMode::Workgroup(path) => format!(
@@ -359,7 +359,7 @@ fn send_message_instructions(messaging_mode: &MessagingContextMode) -> String {
              ```\n\n\
              `--send` takes the filename ONLY, never a path.\n"
             .to_string(),
-        // #923 D3: no `wg-<N>-*` ancestor and not the Root Agent, so `send --send`
+        // No `wg-<N>-*` ancestor and not the Root Agent, so `send --send`
         // refuses this root (cli/send.rs:406-414). Telling it to walk up to a workgroup
         // root it does not have would order an operation the Golden Rule forbids and the
         // CLI rejects. State the truth instead.
@@ -406,7 +406,7 @@ pub(crate) fn default_context(
     )
 }
 
-/// #979 G.2: Root no longer reaches the global-template renderer, so every Root
+/// G.2: Root no longer reaches the global-template renderer, so every Root
 /// governance test that rides this helper must exercise the code-owned prologue.
 /// Left pointed at `render_agent_context_template_inner`, nine of them would keep
 /// passing while asserting nothing about Root's real prompt. Tests that

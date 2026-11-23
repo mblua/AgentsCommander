@@ -40,7 +40,7 @@ pub(crate) const OLD_COORDINATOR_CONTEXT_TEMPLATE_BEFORE_RAISE_HAND: &str =
      C:\\Users\\maria\\0_greenshot\\, and visually inspect the image content before sending.\n\
      - Do not judge Greenshot screenshot relevance by filename; names can be misleading.\n";
 
-/// S6: `get_default_agent_template()` exactly as it shipped from #658
+/// S6: `get_default_agent_template()` exactly as it first shipped
 /// (mandatory placeholders) through base commit ec660c17, frozen so a
 /// pristine v1 `Context.AgentsCommander.md` on disk keeps being recognized
 /// (project auto-update AND standalone root retirement) after the v2
@@ -78,7 +78,7 @@ You are running inside an AgentsCommander session - a terminal session manager t
 "#
 );
 
-/// `get_default_agent_template()` exactly as it shipped from #1005
+/// `get_default_agent_template()` exactly as it shipped second
 /// S6 (token minimization, v2) through base commit 8f272a76, frozen so a
 /// pristine v2 `Context.AgentsCommander.md` on disk keeps being recognized
 /// (project auto-update AND standalone root retirement) after the v3
@@ -119,7 +119,7 @@ You are running inside an AgentsCommander session - a terminal session manager c
 "#
 );
 
-/// `get_default_agent_template()` exactly as it shipped from #1369
+/// `get_default_agent_template()` exactly as it shipped third
 /// (the `{{AGENT_REPOS}}` rename, v3) through base commit 6aae531e, frozen so
 /// pristine v3 project templates and standalone templates remain exact
 /// generated operands after the v4 summarization. Never edit. The shipped
@@ -193,8 +193,8 @@ You are in AgentsCommander, a terminal session manager coordinating multiple AI 
 "#
 );
 
-/// #1005 S4: `get_default_coordinator_template()` exactly as it shipped from
-/// #684 (raise-hand) through base commit 1dd0b58, frozen as the second legacy
+/// S4: `get_default_coordinator_template()` exactly as it shipped from
+/// (raise-hand) through base commit 1dd0b58, frozen as the second legacy
 /// snapshot so a pristine v2 `Context.coordinator.md` on disk keeps being
 /// recognized and auto-upgraded after the v3 token-minimization rewrite.
 /// Never edit. Provenance (G3): one-off run of the shipped accessor at
@@ -294,7 +294,7 @@ pub(crate) const COORDINATOR_CONTEXT_TEMPLATE_BEFORE_CROSS_WORKGROUP_RULE: &str 
 /// base commit ecc6527b, frozen as the fourth legacy snapshot so a pristine v4
 /// `Context.coordinator.md` on disk keeps being recognized and auto-upgraded
 /// after the v5 Coordinator-to-Orchestrator rename.
-/// Never edit. Provenance (plan #1571 3.6): the shipped accessor measured at
+/// Never edit. Provenance (plan 3.6): the shipped accessor measured at
 /// base commit ecc6527b printed len 2509, sha256
 /// f6ef7894b9f0f606e945c282d769144e96487fcc01ab435c9aab8019bb3ce1f6; pinned by
 /// `coordinator_pre_orchestrator_rename_snapshot_is_byte_exact` against those

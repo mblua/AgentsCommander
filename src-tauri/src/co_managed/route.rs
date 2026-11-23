@@ -646,7 +646,7 @@ pub(crate) async fn handle_co_managed_trigger<H: CoManagedHost + ?Sized>(
             room_root.display(),
             catalog_path
         );
-        // #2756 U2a: the slot keeps the candidate; remember it so the next
+        // U2a: the slot keeps the candidate; remember it so the next
         // reader-demand pass can re-offer it once the room is Ready.
         handle.mark_pending_recovery(&id, state.seq, Arc::clone(&candidate));
         if was_armed {

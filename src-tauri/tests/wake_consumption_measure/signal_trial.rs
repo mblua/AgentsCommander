@@ -12,7 +12,7 @@ use super::{
 };
 
 pub(super) async fn wait_for_inject_point(cfg: &HarnessConfig, ctx: &HarnessCtx, id: Uuid) {
-    // Boot/inject timing per mode. The #1001 drop lives in the fresh-idle
+    // Boot/inject timing per mode. The drop lives in the fresh-idle
     // window BEFORE the TUI is paste-ready, so "ready" (settle first) tends
     // to consume cleanly while "first_idle"/"immediate" reproduce the race.
     let boot_deadline = Instant::now() + Duration::from_secs(45);

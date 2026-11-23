@@ -1,6 +1,6 @@
 use super::*;
 
-// ── extract_task_first_line — issue #161 ──
+// ── extract_task_first_line ──
 
 #[test]
 fn task_no_frontmatter_with_heading() {
@@ -160,9 +160,9 @@ fn invalid_replica_identity_is_not_reported_as_repaired_discovery_identity() {
     );
 }
 
-// --- #943 Module B2: the widened ac_discovery_branch_updated payload ---
+// --- The widened ac_discovery_branch_updated payload ---
 
-/// Repo tuple: (path, branch, dirty). #1028 added the third column.
+/// Repo tuple: (path, branch, dirty).
 fn b2_payload(
     branch: Option<&str>,
     repos: &[(&str, Option<&str>, Option<bool>)],
@@ -185,7 +185,7 @@ fn b2_payload(
 /// "missing entry"), and `repoBranches[i]` / `repoDirty[i]` must line up with
 /// `repoPaths[i]`.
 ///
-/// #1028: this is the one test that can catch a `repo_dirty` vs `repoDirty` wire
+/// This is the one test that can catch a `repo_dirty` vs `repoDirty` wire
 /// name mismatch. A frontend test cannot: its payload is written to match the TS
 /// interface, so if Rust emitted `repo_dirty` the frontend test would still pass
 /// and every badge in production would go permanently violet.
@@ -253,7 +253,7 @@ fn discovery_branch_payload_gate_fires_on_per_repo_drift() {
     assert_ne!(before, after, "per-repo drift must re-emit");
 }
 
-/// #1028 - a dirty flip with every branch identical must re-emit, or the badge
+/// A dirty flip with every branch identical must re-emit, or the badge
 /// never turns red on a cold row. `PartialEq` over the whole payload is what
 /// delivers this, which is why `repo_dirty` had to join the payload rather than
 /// ride a separate event: no gate change was needed, but the field must be IN the
@@ -291,7 +291,7 @@ fn discovery_branch_payload_gate_fires_on_dirty_flip() {
     assert_ne!(clean, unknown, "false and null are distinct on the wire");
 }
 
-/// #2064 - the room map travels with the path vector, from the same map, in
+/// The room map travels with the path vector, from the same map, in
 /// the same guard-released window. The room dir is the parent of the replica
 /// path, and the existing path push is unchanged.
 #[test]

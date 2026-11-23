@@ -1,6 +1,6 @@
 use super::*;
 
-// #2682 - the cross-process Loop lock.
+// The cross-process Loop lock.
 
 const LOCK_CHILD_ACTION_ENV: &str = "AC_2682_LOOP_LOCK_CHILD_ACTION";
 
@@ -112,7 +112,7 @@ fn wait_child(mut child: std::process::Child, bound: Duration) -> String {
     stdout
 }
 
-/// #2682 - the child half of T1. A no-op without the child-only action
+/// The child half of T1. A no-op without the child-only action
 /// environment, so an ordinary suite run passes it untouched.
 #[test]
 fn issue_2682_loop_lock_child() {
@@ -135,7 +135,7 @@ fn issue_2682_loop_lock_child() {
     println!("AC_2682_LOOP_LOCK_CHILD_DONE");
 }
 
-/// #2682 T0 - two handles on one sidecar in one process exclude each
+/// Two handles on one sidecar in one process exclude each
 /// other. The in-process legs of T2a/T2b/T7 and the no-self-lock rule for
 /// the leaf writers rest on this.
 #[test]
@@ -164,7 +164,7 @@ fn issue_2682_t0_same_process_handles_exclude() {
         .expect("the lock frees when the first handle closes");
 }
 
-/// #2682 T1 - a child process holds the Loop lock; the parent times out
+/// A child process holds the Loop lock; the parent times out
 /// with `loopLockTimeout` naming the sidecar, then acquires once released
 /// (the positive control: a sidecar that never opens also times out).
 #[test]
@@ -189,7 +189,7 @@ fn issue_2682_t1_lock_excludes_another_process() {
         .expect("positive control: acquires after the child releases");
 }
 
-/// #2682 T2a - two update sections with different crons. Writer A stops
+/// T2a - two update sections with different crons. Writer A stops
 /// between its config and state writes while writer B runs. With the lock
 /// B waits, so the on-disk pair agrees; without it B's config sits next to
 /// A's state and the pair disagrees.
@@ -224,7 +224,7 @@ fn issue_2682_t2a_update_sections_keep_config_and_state_agreeing() {
     assert_eq!(config.trigger.expr, EXPR_JULY, "B's section runs after A's");
 }
 
-/// #2682 T3 - the sidecar lives outside the Loop directory, so removing the
+/// The sidecar lives outside the Loop directory, so removing the
 /// Loop leaves it in place, and a re-created Loop reuses it.
 #[test]
 fn issue_2682_t3_sidecar_survives_loop_removal() {
@@ -252,7 +252,7 @@ fn issue_2682_t3_sidecar_survives_loop_removal() {
     assert_eq!(lock_files, vec!["._loop_weekday-standup.lock".to_string()]);
 }
 
-/// #2682 T4 - a section holding the Loop lock calls every leaf writer and
+/// A section holding the Loop lock calls every leaf writer and
 /// completes: the leaves never take the lock themselves. Bounded, so a
 /// regression fails instead of hanging the job.
 #[test]
@@ -294,7 +294,7 @@ fn issue_2682_t4_leaf_writers_do_not_self_deadlock() {
         .expect("every leaf writer succeeds under the held lock");
 }
 
-/// #2682 T5 - raw, dot-segment and (on Windows) case-variant spellings of
+/// Raw, dot-segment and (on Windows) case-variant spellings of
 /// one AC root resolve to one sidecar and exclude each other.
 #[test]
 fn issue_2682_t5_root_aliases_share_one_lock() {
@@ -318,7 +318,7 @@ fn issue_2682_t5_root_aliases_share_one_lock() {
     }
 }
 
-/// #2682 T7 - writer A (an update) stops between config and state while
+/// Writer A (an update) stops between config and state while
 /// writer B removes the Loop. The only clean outcomes: A's section then B's
 /// removal, or B first and A fails "not found" from a check under the lock.
 /// Never a failed half-write, never `state.json` without `config.toml`.
@@ -354,7 +354,7 @@ fn issue_2682_t7_removal_waits_for_an_update_section() {
     }
 }
 
-/// #2682 gate 4 - the pause hook is inert unless armed: no environment
+/// Gate 4 - the pause hook is inert unless armed: no environment
 /// arming leaks into an ordinary run, and an unarmed stage returns at once.
 #[test]
 fn issue_2682_pause_hook_is_disarmed_by_default() {

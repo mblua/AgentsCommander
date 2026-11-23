@@ -1,8 +1,8 @@
-//! #4843 Sound sink check behind the sidebar sound button.
+//! Sound sink check behind the sidebar sound button.
 
 use crate::process::AudioSinkStatus;
 
-/// #4843 Whether WebKitGTK can find its sound sink; always `"ok"` off Linux.
+/// Whether WebKitGTK can find its sound sink; always `"ok"` off Linux.
 #[tauri::command]
 pub(crate) async fn get_audio_sink_status() -> AudioSinkStatus {
     crate::process::audio_sink_status(crate::config::environment::in_appimage()).await

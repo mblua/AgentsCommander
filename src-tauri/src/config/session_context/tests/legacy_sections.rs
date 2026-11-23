@@ -66,7 +66,7 @@ fn assert_defaults_index_and_render_cleanly(root: &Path) {
 
     // A skill can sit in `index.skills`, warning-free, and still never reach the model:
     // `push_with_budget` drops entries past the budget and `skill_trigger_text` truncates.
-    // The assertion #909 actually wants is "the shipped defaults reach the agent".
+    // The assertion this guard actually wants is "the shipped defaults reach the agent".
     let rendered = render_skills_section(&index);
     assert!(rendered.contains("### Available Skills"));
 
@@ -102,7 +102,7 @@ fn assert_defaults_index_and_render_cleanly(root: &Path) {
 ///
 /// A fresh-tempdir test cannot do this. `root_agent.rs:1159` and `:1168` asserted
 /// `seeded == constant` against a fresh temp root and stayed green for eleven days while
-/// eighteen installs on disk were broken. That blind spot is #909.
+/// eighteen installs on disk were broken. That blind spot is what this test closes.
 #[test]
 fn broken_agency_skill_install_is_repaired_and_reaches_the_context() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -132,7 +132,7 @@ fn shipped_default_root_skills_parse_through_the_real_indexer() {
     assert_defaults_index_and_render_cleanly(&root);
 }
 
-/// #1005 S1 / G3 provenance pin: the frozen legacy intro must stay
+/// S1 / G3 provenance pin: the frozen legacy intro must stay
 /// byte-identical to the const that shipped through base commit 08897ef.
 /// Expected values were captured by a one-off run of the shipped const AT
 /// that commit (never from this const), per the plan's freeze-provenance
@@ -155,7 +155,7 @@ fn legacy_generated_skills_section_intro_is_byte_exact() {
     );
 }
 
-/// #1005 S1 / plan 6.6: a REAL old-generation legacy rendered default whose
+/// S1 / plan 6.6: a REAL old-generation legacy rendered default whose
 /// embedded skills section carries the pre-rewrite intro still classifies
 /// `StaleGenerated` and heals on disk. The embedded section is the frozen OLD
 /// intro (independently byte-pinned against 08897ef) plus the current
@@ -297,9 +297,9 @@ fn edited_legacy_intro_skills_section_is_preserved_not_healed() {
     );
 }
 
-// ── #1614 step 6: the live halves and the D8f behavioural pins ──────────
+// ── step 6: the live halves and the D8f behavioural pins ──────────
 
-/// #1614 D8b, the LIVE half of the git-scope split (the frozen half is
+/// D8b, the LIVE half of the git-scope split (the frozen half is
 /// `workgroup_git_scope_frozen_half_is_byte_exact`). The `contains` pair is
 /// the tripwire: a `contains` on ONE prefix is exactly what would pass a
 /// half-done split. The two `assert!` CEILINGS below in
@@ -320,7 +320,7 @@ fn workgroup_git_scope_split_is_correct() {
     );
 }
 
-/// #1614 AC7.14, the external anchor for D8f. The frozen half's length and
+/// AC7.14, the external anchor for D8f. The frozen half's length and
 /// sha256 come from the plan (section 3.12 Table B), not from the constant.
 /// AC7.15's two behavioural tests build their fixtures FROM this constant,
 /// so it is the PAIR that is non-self-referential, not either half alone.
@@ -360,7 +360,7 @@ fn skills_section_replica_line_split_is_correct() {
     );
 }
 
-/// #1614 AC7.15, the behavioural pin for D8f, modelled on #1005's twin
+/// AC7.15, the behavioural pin for D8f, modelled on the S5 twin
 /// `legacy_intro_skills_section_still_classifies_stale_generated_and_heals`.
 ///
 /// A `Context.AgentsCommander.md` whose EMBEDDED skills section carries the
@@ -450,7 +450,7 @@ fn pre_room_rename_skills_section_still_classifies_stale_generated_and_heals() {
     assert_eq!(healed, get_default_agent_template());
 }
 
-/// #1614 AC7.15's negative control, modelled on
+/// AC7.15's negative control, modelled on
 /// `edited_legacy_intro_skills_section_is_preserved_not_healed`. One mutated
 /// byte inside the frozen pre-rename line means the section is no longer
 /// provably generated, so the file classifies `NotLegacy` and is preserved
@@ -508,7 +508,7 @@ fn edited_pre_room_rename_skills_line_is_preserved_not_healed() {
     );
 }
 
-/// #1614 section 7 item 10, the OTHER outcome. A file whose bytes are
+/// Section 7 item 10, the OTHER outcome. A file whose bytes are
 /// `legacy_rendered_default_context_for_compat` over the same inputs the
 /// classifier is given returns `Current`, not `StaleGenerated`: there is
 /// nothing stale about it, so it is returned as-is and left on disk
@@ -548,7 +548,7 @@ fn current_generation_legacy_context_classifies_current() {
     );
 }
 
-/// #1614 AC7.13. The rendered LIVE context for a Room replica says Room.
+/// AC7.13. The rendered LIVE context for a Room replica says Room.
 /// The matrix root must have a real `skills/` directory, or
 /// `render_skills_section` takes the no-skills arm and the criterion passes
 /// without ever exercising the line D8f moves.
@@ -595,7 +595,7 @@ fn default_context_for_a_room_replica_says_room() {
     );
 }
 
-/// #1614 AC7.4, the frozen half of the D8b split. `WORKGROUP_GIT_SCOPE` is
+/// The frozen half of the live/legacy split. `WORKGROUP_GIT_SCOPE` is
 /// read by the LIVE renderer and by the FROZEN legacy recognizer. Rule R
 /// forces the first to change; Rule P3 forces the second not to. The live
 /// half's assertions live in `workgroup_git_scope_split_is_correct`.
@@ -617,7 +617,7 @@ fn workgroup_git_scope_frozen_half_is_byte_exact() {
     );
 }
 
-/// #1614 AC7.8, the source-side freeze, and the criterion round 1 most
+/// AC7.8, the source-side freeze, and the criterion round 1 most
 /// needed and did not have: a byte comparison against a value taken from the
 /// frozen base and written into the plan, so it cannot move with the code.
 /// The rendered-output digests (AC7.7) prove nothing in the function's
@@ -625,7 +625,7 @@ fn workgroup_git_scope_frozen_half_is_byte_exact() {
 ///
 /// The ONE difference this criterion tolerates is D8b's identifier switch at
 /// the git-scope read, which changes an identifier and not a byte of prose.
-/// #3545 re-pins the source after wrapping literals and moving the format literal
+/// The pin now covers the source after wrapping literals and moving the format literal
 /// to a module macro;
 /// all rendered-output lengths and digests stay unchanged. The source remains
 /// frozen byte for byte at this formatted version.
@@ -681,7 +681,7 @@ fn legacy_rendered_default_context_for_generation_source_is_frozen() {
     );
 }
 
-/// #1614 (plan section 3.12 Table C, section 12 step 0): the two legacy
+/// Plan section 3.12 Table C, section 12 step 0: the two legacy
 /// reconstructions the Room rename must not move, pinned by values captured
 /// with a one-off run of the shipped functions AT base commit
 /// d7008b34e155a8bd6481be5feecfc7d96575328f, read out of a deliberately
@@ -725,7 +725,7 @@ fn legacy_rendered_default_context_is_frozen() {
          legacy recognizer no longer reproduces the d7008b34 bytes"
     );
 
-    // C2: the pre-#1072 reconstruction, the candidate that actually carries
+    // C2: the older reconstruction, the candidate that actually carries
     // the `StaleGenerated` outcome.
     let c2 = pre_1072_legacy_rendered_default_context_for_compat(AGENT_ROOT, Some(MATRIX_ROOT), "");
     #[cfg(not(windows))]

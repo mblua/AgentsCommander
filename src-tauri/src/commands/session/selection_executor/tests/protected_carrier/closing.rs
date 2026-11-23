@@ -82,7 +82,7 @@ pub(super) fn exact(record: &BTreeMap<String, String>, key: &str, value: impl To
     );
 }
 
-/// #3317 - default fixture mode has no exit evidence, so every discard stays held.
+/// Default fixture mode has no exit evidence, so every discard stays held.
 fn held_without_exit_evidence(log: &PollLog) {
     let recovery = records(log, "discard_recovery");
     assert!(!recovery.is_empty(), "missing discard_recovery");

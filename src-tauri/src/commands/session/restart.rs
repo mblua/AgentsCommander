@@ -53,13 +53,13 @@ pub(crate) use crate::session::selection::RestartJobRequest;
 /// `skip_auto_resume = Some(false)`. A session is "deferred" (PTY `Exited(0)`
 /// at startup) for any of the following reasons:
 ///
-///   1. `restoreCoordinatorWakeState = false` (the new-policy default per
-///      issue #248) defers every persisted session regardless of agent type.
+///   1. `restoreCoordinatorWakeState = false` (the new-policy default)
+///      defers every persisted session regardless of agent type.
 ///   2. `restoreCoordinatorWakeState = true` defers all non-coordinator team
 ///      members (these are never auto-woken on startup under the new policy).
 ///   3. `restoreCoordinatorWakeState = true` defers coordinators whose PTY
 ///      status was `Exited(_)` at the prior shutdown (the state-sensitive
-///      branch added by issue #248).
+///      branch).
 ///   4. The user explicitly closed the session during the prior run.
 ///
 /// In all four cases, `skip_auto_resume = Some(false)` allows the next PTY
@@ -163,7 +163,7 @@ pub(crate) async fn restart_session_inner_with_intent<R: tauri::Runtime>(
         )
         .await?;
 
-    // #2232 phase 4 section 5.2: the restart replaces the session UUID, so
+    // Section 5.2: the restart replaces the session UUID, so
     // `execute_restart_transaction` owns the reader lifecycle on both the
     // success and failure paths (release the old id, then raise the
     // replacement's own demands). Nothing reader-related is done here.

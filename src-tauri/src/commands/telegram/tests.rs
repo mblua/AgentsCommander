@@ -102,7 +102,7 @@ fn derive_reader_pi_uses_pty_fallback_for_all_backends() {
     }
 }
 
-/// #1873 - Muse is rejected with one exact message on both backends, before
+/// Muse is rejected with one exact message on both backends, before
 /// `TelegramBridgeManager::attach` could create a bridge or filter.
 #[test]
 fn derive_reader_rejects_muse_for_all_backends_before_bridge_creation() {
@@ -146,7 +146,7 @@ fn claude_transcript_id(kind: Option<SessionReaderKind>) -> Option<String> {
     }
 }
 
-/// #2454 test 9: the id AC injects lives only in `effective_shell_args`.
+/// Test 9: the id AC injects lives only in `effective_shell_args`.
 /// The real caller must hand it to the reader; a session whose effective
 /// args are `None` (after an app restart) derives no id.
 #[tokio::test]
@@ -184,7 +184,7 @@ async fn derive_reader_carries_the_injected_id_through_the_real_caller() {
                 .await;
             if inject {
                 // Exactly as `create_session_inner` leaves it: the
-                // configured recipe plus the #756 rider.
+                // configured recipe plus the fresh-session rider.
                 let mut effective = configured.clone();
                 effective.push("--session-id".to_string());
                 effective.push(MINTED_UUID.to_string());
@@ -200,7 +200,7 @@ async fn derive_reader_carries_the_injected_id_through_the_real_caller() {
     assert_eq!(ids[1], None, "no effective args, no id");
 }
 
-/// #2454 test 9b: the CONFIGURED `shell_args` alone decide the projects
+/// Test 9b: the CONFIGURED `shell_args` alone decide the projects
 /// directory. The identity slice carries no Claude token, so feeding it to
 /// the resolver instead would find none and fail.
 #[test]

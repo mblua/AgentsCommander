@@ -5,7 +5,7 @@ declare module "*.png" {
   export default src;
 }
 
-/* #1167 - node:fs for static source guards ONLY (today: the ones in
+/* node:fs for static source guards ONLY (today: the ones in
    src/sidebar/styles/agent-badge-css.test.ts and
    src/sidebar/styles/coord-quick-access-css.test.ts, which have to read real stylesheet
    bytes because Vitest replaces every CSS module with `export default ""` unless

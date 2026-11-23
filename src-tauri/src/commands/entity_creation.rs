@@ -153,7 +153,7 @@ pub(crate) struct ReplicaDiskCreateArgs {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Agent Matrix / replica directory contract (issue #209)
+// Agent Matrix / replica directory contract
 // ---------------------------------------------------------------------------
 //
 // Agent Matrices own canonical state (`memory/`, `plans/`, `skills/`) plus

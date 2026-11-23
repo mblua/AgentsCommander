@@ -1,6 +1,6 @@
 // Generic guard: no CSS rule may be readable in dark mode
 // and unreadable in light mode.
-// Origin defect: #2744 (light-theme text resolved to dark-theme colors, e.g. a
+// Origin defect: (light-theme text resolved to dark-theme colors, e.g. a
 // `rgba(255, 255, 255, 0.5)` fallback on the #f5f5f7 light surface).
 //
 // For every leaf rule of `src/**/*.css` that declares a resolvable `color`, the

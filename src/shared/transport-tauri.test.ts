@@ -78,7 +78,7 @@ describe("TauriTransport listener scoping (#1363)", () => {
   // The label lookup must never reject `init()`: `this.ready` is awaited by
   // invoke, listen and emit alike, so a throw there would take the whole
   // transport down. Degrading to the unscoped registration the app shipped
-  // before #1363 costs bandwidth; a dead transport is a dead window.
+  // before the fix costs bandwidth; a dead transport is a dead window.
   it("still registers, unscoped, when the label cannot be resolved", async () => {
     tauri.labelThrows = true;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

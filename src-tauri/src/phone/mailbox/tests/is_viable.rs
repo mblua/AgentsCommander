@@ -357,7 +357,7 @@ fn is_viable_root_recipient_requires_pty_for_live_states() {
     }
 }
 
-/// #293 regression: a coordinator sends to `ROOT_AGENT_SENDER`; the
+/// Regression: a coordinator sends to `ROOT_AGENT_SENDER`; the
 /// mailbox accepts the route and the recipient lookup finds the
 /// session marked `is_root_agent`. No auto-spawn, no `can_communicate`
 /// fallback.
@@ -528,7 +528,7 @@ fn wake_action_running_injects() {
     assert_eq!(wake_action_for(&SessionStatus::Running), WakeAction::Inject);
 }
 
-// ── wake_spawn_skip_auto_resume tests (issue #82, plan §8.2) ──
+// ── wake_spawn_skip_auto_resume tests (plan §8.2) ──
 
 #[test]
 fn wake_spawn_skip_auto_resume_skips_when_cold() {
@@ -570,7 +570,7 @@ fn wake_action_exited_respawns() {
     );
 }
 
-// ── is_viable_wake_candidate tests (issue #223) ──
+// ── is_viable_wake_candidate tests ──
 
 #[test]
 fn is_viable_wake_candidate_keeps_live_running() {
@@ -587,7 +587,7 @@ fn is_viable_wake_candidate_keeps_live_active() {
     assert!(is_viable_wake_candidate(&SessionStatus::Active, true));
 }
 
-/// Issue #223 — primary regression guard. A `SessionManager` record with
+/// Primary regression guard. A `SessionManager` record with
 /// status=Running but no `PtyManager` entry (the phantom in the log) MUST be
 /// skipped — otherwise `inject_into_pty` fails with `Session not found:` and
 /// the router has no fallback.
@@ -627,16 +627,16 @@ fn is_viable_wake_candidate_keeps_exited_with_stale_pty() {
 /// A `PtyManager` entry that EXISTS but whose underlying child has exited is
 /// STILL treated as viable by this layer (we cannot detect child liveness
 /// without surfacing `portable_pty::Child::wait()`). Documented here so a
-/// future PR closing the AC3 gap (PTY-exit hook in `#223-fu1`) knows this
+/// future PR closing the AC3 gap (the PTY-exit hook follow-up) knows this
 /// test must be updated to assert the new contract. (dev-rust R1.E3.)
 #[test]
 fn is_viable_wake_candidate_accepts_mapped_pty_regardless_of_child_state() {
     // status=Running + has_pty=true → viable, even if the child is secretly dead.
-    // The router relies on `#223-fu1` to keep status in sync with reality.
+    // The router relies on the PTY-exit hook follow-up to keep status in sync with reality.
     assert!(is_viable_wake_candidate(&SessionStatus::Running, true));
 }
 
-// ── (#1001 PR2 / B) cold-spawn settle_tick + live_settle_action (grinch P1) ──
+// ── cold-spawn settle_tick + live_settle_action (grinch P1) ──
 
 #[test]
 fn settle_tick_cold_spawn_busy_keeps_waiting_and_resets_clock() {
@@ -694,7 +694,7 @@ fn settle_tick_caps_and_injects_anyway() {
     );
 }
 
-/// #1388, T1 - the composed readiness input requires BOTH conditions.
+/// T1: the composed readiness input requires BOTH conditions.
 ///
 /// The suite's only genuinely new assertion. It does not verify the wiring: the
 /// composition happens here, in the test, and `settle_tick` is a free function that
@@ -707,7 +707,7 @@ fn wake_settle_ready_requires_both() {
     assert!(!wake_settle_ready(false, false));
 }
 
-/// #1388, T3 - a `settle_tick` regression test for one uncovered input combination
+/// T3: a `settle_tick` regression test for one uncovered input combination
 /// (`ready == false` with `elapsed >= max_wait`), NOT evidence this change works.
 ///
 /// The existing pair covers `true`/over-cap and `false`/zero-elapsed. Decision 4.1 is

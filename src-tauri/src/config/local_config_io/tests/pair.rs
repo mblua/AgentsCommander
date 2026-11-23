@@ -1,7 +1,7 @@
 use super::*;
 
 // -----------------------------------------------------------------------
-// #2786 (C1) - the config pair primitive. The state path is a literal and
+// (C1) - the config pair primitive. The state path is a literal and
 // the stage hook is test-local: this module must name no other module.
 // -----------------------------------------------------------------------
 
@@ -656,7 +656,7 @@ const NESTED_CHILD_DIR_ENV: &str = "AC_2786_NESTED_WRITER_CHILD_DIR";
 const NESTED_CHILD_TEST_FQN: &str =
     "config::local_config_io::tests::pair::a_nested_config_writer_child";
 
-/// #2786 (C1) - the child half of E2c. A no-op without the child-only
+/// (C1) - the child half of E2c. A no-op without the child-only
 /// environment, so a normal suite run passes it untouched.
 #[test]
 fn a_nested_config_writer_child() {
@@ -738,7 +738,7 @@ fn a_nested_config_writer_child() {
     println!("AC_2786_NESTED_WRITER_CHILD_OK action={action}");
 }
 
-/// #2786 (C1) E2c - every leg runs in a child process with a lifetime bound,
+/// (C1) E2c - every leg runs in a child process with a lifetime bound,
 /// because a hang cannot be asserted in-process and a poisoned `Mutex`
 /// must not leak into the rest of this suite.
 #[test]

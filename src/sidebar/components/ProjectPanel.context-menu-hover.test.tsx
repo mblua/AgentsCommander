@@ -354,7 +354,7 @@ describe("ProjectPanel replica context menu - close on pointer leave (#977)", ()
   // write (another workgroup, the Edit-groups modal) or an invalid groups.toml at
   // load sets it, and only a LATER successful save clears it. If the close bailed
   // on that flag bare, one failed write anywhere would silently disable the
-  // pointer-leave close for every replica menu in the project - #977 all over again.
+  // pointer-leave close for every replica menu in the project - the old bug all over again.
   it("still closes after a failed groups write when the flyout was never opened", async () => {
     const fake = await setupPanel();
     fake.reject("update_project_groups", "groups.toml changed on disk");

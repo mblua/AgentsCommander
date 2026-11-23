@@ -117,7 +117,7 @@ fn config_value(replica: &Path) -> Value {
     serde_json::from_str(&config_bytes(replica)).unwrap()
 }
 
-/// #2816 (C3) - the state file beside `dir`'s `config.json`.
+/// (C3) - the state file beside `dir`'s `config.json`.
 fn state_path(dir: &Path) -> PathBuf {
     dir.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
 }
@@ -126,7 +126,7 @@ fn state_value(dir: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(state_path(dir)).unwrap()).unwrap()
 }
 
-/// #2816 (C3) - none of `keys` may remain in `dir`'s tracked `config.json`;
+/// (C3) - none of `keys` may remain in `dir`'s tracked `config.json`;
 /// an absent tracked file holds none.
 fn assert_untracked(dir: &Path, keys: &[&str]) {
     let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) else {

@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn stage_e_request_close_is_idempotent_and_close_and_join_owns_the_join() {
-    // Stage E (#1064) alert-shutdown ownership sentinel (plan section 8.1,
+    // Stage E alert-shutdown ownership sentinel (plan section 8.1,
     // 10.4 item 20, acceptance item 34): request_close only cancels the token
     // (never takes or awaits the actor join) and is idempotent, while
     // close_and_join stays the sole idempotent join owner.

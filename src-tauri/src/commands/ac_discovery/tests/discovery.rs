@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1472 - the RTK runtime-artifact rules must be narrow: they ignore the
+/// The RTK runtime-artifact rules must be narrow: they ignore the
 /// three artifact families under `_agent_*` roots, and nothing else.
 #[test]
 fn ensure_ac_root_gitignore_ignores_rtk_runtime_artifacts_narrowly() {
@@ -97,7 +97,7 @@ fn ensure_ac_root_gitignore_ignores_rtk_runtime_artifacts_narrowly() {
     );
 }
 
-// ── #1941 strict selection state in both discovery constructors ─────
+// ── Strict selection state in both discovery constructors ─────
 
 struct DiscoverySelectionFixture {
     _temp: tempfile::TempDir,
@@ -284,7 +284,7 @@ async fn issue_1937_selection_api_discovery_constructors_report_strict_selection
     assert_discovery_selection_wire(&direct);
 }
 
-// #2434 - instructions-filename rows and the discovery matcher.
+// Instructions-filename rows and the discovery matcher.
 
 fn agent_rows(content: &str) -> Vec<&str> {
     content
@@ -490,7 +490,7 @@ fn discovery_returns_none_and_warns_on_no_match() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
-/// #2717 E10: the renamed project settings, both lock sidecars and a set-aside
+/// E10: the renamed project settings, both lock sidecars and a set-aside
 /// file are each ignored by their own anchored rule; the retired row is gone,
 /// and a user-authored bare pattern survives.
 #[test]
@@ -574,7 +574,7 @@ fn ac_root_gitignore_covers_the_renamed_project_settings() {
     }
 }
 
-/// #2718 E14: the renamed Loop state, its write temporary and a set-aside
+/// E14: the renamed Loop state, its write temporary and a set-aside
 /// state file are each ignored by their own rule; the retired row is gone
 /// and a user-authored bare pattern survives.
 #[test]
@@ -644,7 +644,7 @@ fn ac_root_gitignore_covers_the_renamed_loop_state() {
         assert_eq!(pattern, rule, "{relative} matched the wrong rule");
     }
 }
-// ---------------------------------------------------------------- #2786 C1
+// ---------------------------------------------------------------- C1
 // E14: the id and the descriptor come from one merged snapshot. The state
 // file's descriptor (`new`) must win over the tracked one (`old`).
 #[test]
@@ -716,7 +716,7 @@ fn inner_read_preferred_agent_id_logged_loads_once() {
     call(tmp.path(), "via-new-b");
 }
 
-/// C4 (#2470): the seeded state file of every row that seeds one. All four
+/// C4: the seeded state file of every row that seeds one. All four
 /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
 #[rustfmt::skip]
 const C4_SEEDED_STATE: &str =
@@ -727,12 +727,12 @@ const C4_SEEDED_STATE: &str =
         r#""lastAgentMessageAt","profileContentHash"]}}"#
     );
 
-/// C4 (#2470): the state file beside a tracked `config.json`.
+/// C4: the state file beside a tracked `config.json`.
 fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {
     tracked.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
 }
 
-/// C4 (#2470): after one writer, the tracked file carries none of the four
+/// C4: after one writer, the tracked file carries none of the four
 /// state keys. This says nothing at all about the state file: `c4_state_is`
 /// is the only helper that reads it, and the row calls them in that order.
 fn c4_tracked_is_clean(tracked: &std::path::Path, site: &str) {
@@ -752,7 +752,7 @@ fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_j
     );
 }
 
-/// C4 (#2470): the state file EXISTS and is exactly `expected`, compared
+/// C4: the state file EXISTS and is exactly `expected`, compared
 /// as parsed JSON so the pretty-printing of `publish_pair_side` is never
 /// the subject. `expected` is always a literal written in the row. Absence
 /// is NOT admitted here and no longer reads as JSON `null`:
@@ -764,7 +764,7 @@ fn c4_state_is(state: &std::path::Path, expected: &str, site: &str) {
     assert_eq!(got, want, "{site} state file");
 }
 
-/// C4 (#2470) E2, site 4: the `context` write and its removal leave the
+/// C4 E2, site 4: the `context` write and its removal leave the
 /// tracked file without a state key and the state file untouched.
 #[tokio::test]
 async fn c4_site_4_writes_context_and_leaves_no_state_key() {

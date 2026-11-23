@@ -1289,7 +1289,7 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    // Drift overrides the #551 redundancy disable. When the target session's
+    // Drift overrides the redundancy disable. When the target session's
     // loaded profile no longer matches its configuration (profileOutdated), the
     // same-pair re-assign is meaningful (re-stamp the cell content + relaunch), so
     // "Assign to this replica" must stay ENABLED even on the otherwise-redundant pair.
@@ -1366,7 +1366,7 @@ describe("AgentPickerModal", () => {
       // Picking the override letter "C" is the replica's current pair → disabled
       // again. Without the override-aware baseline this would compare against the
       // stale "B" and wrongly stay enabled (a no-op assign + needless restart
-      // prompt — exactly what #551 blocks).
+      // prompt — exactly what the no-op guard blocks).
       target<HTMLButtonElement>("agentPicker.profile.C").click();
       await settle();
       expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
@@ -1509,7 +1509,7 @@ describe("AgentPickerModal", () => {
       const { dispose } = renderLockPicker({ currentAgentId: "codex", currentRequestedProfile: "A" });
       await settle();
 
-      // Ordinary replica scope on the already-current pair is the #551 no-op.
+      // Ordinary replica scope on the already-current pair is the no-op.
       expect(target<HTMLButtonElement>("agentPicker.apply").disabled).toBe(true);
 
       clickRadio("agentPicker.scope.lock.replica");
@@ -2127,7 +2127,7 @@ describe("AgentPickerModal", () => {
     });
 
     it("blocks a second mutation while a removal or a default save is in flight", async () => {
-      // The #551 redundant-pair opt-in is off so the ONLY thing that can disable
+      // The redundant-pair opt-in is off so the ONLY thing that can disable
       // Apply in this test is the pending mutation itself.
       const { dispose } = renderLockPicker({ disableRedundantReplicaAssign: false });
       await settle();

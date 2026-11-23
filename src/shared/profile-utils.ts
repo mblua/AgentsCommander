@@ -127,8 +127,8 @@ export function deriveMatrixRoot(replicaPath: string | null | undefined): string
   const acRoot = deriveAcRoot(replicaPath);
   if (!acRoot) return null;
   const parts = trimTrailingSlashes(replicaPath.replaceAll("\\", "/")).split("/");
-  const leaf = parts[parts.length - 1] ?? "";
-  const parent = parts[parts.length - 2] ?? "";
+  const leaf = parts.at(-1) ?? "";
+  const parent = parts.at(-2) ?? "";
   if (!leaf.startsWith("__agent_") || !isEntityDirName(parent)) return null;
   const name = leaf.replace(/^__agent_/, "");
   const sep = replicaPath.includes("\\") ? "\\" : "/";
@@ -570,15 +570,15 @@ export function isAcAgentPath(path: string | null | undefined): boolean {
   if (!path) return false;
   const normalized = trimTrailingSlashes(path.replaceAll("\\", "/"));
   const parts = normalized.split("/");
-  const leaf = parts[parts.length - 1] ?? "";
+  const leaf = parts.at(-1) ?? "";
   return parts.includes(".ac") && /^__?agent_/.test(leaf);
 }
 
 export function isWgReplicaPath(path: string | null | undefined): boolean {
   if (!path) return false;
   const parts = trimTrailingSlashes(path.replaceAll("\\", "/")).split("/");
-  const leaf = parts[parts.length - 1] ?? "";
-  const parent = parts[parts.length - 2] ?? "";
+  const leaf = parts.at(-1) ?? "";
+  const parent = parts.at(-2) ?? "";
   return parts.includes(".ac") && leaf.startsWith("__agent_") && isEntityDirName(parent);
 }
 
@@ -659,7 +659,7 @@ export function sessionOrphanNotice(
   const codingAgent = session.agentLabel;
   const letter = session.effectiveProfile;
   if (!codingAgent || !letter || !session.matchTier) return null;
-  if (!Object.prototype.hasOwnProperty.call(ORPHAN_NOTICE_CLAUSE, session.matchTier)) return null;
+  if (!Object.hasOwn(ORPHAN_NOTICE_CLAUSE, session.matchTier)) return null;
   if (session.matchTier === "hash") {
     const saved = session.originalProfileLetter;
     if (!saved || saved === letter) return null;

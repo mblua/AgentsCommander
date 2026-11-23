@@ -204,14 +204,14 @@ pub fn globally_available(globally_enabled: bool, api_key: &str) -> bool {
     globally_enabled && !api_key.trim().is_empty()
 }
 
-/// #2756 U2a: whether Co-managed can run a reader globally. Only the switch;
+/// U2a: whether Co-managed can run a reader globally. Only the switch;
 /// the key is a `Ready` input, not a capture input. `globally_available`
 /// keeps serving routing unchanged.
 pub fn globally_capturable(globally_enabled: bool) -> bool {
     globally_enabled
 }
 
-/// #2756 U2a: whether this session may hold a reader and keep a candidate.
+/// U2a: whether this session may hold a reader and keep a candidate.
 /// Exactly the first four checks of `effective_state`, from the same source;
 /// it never reads the key or the catalog.
 pub fn capturable(

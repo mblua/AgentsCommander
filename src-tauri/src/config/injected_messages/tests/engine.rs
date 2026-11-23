@@ -275,7 +275,7 @@ fn registry_cache_keeps_first_file_snapshot() {
     assert_eq!(edited.keys().cloned().collect::<Vec<_>>(), keys);
 }
 
-// ---- #4035: one forbidden-scalar policy, two consumers -----------------
+// ---- one forbidden-scalar policy, two consumers -----------------
 
 /// Independent test-only oracle: the forbidden intervals written out here as
 /// expected data, never derived from the production predicate.

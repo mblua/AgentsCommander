@@ -125,7 +125,7 @@ describe("ProjectPanel coordinator idle badge (#580 XOR gate + conditional toolt
     fake.resolve("get_settings", baseSettings({ coordinatorAutoCloseEnabled: true }));
     // Auto-closed marker set AND a 90-min idle anchor. Critically, the marker is
     // NEVER cleared in this test (it simulates a discovery reload clobbering the
-    // event clear, the #589 root cause): the liveness gate alone must drive the
+    // event clear, the root cause): the liveness gate alone must drive the
     // pill, proving the fix self-heals without the projectStore marker changing.
     fake.resolve(
       "discover_project",

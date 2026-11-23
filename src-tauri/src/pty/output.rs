@@ -94,7 +94,7 @@ const UI_HISTORY_REPLAY_PROLOGUE: &[u8] = b"\x1b[?1049l\x1b[r\x1b[?7h\x1b(B\x1b[
 /// Appends a chunk to the bounded history ring. The order is mandatory: trim for space,
 /// trim to a line boundary, then append. Only the length bound is guaranteed; the line
 /// alignment is best effort, because the boundary scan is capped and can find nothing. Its
-/// outcome is recorded in `aligned` and enforced at the attach seed instead (#1458).
+/// outcome is recorded in `aligned` and enforced at the attach seed instead.
 ///
 /// Every index is saturating on purpose. `VecDeque::drain(..k)` panics when `k > len`, and
 /// here a panic is permanent rather than local: the caller flips the parser to `Unavailable`,
@@ -122,7 +122,7 @@ fn append_history(history: &mut std::collections::VecDeque<u8>, aligned: &mut bo
             None => *aligned = false,
         }
     }
-    // #1458: the one path on which the front changes without `over` ever being positive.
+    // The one path on which the front changes without `over` ever being positive.
     // When `tail` becomes the WHOLE ring the front is `tail[0]`, and a chunk larger than the
     // ring was truncated at an arbitrary byte, so that front is not a line start and nothing
     // above recorded it. The `<` is load bearing: `tail.len() == data.len()` means the chunk
@@ -311,7 +311,7 @@ impl SessionIoFanout {
         true
     }
 
-    /// #3029: the reader's own parser is the only cursor authority. No locks escape.
+    /// The reader's own parser is the only cursor authority. No locks escape.
     #[cfg(any(windows, test))]
     pub(crate) fn cursor_position_for_reader(
         &self,

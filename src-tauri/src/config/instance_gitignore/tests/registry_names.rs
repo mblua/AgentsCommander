@@ -78,7 +78,7 @@ fn instance_gitignore_ignores_injected_messages_artifacts_narrowly() {
     }
 }
 
-/// #2470 E5 - every layered target constant equals its own row of the
+/// E5 - every layered target constant equals its own row of the
 /// target tables in `docs/reference/file-naming.md`, row by row. The row
 /// count is pinned, so a deleted row cannot pass by shrinking both sides.
 #[test]
@@ -165,7 +165,7 @@ fn target_names_match_the_documented_tables() {
     }
 }
 
-/// #2470 E6 - each `layered_name!` arm types its layer token once; this ties
+/// E6 - each `layered_name!` arm types its layer token once; this ties
 /// every arm to the constant that names the same token.
 #[test]
 fn layer_tokens_match_the_macro() {
@@ -184,9 +184,9 @@ fn layer_tokens_match_the_macro() {
     }
 }
 
-/// #2714 E4 - B1b switches every settings and blocking-menus live name to
-/// its Phase A target constant, never to a retyped literal. #2715 (B2)
-/// switches the three coding-agent names; the two #1968 sidecars stay.
+/// E4 - B1b switches every settings and blocking-menus live name to
+/// its Phase A target constant, never to a retyped literal. B2
+/// switches the three coding-agent names; the two migration sidecars stay.
 #[test]
 fn live_names_are_the_target_names() {
     let switched = [
@@ -248,7 +248,7 @@ fn live_names_are_the_target_names() {
     }
 }
 
-/// #2714 E10 - the nine retired pairs go, the retired lock keeps a row of
+/// E10 - the nine retired pairs go, the retired lock keeps a row of
 /// its own, this phase's three new rows arrive, and a user-authored bare
 /// pattern with no AC comment above it survives byte for byte.
 #[test]
@@ -291,7 +291,7 @@ fn the_nine_retired_pairs_go_and_the_lock_row_stays() {
     assert_eq!(std::fs::read_to_string(&path).expect("reread"), body);
 }
 
-/// #2470 - the lock is named after the live settings file, and until now
+/// The lock is named after the live settings file, and until now
 /// nothing said so.
 #[test]
 fn settings_lock_name_derives_from_the_settings_name() {

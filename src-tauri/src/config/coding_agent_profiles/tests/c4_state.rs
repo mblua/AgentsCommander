@@ -1,6 +1,6 @@
 use super::*;
 
-/// C4 (#2470): the seeded state file of every row that seeds one. All four
+/// C4: the seeded state file of every row that seeds one. All four
 /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
 #[rustfmt::skip]
 const C4_SEEDED_STATE: &str =
@@ -10,12 +10,12 @@ const C4_SEEDED_STATE: &str =
         r#""keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#,
     );
 
-/// C4 (#2470): the state file beside a tracked `config.json`.
+/// C4: the state file beside a tracked `config.json`.
 fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {
     tracked.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
 }
 
-/// C4 (#2470): after one writer, the tracked file carries none of the four
+/// C4: after one writer, the tracked file carries none of the four
 /// state keys. This says nothing at all about the state file: `c4_state_is`
 /// is the only helper that reads it, and the row calls them in that order.
 fn c4_tracked_is_clean(tracked: &std::path::Path, site: &str) {
@@ -35,7 +35,7 @@ fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_j
     );
 }
 
-/// C4 (#2470): the state file EXISTS and is exactly `expected`, compared
+/// C4: the state file EXISTS and is exactly `expected`, compared
 /// as parsed JSON so the pretty-printing of `publish_pair_side` is never
 /// the subject. `expected` is always a literal written in the row. Absence
 /// is NOT admitted here and no longer reads as JSON `null`:
@@ -47,7 +47,7 @@ fn c4_state_is(state: &std::path::Path, expected: &str, site: &str) {
     assert_eq!(got, want, "{site} state file");
 }
 
-/// C4 (#2470): no state file exists beside the tracked file. Absence is
+/// C4: no state file exists beside the tracked file. Absence is
 /// `NotFound` from `symlink_metadata` and nothing else: an existing entry
 /// of any kind is a failure, a JSON `null`, an empty file, a directory and
 /// a dangling symlink included, and so is every other error. Round 4's
@@ -65,7 +65,7 @@ fn c4_no_state_file(state: &std::path::Path, site: &str) {
     }
 }
 
-/// C4 (#2470): `c4_no_state_file` must reject `state`. The panic message of
+/// C4: `c4_no_state_file` must reject `state`. The panic message of
 /// the rejected call reaches stderr and is expected output, not a failure.
 fn c4_rejects(state: &std::path::Path, case: &str) {
     let probe = state.to_path_buf();
@@ -73,7 +73,7 @@ fn c4_rejects(state: &std::path::Path, case: &str) {
     assert!(outcome.is_err(), "{case}: c4_no_state_file accepted it");
 }
 
-/// C4 (#2470): the four negative controls of the absence contract, on a
+/// C4: the four negative controls of the absence contract, on a
 /// directory of the row's own, so no site fixture is disturbed.
 fn c4_absence_controls(dir: &std::path::Path) {
     let state = c4_state_path(&dir.join("config.json"));
@@ -96,7 +96,7 @@ const C4_STATE_AFTER_SITE_3A: &str =
         r#""profileContentHash"]}}"#,
     );
 
-/// C4 (#2470): seeds `dir` with a selection config and the seeded state file.
+/// C4: seeds `dir` with a selection config and the seeded state file.
 fn c4_seed(dir: &Path) -> PathBuf {
     write_config(dir, &seed_selection_config("{}"));
     let tracked = dir.join("config.json");
@@ -108,7 +108,7 @@ fn c4_tooling(dir: &Path) -> serde_json::Value {
     config_value(dir)["tooling"].clone()
 }
 
-/// C4 (#2470) E12, sites 3a, 3b, 8, 9, 10 and 11, each on its own fixture
+/// C4 E12, sites 3a, 3b, 8, 9, 10 and 11, each on its own fixture
 /// except 9 and 10, which need the same replica.
 #[test]
 fn c4_sites_3_8_9_10_11_leave_no_state_key_in_the_tracked_file() {

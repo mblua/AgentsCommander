@@ -24,7 +24,7 @@ fn issue_1577_binary_suffix_parsing_preserves_first_underscore_behavior() {
     );
 }
 
-/// #1868, #1930: the HOME name is one literal, independent of `BUILD_PROFILE`,
+/// The HOME name is one literal, independent of `BUILD_PROFILE`,
 /// so the same assertions pass in debug and release focused runs. Only an
 /// executable without an underscore suffix routes to it; a suffixed one
 /// routes to its adjacent directory and never to HOME.
@@ -63,7 +63,7 @@ fn issue_1850_config_dir_name_table_is_profile_independent() {
 
 #[test]
 fn mutex_name_is_nul_terminated_and_scoped() {
-    // #786 T9: the probe encodes exactly this name, including the embedded
+    // T9: the probe encodes exactly this name, including the embedded
     // trailing NUL. If this shape ever changes, gui_instance_running() would
     // silently open a different name and defeat the whole safe-write design.
     let name = mutex_name();
@@ -74,7 +74,7 @@ fn mutex_name_is_nul_terminated_and_scoped() {
     );
 }
 
-/// #786 T9: in-process round-trip. Create the single-instance mutex under the
+/// T9: in-process round-trip. Create the single-instance mutex under the
 /// SAME `mutex_name()` the acquirer uses, assert the probe detects it, then
 /// close it and assert it no longer detects it. Windows-only (the probe is a
 /// no-op false off-Windows). Nothing else holds this name during `cargo test`
@@ -131,7 +131,7 @@ fn issue_4788_lock_file_name_keeps_mutex_identity_and_case() {
 #[cfg(target_os = "linux")]
 const WRAPPER_OUT: &str = "AC_4788_WRAPPER_OUT";
 
-/// #4788 child half: a no-op unless the parent set `AC_4788_WRAPPER_OUT`.
+/// Child half: a no-op unless the parent set `AC_4788_WRAPPER_OUT`.
 /// Writes the wrapper result, then keeps any lock it got until killed (≤60 s).
 #[cfg(target_os = "linux")]
 #[test]
@@ -144,7 +144,7 @@ fn issue_4788_wrapper_child() {
     std::thread::sleep(std::time::Duration::from_secs(60));
 }
 
-/// #4788: the `main.rs` wrapper, across processes, with `XDG_RUNTIME_DIR`
+/// The `main.rs` wrapper, across processes, with `XDG_RUNTIME_DIR`
 /// set only on the children (private tempdir; parent env untouched).
 #[cfg(target_os = "linux")]
 #[test]

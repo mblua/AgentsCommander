@@ -545,7 +545,7 @@ async fn set_rail_collapse_persists_both_fields_and_publishes_to_live_state() {
     assert!(live.rail_favorites_collapsed);
 }
 
-// (#965 F1) The two whole-object writers must not let a stale client payload
+// The two whole-object writers must not let a stale client payload
 // revert the rail snapshot. Without these, `window-geometry.ts` alone (which
 // fires a whole-object write on every window move/resize) would silently wipe
 // a header click, and nothing re-persists it: the in-memory signal is never

@@ -4,7 +4,7 @@ import { vi } from "vitest";
 //
 // The whole chain runs here: executeAutomationRequest -> synthetic pointer/mouse
 // events -> Solid's directly-bound onMouseEnter/onMouseLeave -> the flyout. The
-// #943 suite next door fakes the hover with a target-only `new MouseEvent(...)`,
+// the suite next door fakes the hover with a target-only `new MouseEvent(...)`,
 // which is exactly the lie this action exists to stop telling.
 //
 // The platform mock is NOT decoration: `repoBrowseItems` is gated on
@@ -169,7 +169,7 @@ function discoveryA(repoPaths: string[] = [repoA1]): AcDiscoveryResult {
 /** Both coordinators point at the SAME repo path, so the identity-check effect
  *  (:1831-1839) re-derives a live entry and cannot fire. The only thing left that
  *  can close the flyout on an A -> B menu switch is the handler-level
- *  `closeRepoFlyout()` at :2276 / :2322 - the #943 fix that B3 pins. */
+ *  `closeRepoFlyout()` at :2276 / :2322 - the fix that B3 pins. */
 function discoveryShared(shared: string): AcDiscoveryResult {
   return discovery({
     workgroups: [

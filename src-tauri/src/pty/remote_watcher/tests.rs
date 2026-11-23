@@ -43,7 +43,7 @@ fn ok_output(body: &str) -> GhCallOutput {
 }
 
 /// Republishes a repo's branch: `Harness::repo` publishes `main`, and every
-/// #2141 staleness test needs a branch that is NOT the default one.
+/// Staleness test needs a branch that is NOT the default one.
 fn publish_branch(path: &str, branch: &str, git_state: &crate::pty::git_watcher::GitState) {
     crate::pty::git_watcher::publish_git_status(
         path,

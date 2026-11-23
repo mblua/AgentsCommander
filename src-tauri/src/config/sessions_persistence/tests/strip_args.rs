@@ -141,7 +141,7 @@ fn strip_auto_injected_args_removes_cmd_claude_continue() {
 
 #[test]
 fn strip_auto_injected_args_removes_direct_claude_session_id() {
-    // (#756) Rider belt: the launcher-minted identity pair is stripped from
+    // Rider belt: the launcher-minted identity pair is stripped from
     // the saved recipe (a replayed stale --session-id hard-fails the spawn).
     let stripped = strip_auto_injected_args(
         "claude",
@@ -166,7 +166,7 @@ fn strip_auto_injected_args_removes_direct_claude_session_id() {
 
 #[test]
 fn strip_auto_injected_args_removes_embedded_cmd_claude_session_id() {
-    // (#756) cmd-embedded tail loses BOTH injected flags (--continue and the
+    // Cmd-embedded tail loses BOTH injected flags (--continue and the
     // rider pair).
     let stripped = strip_auto_injected_args(
         "cmd.exe",
@@ -180,7 +180,7 @@ fn strip_auto_injected_args_removes_embedded_cmd_claude_session_id() {
 
 #[test]
 fn strip_auto_injected_args_preserves_session_id_without_uuid_value() {
-    // (#756) Pins the UUID gate: a user-authored --session-id with a
+    // Pins the UUID gate: a user-authored --session-id with a
     // non-UUID value is never eaten.
     let args = vec!["--session-id".to_string(), "not-a-uuid".to_string()];
     assert_eq!(strip_auto_injected_args("claude", &args), args);
@@ -334,7 +334,7 @@ fn strip_auto_injected_args_leaves_unrelated_commands_unchanged() {
     assert_eq!(strip_auto_injected_args("powershell.exe", &args), args);
 }
 
-// ── Issue #186 — wrapper-basename Claude detection in the stripper ──
+// ── wrapper-basename Claude detection in the stripper ──
 
 #[test]
 fn strip_auto_injected_args_strips_continue_for_wrapper_basename() {

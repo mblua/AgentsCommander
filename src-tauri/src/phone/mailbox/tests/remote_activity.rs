@@ -1,6 +1,6 @@
 use super::*;
 
-// Stage E (#1064) internal-notice route sentinel (plan section 10.4 item 20,
+// Stage E internal-notice route sentinel (plan section 10.4 item 20,
 // section 7.2): the internal-system target validates the replica identity from
 // an opened handle and never routes by a spelled FQN alone, so an unreadable
 // or non-existent replica is rejected before any wake actuation.
@@ -344,7 +344,7 @@ fn thresholds_is_none_for_a_remote_activity_notice() {
     assert_eq!(remote.thresholds(), None);
 }
 
-/// #2413 T10: the only close-marker restore goes through the create ledger
+/// T10: the only close-marker restore goes through the create ledger
 /// (`commands::session::CoordinatorCreateTicket`); mailbox has none of its own.
 #[test]
 fn mailbox_has_no_unchecked_close_marker_restore() {
@@ -528,7 +528,7 @@ fn peer_content_with_spoofed_system_words_still_uses_peer_wrapper() {
     assert!(payload.contains("[Message from AgentsCommander]"));
 }
 
-/// #2232 phase 7 test 17: the Co-managed origin composes the sender suffix;
+/// Test 17: the Co-managed origin composes the sender suffix;
 /// every other origin's output stays byte-identical to today.
 #[test]
 fn comanaged_origin_composes_the_sender_suffix_and_other_origins_are_unchanged() {
@@ -567,7 +567,7 @@ fn comanaged_origin_composes_the_sender_suffix_and_other_origins_are_unchanged()
     );
 }
 
-/// #1157 N6 - the frozen spoofing tests above assert a prefix the product no
+/// N6 - the frozen spoofing tests above assert a prefix the product no
 /// longer emits, so their adversarial value decays. This re-proves the same
 /// property against the CURRENT default, rendered through the same seam the
 /// notice uses, now that the wording is operator-controlled.

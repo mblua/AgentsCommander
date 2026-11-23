@@ -105,7 +105,7 @@ export function normalizeNonStop(
   }
   return {
     show: !!nonStop.show,
-    // (#1257) DO NOT DROP THIS LINE. This function rebuilds the object field by
+    // DO NOT DROP THIS LINE. This function rebuilds the object field by
     // field and `setConfig` (:391) runs it on EVERY load and EVERY save, so a field
     // omitted here is dropped silently on the first unrelated save and the favorite
     // appears to revert on its own.
@@ -358,7 +358,7 @@ export function groupMatchesWorkgroup(
 }
 
 /**
- * #2036 — THE Ungrouped membership rule. A room is ungrouped when its id is over
+ * THE Ungrouped membership rule. A room is ungrouped when its id is over
  * MAX_GROUP_MATCH_ID_LENGTH, or when no compiled group regex and no Alert me!
  * (NonStop) regex matches it (regardless of `nonStop.show`). The rail counter and
  * the panel list MUST both call this; never re-derive either side locally.
@@ -460,7 +460,7 @@ function setConfig(
   });
 }
 
-// #4805 - the Temporary Rooms group set lives in the config dir, not in a project.
+// The Temporary Rooms group set lives in the config dir, not in a project.
 function groupsIpc(projectPath: string) {
   if (keyFor(projectPath) === keyFor(TEMP_ROOMS_GROUPS_KEY)) {
     return {
@@ -771,7 +771,7 @@ export const workgroupGroupsStore = {
     await this.save(projectPath, { ...config, nonStop: { ...current, regex: nextRegex } });
   },
 
-  /** #4805 - drop `wgName`'s exact tokens from every group and Alert me! in ONE save.
+  /** Drop `wgName`'s exact tokens from every group and Alert me! in ONE save.
    *  Reads the stored set fresh, never the cached entry or its old `error`, so a stale
    *  store error cannot skip the cleanup. A read or save failure REJECTS (the caller
    *  shows a toast) and writes nothing. A custom regex is left as is. */

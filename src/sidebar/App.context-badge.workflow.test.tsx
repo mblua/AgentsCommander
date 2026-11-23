@@ -19,7 +19,7 @@ import { automationIdPart as AP } from "./components/replica-repo-badges";
 // mount-time hydration: backend event / snapshot -> ipc -> store -> projection -> DOM.
 //
 // This mounts SidebarApp rather than re-declaring the listener inside the test,
-// because the listener and its ordering ARE the thing under test. #1032's engine
+// because the listener and its ordering ARE the thing under test. The scrape engine
 // emits ONLY on change, so a listener alone leaves a reloaded sidebar reading N/A
 // forever against a session that is plainly sitting at 42%.
 

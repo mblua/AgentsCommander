@@ -161,7 +161,7 @@ impl SnapshotScannerShutdownOwner {
         }
     }
 
-    /// (#1399) An owner that does NOT claim `ACTIVE_SCANNER_SHUTDOWN_OWNER`.
+    /// An owner that does NOT claim `ACTIVE_SCANNER_SHUTDOWN_OWNER`.
     /// For scanners that will never run a task and must never displace the
     /// long-lived poller's owner on the shutdown path.
     pub(crate) fn unregistered() -> Self {

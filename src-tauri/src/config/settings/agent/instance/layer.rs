@@ -107,7 +107,7 @@ pub(crate) fn try_with_agents_layer_publication_state_in<R>(
     Ok(f(dirs.contains(dir)))
 }
 
-/// #2716 (B3, option C) - true while the agents file beside `dir`'s settings file
+/// (B3, option C) - true while the agents file beside `dir`'s settings file
 /// could not be read by the last full load of it.
 pub(crate) fn agents_layer_unreadable_for_dir(dir: &Path) -> bool {
     agents_unreadable_dirs()
@@ -116,7 +116,7 @@ pub(crate) fn agents_layer_unreadable_for_dir(dir: &Path) -> bool {
         .contains(dir)
 }
 
-/// #2716 (B3, option C) - the one setter: the field and the registry change in
+/// (B3, option C) - the one setter: the field and the registry change in
 /// the same statement, so they cannot diverge.
 pub(crate) fn set_agents_layer_state(
     settings: &mut AppSettings,
@@ -135,7 +135,7 @@ pub(crate) fn set_agents_layer_state(
     settings.agents_layer = state;
 }
 
-/// #2716 (B3, option C) - the agents layer's state from the file alone, for the
+/// (B3, option C) - the agents layer's state from the file alone, for the
 /// defaults fallback, where no merge result survives.
 pub(crate) fn agents_layer_state_at(settings_path: &Path) -> AgentsLayerState {
     agents_layer_state_at_labeled(settings_path, settings_path)

@@ -132,7 +132,7 @@ export class FakeTransport implements Transport {
 
   lastCall(cmd: string): InvokeCall | undefined {
     const calls = this.callsFor(cmd);
-    return calls[calls.length - 1];
+    return calls.at(-1);
   }
 
   clearCalls(): void {
