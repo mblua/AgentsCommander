@@ -42,7 +42,7 @@ pub(crate) enum UpdaterStepOutcome {
     /// the `ContainedSpawnError::Containment` arm. On Unix `TargetProcessOwner::spawn` uses
     /// a plain spawn, which can fail but has no containment step to fail, so the variant is
     /// never produced and `dead_code` is correct to say so.
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(not(windows), allow(dead_code, reason = "only produced on Windows"))]
     ContainmentFailed,
 }
 

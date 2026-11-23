@@ -134,7 +134,7 @@ pub(crate) enum SkipReason {
     NotUtf8,
     /// Windows only: `FILE_ATTRIBUTE_READONLY` blocks the delete inside `ReplaceFileW`. On Unix,
     /// `rename(2)` checks the directory rather than the file mode, so this is never produced.
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(not(windows), allow(dead_code, reason = "only produced on Windows"))]
     ReadOnly,
 }
 

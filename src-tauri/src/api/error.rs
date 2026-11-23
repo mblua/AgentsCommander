@@ -24,7 +24,10 @@ pub(crate) enum WindowScreenshotApiError {
 #[derive(Debug, Clone)]
 pub enum ApiError {
     #[cfg(any(target_os = "windows", test))]
-    #[allow(private_interfaces)]
+    #[allow(
+        private_interfaces,
+        reason = "crate-private screenshot error in pub enum"
+    )]
     WindowScreenshot(WindowScreenshotApiError),
     /// 400 - malformed body, missing/forbidden field, or invalid one-of payload.
     BadRequest(String),

@@ -474,7 +474,7 @@ async fn settle_job_accounting(
     }
 }
 
-#[allow(unused_mut)]
+#[allow(unused_mut, reason = "hook is mutated only under cfg(test)")]
 pub(super) async fn spawn_suspended_contained_impl(
     command: &mut tokio::process::Command,
     mut hook: Option<SpawnTestHook>,

@@ -301,7 +301,10 @@ pub enum BeginOutcome {
     Started,
     Busy(Option<Uuid>),
     /// #2774 The portal selector was dismissed; silent.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(dead_code, reason = "Linux portal only")
+    )]
     Cancelled,
 }
 
