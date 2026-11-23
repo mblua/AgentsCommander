@@ -18,27 +18,31 @@ use super::pty_claim::{ResponseWakeWork, WakeDelivery};
 use super::tests::{fixture_capture_owner, run_owned_persist_core};
 #[cfg(not(test))]
 use crate::config::sessions_persistence::run_owned_persist_core;
+use crate::config::sessions_persistence::PublishedCarrier;
 use crate::config::teams;
+use crate::path_identity::VerifiedPathIdentity;
 use crate::phone::mailbox::host::MailboxHost;
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::PtyManager;
+use crate::session::create_contracts::OwnedReplacementCreateRequest;
 use crate::session::manager::SessionManager;
-use crate::session::selection::{OwnedReplacementContinuation, SourceExecutorGuard};
+use crate::session::selection::{
+    OwnedReplacementContinuation, OwnedReplacementWork, PreparedOwnedReplacement,
+    ReplacementAdmissionStep, ResolvedReplacement, SelectionCoordinator, SourceExecutorGuard,
+};
+use crate::session::session::Session;
 use std::ops::ControlFlow;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 #[cfg(test)]
 mod tests;
 
-fn owned_replacement_work(
-    msg: &OutboxMessage,
-) -> Result<crate::session::selection::OwnedReplacementWork, String> {
+fn owned_replacement_work(msg: &OutboxMessage) -> Result<OwnedReplacementWork, String> {
     let payload = serde_json::to_value(msg).map_err(|error| error.to_string())?;
-    let work = crate::session::selection::OwnedReplacementWork::OrdinaryOwned {
+    let work = OwnedReplacementWork::OrdinaryOwned {
         message_id: msg.id.clone(),
         body: msg.body.clone(),
         payload: payload.clone(),
@@ -49,14 +53,8 @@ fn owned_replacement_work(
 }
 
 fn owned_replacement_directories(
-    request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
-) -> Result<
-    (
-        crate::path_identity::VerifiedPathIdentity,
-        crate::path_identity::VerifiedPathIdentity,
-    ),
-    String,
-> {
+    request: &OwnedReplacementCreateRequest,
+) -> Result<(VerifiedPathIdentity, VerifiedPathIdentity), String> {
     let physical = crate::path_identity::verify_directory(Path::new(&request.cwd))
         .map_err(|_| "targetCreateGateUnavailable".to_string())?;
     let replica = teams::strict_wg_replica_anchor_from_cwd(Path::new(&request.cwd))
@@ -71,10 +69,10 @@ fn owned_replacement_request(
     plan: super::notice::ResolvedWakeSpawnPlan,
     skip_tooling_save: bool,
 ) -> (
-    crate::session::create_contracts::OwnedReplacementCreateRequest,
+    OwnedReplacementCreateRequest,
     super::notice::ResolvedWakeAgentCommand,
 ) {
-    let request = crate::session::create_contracts::OwnedReplacementCreateRequest {
+    let request = OwnedReplacementCreateRequest {
         shell: plan.spawn_shell,
         shell_args: plan.spawn_args,
         cwd: crate::path_utils::normalize_windows_verbatim_path(&plan.cwd),
@@ -93,15 +91,9 @@ async fn owned_snapshot(
     manager: &SessionManager,
     directory: &Path,
     msg: &OutboxMessage,
-    physical: &crate::path_identity::VerifiedPathIdentity,
+    physical: &VerifiedPathIdentity,
     previous_id: Uuid,
-) -> (
-    bool,
-    Option<(
-        crate::config::sessions_persistence::PublishedCarrier,
-        crate::session::session::Session,
-    )>,
-) {
+) -> (bool, Option<(PublishedCarrier, Session)>) {
     let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
     let captured = manager
         .with_current_carrier_snapshot(&permit, |current| {
@@ -132,6 +124,86 @@ async fn owned_snapshot(
         .await;
     drop(permit);
     captured
+}
+
+type WakeAdmissionContext<'a> = (
+    &'a SelectionCoordinator,
+    &'a SessionManager,
+    &'a Arc<Mutex<PtyManager>>,
+);
+
+async fn recover_peer_wake_precommit(
+    (coordinator, manager, pty): WakeAdmissionContext<'_>,
+    target: &str,
+    previous: Uuid,
+    request: &OwnedReplacementCreateRequest,
+    (physical, replica): (&VerifiedPathIdentity, &VerifiedPathIdentity),
+) {
+    coordinator
+        .recover_wake_precommit(
+            target,
+            previous,
+            (&physical.clone().into(), &replica.clone().into()),
+            &|| {
+                owned_replacement_directories(request).is_ok_and(|(cwd, root)| {
+                    cwd.canonical_path == physical.canonical_path
+                        && cwd.object_id == physical.object_id
+                        && root.canonical_path == replica.canonical_path
+                        && root.object_id == replica.object_id
+                })
+            },
+            manager,
+            pty,
+        )
+        .await;
+    #[cfg(test)]
+    OwnedReplacementContinuation::fixture_after_wake_probe().await;
+}
+
+fn resolve_replacement(
+    msg: &OutboxMessage,
+    request: &OwnedReplacementCreateRequest,
+    directory: &Path,
+    (carrier, previous): (PublishedCarrier, Session),
+    work: &OwnedReplacementWork,
+    (physical, replica): (&VerifiedPathIdentity, &VerifiedPathIdentity),
+) -> ResolvedReplacement {
+    ResolvedReplacement {
+        target: msg.to.clone(),
+        directory: directory.to_path_buf(),
+        previous,
+        carrier,
+        requested_agent_id: request.agent_id.clone(),
+        requested_profile: msg.requested_profile.clone(),
+        shell: request.shell.clone(),
+        shell_args: request.shell_args.clone(),
+        launch_recipe: owned_replacement_launch_recipe(request),
+        cwd: request.cwd.clone(),
+        backend: SessionBackendKind::LocalProcess,
+        work: work.clone(),
+        cwd_identity: physical.clone().into(),
+        replica_identity: Some(replica.clone().into()),
+    }
+}
+
+async fn admit_peer_wake_carrier(
+    (coordinator, manager, pty): WakeAdmissionContext<'_>,
+    candidate: PreparedOwnedReplacement,
+    source: &mut SourceExecutorGuard,
+) -> Result<ReplacementAdmissionStep, Option<String>> {
+    let tracker = pty
+        .lock()
+        .map_err(|_| Some("targetCreateGateUnavailable".to_string()))?
+        .response_close_state();
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    let admission = manager
+        .with_current_carrier_snapshot(&permit, |current| {
+            coordinator
+                .admit_owned_wake_replacement(&permit, current, &tracker, pty, candidate, source)
+        })
+        .await;
+    drop(permit);
+    admission.map_err(|error| error.admission_error())
 }
 
 async fn owned_peer_completion(
@@ -189,9 +261,7 @@ impl MailboxPoller {
         if let Some(ref action) = msg.action {
             match action.as_str() {
                 "close-session" => {
-                    // §224 G-IMPL-2: app-outbox replies skip the outbox-relative primary write.
-                    // That master-token path derives <config_dir>/instances/<id>/responses/,
-                    // which the CLI never polls, leaving orphan JSON.
+                    // §224 G-IMPL-2: The CLI never polls master-token instance responses.
                     return Ok(std::ops::ControlFlow::Break(
                         self.handle_close_session(app, path, msg, is_app_outbox)
                             .await,
@@ -259,8 +329,7 @@ impl MailboxPoller {
             .response
             .as_ref()
             .map(ResponseWakeWork::candidate_disposal);
-        // #2232 phase 7: Co-managed wakes deliver inline with display attribution.
-        // Other origins keep the attribution-free shared tail and worker-pool behavior.
+        // #2232 phase 7: Inline co-managed wakes add display attribution.
         let comanaged = origin == OutboxOrigin::CoManaged;
         if !comanaged {
             if let Some(slot) = deferred_tail {
@@ -291,11 +360,8 @@ impl MailboxPoller {
         }
     }
 
-    /// Wake injects into a non-Exited PTY, respawns Exited, or spawns persistent if absent.
-    /// The stdin buffer accepts input while busy, so delivery has no busy gate.
-    // #791 §0.5 HIGH-1: the in-daemon API shares this actuation via a throwaway
-    // MailboxPoller::new(). This delivery-stateless call chain reads app.state,
-    // never the poller's poll_interval or retry_tracker.
+    /// Deliver to live stdin, respawn Exited or spawn if absent. Busy stdin is valid.
+    // #791: The daemon reuses this path without poll interval or retry state.
     pub(crate) async fn deliver_wake<S: MailboxHost>(
         &self,
         app: &S,
@@ -323,8 +389,7 @@ impl MailboxPoller {
         .await
     }
 
-    /// #2232 phase 7: Co-managed queue attribution affects display only, never routing.
-    /// Existing entry points remain attribution-free.
+    /// #2232 phase 7: Co-managed queue attribution affects display only.
     async fn deliver_wake_with_attribution<S: MailboxHost>(
         &self,
         app: &S,
@@ -345,9 +410,7 @@ impl MailboxPoller {
         .await
     }
 
-    /// Single wake entry: serialized messages use Peer. InternalSystem requires the
-    /// validated target, notice, cancellation and guard, and builds its own envelope.
-    /// Returns the annotated outbox message for the Delivered: receipt.
+    /// Deliver Peer or validated InternalSystem wake and return its annotated receipt.
     pub(crate) async fn deliver_validated_wake<S: MailboxHost>(
         &self,
         app: &S,
@@ -403,8 +466,7 @@ impl MailboxPoller {
                 cancellation,
                 guard,
             } => {
-                // Build the flag-free receipt before delivery moves the target.
-                // Delivery must still run for context alerts, notices, cancellations and guard.
+                // Capture the flag-free receipt before delivery consumes the target.
                 let delivered = internal_system_envelope(&target);
                 self.deliver_internal_system_wake(app, target, notice, cancellation, guard)
                     .await?;
@@ -428,14 +490,11 @@ impl MailboxPoller {
             .map(parse_remote_pty_command)
             .transpose()?;
 
-        // #1635-2 D5: a specific agent or profile sets flags, except empty/auto agent
-        // values (the API/DB sends an empty agent). Flags skip spawn-time config.json
-        // writes via skip_tooling_save and annotate the delivered receipt.
+        // #1635-2 D5: Explicit agent/profile flags skip config.json writes and annotate receipts.
         let flags_present = (!msg.preferred_agent.is_empty() && msg.preferred_agent != "auto")
             || msg.requested_profile.is_some();
 
-        // #1635-2 D6: a present profile outside single A-Z is a permanent error.
-        // The CLI rejects it before enqueue (#1635-1); this guards hand-written JSON.
+        // #1635-2 D6: Reject hand-written profiles outside single A-Z permanently.
         if let Some(letter) = msg.requested_profile.as_deref() {
             if crate::config::settings::normalize_profile_letter(letter).is_none() {
                 return Err(ERR_INVALID_DISPATCH_PROFILE.to_string());
@@ -447,13 +506,8 @@ impl MailboxPoller {
             super::wake_injection::admit_peer_text(msg, &msg.body, origin, comanaged)?;
         }
 
-        // #885 J2: backstop against cold-spawning an agent while purge destroys its record.
-        // The DB dispatcher must skip the tick before leasing (api/dispatcher.rs, #885 F-5).
-        // Returning this error after a DB lease would burn an attempt and can poison delivery.
-        // The filesystem poller treats it as non-permanent and retries at 3s intervals
-        // up to MAX_DELIVERY_ATTEMPTS, deferring the wake.
-        // #1177 removed inline API send, leaving the DB dispatcher as the only other
-        // caller; its pre-lease guard keeps it outside this window.
+        // #885 J2: Defer filesystem wakes during purge under normal retry limits.
+        // #1177: DB dispatch skips the lease here to avoid spending a delivery attempt.
         if let Some(g) = app.pty_purge() {
             if g.blocks_agent(&msg.to) {
                 return Err(format!(
@@ -522,9 +576,7 @@ impl MailboxPoller {
         }
     }
 
-    /// #4309 - a container backend inlines the notified file; a local one writes
-    /// the notification line. Inline errors return here, before any effect. A plan
-    /// error is left to the fallback and the replacement, which resolve their own.
+    /// #4309: Inline container file notices, write local notices, and defer plan errors.
     async fn admit_cold_peer_text<S: MailboxHost>(
         &self,
         app: &S,
@@ -576,8 +628,8 @@ impl MailboxPoller {
         &self,
         app: &S,
         msg: &OutboxMessage,
-        request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
-        physical: &crate::path_identity::VerifiedPathIdentity,
+        request: &OwnedReplacementCreateRequest,
+        physical: &VerifiedPathIdentity,
     ) -> bool {
         if app
             .pty_purge()
@@ -670,7 +722,7 @@ impl MailboxPoller {
         &self,
         app: &S,
         msg: &OutboxMessage,
-        request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
+        request: &OwnedReplacementCreateRequest,
         previous_id: Uuid,
     ) -> Result<ControlFlow<OwnedPeerWakeStep, OwnedPeerTarget>, String> {
         #[cfg(test)]
@@ -683,7 +735,6 @@ impl MailboxPoller {
                 return Ok(ControlFlow::Break(OwnedPeerWakeStep::Relist));
             }
         }
-        use crate::session::selection::{ReplacementAdmissionStep, ResolvedReplacement};
         let coordinator = app.selection();
         let manager = app.pty_sessions().read().await.clone();
         let pty = app.pty_routes().clone();
@@ -695,6 +746,8 @@ impl MailboxPoller {
             crate::config::config_dir().ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
         let (physical, replica) = owned_replacement_directories(request)?;
         let work = owned_replacement_work(msg)?;
+        let context = (coordinator, &manager, &pty);
+        let dirs = (&physical, &replica);
         let mut probe_rollback = true;
         let mut prepared = None;
         let mut source = SourceExecutorGuard::unbound();
@@ -707,25 +760,7 @@ impl MailboxPoller {
                 return Err("Wake source authority changed before replacement".into());
             }
             if std::mem::take(&mut probe_rollback) {
-                coordinator
-                    .recover_wake_precommit(
-                        &msg.to,
-                        previous_id,
-                        (&physical.clone().into(), &replica.clone().into()),
-                        &|| {
-                            owned_replacement_directories(request).is_ok_and(|(cwd, root)| {
-                                cwd.canonical_path == physical.canonical_path
-                                    && cwd.object_id == physical.object_id
-                                    && root.canonical_path == replica.canonical_path
-                                    && root.object_id == replica.object_id
-                            })
-                        },
-                        &manager,
-                        &pty,
-                    )
-                    .await;
-                #[cfg(test)]
-                OwnedReplacementContinuation::fixture_after_wake_probe().await;
+                recover_peer_wake_precommit(context, &msg.to, previous_id, request, dirs).await;
             }
             let stripe = gate
                 .acquire_target_lock(&msg.to)
@@ -737,48 +772,15 @@ impl MailboxPoller {
                 return Ok(ControlFlow::Break(OwnedPeerWakeStep::Relist));
             }
             if prepared.is_none() {
-                if let Some((carrier, previous)) = captured.1 {
-                    prepared = Some(coordinator.prepare_owned_replacement(
-                        ResolvedReplacement {
-                            target: msg.to.clone(),
-                            directory: directory.clone(),
-                            previous,
-                            carrier,
-                            requested_agent_id: request.agent_id.clone(),
-                            requested_profile: msg.requested_profile.clone(),
-                            shell: request.shell.clone(),
-                            shell_args: request.shell_args.clone(),
-                            launch_recipe: owned_replacement_launch_recipe(request),
-                            cwd: request.cwd.clone(),
-                            backend: SessionBackendKind::LocalProcess,
-                            work: work.clone(),
-                            cwd_identity: physical.clone().into(),
-                            replica_identity: Some(replica.clone().into()),
-                        },
-                        manager.reserve_carrier_create_binding(),
-                    ));
-                }
+                prepared = captured.1.map(|snapshot| {
+                    let resolved =
+                        resolve_replacement(msg, request, &directory, snapshot, &work, dirs);
+                    let binding = manager.reserve_carrier_create_binding();
+                    coordinator.prepare_owned_replacement(resolved, binding)
+                });
             }
             if let Some(candidate) = prepared.take() {
-                let tracker = pty
-                    .lock()
-                    .map_err(|_| "targetCreateGateUnavailable".to_string())?
-                    .response_close_state();
-                let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
-                let admission = manager
-                    .with_current_carrier_snapshot(&permit, |current| {
-                        coordinator.admit_owned_wake_replacement(
-                            &permit,
-                            current,
-                            &tracker,
-                            &pty,
-                            candidate,
-                            &mut source,
-                        )
-                    })
-                    .await;
-                drop(permit);
-                match admission.map_err(|error| error.admission_error()) {
+                match admit_peer_wake_carrier(context, candidate, &mut source).await {
                     Ok(ReplacementAdmissionStep::Accepted(continuation)) => {
                         return Ok(ControlFlow::Continue(OwnedPeerTarget {
                             continuation,
@@ -823,8 +825,7 @@ impl MailboxPoller {
         }) {
             return Ok(RetainedExit::step("backend_not_local", None));
         }
-        // #4309 - a replacement is LocalProcess-only, so it writes `msg.body` (no inline
-        // override). Judge that exact text, from this plan, before any transfer.
+        // #4309: Validate the local replacement's exact body before transfer.
         super::wake_injection::admit_peer_text(msg, &msg.body, delivery.0, delivery.1)?;
         let (request, resolved_command) = owned_replacement_request(plan, dispatch.1);
         let manager = app.pty_sessions().read().await.clone();
@@ -877,8 +878,7 @@ impl MailboxPoller {
         if let Some(probe) = &self.clear_observation_probe {
             probe.record_owned_child(&delivery);
         }
-        // Relocates the one existing create core around its owned work tail.
-        // Common create borrows this lexical proof and never spawns another core.
+        // Common create borrows the lexical proof inside the existing owned core.
         let (id, to) = (msg.id.clone(), msg.to.clone());
         let result = run_owned_persist_core(async move {
             let result = delivery
@@ -911,9 +911,9 @@ impl MailboxPoller {
         &self,
         app: &S,
         msg: &OutboxMessage,
-        request: &crate::session::create_contracts::OwnedReplacementCreateRequest,
+        request: &OwnedReplacementCreateRequest,
         continuation: OwnedReplacementContinuation,
-        physical: crate::path_identity::VerifiedPathIdentity,
+        physical: VerifiedPathIdentity,
     ) -> OwnedReplacementContinuation {
         let validation_messages = Arc::clone(&self.messages);
         let validation_app = app.clone();

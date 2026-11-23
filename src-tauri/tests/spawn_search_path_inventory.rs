@@ -520,6 +520,12 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
+        "src-tauri/src/phone/mailbox/tests/wake_owner.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
         "src-tauri/src/process.rs",
         4,
         1,

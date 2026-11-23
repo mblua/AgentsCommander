@@ -1,15 +1,20 @@
-use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::{future::Future, path::Path, pin::Pin};
+use tokio::sync::{oneshot, Notify};
 
 use super::{
     add_action, assert_preparing, assert_replacement_runs, assert_wake_keeps_old_claim, at_cut,
     at_recorded_cut, close_coordinator, make_mailbox_fixture, mock_backend, observe_wake, pause_at,
     prepare_retained_exited_respawn, replace_cwd, retained_source_wait_cut, rollback_backend,
-    rollback_poller, run_child_cases, wake_message_to_target, Action, Cut, MailboxPoller,
-    OwnedReplacementContinuation, SessionBackendKind,
+    rollback_poller, run_child_cases, wake_message_to_target, Action, Control, Cut, MailboxFixture,
+    MailboxPoller, Mutex, OutboxMessage, OwnedReplacementContinuation, SelectionCoordinator,
+    SessionBackendKind, Uuid,
 };
+use crate::path_identity::verify_directory;
 use crate::phone::mailbox::pty_observation::{PtyAuthorityState, WakeDeliveryState};
-use crate::session::manager::acquire_carrier_mutation_permit;
+use crate::session::manager::{
+    acquire_carrier_mutation_permit, PendingCreateBinding, SessionManager,
+};
 use crate::session::selection::OwnedSourceStop;
 
 #[tokio::test]
@@ -23,7 +28,6 @@ async fn wake_owner_pending_source_refusal_requires_typed_receipt() {
     let generic = scenario == "generic";
     let setup_error = scenario.starts_with("setup-");
     let changed = changed_cases.contains(&scenario.as_str());
-    let replace_replica = scenario == "setup-replica";
     let mut fixture = make_mailbox_fixture();
     let replica = fixture.target_cwd.clone();
     let app = fixture.app.handle();
@@ -49,80 +53,19 @@ async fn wake_owner_pending_source_refusal_requires_typed_receipt() {
     let wake = wake_message_to_target();
     let first = observe_wake(app, &poller, &wake);
     tokio::pin!(first);
-    let mut expected_token = None;
-    if changed {
-        let validation = Cut::BeforeSourceValidation;
-        let release = pause_at(&control, validation);
-        let cut = at_recorded_cut(first.as_mut(), &control, validation).await;
-        let binding = cut.binding.unwrap();
-        let pending = manager.get_pending_session(binding).await.unwrap();
-        assert_eq!(Path::new(&pending.working_directory), fixture.target_cwd);
-        expected_token = Some(pending.token);
-        if replace_replica {
-            let object = |path: &Path| {
-                crate::path_identity::verify_directory(path)
-                    .unwrap()
-                    .object_id
-            };
-            let cwd = &fixture.target_cwd;
-            let original = object(cwd);
-            let old = replace_cwd(&replica);
-            std::fs::rename(old.join("nested"), cwd).unwrap();
-            assert_eq!(object(cwd), original);
-            assert_ne!(object(&replica), object(&old));
-        } else {
-            replace_cwd(&fixture.target_cwd);
-        }
-        let handoff = probe.before_return.arm();
-        if setup_error {
-            drop(release);
-        } else {
-            release.send(()).unwrap();
-        }
-        at_cut(first.as_mut(), probe.before_return.entered.notified()).await;
-        let state = control.observe_owner(&coordinator).unwrap();
-        assert!(state.source_active && !state.rollback_completed && !state.cleanup_claimed);
-        let stop = (!setup_error).then_some(OwnedSourceStop::AuthorityChanged);
-        assert_eq!(state.source_stop, stop);
-        let kept = manager
-            .get_pending_session(binding)
-            .await
-            .map(|row| row.token);
-        assert_eq!(kept, expected_token, "exact B before source handoff");
-        assert_preparing(&fixture, &wake.to, Some(cut.operation)).await;
-        assert_eq!(coordinator.fixture_root_count(), Some(1));
-        handoff.send(()).unwrap();
-    } else if scenario == "guard-window" {
-        let release = probe.before_return.arm();
-        at_cut(first.as_mut(), probe.before_return.entered.notified()).await;
-        let gate = app.message_store().unwrap().target_gate.as_ref().unwrap();
-        assert!(gate.try_target_lock(&wake.to).unwrap().is_none());
-        let mut exact = Box::pin(gate.acquire_exact(&wake.to));
-        assert!(futures::poll!(exact.as_mut()).is_pending());
-        drop(exact);
-        let inserted = retained_source_wait_cut(&control, Cut::Inserted).await;
-        MailboxPoller::default()
-            .fixture_probe_once(app, &wake, previous)
-            .await;
-        assert_eq!(
-            *probe.probe_candidate.lock().unwrap(),
-            Some(inserted.operation)
-        );
-        let binding = inserted.binding.unwrap();
-        let pending = manager.get_pending_session(binding).await;
-        assert!(pending.is_some(), "pending B kept while both guards held");
-        assert_eq!(probe.removed.load(Ordering::Relaxed), 0);
-        assert_eq!(coordinator.fixture_root_count(), Some(1));
-        probe.before_claim.store(1, Ordering::Relaxed);
-        release.send(()).unwrap();
-    } else {
-        probe.before_claim.store(1, Ordering::Relaxed);
-    }
+    let expected_token = observe_pending_source_cut(
+        first.as_mut(),
+        (&control, &coordinator, &manager),
+        (&fixture, &wake, previous),
+        (&scenario, &replica, changed, setup_error),
+        || (probe.before_return.arm(), &probe.before_return.entered),
+        (&probe.probe_candidate, &probe.removed, &probe.before_claim),
+    )
+    .await;
     let (result, owner) = first.await;
     let error = result.unwrap_err();
     let reasons = ["create_retained", "fixture pending setup failure"];
     assert!(error.contains(reasons[usize::from(setup_error)]));
-
     assert!(!transient.load(Ordering::Relaxed));
     assert_eq!(probe.before_claim.load(Ordering::Relaxed), 0);
     let binding = owner.binding().unwrap();
@@ -146,7 +89,6 @@ async fn wake_owner_pending_source_refusal_requires_typed_receipt() {
     assert!(observation.recorded_error.is_none() && !observation.backend_submitted);
     assert!(!control.submitted.load(Ordering::Acquire));
     assert!(!pty.lock().unwrap().has_session(binding.session_id()));
-
     if generic || changed {
         assert_wake_keeps_old_claim(app, &wake).await;
         assert!(manager.get_pending_session(binding).await.is_some());
@@ -193,7 +135,6 @@ async fn wake_owner_same_claim_recovery() {
     let (coordinator, _, _, previous) = prepare_retained_exited_respawn(&fixture).await;
     let app = fixture.app.handle();
     let manager = app.pty_sessions().read().await.clone();
-    let pty = app.pty_routes();
     let backend = rollback_backend(app);
     let backend = mock_backend(&backend);
     let kills = backend.kill_attempts.load(Ordering::SeqCst);
@@ -227,51 +168,26 @@ async fn wake_owner_same_claim_recovery() {
     let binding = owner.binding().unwrap();
     assert_eq!(before.cursor, cursor);
     assert_eq!(before.recorded_error.is_some(), cursor.is_some());
-    assert_eq!(
-        manager.get_pending_session(binding).await.is_none(),
-        removed > 0 || scenario == "unrecorded-error"
-    );
+    let row_absent = manager.get_pending_session(binding).await.is_none();
+    assert_eq!(row_absent, removed > 0 || scenario == "unrecorded-error");
     assert_eq!(probe.removed.load(Ordering::Relaxed), removed);
     assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills + killed);
     assert_preparing(&fixture, &wake.to, Some(owner.operation())).await;
-    for counter in [
+    reset_rollback_counters([
         &probe.before_close,
         &probe.before_release,
         &probe.before_claim,
-    ] {
-        counter.store(0, Ordering::Relaxed);
-    }
-
-    match scenario.as_str() {
-        "changed-row" => manager.fixture_change_rollback_row(binding, false).await,
-        "changed-binding" => manager.fixture_change_rollback_row(binding, true).await,
-        "changed-preparing" => owner.fixture_replace_rollback_preparing(&manager).await,
-        "changed-generation" => {
-            let pty = pty.lock().unwrap();
-            let id = binding.session_id();
-            let (cwd, replica, generation) = pty.route_identities(id).unwrap();
-            pty.remove_route_if_kind(id, SessionBackendKind::LocalProcess);
-            pty.record_route_with_identities(id, SessionBackendKind::LocalProcess, cwd, replica)
-                .unwrap();
-            assert_ne!(pty.route_identities(id).unwrap().2, generation);
-        }
-        "changed-cwd" => {
-            let permit = acquire_carrier_mutation_permit().await;
-            let challenger = MailboxPoller::default();
-            let hold_probe = probe.after_probe.arm();
-            let second = challenger.fixture_probe_owned_wake(app, &wake, previous);
-            tokio::pin!(second);
-            at_cut(second.as_mut(), probe.before_probe_permit.notified()).await;
-            replace_cwd(&fixture.target_cwd);
-            drop(permit);
-            at_cut(second.as_mut(), probe.after_probe.entered.notified()).await;
-            assert!(manager.get_pending_session(binding).await.is_some());
-            assert_eq!(backend.kill_attempts.load(Ordering::SeqCst), kills);
-            drop(hold_probe);
-        }
-        "tracker-failed" => assert!(!fail_tracker.load(Ordering::Relaxed)),
-        _ => (),
-    }
+    ]);
+    let pause_after_probe = || (probe.after_probe.arm(), &probe.after_probe.entered);
+    perturb_rollback(
+        &scenario,
+        (&owner, binding),
+        (&manager, &fixture, &wake, previous),
+        (&probe.before_probe_permit, pause_after_probe),
+        (&backend.kill_attempts, kills),
+        fail_tracker,
+    )
+    .await;
     if matches!(scenario.as_str(), "before-close" | "after-removal") {
         let (poller, _) = rollback_poller(false);
         let new = assert_replacement_runs(app, &poller, &wake).await;
@@ -291,4 +207,124 @@ async fn wake_owner_same_claim_recovery() {
         assert_eq!(coordinator.fixture_root_count(), Some(1));
     }
     close_coordinator(&coordinator).await;
+}
+
+async fn observe_pending_source_cut<'a, F: Future>(
+    mut actor: Pin<&mut F>,
+    (control, coordinator, manager): (&Control, &SelectionCoordinator, &SessionManager),
+    (fixture, wake, previous): (&MailboxFixture, &OutboxMessage, Uuid),
+    (scenario, replica, changed, setup_error): (&str, &Path, bool, bool),
+    pause_before_return: impl FnOnce() -> (oneshot::Sender<()>, &'a Notify),
+    (probe_candidate, removed, before_claim): (&Mutex<Option<Uuid>>, &AtomicUsize, &AtomicUsize),
+) -> Option<Uuid> {
+    let mut expected_token = None;
+    if changed {
+        let validation = Cut::BeforeSourceValidation;
+        let release = pause_at(control, validation);
+        let cut = at_recorded_cut(actor.as_mut(), control, validation).await;
+        let binding = cut.binding.unwrap();
+        let pending = manager.get_pending_session(binding).await.unwrap();
+        assert_eq!(Path::new(&pending.working_directory), fixture.target_cwd);
+        expected_token = Some(pending.token);
+        if scenario == "setup-replica" {
+            let object = |path: &Path| verify_directory(path).unwrap().object_id;
+            let cwd = &fixture.target_cwd;
+            let original = object(cwd);
+            let old = replace_cwd(replica);
+            std::fs::rename(old.join("nested"), cwd).unwrap();
+            assert_eq!(object(cwd), original);
+            assert_ne!(object(replica), object(&old));
+        } else {
+            replace_cwd(&fixture.target_cwd);
+        }
+        let (handoff, entered) = pause_before_return();
+        if setup_error {
+            drop(release);
+        } else {
+            release.send(()).unwrap();
+        }
+        at_cut(actor.as_mut(), entered.notified()).await;
+        let state = control.observe_owner(coordinator).unwrap();
+        assert!(state.source_active && !state.rollback_completed && !state.cleanup_claimed);
+        let stop = (!setup_error).then_some(OwnedSourceStop::AuthorityChanged);
+        assert_eq!(state.source_stop, stop);
+        let kept = manager.get_pending_session(binding).await;
+        assert_eq!(
+            kept.map(|row| row.token),
+            expected_token,
+            "exact B before source handoff"
+        );
+        assert_preparing(fixture, &wake.to, Some(cut.operation)).await;
+        assert_eq!(coordinator.fixture_root_count(), Some(1));
+        handoff.send(()).unwrap();
+    } else if scenario == "guard-window" {
+        let app = fixture.app.handle();
+        let (release, entered) = pause_before_return();
+        at_cut(actor.as_mut(), entered.notified()).await;
+        let gate = app.message_store().unwrap().target_gate.as_ref().unwrap();
+        assert!(gate.try_target_lock(&wake.to).unwrap().is_none());
+        let mut exact = Box::pin(gate.acquire_exact(&wake.to));
+        assert!(futures::poll!(exact.as_mut()).is_pending());
+        drop(exact);
+        let inserted = retained_source_wait_cut(control, Cut::Inserted).await;
+        let challenger = MailboxPoller::default();
+        challenger.fixture_probe_once(app, wake, previous).await;
+        assert_eq!(*probe_candidate.lock().unwrap(), Some(inserted.operation));
+        let binding = inserted.binding.unwrap();
+        let pending = manager.get_pending_session(binding).await;
+        assert!(pending.is_some(), "pending B kept while both guards held");
+        assert_eq!(removed.load(Ordering::Relaxed), 0);
+        assert_eq!(coordinator.fixture_root_count(), Some(1));
+        before_claim.store(1, Ordering::Relaxed);
+        release.send(()).unwrap();
+    } else {
+        before_claim.store(1, Ordering::Relaxed);
+    }
+    expected_token
+}
+
+fn reset_rollback_counters(counters: [&AtomicUsize; 3]) {
+    for counter in counters {
+        counter.store(0, Ordering::Relaxed);
+    }
+}
+
+async fn perturb_rollback<'a>(
+    scenario: &str,
+    (owner, binding): (&OwnedReplacementContinuation, PendingCreateBinding),
+    (manager, fixture, wake, previous): (&SessionManager, &MailboxFixture, &OutboxMessage, Uuid),
+    (before_permit, pause): (&Notify, impl FnOnce() -> (oneshot::Sender<()>, &'a Notify)),
+    (kill_attempts, kills): (&AtomicUsize, usize),
+    fail_tracker: &AtomicBool,
+) {
+    match scenario {
+        "changed-row" => manager.fixture_change_rollback_row(binding, false).await,
+        "changed-binding" => manager.fixture_change_rollback_row(binding, true).await,
+        "changed-preparing" => owner.fixture_replace_rollback_preparing(manager).await,
+        "changed-generation" => {
+            let pty = fixture.app.handle().pty_routes().lock().unwrap();
+            let id = binding.session_id();
+            let (cwd, replica, generation) = pty.route_identities(id).unwrap();
+            pty.remove_route_if_kind(id, SessionBackendKind::LocalProcess);
+            pty.record_route_with_identities(id, SessionBackendKind::LocalProcess, cwd, replica)
+                .unwrap();
+            assert_ne!(pty.route_identities(id).unwrap().2, generation);
+        }
+        "changed-cwd" => {
+            let permit = acquire_carrier_mutation_permit().await;
+            let challenger = MailboxPoller::default();
+            let (hold_probe, entered) = pause();
+            let second = challenger.fixture_probe_owned_wake(fixture.app.handle(), wake, previous);
+            tokio::pin!(second);
+            at_cut(second.as_mut(), before_permit.notified()).await;
+            replace_cwd(&fixture.target_cwd);
+            drop(permit);
+            at_cut(second.as_mut(), entered.notified()).await;
+            assert!(manager.get_pending_session(binding).await.is_some());
+            assert_eq!(kill_attempts.load(Ordering::SeqCst), kills);
+            drop(hold_probe);
+        }
+        "tracker-failed" => assert!(!fail_tracker.load(Ordering::Relaxed)),
+        _ => (),
+    }
 }
