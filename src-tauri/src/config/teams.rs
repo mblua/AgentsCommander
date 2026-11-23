@@ -245,7 +245,7 @@ pub enum ResolutionError {
     /// Target's agent segment starts with the on-disk replica/matrix prefix
     /// (`__agent_` or `_agent_`) — i.e. the caller passed a filesystem directory
     /// name instead of a peer FQN. Common Codex-agent fallback bug when
-    /// `list-peers` returned empty (Issue #134).
+    /// `list-peers` returned empty.
     #[error(
         "target '{0}' looks like a filesystem directory name, not a peer FQN. \
          Use the 'name' field from `list-peers-lean` (e.g. 'project:room-N-team/agent' \
@@ -343,7 +343,7 @@ fn strict_project_ac_root(project: &Path) -> Result<Option<PathBuf>, String> {
 /// Where a candidate project directory came from. A caller-supplied
 /// (`Configured`) path stays fail-closed; a `ScannedChild` found by walking the
 /// caller's tree is skipped and counted when it fails identity verification
-/// (#2228).
+///.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProjectOrigin {
     Configured,
@@ -502,7 +502,7 @@ pub(crate) struct PeerInfo {
     pub(crate) reachable: bool,
     pub(crate) last_coding_agent: Option<String>,
 
-    // ── NEW (issue #206) ────────────────────────────────────────────
+    // ── NEW ────────────────────────────────────────────
     /// True iff the peer has a matching session in Running or Active
     /// state AND `waiting_for_input == false`. Mirrors the sidebar
     /// `running-peer` badge predicate (ProjectPanel.tsx:780-786).

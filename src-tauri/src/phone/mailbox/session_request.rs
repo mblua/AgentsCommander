@@ -29,7 +29,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 impl MailboxPoller {
-    /// (#885) Handle `purge-wg`: purge every peer in the caller's own workgroup.
+    /// Handle `purge-wg`: purge every peer in the caller's own workgroup.
     ///
     /// Sequence is non-reorderable. Steps 1-14 per plan §5.5c, consensus round 1.
     pub(crate) async fn handle_purge_wg<S: MailboxHost>(

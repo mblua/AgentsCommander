@@ -599,7 +599,7 @@ async fn exit_and_disconnect_cleanup_remove_route_and_transport_state() {
     }
 }
 
-/// #1171, 9.1.4 (container half) - an id this backend has no parser for is `Gone`, not
+/// 9.1.4 (container half) - an id this backend has no parser for is `Gone`, not
 /// `Missing`.
 ///
 /// This backend tears down on a natural exit and `close_transport` drops the parser before

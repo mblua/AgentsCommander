@@ -95,7 +95,7 @@ fn agent_fqn_from_path_parent_ac_prefix() {
     assert_eq!(agent_fqn_from_path(cwd), "proj-a:wg-1-devs/alice");
 }
 
-// ── #516 workgroup_and_agent_from_path ──
+// ── Workgroup_and_agent_from_path ──
 
 #[test]
 fn workgroup_and_agent_from_path_wg_replica() {
@@ -138,7 +138,7 @@ fn workgroup_and_agent_from_path_root_agent_dir_returns_none() {
     );
 }
 
-// ── #566 project_from_path ──
+// ── Project_from_path ──
 
 #[test]
 fn project_from_path_wg_replica() {

@@ -36,7 +36,7 @@ fn normalize_path_for_compare(s: &str) -> String {
 /// Logical resolution of `.` and `..` components in a path string (no disk
 /// access). Used as a fallback when `std::fs::canonicalize()` fails because
 /// the target doesn't exist — e.g., legacy identity refs that point to a
-/// previous workspace folder name (see #299).
+/// previous workspace folder name.
 ///
 /// Returns a forward-slash string. `..` components above the root of an
 /// absolute path are dropped; `..` components at the front of a purely

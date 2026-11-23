@@ -1,4 +1,4 @@
-//! #3948 - `GitEvents` port ordering through the real `GitWatcher::poll`.
+//! `GitEvents` port ordering through the real `GitWatcher::poll`.
 
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::task::Poll;
