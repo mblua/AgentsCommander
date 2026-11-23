@@ -84,7 +84,7 @@ function deferredHandler<T>(handles: Deferred<T>[]) {
   };
 }
 
-describe("codingAgentsStore (#1965 catalog report)", () => {
+describe("codingAgentsStore (catalog report)", () => {
   let fake: FakeTransport;
 
   beforeEach(() => {

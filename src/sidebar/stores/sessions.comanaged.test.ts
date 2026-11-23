@@ -17,7 +17,7 @@ import { sessionsStore } from "./sessions";
 // Session would be wiped by projectStoredSelection's wholesale replacement, so
 // the executable form of section 4.1 is here and not in a component test.
 
-describe("sessionsStore comanaged sidecar (#2271)", () => {
+describe("sessionsStore comanaged sidecar", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

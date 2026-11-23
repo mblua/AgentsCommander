@@ -15,7 +15,7 @@ function railCollapseCalls(fake: FakeTransport) {
   return fake.callsFor("set_rail_collapse").map((call) => call.args);
 }
 
-describe("railCollapseStore (#965)", () => {
+describe("railCollapseStore", () => {
   let fake: FakeTransport;
   let restoreTransport: (() => void) | undefined;
 

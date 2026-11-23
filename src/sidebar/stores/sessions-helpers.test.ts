@@ -133,7 +133,7 @@ describe("applySelectionToSessionList", () => {
   });
 });
 
-describe("upsertSessionList (#274 banner-reuse hydration)", () => {
+describe("upsertSessionList (banner-reuse hydration)", () => {
   it("appends a new session when id is not present", () => {
     const sessions = [mkSession("a", "idle")];
     const next = upsertSessionList(sessions, mkSession("b", "running"));
