@@ -698,10 +698,6 @@ fn read_layer(
     layer: CatalogLayer,
     ctx: &ConfigContext,
 ) {
-    let observation = observe_agent_file(&snapshot.path);
-    if matches!(observation, BoundedSourceObservation::Absent) {
-        return;
-    }
     let primary = match (scope, ctx) {
         (ConfigScope::Project, ConfigContext::Project(key)) => Some(PathBuf::from(key)),
         _ => None,
@@ -710,12 +706,15 @@ fn read_layer(
         .map_err(|_| "sourceContextUnavailable".to_owned())
         .and_then(|context| {
             let source = context.source(layer_kind(layer));
-            snapshot_from_captured_source(&context, &source, &observation, None)
+            read_agent_file_snapshot(&context, &source)
         });
     let selected = match read {
         Ok(selected) => selected,
         Err(code) => return invalid_config(snapshot, code),
     };
+    if selected.availability == SourceAvailability::Absent {
+        return;
+    }
     snapshot.revision = selected.revision.clone();
     match agent_file_projection(&selected) {
         Ok(projection) => {
