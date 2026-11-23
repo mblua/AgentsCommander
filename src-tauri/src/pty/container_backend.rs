@@ -564,7 +564,12 @@ impl PtyBackend for ContainerTransportBackend {
                 cols,
                 rows,
             },
-            || self.fanout.record_resize(id),
+            || {
+                #[cfg(test)]
+                self.resize_marks_for_test
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.fanout.record_resize(id);
+            },
         )?;
 
         {

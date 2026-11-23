@@ -233,9 +233,6 @@ impl ContainerTransportBackend {
         let permit = sender
             .try_reserve()
             .map_err(|error| self.queue_failure(session_id, QueueFailure::of(&error)))?;
-        #[cfg(test)]
-        self.resize_marks_for_test
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         mark();
         permit.send(HostToBridgeFrame::Text(frame));
         #[cfg(test)]

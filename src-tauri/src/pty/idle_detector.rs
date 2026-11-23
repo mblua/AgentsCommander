@@ -818,15 +818,15 @@ impl IdleDetector {
         }
     }
 
-    /// (#580) Time since this session's PTY was registered (spawned), or None if
-    /// untracked. Used by auto-close to apply `WAKE_GRACE`: a freshly-woken session
-    /// is neither kill-eligible nor allowed to advance the persisted idle anchor
-    /// until alive past the grace (so wake-time scrollback repaint cannot reset it).
+    /// (#580) Time since PTY registration, or None if untracked. Auto-close applies
+    /// `WAKE_GRACE` with it, so a woken session's repaint can neither close nor anchor.
     pub fn alive_age(&self, session_id: Uuid) -> Option<Duration> {
-        let now = Instant::now();
-        lock(&self.registered_at)
-            .get(&session_id)
-            .and_then(|clock| now.checked_duration_since(clock.registered))
+        self.alive_age_at(session_id, Instant::now())
+    }
+
+    pub(crate) fn alive_age_at(&self, session_id: Uuid, now: Instant) -> Option<Duration> {
+        let registered = lock(&self.registered_at).get(&session_id)?.registered;
+        now.checked_duration_since(registered)
     }
 
     /// Remove a session from tracking (called on session destroy).

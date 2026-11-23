@@ -917,9 +917,7 @@ fn issue_2158_focus_resize_keeps_team_anchor() {
 
 #[tokio::test]
 async fn issue_2158_delayed_restore_keeps_team_anchors() {
-    // Base 35 s back, so the +35 s tick is the real `now` that `alive_age` reads.
-    let mut fx = Fx::new(&[("t1", 3), ("t2", 7)]);
-    fx.1 = Instant::now() - Duration::from_secs(35);
+    let fx = Fx::new(&[("t1", 3), ("t2", 7)]);
     let ids = [(); 3].map(|()| Uuid::new_v4());
     for (id, registered) in ids.into_iter().zip([5.0, 5.0, 6.0]) {
         fx.0.register_session_at(id, IdleTuning::AGENT_DEFAULT, Some(fx.at(registered)));
@@ -927,9 +925,11 @@ async fn issue_2158_delayed_restore_keeps_team_anchors() {
     }
     let members = vec![key(ids[0], "t1"), key(ids[1], "t1"), key(ids[2], "t2")];
     assert_eq!(fx.tick(&members, 35.0), [Some(3), Some(7)]);
-    // t1 alive exactly 30 s is established; t2 alive 29 s is not.
+    // Injected time: t1 is established at exactly 30 s, not 1 ns before; t2 (29 s) is not.
+    let (at, ns) = (fx.at(35.0), Duration::from_nanos(1));
+    assert!(established_teams_at(&members, &fx.0, at - ns).is_empty());
     let t1 = HashSet::from(["t1".to_string()]);
-    assert_eq!(established_teams(&members, &fx.0), t1);
+    assert_eq!(established_teams_at(&members, &fx.0, at), t1);
     // Stale anchor: restore and resize-repaint emissions veto the close, a silent control closes.
     let (old, now) = (Duration::from_secs(300), Instant::now());
     let [repaint, control] = [(); 2].map(|()| Uuid::new_v4());

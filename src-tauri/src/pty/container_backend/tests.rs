@@ -402,7 +402,8 @@ async fn issue_2158_container_resize_marks_before_publish() {
         }
         let error = backend.resize(id, 90, 30).expect_err("queue failure");
         if full {
-            assert!(matches!(error, AppError::PtyError(ref t) if t.contains("queue full")));
+            let full = "container transport outbound queue full";
+            assert!(matches!(error, AppError::PtyError(ref t) if t == full));
         } else {
             assert!(matches!(error, AppError::SessionNotFound(ref t) if t == &id.to_string()));
         }

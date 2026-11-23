@@ -675,6 +675,13 @@ fn issue_2158_clock_boundaries_and_lifecycle() {
 
     // Restore window: classified exactly 10 s after the first chunk is still repaint.
     let edge = secs(base, 11.0);
+    let before = edge - Duration::from_nanos(1);
+    chunk(&detector, id, before, before);
+    assert_eq!(
+        eligible_at(&detector, id, base),
+        None,
+        "just before the cutoff"
+    );
     chunk(&detector, id, edge, edge);
     assert_eq!(
         eligible_at(&detector, id, base),

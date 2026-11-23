@@ -368,9 +368,18 @@ fn live_members(
 }
 
 fn established_teams(members: &[(Uuid, String)], idle: &IdleDetector) -> HashSet<String> {
+    established_teams_at(members, idle, Instant::now())
+}
+
+/// #2158 - `established_teams` against an injected instant.
+fn established_teams_at(
+    members: &[(Uuid, String)],
+    idle: &IdleDetector,
+    now: Instant,
+) -> HashSet<String> {
     members
         .iter()
-        .filter(|(id, _)| idle.alive_age(*id).is_some_and(|a| a >= WAKE_GRACE))
+        .filter(|(id, _)| idle.alive_age_at(*id, now).is_some_and(|a| a >= WAKE_GRACE))
         .map(|(_, k)| k.clone())
         .collect()
 }
