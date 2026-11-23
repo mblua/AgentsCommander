@@ -537,7 +537,7 @@ fn assert_full_wg_required_text(full_wg: &str) {
     assert_eq!(full_wg.matches("# Agent Repos").count(), 1);
     assert!(!full_wg.contains("{{"));
     assert!(!full_wg.contains("}}"));
-    // #1605: the platform block renders in the WG profile on every OS (linux/
+    // The platform block renders in the WG profile on every OS (linux/
     // macos render their minimal block too).
     assert!(
         full_wg.contains("## Host Platform Rules"),

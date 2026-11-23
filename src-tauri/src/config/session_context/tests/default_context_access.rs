@@ -187,7 +187,7 @@ fn default_context_non_workgroup_omits_messaging_exception() {
         !out.contains("Narrow exception — room messaging directory"),
         "expected no messaging exception header for non-WG agent, got:\n{out}"
     );
-    // #923 D3: a `None`-mode agent is never told to walk up to a workgroup root it
+    // A `None`-mode agent is never told to walk up to a workgroup root it
     // does not have, and it gets exactly one read grant: the message file whose
     // absolute path AgentsCommander itself hands it.
     assert!(out.contains("This session has no messaging directory"));

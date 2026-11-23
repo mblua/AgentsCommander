@@ -214,7 +214,7 @@ fn live_session_record_requires_id_and_non_exited_status() {
     ));
 }
 
-// ── find_workgroup_task_path_for_cwd — issue #107 ──
+// ── find_workgroup_task_path_for_cwd ──
 
 #[test]
 fn find_workgroup_task_path_returns_path_when_cwd_is_workgroup_root() {

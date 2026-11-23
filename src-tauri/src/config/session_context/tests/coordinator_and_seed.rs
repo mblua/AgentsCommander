@@ -345,7 +345,7 @@ fn coordinator_template_carries_raise_hand_guidance_and_shared_template_does_not
 
 #[test]
 fn coordinator_template_carries_cross_workgroup_rule() {
-    // #1030: the user-approved cross-workgroup bullet, verbatim. Asserted as
+    // The user-approved cross-workgroup bullet, verbatim. Asserted as
     // ONE exact string rather than fragments: a body keeping the routing and
     // reply fragments but dropping the "only when your role, the user, or the
     // Root Agent authorizes it" clause between them would satisfy a fragment
@@ -436,7 +436,7 @@ fn materialized_replica_context_carries_answering_section() {
 
 #[test]
 fn coordinator_on_disk_legacy_self_maintenance_is_stripped_and_replaced() {
-    // #640 M1: an existing workgroup froze the OLD `## Self-Maintenance` block
+    // An existing workgroup froze the OLD `## Self-Maintenance` block
     // into its persisted Context.coordinator.md on disk. The render-time strip
     // must remove it so the materialized context has EXACTLY ONE such section
     // (the new gated one) when ON, and ZERO when OFF (proving OFF truly
