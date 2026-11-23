@@ -57,7 +57,7 @@ fn auto_unarchive_registration(
     crate::config::projects::register_existing_project(settings, root).map(Some)
 }
 
-/// #881: read-only preflight used before restart destroys the dormant row.
+/// Read-only preflight used before restart destroys the dormant row.
 pub(crate) async fn probe_spawn_refusal<H: ArchiveGateHost + ?Sized>(
     app: &H,
     cwd: &str,
@@ -85,7 +85,7 @@ pub(crate) async fn probe_spawn_refusal<H: ArchiveGateHost + ?Sized>(
     probe_spawn_refusal_for_archived_root(&root)
 }
 
-/// #881: enforce that a session spawn never leaves a live PTY inside an
+/// Enforce that a session spawn never leaves a live PTY inside an
 /// archived project.
 pub(crate) async fn enforce_unarchived_for_spawn<H, W, WF, A, AF, P, F>(
     app: &H,
