@@ -519,6 +519,170 @@ fn assert_domain_ready(coordinator: &SelectionCoordinator, backend: &ContainerTr
     assert!(inner.retained_cleanup_tasks.lock().unwrap().is_empty());
 }
 
+async fn drive_worker_phase(
+    driver: &mut Driver<'_>,
+    coordinator: &SelectionCoordinator,
+    restore_guard: &mut Option<RestoreBarrierGuard>,
+    probe: &FixtureProbe,
+    capped: bool,
+) -> Option<SelectionShutdownReport> {
+    let mut report;
+    let worker_state = |probe: &FixtureProbe| {
+        let log = probe.log();
+        (log.worker_aborts, log.worker_ready.len())
+    };
+    if capped {
+        report = driver.tick_to(ms(149)).await;
+        assert!(report.is_none(), "capped close pending at 149 ms");
+        assert_eq!(
+            worker_state(probe),
+            (0, 0),
+            "worker pending, no abort at 149 ms"
+        );
+        driver.mark("worker pending at 149".into());
+        report = driver.tick_to(ms(152)).await;
+        assert!(report.is_none(), "capped close pending at 152 ms");
+        assert_eq!(
+            probe.log().worker_aborts,
+            1,
+            "one delegated abort at 152 ms"
+        );
+        driver.mark("worker aborted at 152".into());
+        report = driver
+            .settle(&mut Vec::new(), &|probe| {
+                !probe.log().worker_ready.is_empty()
+            })
+            .await;
+        let log = probe.log();
+        assert!(
+            matches!(log.worker_ready.as_slice(), [Err(_)]),
+            "aborted worker joins once with an error: {:?}",
+            log.worker_ready
+        );
+        drop(log);
+        assert!(coordinator.inner.worker.lock().unwrap().is_none());
+        assert!(coordinator
+            .inner
+            .retained_workers
+            .lock()
+            .unwrap()
+            .is_empty());
+    } else {
+        report = driver.tick_to(ms(300)).await;
+        assert!(report.is_none(), "normal close pending at 300 ms");
+        assert_eq!(
+            worker_state(probe),
+            (0, 0),
+            "normal worker pending, no abort"
+        );
+        assert!(
+            probe.log().joins.is_empty(),
+            "no cleanup join before the worker"
+        );
+        driver.mark("worker held at 300".into());
+        if let Some(guard) = restore_guard.take() {
+            guard.finish();
+        }
+        report = driver
+            .settle(&mut Vec::new(), &|probe| {
+                !probe.log().worker_ready.is_empty()
+            })
+            .await;
+        assert!(
+            matches!(probe.log().worker_ready.as_slice(), [Ok(())]),
+            "released worker returns Ok"
+        );
+    }
+    report
+}
+
+async fn drive_held_join(
+    driver: &mut Driver<'_>,
+    coordinator: &SelectionCoordinator,
+    probe: &FixtureProbe,
+    hold: Hold,
+) -> Option<SelectionShutdownReport> {
+    let mut report;
+    let site = if hold == Hold::Rollback {
+        "rollback"
+    } else {
+        "drain"
+    };
+    let entered = move |probe: &FixtureProbe| {
+        let log = probe.log();
+        log.joins.get(site).is_some_and(|(_, pending)| *pending)
+            && (site == "rollback"
+                || log
+                    .stages
+                    .iter()
+                    .any(|s| matches!(s, ShutdownStage::Drain(_))))
+    };
+    report = driver.settle(&mut Vec::new(), &entered).await;
+    assert!(
+        report.is_none(),
+        "{site} join still pending under the close"
+    );
+    report = driver.tick_to(ms(199)).await;
+    assert!(report.is_none(), "close pending at 199 ms with {site} held");
+    let inner = &coordinator.inner;
+    assert!(inner.retained_rollback_tasks.lock().unwrap().is_empty());
+    assert!(inner.retained_cleanup_tasks.lock().unwrap().is_empty());
+    {
+        let log = probe.log();
+        assert!(log.joins[site].1, "{site} join pending at 199 ms");
+        if site == "rollback" {
+            assert!(!log.joins.contains_key("drain"), "drain not entered");
+        } else {
+            assert!(!log.joins["rollback"].1, "rollback joined before the drain");
+        }
+    }
+    driver.mark(format!("{site} pending at 199"));
+    report = driver.tick_to(ms(202)).await;
+    driver.mark(format!("{site} expired at 202 ready={}", report.is_some()));
+    let held_id = probe.log().joins[site].0;
+    let retained: Vec<_> = if site == "rollback" {
+        inner
+            .retained_rollback_tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|t| t.id())
+            .collect()
+    } else {
+        inner
+            .retained_cleanup_tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|t| t.id())
+            .collect()
+    };
+    assert_eq!(
+        retained,
+        vec![held_id],
+        "exactly the held {site} join is retained"
+    );
+    if report.is_none() {
+        // A drain entered with zero remaining expires on the next wheel tick.
+        report = driver.tick_to(ms(204)).await;
+    }
+    assert!(report.is_some(), "close returns after {site} expiry");
+    report
+}
+
+fn stage_args(probe: &FixtureProbe) -> (Option<Instant>, Option<Instant>) {
+    let stages = probe.log().stages.clone();
+    let begin_arg = stages.iter().find_map(|s| match s {
+        ShutdownStage::Begin(at) => Some(*at),
+        ShutdownStage::Drain(_) => None,
+    });
+    let drain_arg = stages.iter().find_map(|s| match s {
+        ShutdownStage::Drain(at) => Some(*at),
+        ShutdownStage::Begin(_) => None,
+    });
+    (begin_arg, drain_arg)
+}
+
 pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> CloseRun {
     let CloseCase {
         capped,
@@ -609,139 +773,17 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
     );
     assert!(probe.log().worker_polls >= 1, "worker polled by the close");
 
-    let worker_state = |probe: &FixtureProbe| {
-        let log = probe.log();
-        (log.worker_aborts, log.worker_ready.len())
-    };
-    if capped {
-        report = driver.tick_to(ms(149)).await;
-        assert!(report.is_none(), "capped close pending at 149 ms");
-        assert_eq!(
-            worker_state(&probe),
-            (0, 0),
-            "worker pending, no abort at 149 ms"
-        );
-        driver.mark("worker pending at 149".into());
-        report = driver.tick_to(ms(152)).await;
-        assert!(report.is_none(), "capped close pending at 152 ms");
-        assert_eq!(
-            probe.log().worker_aborts,
-            1,
-            "one delegated abort at 152 ms"
-        );
-        driver.mark("worker aborted at 152".into());
-        report = driver
-            .settle(&mut Vec::new(), &|probe| {
-                !probe.log().worker_ready.is_empty()
-            })
-            .await;
-        let log = probe.log();
-        assert!(
-            matches!(log.worker_ready.as_slice(), [Err(_)]),
-            "aborted worker joins once with an error: {:?}",
-            log.worker_ready
-        );
-        drop(log);
-        assert!(domain.coordinator.inner.worker.lock().unwrap().is_none());
-        assert!(domain
-            .coordinator
-            .inner
-            .retained_workers
-            .lock()
-            .unwrap()
-            .is_empty());
-    } else {
-        report = driver.tick_to(ms(300)).await;
-        assert!(report.is_none(), "normal close pending at 300 ms");
-        assert_eq!(
-            worker_state(&probe),
-            (0, 0),
-            "normal worker pending, no abort"
-        );
-        assert!(
-            probe.log().joins.is_empty(),
-            "no cleanup join before the worker"
-        );
-        driver.mark("worker held at 300".into());
-        if let Some(guard) = domain.restore_guard.take() {
-            guard.finish();
-        }
-        report = driver
-            .settle(&mut Vec::new(), &|probe| {
-                !probe.log().worker_ready.is_empty()
-            })
-            .await;
-        assert!(
-            matches!(probe.log().worker_ready.as_slice(), [Ok(())]),
-            "released worker returns Ok"
-        );
-    }
+    report = drive_worker_phase(
+        &mut driver,
+        domain.coordinator,
+        &mut domain.restore_guard,
+        &probe,
+        capped,
+    )
+    .await;
 
     if report.is_none() && hold != Hold::None {
-        let site = if hold == Hold::Rollback {
-            "rollback"
-        } else {
-            "drain"
-        };
-        let entered = move |probe: &FixtureProbe| {
-            let log = probe.log();
-            log.joins.get(site).is_some_and(|(_, pending)| *pending)
-                && (site == "rollback"
-                    || log
-                        .stages
-                        .iter()
-                        .any(|s| matches!(s, ShutdownStage::Drain(_))))
-        };
-        report = driver.settle(&mut Vec::new(), &entered).await;
-        assert!(
-            report.is_none(),
-            "{site} join still pending under the close"
-        );
-        report = driver.tick_to(ms(199)).await;
-        assert!(report.is_none(), "close pending at 199 ms with {site} held");
-        let inner = &domain.coordinator.inner;
-        assert!(inner.retained_rollback_tasks.lock().unwrap().is_empty());
-        assert!(inner.retained_cleanup_tasks.lock().unwrap().is_empty());
-        {
-            let log = probe.log();
-            assert!(log.joins[site].1, "{site} join pending at 199 ms");
-            if site == "rollback" {
-                assert!(!log.joins.contains_key("drain"), "drain not entered");
-            } else {
-                assert!(!log.joins["rollback"].1, "rollback joined before the drain");
-            }
-        }
-        driver.mark(format!("{site} pending at 199"));
-        report = driver.tick_to(ms(202)).await;
-        driver.mark(format!("{site} expired at 202 ready={}", report.is_some()));
-        let held_id = probe.log().joins[site].0;
-        let retained: Vec<_> = if site == "rollback" {
-            inner
-                .retained_rollback_tasks
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|t| t.id())
-                .collect()
-        } else {
-            inner
-                .retained_cleanup_tasks
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|t| t.id())
-                .collect()
-        };
-        assert_eq!(
-            retained,
-            vec![held_id],
-            "exactly the held {site} join is retained"
-        );
-        if report.is_none() {
-            // A drain entered with zero remaining expires on the next wheel tick.
-            report = driver.tick_to(ms(204)).await;
-        }
-        assert!(report.is_some(), "close returns after {site} expiry");
+        report = drive_held_join(&mut driver, domain.coordinator, &probe, hold).await;
     } else if report.is_none() {
         report = driver.settle(&mut schedule, &|_| false).await;
     }
@@ -774,15 +816,7 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
     let post = join_after_return(domain.coordinator, &watchdog, &mut finalizer, finalizer_id).await;
     let finalizer_result = post.1;
     // A drain entered with zero remaining may run after R; read both receivers now.
-    let stages = probe.log().stages.clone();
-    let begin_arg = stages.iter().find_map(|s| match s {
-        ShutdownStage::Begin(at) => Some(*at),
-        ShutdownStage::Drain(_) => None,
-    });
-    let drain_arg = stages.iter().find_map(|s| match s {
-        ShutdownStage::Drain(at) => Some(*at),
-        ShutdownStage::Begin(_) => None,
-    });
+    let (begin_arg, drain_arg) = stage_args(&probe);
     watchdog.finish();
     watcher.await.expect("watchdog thread joins");
     CloseRun {
