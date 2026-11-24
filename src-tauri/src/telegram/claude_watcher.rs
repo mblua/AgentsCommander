@@ -129,11 +129,9 @@ fn decide_attach(inputs: AttachInputs<'_>) -> AttachDecision {
     }
 }
 
-/// Whether this poll consults [`decide_attach`].
-///
-/// Only until the reader's first attach: after it, a vanished transcript
-/// leaves `current_file` empty again, and re-running the decision would pin a
-/// restored file whose content this reader already consumed.
+/// Whether this poll consults [`decide_attach`]: only until the reader's first
+/// attach. After it, a vanished transcript leaves `current_file` empty again, and
+/// re-running the decision would pin a restored file this reader already consumed.
 fn runs_first_attach_decision(first_attach_done: bool, has_current_file: bool) -> bool {
     !first_attach_done && !has_current_file
 }
@@ -539,8 +537,7 @@ impl ClaudeReader {
             file_offset: 0,
             line_remainder: String::new(),
             dir_warned: false,
-            // The minted transcript id, consulted until the first attach.
-            pin_id: transcript_id,
+            pin_id: transcript_id, // The minted transcript id, consulted until the first attach.
             attach_phase: AttachPhase::FirstPoll,
             wait_deadline: None,
         }
@@ -652,12 +649,16 @@ impl ClaudeReader {
             if waiting && self.wait_deadline.is_none() {
                 self.wait_deadline =
                     Some(Instant::now() + Duration::from_secs(PINNED_ATTACH_WAIT_SECS));
-                let pin_file = format!("{}.jsonl", self.pin_id.as_deref().unwrap_or_default());
                 log::info!(
                     "[JSONL_ATTACH] session {} waiting up to {}s for {}",
                     self.session_id,
                     PINNED_ATTACH_WAIT_SECS,
-                    self.project_dir.join(pin_file).display()
+                    self.project_dir
+                        .join(format!(
+                            "{}.jsonl",
+                            self.pin_id.as_deref().unwrap_or_default()
+                        ))
+                        .display()
                 );
             }
             match decision {
@@ -742,8 +743,7 @@ impl ClaudeReader {
 
     /// The first attach's §J preamble scan over `p`.
     fn first_attach_scan(&mut self, p: &Path, pinned_attach: bool) {
-        // A pinned attach is this
-        // spawn's own output, so it is `Live`.
+        // A pinned attach is this spawn's own output, so it is `Live`.
         let origin = if pinned_attach {
             RecordOrigin::Live
         } else {
