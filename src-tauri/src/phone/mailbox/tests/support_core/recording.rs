@@ -1,7 +1,10 @@
 use crate::config::settings::AgentConfig;
+use crate::errors::AppError;
+use crate::phone::mailbox::host::{MailboxHost, WakeCreateProbe};
 use crate::phone::types::OutboxMessage;
-use crate::pty::backend::{BackendSpawnSpec, PtyBackend};
+use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
 use crate::pty::manager::PtyManager;
+use futures::future::BoxFuture;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -357,5 +360,82 @@ impl ClearObservationProbe {
 
     pub(crate) fn release(&self, count: usize) {
         self.release.add_permits(count);
+    }
+}
+
+impl WakeCreateProbe {
+    pub(in crate::phone::mailbox) fn delay_backend_return(&self, app: &impl MailboxHost) {
+        let mut pty = app.pty_routes().lock().unwrap();
+        let backend = pty.backend_for_kind(SessionBackendKind::LocalProcess);
+        *pty = PtyManager::new_for_test(Arc::new(DelayedWakeBackend {
+            backend,
+            probe: self.clone(),
+        }));
+    }
+}
+
+struct DelayedWakeBackend {
+    backend: Arc<dyn PtyBackend>,
+    probe: WakeCreateProbe,
+}
+
+impl PtyBackend for DelayedWakeBackend {
+    fn as_any(&self) -> &dyn std::any::Any {
+        // Existing mailbox fixture helpers seed and inspect the wrapped fake.
+        self.backend.as_any()
+    }
+
+    fn spawn(&self, spec: BackendSpawnSpec) -> BoxFuture<'_, Result<(), AppError>> {
+        Box::pin(async move {
+            let id = spec.id;
+            let result = self.backend.spawn(spec).await;
+            (self.probe.observe)("late_native", Some(id)).await;
+            result
+        })
+    }
+
+    fn write(
+        &self,
+        authority: &crate::pty::manager::BackendWriteAuthority,
+        id: Uuid,
+        data: &[u8],
+    ) -> Result<(), AppError> {
+        self.backend.write(authority, id, data)
+    }
+
+    fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), AppError> {
+        self.backend.resize(id, cols, rows)
+    }
+
+    fn kill(&self, id: Uuid) -> Result<(), AppError> {
+        self.backend.kill(id)
+    }
+
+    fn has_session(&self, id: Uuid) -> bool {
+        self.backend.has_session(id)
+    }
+
+    fn get_screen_snapshot(&self, id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+        self.backend.get_screen_snapshot(id)
+    }
+
+    fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
+        self.backend.get_pty_size(id)
+    }
+
+    fn get_screen_rows(&self, id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+        self.backend.get_screen_rows(id)
+    }
+
+    fn register_response_watcher(&self, id: Uuid, request: String, dir: std::path::PathBuf) {
+        self.backend.register_response_watcher(id, request, dir);
+    }
+
+    fn terminate_job_for_session(&self, id: Uuid) -> bool {
+        self.backend.terminate_job_for_session(id)
+    }
+
+    fn kill_all_jobs(&self) -> (usize, usize) {
+        self.backend.kill_all_jobs()
     }
 }

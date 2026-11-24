@@ -1,17 +1,30 @@
+use futures::future::BoxFuture;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use std::{future::Future, path::Path, pin::Pin};
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::time::Instant;
 
 use super::{
-    add_action, assert_preparing, assert_replacement_runs, assert_wake_keeps_old_claim, at_cut,
-    at_recorded_cut, close_coordinator, make_mailbox_fixture, mock_backend, observe_wake, pause_at,
+    add_action, assert_deadline, assert_preparing, assert_replacement_runs,
+    assert_wake_keeps_old_claim, at_cut, at_recorded_cut, close_coordinator, completes,
+    deadline_events, make_mailbox_fixture, mock_backend, observe_wake, pause_at,
     prepare_retained_exited_respawn, replace_cwd, retained_source_wait_cut, rollback_backend,
-    rollback_poller, run_child_cases, wake_message_to_target, Action, Control, Cut, MailboxFixture,
-    MailboxPoller, Mutex, OutboxMessage, OwnedReplacementContinuation, SelectionCoordinator,
-    SessionBackendKind, Uuid,
+    rollback_poller, run_child_cases, wake_message_to_target, Action, CapturedCore, Control, Cut,
+    MailboxFixture, MailboxMockPtyBackend, MailboxPoller, Mutex, OutboxMessage,
+    OwnedReplacementContinuation, SelectionCoordinator, SessionBackendKind, Uuid, WAIT,
+    WAKE_CORE_CAPTURE,
 };
 use crate::path_identity::verify_directory;
+use crate::phone::mailbox::handoff::wake_claim_path;
+use crate::phone::mailbox::host::{MailboxHost, WakeCreateProbe};
+use crate::phone::mailbox::poller::{deliver_claimed_wake, wake_deadline, ValidatedWake};
+use crate::phone::mailbox::pty_claim::MailboxTestHooks;
 use crate::phone::mailbox::pty_observation::{PtyAuthorityState, WakeDeliveryState};
+use crate::phone::types::outbox_delivered_receipt;
+use crate::pty::manager::PtyManager;
 use crate::session::manager::{
     acquire_carrier_mutation_permit, PendingCreateBinding, SessionManager,
 };
@@ -327,4 +340,370 @@ async fn perturb_rollback<'a>(
         "tracker-failed" => assert!(!fail_tracker.load(Ordering::Relaxed)),
         _ => (),
     }
+}
+
+pub(super) type WakeCreateEvent = (
+    &'static str,
+    Option<Uuid>,
+    Option<(Instant, Instant)>,
+    oneshot::Sender<bool>,
+);
+
+pub(crate) struct WakeCreateEvents(mpsc::UnboundedReceiver<WakeCreateEvent>);
+
+impl WakeCreateEvents {
+    pub(super) async fn recv(&mut self) -> Option<WakeCreateEvent> {
+        self.0.recv().await
+    }
+
+    pub(super) async fn at(
+        &mut self,
+        stage: &str,
+        wait: Duration,
+    ) -> (Option<Uuid>, oneshot::Sender<bool>) {
+        let (actual, binding, _, resume) = tokio::time::timeout(wait, self.recv())
+            .await
+            .expect("wake fixture deadline")
+            .unwrap();
+        assert_eq!(actual, stage);
+        (binding, resume)
+    }
+}
+
+struct WakeDeadlineWarnings(Mutex<Vec<String>>);
+
+static WAKE_DEADLINE_WARNINGS: WakeDeadlineWarnings = WakeDeadlineWarnings(Mutex::new(Vec::new()));
+
+impl log::Log for WakeDeadlineWarnings {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() == log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            let message = record.args().to_string();
+            if message.contains("#3263 wake ended without input")
+                && message.contains("stage=deadline")
+            {
+                self.0.lock().unwrap().push(message);
+            }
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+impl WakeCreateProbe {
+    pub(crate) fn pause_at(
+        budget: Duration,
+        cuts: &[(&'static str, usize)],
+    ) -> (Self, WakeCreateEvents) {
+        log::set_logger(&WAKE_DEADLINE_WARNINGS).unwrap();
+        log::set_max_level(log::LevelFilter::Warn);
+        let (events, receiver) = mpsc::unbounded_channel();
+        let hold_input = cuts.iter().any(|&(stage, _)| stage == "input");
+        let cuts = Mutex::new(VecDeque::from(cuts.to_vec()));
+        let observe = Arc::new(move |stage, binding| -> BoxFuture<'static, bool> {
+            let events = events.clone();
+            let mut cuts = cuts.lock().unwrap();
+            let pause = cuts
+                .front_mut()
+                .filter(|cut| cut.0 == stage)
+                .is_some_and(|cut| {
+                    cut.1 -= 1;
+                    cut.1 == 0
+                });
+            if pause {
+                cuts.pop_front();
+            }
+            let timing = (pause && stage == "standard_response_prepared").then(|| {
+                let deadline = wake_deadline().expect("prepared response has a wake deadline");
+                let observed_at = Instant::now();
+                assert!(
+                    observed_at < deadline,
+                    "prepared response reached within the deadline"
+                );
+                (observed_at, deadline)
+            });
+            Box::pin(async move {
+                if !pause {
+                    return false;
+                }
+                let (resume, wait) = oneshot::channel();
+                events.send((stage, binding, timing, resume)).unwrap();
+                wait.await.unwrap_or(false)
+            })
+        });
+        let prepared = Arc::new(Mutex::new(None));
+        (
+            Self {
+                budget,
+                observe,
+                prepared,
+                hold_input: Arc::new(AtomicBool::new(hold_input)),
+            },
+            WakeCreateEvents(receiver),
+        )
+    }
+
+    pub(in crate::phone::mailbox) async fn observe_input_dispatch<F: Future>(
+        app: &impl MailboxHost,
+        session_id: Uuid,
+        injection: F,
+    ) -> F::Output {
+        let Some(probe) = app
+            .wake_create_probe()
+            .filter(|probe| probe.hold_input.swap(false, Ordering::Relaxed))
+        else {
+            return injection.await;
+        };
+        // Poll the canonical injector with its actual per-session writer occupied.
+        let writer = PtyManager::acquire_input_writer(app.pty_routes(), session_id)
+            .await
+            .unwrap();
+        let mut injection = Box::pin(injection);
+        assert!(
+            futures::poll!(injection.as_mut()).is_pending(),
+            "peer injection must wait for the occupied PTY writer"
+        );
+        (probe.observe)("input", Some(session_id)).await;
+        drop(writer);
+        injection.await
+    }
+
+    pub(super) async fn assert_input_pending(app: &impl MailboxHost, id: Uuid) {
+        let mut writer = std::pin::pin!(PtyManager::acquire_input_writer(app.pty_routes(), id));
+        assert!(
+            futures::poll!(writer.as_mut()).is_pending(),
+            "the real PTY writer must be occupied at the input cut"
+        );
+    }
+
+    pub(super) fn assert_native_pending(
+        app: &impl MailboxHost,
+        owner: &Mutex<Option<OwnedReplacementContinuation>>,
+        id: Uuid,
+    ) {
+        let owner = owner.lock().unwrap();
+        let owner = owner.as_ref().unwrap();
+        let state = owner.fixture_observe_publication();
+        assert_eq!(state.binding.session_id(), id);
+        assert!(owner.fixture_wake_source_observation().active);
+        assert!(owner.fixture_wake_rollback().backend_submitted);
+        assert!(!state.terminal && !state.publication);
+        assert_eq!(app.selection_opt().unwrap().fixture_root_count(), Some(1));
+        let pty = app.pty_routes().lock().unwrap();
+        assert!(
+            pty.backend_for_kind(SessionBackendKind::LocalProcess)
+                .has_session(id),
+            "native spawn must already have started"
+        );
+        assert!(pty.backend_kind(id).is_none(), "spawn result still pending");
+    }
+
+    pub(crate) async fn assert_bound_conflict(
+        &self,
+        app: &impl MailboxHost,
+        pending_before: &HashSet<Uuid>,
+    ) {
+        let binding = self.prepared.lock().unwrap().unwrap();
+        let manager = app.pty_sessions().read().await.clone();
+        assert!(pending_before.contains(&binding.session_id()));
+        assert!(manager.get_pending_session(binding).await.is_some());
+        let capacity = app.selection_opt().unwrap().port_test_state();
+        assert_eq!(capacity.queue_capacity, capacity.expected_queue_capacity);
+        assert_eq!(
+            capacity.admission_available,
+            capacity.expected_admission_capacity
+        );
+    }
+
+    pub(crate) fn assert_deadline_warning(reason: &str, diagnostic: &str) {
+        assert!(reason.contains(diagnostic), "{reason}");
+        let warnings = std::mem::take(&mut *WAKE_DEADLINE_WARNINGS.0.lock().unwrap());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].ends_with(reason), "{warnings:?}");
+        println!("{}", warnings[0]);
+    }
+}
+
+#[tokio::test]
+async fn wake_owner_deadline_before_dispatch() {
+    const NAME: &str = "wake_owner_deadline_before_dispatch";
+    let Some(scenario) = run_child_cases(module_path!(), NAME, &["standard", "logical"]).await
+    else {
+        return;
+    };
+    let logical = scenario == "logical";
+    let stage = if logical {
+        "logical_prepared"
+    } else {
+        "standard_response_prepared"
+    };
+    let fixture = make_mailbox_fixture();
+    let app = fixture.app.handle();
+    let (coordinator, _, sender, _) = prepare_retained_exited_respawn(&fixture).await;
+    let manager = app.pty_sessions().read().await.clone();
+    let wake = dispatch_deadline_wake(&manager, sender, logical).await;
+    let (poller, control) = rollback_poller(true);
+    let mut events = deadline_events(
+        app,
+        &[("first_refresh", 1), ("final_refresh", 1), (stage, 1)],
+    );
+    let rollback = OwnedReplacementContinuation::install_wake_rollback_fixture();
+    let producer_return = rollback.before_return.arm();
+    let capture = Arc::new(CapturedCore::default());
+    let outbox = tempfile::tempdir().unwrap();
+    let origin = outbox.path().join(format!("{}.json", wake.id));
+    let claim = wake_claim_path(&origin);
+    let actor = WAKE_CORE_CAPTURE.scope(
+        capture.clone(),
+        deadline_claim_with_response(&poller, app, &wake, &origin),
+    );
+    tokio::pin!(actor);
+    let (_, resume) = at_cut(actor.as_mut(), events.at("first_refresh", WAIT)).await;
+    let before_transfer = control.observe_owner(&coordinator).unwrap().effects_started;
+    resume.send(false).unwrap();
+    let (id, resume) = at_cut(actor.as_mut(), events.at("final_refresh", WAIT)).await;
+    let id = id.unwrap();
+    manager.mark_idle(id).await;
+    resume.send(false).unwrap();
+
+    let event = at_cut(actor.as_mut(), events.recv()).await.unwrap();
+    let resume = assert_dispatch_cut(event, stage, id, logical);
+    let owner = capture.owner.lock().unwrap().take().unwrap();
+    let before = owner.fixture_observe_publication();
+    assert_eq!(before.binding.session_id(), id);
+    assert!(before.publication && !before.terminal && !before.work_transferred);
+    assert!(before.work_attempt.is_none() && !before.not_started());
+    assert!(before.no_input_attempt().is_none());
+    let source = control.observe_owner(&coordinator).unwrap();
+    assert!(source.source_active);
+    assert_eq!(source.effects_started, before_transfer + 1);
+    let route = app
+        .pty_routes()
+        .lock()
+        .unwrap()
+        .route_identities(id)
+        .unwrap();
+    let binding_token = manager.get_session(id).await.unwrap().token;
+    let backend = rollback_backend(app);
+    let backend = mock_backend(&backend);
+    assert!(backend.live.lock().unwrap().contains(&id));
+    assert_eq!(backend.spawn_attempts(id), 1);
+    assert_eq!(backend.write_attempts.load(Ordering::SeqCst), 0);
+
+    assert_deadline(completes(actor).await, "work_transfer");
+    assert!(
+        origin.is_file() && !claim.exists(),
+        "the original claim is retryable"
+    );
+    assert_eq!(coordinator.fixture_root_count(), Some(1));
+    assert!(owner.fixture_wake_source_observation().active);
+    resume.send(false).unwrap();
+    completes(rollback.before_return.entered.notified()).await;
+    assert_eq!(
+        backend.write_attempts.load(Ordering::SeqCst),
+        0,
+        "expired dispatch must perform zero backend write attempts"
+    );
+    assert!(!outbox_delivered_receipt(outbox.path(), &wake.id).exists());
+    let after = owner.fixture_observe_publication();
+    assert_eq!(
+        (after.operation, after.binding),
+        (before.operation, before.binding)
+    );
+    assert_eq!(after.no_input_attempt(), Some(after.work_attempt.unwrap()));
+    assert!(after.publication && !after.work_transferred);
+    assert_eq!(manager.get_session(id).await.unwrap().token, binding_token);
+    assert_eq!(
+        app.pty_routes().lock().unwrap().route_identities(id),
+        Some(route)
+    );
+
+    producer_return.send(()).unwrap();
+    assert_deadline_owner_retry(app, &coordinator, &owner, &wake, backend, id).await;
+    assert!(WAKE_DEADLINE_WARNINGS.0.lock().unwrap().is_empty());
+    close_coordinator(&coordinator).await;
+}
+
+async fn dispatch_deadline_wake(
+    manager: &SessionManager,
+    sender: Uuid,
+    logical: bool,
+) -> OutboxMessage {
+    let mut wake = wake_message_to_target();
+    wake.id = Uuid::new_v4().to_string();
+    wake.token = Some(manager.get_session(sender).await.unwrap().token.to_string());
+    if logical {
+        wake.command = Some("clear".into());
+        wake.body.clear();
+    }
+    wake
+}
+
+async fn deadline_claim_with_response(
+    poller: &MailboxPoller,
+    app: &impl MailboxHost,
+    wake: &OutboxMessage,
+    origin: &Path,
+) -> Result<(), String> {
+    let content = serde_json::to_string(wake).unwrap();
+    std::fs::write(origin, &content).unwrap();
+    let work = poller
+        .admit_response_source(app, origin, wake, true, &content)
+        .await
+        .expect("the exact source was durably accepted");
+    let claim = wake_claim_path(origin);
+    std::fs::rename(origin, &claim).unwrap();
+    let validated = ValidatedWake {
+        message: wake.clone(),
+        response: Some(work),
+    };
+    deliver_claimed_wake(poller, app, &claim, origin, &validated).await
+}
+
+fn assert_dispatch_cut(
+    (stage, binding, timing, resume): WakeCreateEvent,
+    expected: &str,
+    id: Uuid,
+    logical: bool,
+) -> oneshot::Sender<bool> {
+    assert_eq!(stage, expected);
+    assert_eq!(binding, Some(id));
+    if logical {
+        assert!(timing.is_none());
+    } else {
+        let (observed_at, deadline) = timing.expect("standard response producer timing");
+        assert!(observed_at < deadline);
+        println!("standard B={id} observed_at={observed_at:?} deadline={deadline:?}");
+    }
+    resume
+}
+
+async fn assert_deadline_owner_retry(
+    app: &impl MailboxHost,
+    coordinator: &SelectionCoordinator,
+    owner: &OwnedReplacementContinuation,
+    wake: &OutboxMessage,
+    backend: &MailboxMockPtyBackend,
+    id: Uuid,
+) {
+    completes(async {
+        while coordinator.fixture_root_count() != Some(0) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(owner.fixture_observe_publication().terminal);
+    let manager = app.pty_sessions().read().await.clone();
+    manager.mark_idle(id).await;
+    let hooks = MailboxTestHooks::default();
+    hooks.real_inject_sessions.lock().unwrap().insert(id);
+    let retry = MailboxPoller::new_with_test_hooks(hooks);
+    let live_before = backend.live.lock().unwrap().clone();
+    completes(retry.deliver_wake(app, wake)).await.unwrap();
+    assert_eq!(backend.spawn_attempts(id), 1);
+    assert_eq!(*backend.live.lock().unwrap(), live_before);
+    assert!(!backend.writes_for(id).is_empty());
 }

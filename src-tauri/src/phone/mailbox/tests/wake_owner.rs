@@ -11,7 +11,7 @@ use crate::config::sessions_persistence::{
     classify_create_carrier_scope, persist_initial_carrier, retire_carrier_for_discard,
     CreateCarrierScope, InitialCarrierIntent, PublishedCarrier,
 };
-use crate::phone::mailbox::host::{MailboxHost, WakeCreateEvents, WakeCreateProbe};
+use crate::phone::mailbox::host::{MailboxHost, WakeCreateProbe};
 use crate::phone::types::PtyInputSourcePlane;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::{
@@ -25,6 +25,7 @@ use crate::session::selection::{
     ReplacementFixtureControl as Control, ReplacementFixtureCut as Cut, ReplacementFixtureReceipt,
     SourceExecutorGuard,
 };
+use rollback::WakeCreateEvents;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::OnceLock;

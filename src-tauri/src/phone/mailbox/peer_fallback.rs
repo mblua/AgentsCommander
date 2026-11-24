@@ -10,7 +10,8 @@ use super::notice::{
 };
 use super::poller::{
     check_wake_deadline, MailboxPoller, OwnedPeerWakeExecution, OwnedPeerWakeStep,
-    PeerWakeFallback, RetainedExit, SpawnedPeerWake, WakeDispatch, ERR_WAKE_RETAINED,
+    PeerWakeFallback, RetainedExit, SpawnedPeerWake, WakeDispatch, ERR_WAKE_DELIVERY_TIMEOUT,
+    ERR_WAKE_RETAINED,
 };
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
@@ -350,6 +351,10 @@ impl MailboxPoller {
             )
             .await;
         if let Err(error) = injected {
+            if error == ERR_WAKE_DELIVERY_TIMEOUT {
+                continuation.complete_wake_transfer_no_input(effect);
+                return retained("deadline", Some(id));
+            }
             retain_after_transfer_error(effect, continuation, error);
             return retained("inject_failed", Some(id));
         }
