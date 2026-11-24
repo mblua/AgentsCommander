@@ -207,7 +207,7 @@ async fn deliver_within_deadline<S: MailboxHost>(
     };
     let delivered = WAKE_ATTEMPT.scope(
         Some(attempt),
-        delivery.deliver_validated_wake(app, validated, false),
+        Box::pin(delivery.deliver_validated_wake(app, validated, false)),
     );
     let reason = match tokio::time::timeout_at(deadline, delivered).await {
         Ok(Err(error)) if error.starts_with(ERR_WAKE_DELIVERY_TIMEOUT) => error,

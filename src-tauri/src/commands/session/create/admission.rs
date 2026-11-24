@@ -1,6 +1,6 @@
 //! Admission state for one session create: target lease, carrier reservation and resources.
 //! Owns the create publication region and restores coordinator close markers when a
-//! create fails before any PTY may exist. Spawn and publication live in sibling modules.
+//! create fails before any PTY may exist.
 
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 #[cfg(test)]
@@ -842,8 +842,7 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
     if lifecycle_domain.is_some()
         || inline_transaction.is_some_and(SelectionTransaction::has_restore_context)
     {
-        // The actual outer lifecycle/restore executor already owns this effect.
-        // Its borrow and outcome must return to that same executor, not a child.
+        // The accepted lifecycle or restore executor owns the archive effect.
         return crate::config::archive_gate::enforce_unarchived_for_spawn(
             app,
             cwd,
@@ -876,7 +875,7 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
     if !first_archive_probe {
         scope.deadline = None;
     }
-    let archive = WAKE_CREATE_SCOPE.scope(scope, async move {
+    let archive = Box::pin(async move {
         let result = crate::config::archive_gate::enforce_unarchived_for_spawn(
             &app,
             &cwd,
@@ -893,15 +892,15 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
                 let manager = manager.clone();
                 async move {
                     let admitted = try_acquire_create_publication_region(&owner, &manager).await;
-                    #[cfg(test)]
                     if admitted.is_none() {
+                        #[cfg(test)]
                         observe_wake_create("archive_refused", None).await;
-                    }
-                    if admitted.is_none() && owner.lock().is_ok_and(|owner| owner.preheld_target) {
-                        if let Ok(mut owner) = owner.lock() {
+                        if let Ok(mut owner) = owner.lock()
+                            && owner.preheld_target
+                        {
                             owner.blocked_bound = true;
+                            return Err("targetCreateGateUnavailable".to_string());
                         }
-                        return Err("targetCreateGateUnavailable".to_string());
                     }
                     check_unbound_wake_deadline(&owner)?;
                     Ok::<_, String>(admitted)
@@ -914,6 +913,7 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
         observe_wake_create("archive_exit", None).await;
         result
     });
+    let archive = WAKE_CREATE_SCOPE.scope(scope, archive);
     crate::config::sessions_persistence::run_owned_persist_core(archive).await
 }
 

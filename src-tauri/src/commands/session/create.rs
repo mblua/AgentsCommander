@@ -215,7 +215,7 @@ pub(crate) async fn create_session_inner_for_wake<R: tauri::Runtime>(
         admission::WAKE_CREATE_SCOPE
             .scope(
                 scope,
-                create_session_inner_impl(
+                Box::pin(create_session_inner_impl(
                     app,
                     session_mgr,
                     pty_mgr,
@@ -243,7 +243,7 @@ pub(crate) async fn create_session_inner_for_wake<R: tauri::Runtime>(
                     None,
                     None,
                     None,
-                ),
+                )),
             )
             .await?,
     )
@@ -535,7 +535,7 @@ pub(crate) async fn create_session_inner_impl<R: tauri::Runtime>(
     }
     let (app, session_mgr, pty_mgr) = (app.clone(), session_mgr.clone(), pty_mgr.clone());
     let transaction = transaction.cloned();
-    run_detached_create(async move {
+    run_detached_create(Box::pin(async move {
         create_session_inner_core(
             &app,
             &session_mgr,
@@ -566,7 +566,7 @@ pub(crate) async fn create_session_inner_impl<R: tauri::Runtime>(
             initial_last_prompt,
         )
         .await
-    })
+    }))
     .await
 }
 

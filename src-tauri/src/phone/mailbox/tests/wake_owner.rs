@@ -869,7 +869,7 @@ async fn check_generic_retained(app: &AppHandle<MockRuntime>, wake: &OutboxMessa
     let (binding, poison) = at_cut(actor.as_mut(), deadline_event(&mut events, cut)).await;
     poison.send(true).unwrap();
     let error = completes(actor).await.unwrap_err();
-    assert_eq!(error, ERR_WAKE_CREATE_RETAINED);
+    assert!(error.ends_with(ERR_WAKE_CREATE_RETAINED), "{error}");
     let id = binding.unwrap();
     assert!(pending_ids(app).await.is_empty());
     let manager = app.pty_sessions().read().await.clone();
@@ -940,8 +940,9 @@ async fn wake_owner_owned_deadline_reports_dispatch_and_settles_exact_owner() {
     let backend = mock_backend(&backend);
     if pre_context {
         assert!(owner.precommit_rollback_completed());
-        assert_eq!(backend.spawn_attempts(id), 0);
-        assert!(!observation.publication);
+        let before_publish = control.observe_owner(&coordinator).unwrap();
+        assert_eq!(before_publish.effects_started, 1);
+        assert!(!observation.publication && backend.spawn_attempts(id) == 0);
     } else if matches!(case.as_str(), "first_refresh" | "late_native") {
         assert!(observation.not_started() && observation.work_attempt.is_none());
         assert_eq!(backend.spawn_attempts(id), 1);

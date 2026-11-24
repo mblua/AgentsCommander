@@ -887,7 +887,7 @@ impl MailboxPoller {
         // Common create borrows the lexical proof inside the existing owned core.
         let (id, to) = (msg.id.clone(), msg.to.clone());
         let attempt = WAKE_ATTEMPT.try_with(Clone::clone).ok().flatten();
-        run_owned_persist_core(WAKE_ATTEMPT.scope(attempt, async move {
+        let core = Box::pin(async move {
             let result = delivery
                 .execute_owned_peer_replacement(&app, &pty, &mut execution)
                 .await;
@@ -902,8 +902,8 @@ impl MailboxPoller {
             let result = owned_peer_completion(result, &completion, &manager, &pty).await;
             log_core_end(&result, &id, &to, previous);
             result
-        }))
-        .await
+        });
+        run_owned_persist_core(WAKE_ATTEMPT.scope(attempt, core)).await
     }
 
     fn with_owned_source_validation<S: MailboxHost>(

@@ -285,7 +285,7 @@ impl MailboxPoller {
             let proof = replacement_target_ownership(execution)?;
             let request = execution.request.clone();
             WakeDispatch::OwnedCreate.mark();
-            app.create_owned_response_replacement(request, continuation.clone(), &proof)
+            Box::pin(app.create_owned_response_replacement(request, continuation.clone(), &proof))
                 .await
         };
 
