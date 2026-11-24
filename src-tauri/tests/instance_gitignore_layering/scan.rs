@@ -38,7 +38,7 @@ pub(crate) fn normalized(body: &str) -> String {
 /// the last one missing.** It compiles inside the guarded module, it is
 /// rustfmt-stable, and it renames the **crate root** rather than one module
 /// group, so the alias reaches every knot member and not only
-/// `config::root_agent`. Measured during the #1273 review as one line plus one
+/// `config::root_agent`. Measured during the review as one line plus one
 /// production reference: guard green, `cargo fmt --check` exit 0, and the
 /// detector does not resolve it either, so nothing in the repository noticed.
 /// Entry 21.
@@ -65,7 +65,7 @@ pub(crate) fn aliases_a_module_group(body: &str) -> bool {
 /// A leading `r#` is dropped first: `r#root_agent` is the raw-identifier
 /// spelling of `root_agent` and names the same module, but reading it literally
 /// stops at the `#` and reports the child as `r`, so the reference would be
-/// caught by the equality assertion instead of by the #1273 message that
+/// caught by the equality assertion instead of by the message that
 /// explains it.
 pub(crate) fn leading_segment(item: &str) -> String {
     let item = item.strip_prefix("r#").unwrap_or(item);

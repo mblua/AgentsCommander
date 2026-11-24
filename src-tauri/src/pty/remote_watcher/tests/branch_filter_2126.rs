@@ -662,7 +662,7 @@ async fn stale_on_default_branch_sends_no_notice_but_keeps_the_chip() {
 }
 
 /// A repo on its default branch reports `ahead_by == 0` too, so the
-/// #2131 gate is evaluated FIRST and the `ahead_by` rule never runs there.
+/// Gate is evaluated FIRST and the `ahead_by` rule never runs there.
 /// Own commits on the default branch change nothing.
 #[tokio::test]
 async fn stale_on_default_branch_with_own_commits_still_sends_no_notice() {

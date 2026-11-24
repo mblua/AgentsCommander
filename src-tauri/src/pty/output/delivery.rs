@@ -380,7 +380,7 @@ fn copy_attach_snapshot(
                 // No line start with content behind it. The ring cannot be
                 // replayed from any offset, and in the observed incident it holds
                 // nothing but spinner frames anyway. The mirror is a consistent
-                // full repaint on a grid the #1439 branch above already validated.
+                // full repaint on a grid the branch above already validated.
                 None => screen.contents_formatted(),
             };
             Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {

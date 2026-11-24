@@ -45,7 +45,7 @@ fn batch(session_id: uuid::Uuid) -> WatcherMatchBatch {
     }
 }
 
-/// #1171, 9.3.36 - with the activity window closed, NOTHING is emitted - not a broadcast
+/// 9.3.36 - with the activity window closed, NOTHING is emitted - not a broadcast
 /// nobody reads, not an emit to a label that does not exist - **and the ring still
 /// records**, so opening the window later shows the history.
 #[test]

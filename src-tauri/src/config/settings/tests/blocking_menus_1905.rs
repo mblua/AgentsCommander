@@ -192,7 +192,7 @@ fn local_file_rejections_yield_an_empty_layer_and_match_the_parser() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// T6-T14 - the #1905 one-shot export out of settings.json.
+// T6-T14 - the one-shot export out of settings.json.
 // Fixture policy: every fixture entry carries all four fields, because the
 // export writes a `Valid` entry through the typed round-trip, which adds
 // `"enabled": true` when absent, so an equality assertion against a
