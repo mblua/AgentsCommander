@@ -549,6 +549,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
       <Show when={props.open}>
         <div
           class="webserver-dropdown"
+          role="none"
           onClick={(event) => event.stopPropagation()}
           // `on:keydown`, not `onKeyDown`: the delegated form would register a
           // document-level keydown listener, and Titlebar.zoom.test.tsx asserts
