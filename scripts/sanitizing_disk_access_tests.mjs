@@ -140,7 +140,7 @@ test('07r real/homonym mix and homonym types never count', () => {
   ]);
 });
 
-test('07r provenance matrix retains unknowns and recognizes #4025 locals', () => {
+test('07r provenance matrix retains unknowns and recognizes typed path locals', () => {
   const use = 'use std::path::{Path, PathBuf}; ';
   const results = expectSites([
     [use + 'fn f() { dir().exists(); }', 0],

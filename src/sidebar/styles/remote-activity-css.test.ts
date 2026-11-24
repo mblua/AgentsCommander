@@ -20,7 +20,7 @@ const CSS_PATH = new URL("./sidebar.css", import.meta.url);
 const RAW_CSS = readFileSync(CSS_PATH, "utf8");
 const CSS = RAW_CSS.split("\r\n").join("\n");
 
-/** Comment spans blanked, length and line breaks preserved: the #2064 comment above
+/** Comment spans blanked, length and line breaks preserved: the remote-activity comment above
  *  the rules names `ci-running` and `stale` in prose, and an unstripped scan would
  *  read a sentence as a selector. */
 const NO_COMMENTS = CSS.replace(/\/\*[\s\S]*?\*\//g, (span) => span.replace(/[^\n]/g, " "));
