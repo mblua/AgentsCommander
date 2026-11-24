@@ -437,13 +437,11 @@ fn commit_effect_completes_on_a_current_thread_runtime() {
     });
 }
 
-/// Hold `.co-managed/lock` for `hold`, signalling once it is really held.
-/// The join handle returns how long the lock was actually held: a loaded
-/// runner can deschedule the holder past its sleep, and a caller must be
-/// able to tell that scheduler overshoot from a code defect.
+/// Hold `.co-managed/lock` for `hold` or until `release` fires/drops; returns time held.
 fn hold_lock(
     root: &Path,
     hold: Duration,
+    release: Option<std::sync::mpsc::Receiver<()>>,
 ) -> (
     std::sync::mpsc::Receiver<()>,
     std::thread::JoinHandle<Duration>,
@@ -456,29 +454,9 @@ fn hold_lock(
         };
         let acquired = Instant::now();
         tx.send(()).expect("signal");
-        std::thread::sleep(hold);
+        release.map_or_else(|| std::thread::sleep(hold), |release| drop(release.recv()));
         drop(lock);
         acquired.elapsed()
-    });
-    (rx, handle)
-}
-
-/// Hold `.co-managed/lock` until `release` fires, signalling once it is held.
-/// No timer: the caller decides when the lock is released.
-fn hold_lock_until(
-    root: &Path,
-    release: std::sync::mpsc::Receiver<()>,
-) -> (std::sync::mpsc::Receiver<()>, std::thread::JoinHandle<()>) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let root = root.to_path_buf();
-    let handle = std::thread::spawn(move || {
-        let LockAttempt::Held(lock) = acquire_lock(&root, Duration::from_secs(5)) else {
-            panic!("the holder must get the lock");
-        };
-        tx.send(()).expect("signal");
-        // A dropped sender also releases, so a failing caller never hangs.
-        let _ = release.recv();
-        drop(lock);
     });
     (rx, handle)
 }
@@ -495,14 +473,13 @@ fn contention_is_lock_busy_and_bounded() {
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "turn", Some(10), 0), 0);
     let (release, release_rx) = std::sync::mpsc::channel();
-    let (ready, holder) = hold_lock_until(&root, release_rx);
+    let (ready, holder) = hold_lock(&root, Duration::ZERO, Some(release_rx));
     ready.recv().expect("holder ready");
     let pre = preconditions(EffectKind::Automatic); // a fresh snapshot
     let started = Instant::now();
     let outcome = commit_effect(&root, &slot, seq, &key, &pre, &capture);
     let elapsed = started.elapsed();
     let snapshot_age = pre.observed_at.elapsed();
-    // The lock is held for the whole call by construction, not by a timer.
     release.send(()).expect("release holder");
     holder.join().expect("holder");
     assert_eq!(outcome, Err(AbstainReason::LockBusy));
@@ -532,7 +509,7 @@ fn a_short_lock_wait_still_leaves_the_snapshot_fresh() {
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "turn", Some(10), 0), 0);
-    let (ready, holder) = hold_lock(&root, Duration::from_millis(25));
+    let (ready, holder) = hold_lock(&root, Duration::from_millis(25), None);
     ready.recv().expect("holder ready");
     let mut pre = preconditions(EffectKind::Automatic);
     pre.observed_at = Instant::now() - Duration::from_millis(75);
@@ -567,7 +544,7 @@ fn a_held_lock_bounds_the_flush_and_the_next_one_writes() {
         room.dirty = true;
     });
     recharge_in_memory(&root, &capture);
-    let (ready, holder) = hold_lock(&root, Duration::from_millis(300));
+    let (ready, holder) = hold_lock(&root, Duration::from_millis(300), None);
     ready.recv().expect("holder ready");
     let started = Instant::now();
     let outcome = flush_room(&root, &capture);
