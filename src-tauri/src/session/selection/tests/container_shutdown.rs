@@ -13,7 +13,7 @@ use tokio::time::error::Elapsed;
 const GLOBAL_SWEEP_CEILING: Duration = Duration::from_secs(10);
 
 mod deadline;
-use deadline::{CloseCase, CloseRun, Hold, ReadAt, ReturnWait};
+use deadline::{CloseCase, CloseRun, Hold};
 
 pub(super) fn build_selection_test_app(
     manager: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -435,65 +435,13 @@ async fn pending_container_drain_expires_at_shared_deadline() {
 
 #[tokio::test]
 async fn pending_container_return_bounds_are_inclusive() {
-    use ReadAt::{FromArm, FromStart};
-    use ReturnWait::{Native, TokioSleep, TokioSleepUntil};
     let ms = Duration::from_millis;
-    let abs = |a, b| vec![FromStart(ms(a)), FromStart(ms(b))];
-    let rel = |a, b| vec![FromArm(ms(a)), FromArm(ms(b))];
-    // (capped, wait, read schedule, expected C in ms, expected L in ms)
-    let mut cases = vec![
-        (
-            true,
-            TokioSleepUntil(ms(750)),
-            abs(748, 752),
-            750,
-            Some(752),
-        ),
-        (
-            true,
-            TokioSleepUntil(ms(751)),
-            abs(748, 752),
-            751,
-            Some(752),
-        ),
-        (
-            false,
-            TokioSleepUntil(ms(1000)),
-            abs(998, 1002),
-            1000,
-            Some(1002),
-        ),
-        (
-            false,
-            TokioSleepUntil(ms(1001)),
-            abs(998, 1002),
-            1001,
-            Some(1002),
-        ),
-        (true, TokioSleep(ms(600)), rel(598, 602), 750, None),
-        (true, TokioSleep(ms(601)), rel(598, 602), 751, None),
-        (false, TokioSleep(ms(1000)), rel(998, 1002), 1000, None),
-        (false, TokioSleep(ms(1001)), rel(998, 1002), 1001, None),
-        (true, Native(ms(600)), Vec::new(), 750, None),
-        (true, Native(ms(601)), Vec::new(), 751, None),
-        (false, Native(ms(1000)), Vec::new(), 1000, None),
-        (false, Native(ms(1001)), Vec::new(), 1001, None),
-    ];
-    for request in [400, 800, 1100] {
-        for capped in [true, false] {
-            let prefix = if capped { 150 } else { 0 };
-            for wait in [TokioSleep(ms(request)), Native(ms(request))] {
-                cases.push((capped, wait, Vec::new(), prefix + request, None));
-            }
-            let absolute = TokioSleepUntil(ms(request));
-            cases.push((capped, absolute, Vec::new(), request.max(prefix), None));
-        }
-    }
+    let cases = deadline::return_bound_cases();
     for (capped, wait, schedule, expected_c, expected_l) in cases {
         let case = CloseCase {
             capped,
             hold: Hold::None,
-            wait: Some(wait),
+            wait: Some(wait.clone()),
             schedule,
         };
         let run = pending_container_case(case).await;

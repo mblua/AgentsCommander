@@ -53,7 +53,7 @@ pub(super) enum Hold {
 pub(super) struct CloseCase {
     pub(super) capped: bool,
     pub(super) hold: Hold,
-    pub(super) wait: Option<ReturnWait>,
+    pub(super) wait: Option<SiteWait>,
     pub(super) schedule: Vec<ReadAt>,
 }
 
@@ -66,6 +66,91 @@ impl CloseCase {
             schedule: Vec::new(),
         }
     }
+}
+
+/// Return-bound pairs and totals: (capped, site wait, read schedule, expected C, expected L).
+pub(super) type BoundCase = (bool, SiteWait, Vec<ReadAt>, u64, Option<u64>);
+
+pub(super) fn return_bound_cases() -> Vec<BoundCase> {
+    use ReadAt::{FromArm, FromStart};
+    use ReturnWait::{Native, TokioSleep, TokioSleepUntil};
+    let abs = |a, b| vec![FromStart(ms(a)), FromStart(ms(b))];
+    let rel = |a, b| vec![FromArm(ms(a)), FromArm(ms(b))];
+    // (capped, wait, read schedule, expected C in ms, expected L in ms)
+    let cases = vec![
+        (
+            true,
+            TokioSleepUntil(ms(750)),
+            abs(748, 752),
+            750,
+            Some(752),
+        ),
+        (
+            true,
+            TokioSleepUntil(ms(751)),
+            abs(748, 752),
+            751,
+            Some(752),
+        ),
+        (
+            false,
+            TokioSleepUntil(ms(1000)),
+            abs(998, 1002),
+            1000,
+            Some(1002),
+        ),
+        (
+            false,
+            TokioSleepUntil(ms(1001)),
+            abs(998, 1002),
+            1001,
+            Some(1002),
+        ),
+        (true, TokioSleep(ms(600)), rel(598, 602), 750, None),
+        (true, TokioSleep(ms(601)), rel(598, 602), 751, None),
+        (false, TokioSleep(ms(1000)), rel(998, 1002), 1000, None),
+        (false, TokioSleep(ms(1001)), rel(998, 1002), 1001, None),
+        (true, Native(ms(600)), Vec::new(), 750, None),
+        (true, Native(ms(601)), Vec::new(), 751, None),
+        (false, Native(ms(1000)), Vec::new(), 1000, None),
+        (false, Native(ms(1001)), Vec::new(), 1001, None),
+    ];
+    let mut cases: Vec<_> = cases
+        .into_iter()
+        .map(|(capped, wait, schedule, c, l)| {
+            (capped, SiteWait::inline("return", wait), schedule, c, l)
+        })
+        .collect();
+    for request in [400, 800, 1100] {
+        for capped in [true, false] {
+            let prefix = if capped { 150 } else { 0 };
+            let absolute = TokioSleepUntil(ms(request));
+            for wait in [TokioSleep(ms(request)), Native(ms(request))] {
+                let return_site = SiteWait::inline("return", wait);
+                cases.push((capped, return_site, Vec::new(), prefix + request, None));
+            }
+            let return_site = SiteWait::inline("return", absolute);
+            cases.push((capped, return_site, Vec::new(), request.max(prefix), None));
+            // The same totals from children the close joins between rollback and drain.
+            for wait in [TokioSleep(ms(request)), Native(ms(request))] {
+                let child = SiteWait::children("between-joins", vec![wait]);
+                cases.push((capped, child, Vec::new(), prefix + request, None));
+            }
+            let child = SiteWait::children("between-joins", vec![absolute]);
+            cases.push((capped, child, Vec::new(), request.max(prefix), None));
+        }
+    }
+    // 1 ms: one Tokio sleep at each site, and a native/Tokio child pair between joins.
+    for capped in [true, false] {
+        let expected = if capped { 151 } else { 1 };
+        for site in ["between-joins", "return"] {
+            let wait = SiteWait::inline(site, TokioSleep(ms(1)));
+            cases.push((capped, wait, Vec::new(), expected, None));
+        }
+        let pair = SiteWait::children("between-joins", vec![Native(ms(1)), TokioSleep(ms(1))]);
+        cases.push((capped, pair, Vec::new(), expected, None));
+    }
+    cases
 }
 
 // ---------------------------------------------------------------- physical watchdog
@@ -247,245 +332,11 @@ impl Watchdog {
     }
 }
 
-// ---------------------------------------------------------------- receipts and probe
-
-#[derive(Clone, Debug)]
-pub(super) struct Receipt {
-    pub(super) wait: ReturnWait,
-    pub(super) arm_seq: u64,
-    pub(super) q: Duration,
-    pub(super) p: Option<Duration>,
-    pub(super) release: Option<(u64, Duration)>,
-    pub(super) native_waited: Option<Duration>,
-    pub(super) consume_seq: Option<u64>,
-}
-
-#[derive(Default)]
-struct ProbeLog {
-    joins: BTreeMap<&'static str, (tokio::task::Id, bool)>,
-    transfers: Vec<(&'static str, tokio::task::Id)>,
-    receipts: Vec<Receipt>,
-    stages: Vec<ShutdownStage>,
-    worker_polls: usize,
-    worker_aborts: usize,
-    worker_ready: Vec<Result<(), String>>,
-}
-
-pub(super) struct FixtureProbe {
-    log: Mutex<ProbeLog>,
-    external: AtomicBool,
-    seq: AtomicU64,
-    t0: Mutex<Option<tokio::time::Instant>>,
-    wait: Option<ReturnWait>,
-    wake: Arc<WakeFlag>,
-    watchdog: Mutex<Option<Arc<Watchdog>>>,
-    me: std::sync::Weak<FixtureProbe>,
-}
-
-impl FixtureProbe {
-    fn log(&self) -> std::sync::MutexGuard<'_, ProbeLog> {
-        self.log
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn next(&self) -> u64 {
-        self.seq.fetch_add(1, Ordering::SeqCst)
-    }
-
-    fn since_t0(&self) -> Duration {
-        let t0 = self
-            .t0
-            .lock()
-            .unwrap()
-            .expect("t0 recorded before the first poll");
-        tokio::time::Instant::now() - t0
-    }
-
-    fn stage(&self, stage: ShutdownStage) {
-        if matches!(stage, ShutdownStage::Begin(_)) {
-            if let Some(watchdog) = self.watchdog.lock().unwrap().clone() {
-                watchdog.stamp(|stamps| {
-                    stamps.a.get_or_insert_with(Instant::now);
-                });
-            }
-        }
-        self.log().stages.push(stage);
-        WakeFlag::wake_by_ref(&self.wake);
-    }
-
-    fn arm(&self, wait: ReturnWait, p: Option<Duration>) -> usize {
-        let receipt = Receipt {
-            wait,
-            arm_seq: self.next(),
-            q: self.since_t0(),
-            p,
-            release: None,
-            native_waited: None,
-            consume_seq: None,
-        };
-        let mut log = self.log();
-        log.receipts.push(receipt);
-        log.receipts.len() - 1
-    }
-
-    fn released(&self, index: usize, native_waited: Option<Duration>) {
-        let release = (self.next(), self.since_t0());
-        let mut log = self.log();
-        log.receipts[index].release = Some(release);
-        log.receipts[index].native_waited = native_waited;
-    }
-
-    fn consumed(&self, index: usize) {
-        let seq = self.next();
-        self.log().receipts[index].consume_seq = Some(seq);
-    }
-
-    /// Tokio wait built in the arming poll; its deadline is read before it is pinned.
-    async fn tokio_wait(self: Arc<Self>, wait: ReturnWait) {
-        let t0 = self.t0.lock().unwrap().expect("t0 recorded");
-        let q = tokio::time::Instant::now();
-        let sleep = match wait {
-            ReturnWait::TokioSleep(d) => tokio::time::sleep(d),
-            ReturnWait::TokioSleepUntil(at) => tokio::time::sleep_until(t0 + at),
-            ReturnWait::Native(_) => unreachable!("native wait is served by a thread"),
-        };
-        let p = sleep.deadline() - t0;
-        if let ReturnWait::TokioSleep(d) = wait {
-            assert_eq!(sleep.deadline() - q, d, "relative sleep deadline is q + d");
-        }
-        let index = self.arm(wait, Some(p));
-        let mut sleep = Box::pin(sleep);
-        let probe = Arc::clone(&self);
-        let mut armed = false;
-        std::future::poll_fn(|cx| match sleep.as_mut().poll(cx) {
-            Poll::Ready(()) => {
-                probe.released(index, None);
-                Poll::Ready(())
-            }
-            Poll::Pending => {
-                if !std::mem::replace(&mut armed, true) {
-                    WakeFlag::wake_by_ref(&probe.wake);
-                }
-                Poll::Pending
-            }
-        })
-        .await;
-        self.consumed(index);
-    }
-
-    /// Native wait: a service thread other than the watchdog opens the gate at entry+d.
-    fn native_wait(&self, d: Duration) {
-        let index = self.arm(ReturnWait::Native(d), None);
-        let gate = Arc::new(Gate::default());
-        let entry = Instant::now();
-        let service_gate = Arc::clone(&gate);
-        let service = std::thread::spawn(move || {
-            std::thread::sleep((entry + d).saturating_duration_since(Instant::now()));
-            let released = Instant::now();
-            service_gate.open();
-            released
-        });
-        gate.wait();
-        let released = service.join().expect("native wait service joins");
-        assert!(released - entry >= d, "native release precedes entry + d");
-        self.released(index, Some(d));
-        self.consumed(index);
-    }
-}
-
-impl CloseProbe for FixtureProbe {
-    fn join_polled(&self, site: &'static str, id: tokio::task::Id, pending: bool) {
-        self.log().joins.insert(site, (id, pending));
-        self.external.store(pending, Ordering::SeqCst);
-    }
-
-    fn transferred(&self, site: &'static str, id: tokio::task::Id) {
-        self.log().transfers.push((site, id));
-    }
-
-    fn return_wait(&self) -> Option<BoxFuture<'static, ()>> {
-        let wait = self.wait?;
-        let probe = self.me.upgrade()?;
-        Some(match wait {
-            ReturnWait::Native(d) => Box::pin(async move { probe.native_wait(d) }),
-            tokio_wait => Box::pin(probe.tokio_wait(tokio_wait)),
-        })
-    }
-}
-
-/// The same worker the coordinator owns, with poll and abort delegated and recorded.
-struct ProbeWorker {
-    inner: Pin<Box<dyn SelectionTask>>,
-    probe: Arc<FixtureProbe>,
-}
-
-impl Future for ProbeWorker {
-    type Output = Result<(), String>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let polled = self.inner.as_mut().poll(cx);
-        let mut log = self.probe.log();
-        log.worker_polls += 1;
-        if let Poll::Ready(result) = &polled {
-            log.worker_ready.push(result.clone());
-        }
-        drop(log);
-        self.probe
-            .external
-            .store(polled.is_pending(), Ordering::SeqCst);
-        polled
-    }
-}
-
-impl SelectionTask for ProbeWorker {
-    fn abort(&self) {
-        self.probe.log().worker_aborts += 1;
-        self.inner.abort();
-    }
-}
-
-// ---------------------------------------------------------------- bound evaluator
-
-/// Attributable delay `C`: expired product deadlines and the waits that conditioned R.
-pub(super) fn attributable(
-    worker_phase: Option<Duration>,
-    shared: Option<Duration>,
-    receipts: &[Receipt],
-    ready_seq: u64,
-) -> Result<Duration, String> {
-    let mut c = worker_phase
-        .into_iter()
-        .chain(shared)
-        .max()
-        .unwrap_or_default();
-    for receipt in receipts {
-        let release = receipt.release.ok_or("wait never released")?;
-        let consumed = receipt.consume_seq.ok_or("wait never consumed")?;
-        if !(receipt.arm_seq < release.0 && release.0 < consumed && consumed < ready_seq) {
-            return Err(format!(
-                "wait trace out of order: {receipt:?} ready={ready_seq}"
-            ));
-        }
-        c = match receipt.wait {
-            ReturnWait::TokioSleep(d) => {
-                let p = receipt.p.ok_or("tokio wait without deadline")?;
-                if release.1 < p || p - receipt.q != d {
-                    return Err(format!("tokio relative wait mismatch: {receipt:?}"));
-                }
-                c + d
-            }
-            ReturnWait::TokioSleepUntil(at) => {
-                if receipt.p != Some(at) || release.1 < at {
-                    return Err(format!("tokio absolute wait mismatch: {receipt:?}"));
-                }
-                c.max(at)
-            }
-            ReturnWait::Native(_) => c + receipt.native_waited.ok_or("native wait unmeasured")?,
-        };
-    }
-    Ok(c)
-}
+// Leaf file beside this one (tests/container_shutdown/receipts.rs).
+#[path = "receipts.rs"]
+mod receipts;
+pub(super) use receipts::SiteWait;
+use receipts::{attributable, FixtureProbe, ProbeWorker};
 
 // ---------------------------------------------------------------- driver
 
@@ -568,7 +419,8 @@ impl Driver<'_> {
             if stop(&self.probe) || self.watchdog.first_failure().is_some() {
                 return None;
             }
-            if self.probe.external.load(Ordering::SeqCst) {
+            let child_timer = self.probe.child_timers.load(Ordering::SeqCst) > 0;
+            if self.probe.external.load(Ordering::SeqCst) && !child_timer {
                 self.probe.wake.notify.notified().await;
                 continue;
             }
@@ -675,9 +527,10 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
         me: me.clone(),
         log: Mutex::default(),
         external: AtomicBool::new(false),
+        child_timers: std::sync::atomic::AtomicUsize::new(0),
         seq: AtomicU64::new(0),
         t0: Mutex::new(None),
-        wait,
+        wait: wait.clone(),
         wake: Arc::clone(&wake),
         watchdog: Mutex::new(None),
     });
@@ -892,17 +745,10 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
         worker_expired.then_some(worker_phase),
         shared_expired.then_some(budget),
         &log.receipts,
+        log.drain_seq,
         ready_seq,
     );
     let transfers = log.transfers.clone();
-    let begin_arg = log.stages.iter().find_map(|s| match s {
-        ShutdownStage::Begin(at) => Some(*at),
-        ShutdownStage::Drain(_) => None,
-    });
-    let drain_arg = log.stages.iter().find_map(|s| match s {
-        ShutdownStage::Drain(at) => Some(*at),
-        ShutdownStage::Begin(_) => None,
-    });
     drop(log);
 
     // Release product guards, resume Tokio and join every owned handle once.
@@ -914,6 +760,16 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
     tokio::time::resume();
     let post = join_after_return(domain.coordinator, &watchdog, &mut finalizer, finalizer_id).await;
     let finalizer_result = post.1;
+    // A drain entered with zero remaining may run after R; read both receivers now.
+    let stages = probe.log().stages.clone();
+    let begin_arg = stages.iter().find_map(|s| match s {
+        ShutdownStage::Begin(at) => Some(*at),
+        ShutdownStage::Drain(_) => None,
+    });
+    let drain_arg = stages.iter().find_map(|s| match s {
+        ShutdownStage::Drain(at) => Some(*at),
+        ShutdownStage::Begin(_) => None,
+    });
     watchdog.finish();
     watcher.await.expect("watchdog thread joins");
     CloseRun {

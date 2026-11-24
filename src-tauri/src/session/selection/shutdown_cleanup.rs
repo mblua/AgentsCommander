@@ -30,8 +30,9 @@ pub(crate) mod probe {
         fn join_polled(&self, site: &'static str, id: tokio::task::Id, pending: bool);
         /// A join that missed its deadline moved to its retained collection.
         fn transferred(&self, site: &'static str, id: tokio::task::Id);
-        /// Await requested at the common return site, after the drain join.
-        fn return_wait(&self) -> Option<BoxFuture<'static, ()>>;
+        /// Await requested at a close site: `between-joins` (after the rollback join,
+        /// before the drain) or `return` (after the drain join).
+        fn return_wait(&self, site: &'static str) -> Option<BoxFuture<'static, ()>>;
     }
 
     tokio::task_local! {
@@ -43,8 +44,8 @@ pub(crate) mod probe {
     }
 
     /// Clones the callback, ends the borrow, then awaits what it returned.
-    pub(crate) async fn at_return_site() {
-        let wait = current().and_then(|probe| probe.return_wait());
+    pub(crate) async fn at_site(site: &'static str) {
+        let wait = current().and_then(|probe| probe.return_wait(site));
         if let Some(wait) = wait {
             wait.await;
         }
