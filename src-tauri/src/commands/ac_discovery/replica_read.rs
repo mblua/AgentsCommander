@@ -52,7 +52,9 @@ pub(crate) fn read_preferred_agent_id_logged(
     let foreign_id = v.get("tooling")?.get("lastCodingAgent")?.as_str()?;
     let reference =
         crate::config::agent_command::StoredReference::from_config(Some(&v), foreign_id);
-    match crate::config::agent_command::resolve_portable_reference(settings, &reference) {
+    // #4845 P15 - the replica's own file; the `config.json` already loaded (one load).
+    let view = crate::config::settings::agent::launch_view_with(settings, dir, Some(&v));
+    match crate::config::agent_command::resolve_portable_reference(&view.settings, &reference) {
         crate::config::agent_command::MatchOutcome::Matched(found) => Some(found.agent_id),
         crate::config::agent_command::MatchOutcome::NoMatch { reference } => {
             warnings.push(format!(

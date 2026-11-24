@@ -271,6 +271,7 @@ mod discovery;
 mod discovery_payload;
 mod gitignore_layout;
 mod gitignore_rules;
+mod i4845_discovery_scope;
 mod project;
 mod snapshot_null;
 mod snapshot_refresh;

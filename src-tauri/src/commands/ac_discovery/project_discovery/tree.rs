@@ -183,8 +183,9 @@ async fn discover_workgroup(
                     .identity
                     .as_ref()
                     .and_then(|identity| read_preferred_agent_id(&identity.matrix_dir, cfg));
+                let view = crate::config::settings::agent::launch_view(cfg, &wg_path);
                 let current_coding_agent_id = read_replica_current_coding_agent(&wg_path)
-                    .filter(|id| cfg.agents.iter().any(|agent| agent.id == *id));
+                    .filter(|id| view.settings.agents.iter().any(|agent| agent.id == *id));
                 let profile_read = read_replica_profile_result(&wg_path);
                 if let Some(warning) = &profile_read.warning {
                     log::warn!("[ac-discovery] {warning}");
