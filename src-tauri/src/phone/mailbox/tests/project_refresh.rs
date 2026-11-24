@@ -733,6 +733,7 @@ async fn assert_poller_settings_order(application: &tauri::App<tauri::test::Mock
         op: CodingAgentOp::Add {
             agent: wake_agent("poller-agent", "Poller", "cmd.exe"),
         },
+        context: None,
     };
     std::fs::write(
         requests.join("agent.json"),
@@ -755,6 +756,7 @@ async fn assert_poller_settings_order(application: &tauri::App<tauri::test::Mock
         op: CodingAgentOp::Remove {
             id: "poller-agent".into(),
         },
+        context: None,
     };
     std::fs::write(
         requests.join("expired.json"),

@@ -29,6 +29,10 @@ pub struct CodingAgentRequest {
     pub request_id: String,
     pub created_at_ms: u64,
     pub op: CodingAgentOp,
+    /// #4845 - the caller's context: its project root as listed in `projectPaths`;
+    /// absent = Outside projects. Set and read from P18 on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 /// The result file the poller writes and the CLI polls for.

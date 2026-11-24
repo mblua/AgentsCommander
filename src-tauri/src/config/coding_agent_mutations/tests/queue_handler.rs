@@ -20,6 +20,7 @@ fn request_result_roundtrip_atomic() {
         request_id: "req1".into(),
         created_at_ms: 123,
         op: add(agent("claude", "Claude", "claude")),
+        context: None,
     };
     let path = write_coding_agent_request(&requests, &req).unwrap();
     assert!(path.exists());

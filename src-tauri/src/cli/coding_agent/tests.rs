@@ -381,6 +381,7 @@ fn p02_direct_and_queued_updates_share_canonical_serializer_and_effect() {
         request_id: "p02".into(),
         created_at_ms: 1,
         op: op.clone(),
+        context: None,
     };
     let wire = serde_json::to_value(&request).unwrap();
     assert_eq!(wire["op"]["patch"]["baseCommand"], "tool --after");

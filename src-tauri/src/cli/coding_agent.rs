@@ -482,6 +482,7 @@ fn dispatch_via_daemon(
         request_id: request_id.clone(),
         created_at_ms: now_unix_ms(),
         op,
+        context: None,
     };
     let request_path = ops::write_coding_agent_request(&requests_dir, &request)?;
 
