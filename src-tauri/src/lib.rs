@@ -565,7 +565,7 @@ fn invoke_handler(
         commands::ac_discovery::get_project_file_difference,
         commands::project_settings::get_project_groups,
         commands::project_settings::update_project_groups,
-        commands::non_stop::non_stop_report,
+        commands::non_stop::non_stop_report, commands::ipc_blackbox::ipc_blackbox_enabled,
         commands::ipc_blackbox::ipc_blackbox_report,
         commands::ac_discovery::keep_custom_context_template,
         commands::ac_discovery::overwrite_context_template_with_default,

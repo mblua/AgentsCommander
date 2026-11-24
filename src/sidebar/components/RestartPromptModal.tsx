@@ -13,7 +13,11 @@ const RestartPromptModal: Component<{
   return (
     <div
       class="modal-overlay"
-      onClick={props.onLater}
+      role="none"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) props.onLater();
+        else e.stopPropagation();
+      }}
       // Escape = backdrop click; the dialog takes focus on mount so keys reach here.
       onKeyDown={(e) => {
         if (e.key === "Escape") {
@@ -31,7 +35,6 @@ const RestartPromptModal: Component<{
         style={{ "max-width": "360px" }}
         tabIndex={-1}
         ref={(el) => focusOnMount(el)}
-        onClick={(e) => e.stopPropagation()}
         {...automationAttrs("restartPrompt.modal", "dialog")}
       >
         <div class="agent-modal-header">

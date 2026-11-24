@@ -242,23 +242,13 @@ fn norm_path_lowercases_and_normalizes_slashes() {
 // ── compute_peer_status (non-WG, expected_name=None) ─────────────
 
 /// A `temp-room-trNN` folder in the real config dir, removed on drop.
-/// Each test needs its own number because nextest runs tests in separate processes.
-struct TempRoomDir(
-    PathBuf,
-    #[allow(
-        dead_code,
-        reason = "guard is held for the value's lifetime, never read"
-    )]
-    std::sync::MutexGuard<'static, ()>,
-);
-
-static TEMP_ROOM_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Each test needs its own number: tests run in parallel (and nextest runs
+/// them in separate processes), and each asserts only about its own room or
+/// about non-temp rows.
+struct TempRoomDir(PathBuf);
 
 impl TempRoomDir {
     fn create(n: u32) -> Self {
-        let guard = TEMP_ROOM_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let base = crate::config::config_dir().expect("config dir");
         // Root discovery needs a real Root dir; a fresh config dir (CI) has none.
         let root = crate::config::root_agent::root_agent_dir().expect("root dir");
@@ -266,7 +256,7 @@ impl TempRoomDir {
         let path = base.join(crate::config::temp_rooms::temp_room_dir_name(n));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create temp room");
-        Self(path, guard)
+        Self(path)
     }
 }
 

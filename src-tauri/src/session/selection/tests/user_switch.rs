@@ -1,20 +1,21 @@
 use super::*;
+use crate::pty::backend::SessionBackendKind;
+use crate::session::session::Session;
+use tauri::Listener;
 
-#[tokio::test]
-async fn user_switch_to_already_selected_session_publishes_view_requested() {
-    use crate::pty::backend::SessionBackendKind;
-    use tauri::Listener;
+type MockApp = tauri::App<tauri::test::MockRuntime>;
 
-    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    // The filler absorbs the manager's automatic first-session selection, so
-    // the first user switch below is a real selection change.
+async fn create_shell_session(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    working_directory: &str,
+) -> Session {
     manager
         .read()
         .await
         .create_session(
             "shell".to_string(),
             Vec::new(),
-            "C:/filler".to_string(),
+            working_directory.to_string(),
             None,
             None,
             Vec::new(),
@@ -22,50 +23,82 @@ async fn user_switch_to_already_selected_session_publishes_view_requested() {
             SessionBackendKind::LocalProcess,
         )
         .await
-        .unwrap();
-    let session = manager
-        .read()
-        .await
-        .create_session(
-            "shell".to_string(),
-            Vec::new(),
-            "C:/already-selected".to_string(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
-    let backend = Arc::new(LifecycleTestBackend::default());
-    backend.set_live(session.id, true);
-    let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
-    pty.lock()
         .unwrap()
-        .record_route(session.id, SessionBackendKind::LocalProcess);
-    let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
+}
+
+/// Marks every session live, then routes each one through a local process.
+fn live_routed_pty(
+    backend: &Arc<LifecycleTestBackend>,
+    session_ids: &[uuid::Uuid],
+) -> Arc<Mutex<PtyManager>> {
+    for session_id in session_ids {
+        backend.set_live(*session_id, true);
+    }
+    let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+    for session_id in session_ids {
+        pty.lock()
+            .unwrap()
+            .record_route(*session_id, SessionBackendKind::LocalProcess);
+    }
+    pty
+}
+
+/// Builds the mock app, starts the coordinator on it and finishes restore-first.
+async fn start_switch_app(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty: &Arc<Mutex<PtyManager>>,
+    detached: DetachedSessionsState,
+    label: &str,
+) -> (SelectionCoordinator, MockApp) {
+    let coordinator = SelectionCoordinator::new(Arc::clone(manager), CancellationToken::new());
     let app = tauri::test::mock_builder()
         .manage(crate::commands::session::selection_executor::state::<
             tauri::test::MockRuntime,
         >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
-        .manage(DetachedSessionsState::default())
+        .manage(Arc::clone(manager))
+        .manage(Arc::clone(pty))
+        .manage(detached)
         .manage(WsBroadcaster::new())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build already-selected app");
+        .unwrap_or_else(|error| panic!("build {label} app: {error:?}"));
     coordinator
         .start(app.handle().clone())
-        .expect("start already-selected coordinator");
+        .unwrap_or_else(|error| panic!("start {label} coordinator: {error:?}"));
     coordinator.submit_restore_first().await.unwrap().finish();
+    (coordinator, app)
+}
+
+fn listen_events(
+    app: &MockApp,
+    event_names: &[&'static str],
+) -> std::sync::mpsc::Receiver<(&'static str, String)> {
     let (events_tx, events_rx) = std::sync::mpsc::channel();
-    for event_name in ["session_switched", "session_view_requested"] {
+    for &event_name in event_names {
         let events_tx = events_tx.clone();
         app.listen_any(event_name, move |event| {
             let _ = events_tx.send((event_name, event.payload().to_string()));
         });
     }
+    events_rx
+}
+
+#[tokio::test]
+async fn user_switch_to_already_selected_session_publishes_view_requested() {
+    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    // The filler absorbs the manager's automatic first-session selection, so
+    // the first user switch below is a real selection change.
+    create_shell_session(&manager, "C:/filler").await;
+    let session = create_shell_session(&manager, "C:/already-selected").await;
+    let backend = Arc::new(LifecycleTestBackend::default());
+    let pty = live_routed_pty(&backend, &[session.id]);
+    let (coordinator, app) = start_switch_app(
+        &manager,
+        &pty,
+        DetachedSessionsState::default(),
+        "already-selected",
+    )
+    .await;
+    let events_rx = listen_events(&app, &["session_switched", "session_view_requested"]);
 
     coordinator
         .transition(SelectionRequest::user_switch(session.id))
@@ -109,73 +142,15 @@ async fn user_switch_to_already_selected_session_publishes_view_requested() {
 
 #[tokio::test]
 async fn user_switch_to_detached_target_publishes_no_view_requested() {
-    use crate::pty::backend::SessionBackendKind;
-    use tauri::Listener;
-
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let detached_session = manager
-        .read()
-        .await
-        .create_session(
-            "shell".to_string(),
-            Vec::new(),
-            "C:/detached-target".to_string(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
-    let live_session = manager
-        .read()
-        .await
-        .create_session(
-            "shell".to_string(),
-            Vec::new(),
-            "C:/live-detached-control".to_string(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
+    let detached_session = create_shell_session(&manager, "C:/detached-target").await;
+    let live_session = create_shell_session(&manager, "C:/live-detached-control").await;
     let backend = Arc::new(LifecycleTestBackend::default());
-    backend.set_live(detached_session.id, true);
-    backend.set_live(live_session.id, true);
-    let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
-    pty.lock()
-        .unwrap()
-        .record_route(detached_session.id, SessionBackendKind::LocalProcess);
-    pty.lock()
-        .unwrap()
-        .record_route(live_session.id, SessionBackendKind::LocalProcess);
+    let pty = live_routed_pty(&backend, &[detached_session.id, live_session.id]);
     let detached = DetachedSessionsState::default();
-    let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
-        .manage(Arc::clone(&detached))
-        .manage(WsBroadcaster::new())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build detached-target app");
-    coordinator
-        .start(app.handle().clone())
-        .expect("start detached-target coordinator");
-    coordinator.submit_restore_first().await.unwrap().finish();
-    let (events_tx, events_rx) = std::sync::mpsc::channel();
-    for event_name in ["session_switched", "session_view_requested"] {
-        let events_tx = events_tx.clone();
-        app.listen_any(event_name, move |event| {
-            let _ = events_tx.send((event_name, event.payload().to_string()));
-        });
-    }
+    let (coordinator, app) =
+        start_switch_app(&manager, &pty, Arc::clone(&detached), "detached-target").await;
+    let events_rx = listen_events(&app, &["session_switched", "session_view_requested"]);
 
     assert_eq!(
         manager.read().await.selection_payload().await.id(),
@@ -214,72 +189,19 @@ async fn user_switch_to_detached_target_publishes_no_view_requested() {
 
 #[tokio::test]
 async fn user_switch_to_session_without_live_pty_publishes_no_view_requested() {
-    use crate::pty::backend::SessionBackendKind;
-    use tauri::Listener;
-
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let dead_session = manager
-        .read()
-        .await
-        .create_session(
-            "shell".to_string(),
-            Vec::new(),
-            "C:/no-live-pty".to_string(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
-    let live_session = manager
-        .read()
-        .await
-        .create_session(
-            "shell".to_string(),
-            Vec::new(),
-            "C:/live-after-repair".to_string(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
+    let dead_session = create_shell_session(&manager, "C:/no-live-pty").await;
+    let live_session = create_shell_session(&manager, "C:/live-after-repair").await;
     let backend = Arc::new(LifecycleTestBackend::default());
-    backend.set_live(dead_session.id, true);
-    backend.set_live(live_session.id, true);
-    let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
-    pty.lock()
-        .unwrap()
-        .record_route(dead_session.id, SessionBackendKind::LocalProcess);
-    pty.lock()
-        .unwrap()
-        .record_route(live_session.id, SessionBackendKind::LocalProcess);
-    let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
-        .manage(DetachedSessionsState::default())
-        .manage(WsBroadcaster::new())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build no-live-pty app");
-    coordinator
-        .start(app.handle().clone())
-        .expect("start no-live-pty coordinator");
-    coordinator.submit_restore_first().await.unwrap().finish();
-    let (events_tx, events_rx) = std::sync::mpsc::channel();
-    for event_name in ["session_switched", "session_view_requested"] {
-        let events_tx = events_tx.clone();
-        app.listen_any(event_name, move |event| {
-            let _ = events_tx.send((event_name, event.payload().to_string()));
-        });
-    }
+    let pty = live_routed_pty(&backend, &[dead_session.id, live_session.id]);
+    let (coordinator, app) = start_switch_app(
+        &manager,
+        &pty,
+        DetachedSessionsState::default(),
+        "no-live-pty",
+    )
+    .await;
+    let events_rx = listen_events(&app, &["session_switched", "session_view_requested"]);
 
     // Precondition: the session that will lose its PTY is the current selection.
     assert_eq!(
@@ -338,54 +260,21 @@ fn assert_repair_then_live_switch_events(
 
 #[tokio::test]
 async fn route_loss_publishes_destroyed_exited_row_and_one_dormant_selection() {
-    use crate::pty::backend::SessionBackendKind;
-    use tauri::Listener;
-
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let session = manager
-        .read()
-        .await
-        .create_session(
-            "shell".to_string(),
-            Vec::new(),
-            "C:/work".to_string(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            SessionBackendKind::LocalProcess,
-        )
-        .await
-        .unwrap();
+    let session = create_shell_session(&manager, "C:/work").await;
     let backend = Arc::new(LifecycleTestBackend::default());
-    backend.set_live(session.id, true);
-    let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
-    pty.lock()
-        .unwrap()
-        .record_route(session.id, SessionBackendKind::LocalProcess);
-    let broadcaster = WsBroadcaster::new();
-    let coordinator = SelectionCoordinator::new(Arc::clone(&manager), CancellationToken::new());
-    let app = tauri::test::mock_builder()
-        .manage(crate::commands::session::selection_executor::state::<
-            tauri::test::MockRuntime,
-        >())
-        .manage(Arc::clone(&manager))
-        .manage(Arc::clone(&pty))
-        .manage(DetachedSessionsState::default())
-        .manage(broadcaster)
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build route-loss app");
-    coordinator
-        .start(app.handle().clone())
-        .expect("start route-loss coordinator");
-    coordinator.submit_restore_first().await.unwrap().finish();
-    let (events_tx, events_rx) = std::sync::mpsc::channel();
-    for event_name in ["session_destroyed", "session_created", "session_switched"] {
-        let events_tx = events_tx.clone();
-        app.listen_any(event_name, move |event| {
-            let _ = events_tx.send((event_name, event.payload().to_string()));
-        });
-    }
+    let pty = live_routed_pty(&backend, &[session.id]);
+    let (coordinator, app) = start_switch_app(
+        &manager,
+        &pty,
+        DetachedSessionsState::default(),
+        "route-loss",
+    )
+    .await;
+    let events_rx = listen_events(
+        &app,
+        &["session_destroyed", "session_created", "session_switched"],
+    );
 
     backend.set_live(session.id, false);
     pty.lock()

@@ -10,7 +10,6 @@ use super::*;
 use crate::pty::inject::validate_pty_input_text;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 mod engine;
@@ -353,14 +352,18 @@ fn reference_path(dir: &Path) -> PathBuf {
 
 // ---- write counter (N14) ---------------------------------------------
 
+/// Dirs whose writes are being counted. A write is logged only under one of
+/// them, so tests counting different dirs in parallel cannot pollute each
+/// other, and no test lock is needed.
+static COUNTED_DIRS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 static WRITE_LOG: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
-static COUNTING: AtomicBool = AtomicBool::new(false);
-/// Held for the whole of any test that counts writes, so a concurrently
-/// running test cannot pollute the log.
-static COUNTING_LOCK: Mutex<()> = Mutex::new(());
 
 pub(super) fn record_write(path: &Path) {
-    if !COUNTING.load(Ordering::SeqCst) {
+    let counted = COUNTED_DIRS
+        .lock()
+        .map(|dirs| dirs.iter().any(|dir| path.starts_with(dir)))
+        .unwrap_or(false);
+    if !counted {
         return;
     }
     if let Ok(mut log) = WRITE_LOG.lock() {
@@ -368,26 +371,24 @@ pub(super) fn record_write(path: &Path) {
     }
 }
 
-fn start_counting() {
-    if let Ok(mut log) = WRITE_LOG.lock() {
-        log.clear();
+fn start_counting(dir: &Path) {
+    if let Ok(mut dirs) = COUNTED_DIRS.lock() {
+        dirs.push(dir.to_path_buf());
     }
-    COUNTING.store(true, Ordering::SeqCst);
 }
 
-/// Only writes under `dir`, so tests running in parallel in the same
-/// process cannot pollute the count.
+/// Stops counting `dir` and returns (and removes) the writes logged under it.
 fn stop_counting(dir: &Path) -> Vec<PathBuf> {
-    COUNTING.store(false, Ordering::SeqCst);
-    WRITE_LOG
-        .lock()
-        .map(|log| {
-            log.iter()
-                .filter(|path| path.starts_with(dir))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default()
+    if let Ok(mut dirs) = COUNTED_DIRS.lock() {
+        dirs.retain(|counted| counted != dir);
+    }
+    let Ok(mut log) = WRITE_LOG.lock() else {
+        return Vec::new();
+    };
+    let (mine, rest): (Vec<PathBuf>, Vec<PathBuf>) =
+        log.drain(..).partition(|path| path.starts_with(dir));
+    *log = rest;
+    mine
 }
 
 /// The `coverage_version` [`newer_coverage_version_keeps_rendering_from_file`]

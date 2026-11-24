@@ -8,7 +8,7 @@ fn issue_3029_cursor_position_respects_reader_token() {
         .register_session_for_test(id, IdleTuning::DEFAULT, 24, 80)
         .unwrap();
     assert_eq!(fanout.cursor_position_for_reader(&token), Some((1, 1)));
-    fanout.handle_output(&token, &id.to_string(), b"\x1b[3;4Hhi".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"\x1b[3;4Hhi");
     let before = fanout.get_screen_snapshot(id).unwrap();
     let history = fanout.screen_parsers.lock().unwrap()[&id].history.clone();
     assert_eq!(fanout.cursor_position_for_reader(&token), Some((3, 6)));
@@ -205,7 +205,7 @@ fn a_degenerate_resize_never_reaches_the_vt100_parser() {
         .register_session_for_test(id, IdleTuning::DEFAULT, 30, 120)
         .expect("register session");
     let token = fanout.registration_token_for_test(id);
-    fanout.handle_output(&token, &id.to_string(), b"hello".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"hello");
 
     fanout.resize_screen_and_broadcast(id, 0, 0);
 
