@@ -482,9 +482,7 @@ struct ClaudeReader {
     wait_deadline: Option<Instant>,
 }
 
-/// Where a reader is in its first attach. The phases only move forward:
-/// `FirstPoll` until the first attach decision runs, `Waiting` until a file
-/// is attached, then `Attached` for the rest of the reader's life.
+/// First-attach progress, moving only forward: `FirstPoll`, `Waiting`, `Attached`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AttachPhase {
     FirstPoll,
@@ -634,8 +632,7 @@ impl ClaudeReader {
 
     /// The file this poll should read, and whether it is a pinned attach.
     fn attach_target(&mut self, newest: Option<PathBuf>) -> (Option<PathBuf>, bool) {
-        // The first attach goes through `decide_attach`; after
-        // it, rotation follows the newest mtime exactly as before.
+        // The first attach goes through `decide_attach`; later ones follow the newest mtime.
         let mut pinned_attach = false;
         let attached = self.attach_phase == AttachPhase::Attached;
         let latest = if runs_first_attach_decision(attached, self.current_file.is_some()) {
@@ -650,23 +647,17 @@ impl ClaudeReader {
                 first_poll: self.attach_phase == AttachPhase::FirstPoll,
                 deadline_expired: self.wait_deadline.is_some_and(|d| Instant::now() >= d),
             });
-            if self.attach_phase == AttachPhase::FirstPoll {
-                self.attach_phase = AttachPhase::Waiting;
-            }
+            self.attach_phase = AttachPhase::Waiting;
             let waiting = matches!(decision, AttachDecision::Wait);
             if waiting && self.wait_deadline.is_none() {
                 self.wait_deadline =
                     Some(Instant::now() + Duration::from_secs(PINNED_ATTACH_WAIT_SECS));
+                let pin_file = format!("{}.jsonl", self.pin_id.as_deref().unwrap_or_default());
                 log::info!(
                     "[JSONL_ATTACH] session {} waiting up to {}s for {}",
                     self.session_id,
                     PINNED_ATTACH_WAIT_SECS,
-                    self.project_dir
-                        .join(format!(
-                            "{}.jsonl",
-                            self.pin_id.as_deref().unwrap_or_default()
-                        ))
-                        .display()
+                    self.project_dir.join(pin_file).display()
                 );
             }
             match decision {
