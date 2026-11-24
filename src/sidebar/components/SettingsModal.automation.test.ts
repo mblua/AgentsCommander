@@ -442,30 +442,27 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("renders the activity log checkbox and persists the toggle", async () => {
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {} }),
-      root,
-    );
-    await settle();
-
-    const toggle = byTestId<HTMLInputElement>("settings.general.activityLogEnabled");
-    expect(toggle.checked).toBe(false);
-
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event("change", { bubbles: true }));
-    await settle();
-
-    byTestId<HTMLButtonElement>("settings.save").click();
-    await settle();
-
-    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
-    expect(saved?.activityLogEnabled).toBe(true);
-
-    dispose();
-  });
+  it.each(["activityLogEnabled", "ipcBlackBoxEnabled"] as const)(
+    "renders the %s checkbox off with a next-start hint and persists the toggle",
+    async (key) => {
+      const root = document.createElement("div");
+      document.body.append(root);
+      const dispose = render(() => SettingsModal({ onClose: () => {} }), root);
+      await settle();
+      const toggle = byTestId<HTMLInputElement>(`settings.general.${key}`);
+      expect(toggle.checked).toBe(false);
+      const hint = byTestId(`settings.general.${key}.hint`).textContent ?? "";
+      expect(hint).toMatch(/Applies on the next (launch|restart)/);
+      toggle.checked = true;
+      toggle.dispatchEvent(new Event("change", { bubbles: true }));
+      await settle();
+      byTestId<HTMLButtonElement>("settings.save").click();
+      await settle();
+      const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+      expect(saved?.[key]).toBe(true);
+      dispose();
+    },
+  );
 
   it("stops the API server, refreshes live status, and persists the disabled preference", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({ apiServerEnabled: true }));

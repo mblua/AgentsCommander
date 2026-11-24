@@ -501,86 +501,105 @@ impl Drop for P03SettingsLock {
 
 #[test]
 fn p03_real_readers_hold_shared_lock_and_retry_sidecar_without_managed_writes() {
-    for mode in 0..3 {
-        let fixture = ReadonlyFixture::new();
-        stage_p03_source(&fixture, mode);
-        let remote_root = fixture.config.join("ac-root-agent");
-        std::fs::create_dir_all(remote_root.join("messaging")).unwrap();
-        std::fs::write(
-            remote_root.join("messaging").join(P05_ROOT_MESSAGE),
-            "P03 message",
-        )
-        .unwrap();
-        for verb in ["list-peers", "list-peers-lean"] {
-            let peers = fixture.assert_reader(&[
-                verb,
-                "--token",
-                P05_TOKEN,
-                "--root",
-                remote_root.to_str().unwrap(),
-            ]);
-            assert!(peers
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|peer| peer["name"] == "RegisteredRemote:room-01-devs/coord"));
-        }
-        let held = P03SettingsLock::acquire(&fixture.config);
-        let before = fixture.managed_bytes();
-        let commands = p03_reader_commands(remote_root.to_str().unwrap(), &fixture.peer);
-        for args in &commands {
-            let start = std::time::Instant::now();
-            let output = run_failure(&fixture.bin, args);
-            assert_eq!(output.status.code(), Some(1));
-            assert!(start.elapsed() >= std::time::Duration::from_secs(2));
-            assert!(!String::from_utf8_lossy(&output.stdout).contains("Queued:"));
-            assert!(serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err());
-            assert_eq!(fixture.managed_bytes(), before);
-            fixture.assert_no_outbox();
-            assert!(!fixture.project.join(".ac/_agent_p03matrix").exists());
-        }
-        // Explicit fixture staging models post-publication/pre-cleanup, not engine execution.
-        if mode == 0 {
-            stage_p03_source(&fixture, 2);
-        }
-        let path = fixture.config.join("settings.30.instance.no-git.json");
-        let mut settings: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        for key in PROJECT_KEYS {
-            settings.as_object_mut().unwrap().remove(key);
-        }
-        std::fs::write(path, serde_json::to_vec(&settings).unwrap()).unwrap();
-        drop(held);
-        let before = fixture.managed_bytes();
-        for args in &commands[..2] {
-            let peers = fixture.assert_reader(args);
-            assert!(peers
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|peer| peer["name"] == "RegisteredRemote:room-01-devs/coord"));
-        }
-        let output = run_failure(&fixture.bin, &commands[2]);
-        assert!(String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .any(|line| line.starts_with("Queued: ")));
-        assert!(String::from_utf8_lossy(&output.stderr)
-            .contains("delivery confirmation timeout after 0s"));
-        let outbox = fixture.outbox_for_root(remote_root.to_str().unwrap());
-        let queued: Vec<_> = std::fs::read_dir(&outbox)
+    // The 3 modes share no state (each fixture owns its temp dirs, binary copy,
+    // config and lock file), so they run in parallel: each mode must wait >= 2 s
+    // per reader command, and in series that cost ~60 s of CI wall time (#5180).
+    let workers: Vec<_> = (0..3)
+        .map(|mode| {
+            std::thread::Builder::new()
+                .name(format!("p03-mode-{mode}"))
+                .spawn(move || p03_real_readers_mode(mode))
+                .expect("spawn p03 mode thread")
+        })
+        .collect();
+    let failed: Vec<_> = workers
+        .into_iter()
+        .enumerate()
+        .filter_map(|(mode, worker)| worker.join().err().map(|_| mode))
+        .collect();
+    assert!(failed.is_empty(), "p03 modes failed: {failed:?}");
+}
+
+fn p03_real_readers_mode(mode: usize) {
+    let fixture = ReadonlyFixture::new();
+    stage_p03_source(&fixture, mode);
+    let remote_root = fixture.config.join("ac-root-agent");
+    std::fs::create_dir_all(remote_root.join("messaging")).unwrap();
+    std::fs::write(
+        remote_root.join("messaging").join(P05_ROOT_MESSAGE),
+        "P03 message",
+    )
+    .unwrap();
+    for verb in ["list-peers", "list-peers-lean"] {
+        let peers = fixture.assert_reader(&[
+            verb,
+            "--token",
+            P05_TOKEN,
+            "--root",
+            remote_root.to_str().unwrap(),
+        ]);
+        assert!(peers
+            .as_array()
             .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
-        assert_eq!(queued.len(), 1);
-        let message: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&queued[0]).unwrap()).unwrap();
-        assert_eq!(message["to"], "RegisteredRemote:room-01-devs/coord");
-        std::fs::remove_file(&queued[0]).unwrap();
-        fixture.assert_denied(&commands[3], "authorization denied");
-        run_success(&fixture.bin, &commands[4]);
-        assert!(fixture.project.join(".ac/_agent_p03matrix").is_dir());
-        assert_eq!(fixture.managed_bytes(), before);
+            .iter()
+            .any(|peer| peer["name"] == "RegisteredRemote:room-01-devs/coord"));
     }
+    let held = P03SettingsLock::acquire(&fixture.config);
+    let before = fixture.managed_bytes();
+    let commands = p03_reader_commands(remote_root.to_str().unwrap(), &fixture.peer);
+    for args in &commands {
+        let start = std::time::Instant::now();
+        let output = run_failure(&fixture.bin, args);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(start.elapsed() >= std::time::Duration::from_secs(2));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("Queued:"));
+        assert!(serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err());
+        assert_eq!(fixture.managed_bytes(), before);
+        fixture.assert_no_outbox();
+        assert!(!fixture.project.join(".ac/_agent_p03matrix").exists());
+    }
+    // Explicit fixture staging models post-publication/pre-cleanup, not engine execution.
+    if mode == 0 {
+        stage_p03_source(&fixture, 2);
+    }
+    let path = fixture.config.join("settings.30.instance.no-git.json");
+    let mut settings: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for key in PROJECT_KEYS {
+        settings.as_object_mut().unwrap().remove(key);
+    }
+    std::fs::write(path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    drop(held);
+    let before = fixture.managed_bytes();
+    for args in &commands[..2] {
+        let peers = fixture.assert_reader(args);
+        assert!(peers
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|peer| peer["name"] == "RegisteredRemote:room-01-devs/coord"));
+    }
+    let output = run_failure(&fixture.bin, &commands[2]);
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.starts_with("Queued: ")));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("delivery confirmation timeout after 0s")
+    );
+    let outbox = fixture.outbox_for_root(remote_root.to_str().unwrap());
+    let queued: Vec<_> = std::fs::read_dir(&outbox)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(queued.len(), 1);
+    let message: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&queued[0]).unwrap()).unwrap();
+    assert_eq!(message["to"], "RegisteredRemote:room-01-devs/coord");
+    std::fs::remove_file(&queued[0]).unwrap();
+    fixture.assert_denied(&commands[3], "authorization denied");
+    run_success(&fixture.bin, &commands[4]);
+    assert!(fixture.project.join(".ac/_agent_p03matrix").is_dir());
+    assert_eq!(fixture.managed_bytes(), before);
 }
 
 #[test]

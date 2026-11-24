@@ -2,7 +2,6 @@ use super::*;
 
 #[test]
 fn normal_binary_refuses_ui_hover_with_json_stdout_and_silent_stderr() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-hover-non-testable");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(
@@ -35,7 +34,6 @@ fn normal_binary_refuses_ui_hover_with_json_stdout_and_silent_stderr() {
 /// behavior.
 #[test]
 fn ui_hover_rejects_selector_together_with_leave() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-hover-conflict");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(
@@ -67,7 +65,6 @@ fn ui_hover_rejects_selector_together_with_leave() {
 /// is meaningless, so `required_unless_present = "leave"` must keep it un-runnable.
 #[test]
 fn ui_hover_requires_selector_unless_leave() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-hover-missing-selector");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(&bin, &["ui-hover", "--window", "main"]);
@@ -85,7 +82,6 @@ fn ui_hover_requires_selector_unless_leave() {
 
 #[test]
 fn fake_response_makes_ui_hover_succeed() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -151,7 +147,6 @@ fn fake_response_makes_ui_hover_succeed() {
 
 #[test]
 fn fake_response_makes_ui_hover_leave_succeed() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -215,7 +210,6 @@ fn fake_response_makes_ui_hover_leave_succeed() {
 
 #[test]
 fn ui_query_timeout_reports_awaiting_gui_poller_phase() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -244,7 +238,6 @@ fn ui_query_timeout_reports_awaiting_gui_poller_phase() {
 
 #[test]
 fn ui_query_timeout_after_frontend_accepts_request_returns_bounded_stdout() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -282,7 +275,6 @@ fn ui_query_timeout_after_frontend_accepts_request_returns_bounded_stdout() {
 
 #[test]
 fn ui_query_large_missing_selector_response_is_bounded_stdout() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -370,7 +362,6 @@ fn ui_query_large_missing_selector_response_is_bounded_stdout() {
 
 #[test]
 fn ui_click_timeout_removes_inflight_request_with_json_only_stdout() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -414,7 +405,6 @@ fn ui_click_timeout_removes_inflight_request_with_json_only_stdout() {
 
 #[test]
 fn ui_query_retries_transient_missing_session_file() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -450,7 +440,6 @@ fn ui_query_retries_transient_missing_session_file() {
 
 #[test]
 fn stale_prior_session_with_running_daemon_reports_automation_not_enabled_on_stdout() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -529,7 +518,6 @@ fn ui_wait_zoom(bin: &Path, timeout_ms: &str) -> (Option<i32>, String, String, D
 
 #[test]
 fn ui_wait_waits_through_startup_until_session_appears() {
-    let _guard = test_lock();
     let Some((_tmp, bin, writer)) = startup_race_fixture("ui-wait-startup-race") else {
         return;
     };
@@ -559,7 +547,6 @@ fn ui_wait_waits_through_startup_until_session_appears() {
 
 #[test]
 fn ui_wait_condition_timeout_clears_startup_diagnostic() {
-    let _guard = test_lock();
     let Some((_tmp, bin, writer)) = startup_race_fixture("ui-wait-startup-then-condition") else {
         return;
     };
@@ -589,7 +576,6 @@ fn ui_wait_condition_timeout_clears_startup_diagnostic() {
 
 #[test]
 fn ui_wait_timeout_reports_last_startup_diagnostic() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-wait-no-gui");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     let (code, stdout, stderr, elapsed) = ui_wait_zoom(&bin, "300");
@@ -608,7 +594,6 @@ fn ui_wait_timeout_reports_last_startup_diagnostic() {
 
 #[test]
 fn ui_wait_does_not_retry_stale_session_without_daemon() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-wait-stale-no-daemon");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, u32::MAX, &["main"]);
@@ -638,14 +623,13 @@ fn reap_on_drop_kills_the_child_when_the_caller_panics() {
     use agentscommander_lib::testability::ui_automation::pid_is_alive;
     const SENTINEL: &str = "1773 ReapOnDrop sentinel panic 2b9d";
 
-    let _guard = test_lock();
     let pid = fake_live_pid().expect("fake_live_pid must yield a live session pid");
     let tmp = Tmp::new("ui-reap-on-drop");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, pid, &["main"]);
     let requests_dir = config_dir_for(&bin).join("ui-automation").join("requests");
 
-    let guard = ReapOnDrop(
+    let guard = ReapOnDrop(spawn_child(
         command_for_binary(&bin)
             .args([
                 "ui-query",
@@ -657,10 +641,8 @@ fn reap_on_drop_kills_the_child_when_the_caller_panics() {
                 "30000",
             ])
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn binary"),
-    );
+            .stderr(Stdio::piped()),
+    ));
     let child_pid = guard.0.id();
     // Anchored after the spawn: this cap only has to catch a child that never
     // starts. The child's own budget is --timeout-ms 30000.
@@ -724,7 +706,6 @@ fn reap_on_drop_kills_the_child_when_the_caller_panics() {
 
 #[test]
 fn normal_binary_refuses_ui_pointer_with_json_stdout_and_silent_stderr() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-pointer-non-testable");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(
@@ -746,7 +727,6 @@ fn normal_binary_refuses_ui_pointer_with_json_stdout_and_silent_stderr() {
 
 #[test]
 fn normal_binary_refuses_ui_key_with_json_stdout_and_silent_stderr() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-key-non-testable");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(
@@ -778,7 +758,6 @@ fn ok_response(request: &Value) -> Value {
 }
 
 fn run_fake_success(label: &str, args: &[&str], check: fn(&Value)) {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -853,7 +832,6 @@ fn fake_response_makes_ui_key_succeed() {
 
 #[test]
 fn ui_pointer_and_ui_key_preflight_errors_create_no_request_file() {
-    let _guard = test_lock();
     let cases: [(&str, &[&str], &str); 4] = [
         (
             "pointer-op",
@@ -893,7 +871,6 @@ fn ui_pointer_and_ui_key_preflight_errors_create_no_request_file() {
 
 #[test]
 fn fake_response_passes_pointer_frontend_error_through() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;

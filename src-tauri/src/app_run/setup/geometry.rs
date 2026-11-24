@@ -96,12 +96,8 @@ pub(super) fn create_main_window(
     app: SetupApp<'_>,
     test_window_placement: Option<&TestWindowPlacement>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    #[allow(
-        clippy::expect_used,
-        reason = "existing startup failure mode: abort if the embedded app icon fails to load"
-    )]
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../../icons/icon.png"))
-        .expect("Failed to load app icon");
+        .map_err(|e| format!("Failed to load app icon: {e}"))?;
 
     // Load saved window geometry
     let saved_settings = config::settings::load_settings();
@@ -132,10 +128,6 @@ pub(super) fn create_main_window(
     );
 
     // Create the unified Main window (replaces sidebar + terminal windows).
-    #[allow(
-        clippy::expect_used,
-        reason = "existing startup failure mode: abort if the main window icon is rejected"
-    )]
     let main_win = WebviewWindowBuilder::new(
         &*app,
         "main",
@@ -143,7 +135,7 @@ pub(super) fn create_main_window(
     )
     .title(config::profile::app_title())
     .icon(icon)
-    .expect("Failed to set main window icon")
+    .map_err(|e| format!("Failed to set main window icon: {e}"))?
     .min_inner_size(800.0, 500.0)
     .decorations(false)
     .zoom_hotkeys_enabled(false)

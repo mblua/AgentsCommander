@@ -56,6 +56,7 @@
   "gitSweepConcurrency": 1,
   "gitSweepMinIntervalSecs": 10,
   "guideZoom": 1.0,
+  "ipcBlackBoxEnabled": false,
   "jevApiKey": "",
   "jevEndpoint": "https://api.typesafe.ai/v1/systemone",
   "jevMargin": 0.15000000596046448,

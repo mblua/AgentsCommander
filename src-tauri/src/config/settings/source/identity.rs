@@ -510,7 +510,7 @@ pub(crate) fn source_transition_digest<T: Serialize>(
 ) -> Result<String, SourceCoordinationError> {
     let bytes = serde_json::to_vec(value).map_err(|_| SourceCoordinationError::Invalid)?;
     let SourceRevision::Bytes { sha256 } = source_bytes_revision(&bytes) else {
-        unreachable!()
+        unreachable!("source_bytes_revision always returns SourceRevision::Bytes")
     };
     Ok(sha256)
 }
