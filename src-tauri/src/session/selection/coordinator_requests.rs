@@ -639,7 +639,7 @@ impl SelectionCoordinator {
         &self,
         budget: Duration,
     ) -> SelectionShutdownReport {
-        let started_at = Instant::now();
+        let started_at = tokio::time::Instant::now().into_std();
         let deadline = started_at.checked_add(budget).unwrap_or(started_at);
         let finalization_reserve = (budget / 4).min(SHUTDOWN_FINALIZATION_RESERVE_MAX);
         let worker_deadline = deadline
@@ -669,7 +669,8 @@ impl SelectionCoordinator {
             }
         };
         if let Some(mut handle) = handle {
-            let remaining = worker_deadline.saturating_duration_since(Instant::now());
+            let remaining =
+                worker_deadline.saturating_duration_since(tokio::time::Instant::now().into_std());
             match tokio::time::timeout(remaining, &mut handle).await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
@@ -688,7 +689,8 @@ impl SelectionCoordinator {
                             outstandingCriticalKeys={critical_count}"
                     );
                     handle.abort();
-                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let remaining =
+                        deadline.saturating_duration_since(tokio::time::Instant::now().into_std());
                     match tokio::time::timeout(remaining, &mut handle).await {
                         Ok(Ok(())) => {}
                         Ok(Err(error)) => {

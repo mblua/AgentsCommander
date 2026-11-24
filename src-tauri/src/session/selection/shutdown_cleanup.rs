@@ -256,7 +256,7 @@ async fn await_pending_create_cleanup(
     deadline: Instant,
     mut cleanup: tokio::task::JoinHandle<Vec<String>>,
 ) -> Vec<String> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now().into_std());
     match tokio::time::timeout(remaining, &mut cleanup).await {
         Ok(Ok(retained)) => retained,
         Ok(Err(error)) => {
@@ -303,7 +303,7 @@ pub(super) async fn seal_and_drain_container_shutdown_work_after_join(
     let mut task = tokio::task::spawn_blocking(move || {
         container_backend.seal_and_drain_shutdown_work_blocking(deadline)
     });
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now().into_std());
     match tokio::time::timeout(remaining, &mut task).await {
         Ok(Ok(report)) => retained.extend(report.retained),
         Ok(Err(error)) => {
