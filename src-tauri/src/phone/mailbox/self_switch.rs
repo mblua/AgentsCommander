@@ -17,6 +17,7 @@ use super::settle::{
     SelfClearGateAction, SelfClearGateState,
 };
 use crate::config::agent_command::{executable_basename, resolve_configured_agent_spawn_for_cwd};
+use crate::config::settings::agent::launch_view;
 use crate::config::teams;
 use crate::filesystem::phone_mailbox as mailbox_disk;
 use crate::phone::mailbox::host::MailboxHost;
@@ -775,6 +776,7 @@ impl MailboxPoller {
         app: &S,
         msg: &OutboxMessage,
     ) -> Result<Option<ResolvedWakeAgentCommand>, String> {
+        let dest_path = self.resolve_repo_path(&msg.to, app).await;
         let agents = {
             let settings = app.pty_settings();
             let cfg = settings.read().await;
@@ -785,14 +787,17 @@ impl MailboxPoller {
                     path,
                 ));
             }
-            cfg.agents.clone()
+            match dest_path.as_deref() {
+                Some(dir) => launch_view(&cfg, Path::new(dir)).settings.agents.clone(),
+                None => cfg.agents.clone(),
+            }
         };
 
         let mut destination_current_agent: Option<String> = None;
         let mut destination_last_agent: Option<String> = None;
         let mut destination_config_path: Option<PathBuf> = None;
 
-        if let Some(dest_path) = self.resolve_repo_path(&msg.to, app).await {
+        if let Some(dest_path) = dest_path {
             let dest = Path::new(&dest_path);
             // The Selection UI assignment (currentCodingAgent), including the
             // "Entire Workgroup" path, is written to the replica's top-level

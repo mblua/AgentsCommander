@@ -507,7 +507,7 @@ fn failed_report(
 /// the `agentId` the session was launched with and its stored
 /// `requestedProfile` (always from the same record).
 #[derive(Debug, Clone, PartialEq)]
-struct PersistedCoordinatorAgent {
+pub(crate) struct PersistedCoordinatorAgent {
     agent_id: String,
     requested_profile: Option<String>,
 }
@@ -841,11 +841,13 @@ async fn resolve_loop_agent_command<H: LoopDeliveryHost + ?Sized>(
 /// not claimed as manual-path parity. `settings.agents.first()` is gone: a
 /// replica with no pin fails closed instead of silently waking a different
 /// agent.
-fn resolve_loop_agent_command_from_settings(
+pub(crate) fn resolve_loop_agent_command_from_settings(
     settings: &AppSettings,
     replica_dir: &Path,
     persisted_agent: Option<&PersistedCoordinatorAgent>,
 ) -> Result<ResolvedLoopAgentCommand, String> {
+    let view = crate::config::settings::agent::launch_view(settings, replica_dir);
+    let settings = &*view.settings;
     let replica_dir_string =
         crate::path_utils::path_to_string_without_windows_verbatim_prefix(replica_dir);
     let selected = crate::commands::session::resolve_restart_selected_agent_id(

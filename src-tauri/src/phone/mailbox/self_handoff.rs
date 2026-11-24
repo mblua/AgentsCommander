@@ -86,6 +86,7 @@ impl MailboxPoller {
         }
 
         let settings_snapshot = host.pty_settings().read().await.clone();
+        let settings_snapshot = scoped(&settings_snapshot, &session.working_directory);
         let (replica_path, targets) =
             match resolve_self_switch_request(&settings_snapshot, &session, msg) {
                 Ok(request) => request,
@@ -210,7 +211,7 @@ impl MailboxPoller {
         let settings_snapshot = {
             let settings = host.pty_settings();
             let snapshot = settings.read().await.clone();
-            snapshot
+            scoped(&snapshot, &session.working_directory)
         };
         if let Err(reason) = validate_self_restart_spawn(&settings_snapshot, &session, &recipe) {
             return self.reject_message(path, msg, &reason).await;
@@ -524,6 +525,7 @@ impl MailboxPoller {
                     return Ok(());
                 }
                 let settings_snapshot = host.pty_settings().read().await.clone();
+                let settings_snapshot = scoped(&settings_snapshot, &cwd);
                 crate::config::coding_agent_profiles::set_replica_coding_agent_selection(
                     &settings_snapshot,
                     &cwd,
@@ -910,6 +912,13 @@ fn validate_self_restart_spawn(
         }
     }
     Ok(())
+}
+
+/// #4845 P12 - the settings an agent at `dir` starts with (its own file, P03 order).
+fn scoped(settings: &AppSettings, dir: impl AsRef<Path>) -> AppSettings {
+    crate::config::settings::agent::launch_view(settings, dir.as_ref())
+        .settings
+        .into_owned()
 }
 
 fn resolve_self_switch_request(

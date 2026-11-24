@@ -285,3 +285,41 @@ fn an_unreadable_layer_is_not_an_empty_list() {
         "No configured coding agents found."
     );
 }
+
+/// #4845 P12 - `--root` lists the ids of the caller's own file (a tempdir project file).
+#[test]
+fn cli_self_switch_discovery_lists_agent_file_ids() {
+    use crate::config::coding_agent_files::{with_active, ConfigContext, ConfigFileLocator};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("proj");
+    let agent_dir = root.join("agent");
+    let files = root.join(".ac").join("coding-agents");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::create_dir_all(&files).unwrap();
+    let file = serde_json::json!({"agents": [
+        {"id": "codex-team", "label": "Codex Team", "command": "codex", "color": "#123"}
+    ]});
+    let path = files.join("ac.coding-agents-config.team.json");
+    std::fs::write(path, file.to_string()).unwrap();
+    let root_key = root.to_string_lossy().into_owned();
+    let ctx = ConfigContext::Project(crate::config::coding_agent_files::locator::context_key(
+        &root_key,
+    ));
+    let team = ConfigFileLocator::Named {
+        scope: crate::config::coding_agent_files::ConfigScope::Project,
+        name: "team".into(),
+    };
+    let settings = crate::config::settings::AppSettings {
+        agents: vec![agent("claude-30", "Claude", "claude")],
+        project_paths: vec![root_key],
+        coding_agent_config_files: Some(with_active(None, &ctx, team)),
+        ..crate::config::settings::AppSettings::default()
+    };
+
+    let scoped = scoped_coding_agent_discovery(&settings, Some(&agent_dir));
+    assert!(scoped.contains("- codex-team"), "{scoped}");
+    assert!(!scoped.contains("- claude-30"), "{scoped}");
+    let base = scoped_coding_agent_discovery(&settings, None);
+    assert_eq!(base, render_coding_agent_discovery(&settings));
+    assert!(base.contains("- claude-30"), "{base}");
+}

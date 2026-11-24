@@ -147,6 +147,7 @@ pub(crate) fn execute_matrix_project_create(
     let mut launch_agent_id: Option<String> = None;
 
     if let Some(requested) = launch {
+        let settings = session_request::launch_settings(&settings, &created.agent_dir);
         match session_request::find_launch_agent(&settings, requested) {
             Some(agent) => {
                 match session_request::build_session_request(

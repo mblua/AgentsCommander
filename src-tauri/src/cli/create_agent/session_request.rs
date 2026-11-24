@@ -25,6 +25,14 @@ pub struct SessionRequest {
     pub timestamp: String,
 }
 
+/// #4845 P12 - the settings an agent at `dir` launches with (its own file, P03 order).
+pub(crate) fn launch_settings<'a>(
+    settings: &'a crate::config::settings::AppSettings,
+    dir: &Path,
+) -> std::borrow::Cow<'a, crate::config::settings::AppSettings> {
+    crate::config::settings::agent::launch_view(settings, dir).settings
+}
+
 pub(crate) fn find_launch_agent<'a>(
     settings: &'a crate::config::settings::AppSettings,
     requested: &str,

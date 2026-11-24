@@ -433,6 +433,7 @@ impl MailboxPoller {
         app: &S,
         target: &InternalSystemTarget,
     ) -> Result<Option<ResolvedWakeAgentCommand>, String> {
+        let replica_dir = target.replica_dir().to_path_buf();
         let agents = {
             let settings = app.pty_settings();
             let settings = settings.read().await;
@@ -442,9 +443,9 @@ impl MailboxPoller {
                     path,
                 ));
             }
-            settings.agents.clone()
+            let view = crate::config::settings::agent::launch_view(&settings, &replica_dir);
+            view.settings.agents.clone()
         };
-        let replica_dir = target.replica_dir().to_path_buf();
         tokio::task::spawn_blocking(move || {
             let current = crate::config::coding_agent_profiles::read_replica_current_coding_agent(
                 &replica_dir,

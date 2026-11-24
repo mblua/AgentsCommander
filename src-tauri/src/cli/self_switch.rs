@@ -177,9 +177,26 @@ fn render_coding_agent_discovery(settings: &crate::config::settings::AppSettings
     lines.join("\n")
 }
 
-fn print_coding_agent_discovery() {
+fn print_coding_agent_discovery(root: Option<&str>) {
     let settings = crate::config::settings::load_settings_for_cli();
-    crate::cli_println!("{}", render_coding_agent_discovery(&settings));
+    let root = root.map(std::path::Path::new);
+    crate::cli_println!("{}", scoped_coding_agent_discovery(&settings, root));
+}
+
+/// #4845 P12 - the discovery list of the caller's own file (P03 order) when `--root` is set.
+fn scoped_coding_agent_discovery(
+    settings: &crate::config::settings::AppSettings,
+    root: Option<&std::path::Path>,
+) -> String {
+    if settings.agents_layer.unreadable_path().is_some() {
+        return render_coding_agent_discovery(settings);
+    }
+    match root {
+        Some(dir) => render_coding_agent_discovery(
+            &crate::config::settings::agent::launch_view(settings, dir).settings,
+        ),
+        None => render_coding_agent_discovery(settings),
+    }
 }
 
 fn wait_for_switch_response(ac_dir: &std::path::Path, request_id: &str, timeout: u64) -> i32 {
@@ -236,7 +253,7 @@ fn wait_for_switch_response(ac_dir: &std::path::Path, request_id: &str, timeout:
 
 pub fn execute(args: SelfSwitchArgs) -> i32 {
     if args.list_coding_agents {
-        print_coding_agent_discovery();
+        print_coding_agent_discovery(args.root.as_deref());
         return 0;
     }
 

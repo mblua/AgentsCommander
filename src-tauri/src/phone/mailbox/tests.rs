@@ -5,6 +5,7 @@ mod deliver_wake;
 mod equivalence;
 mod handle_self;
 mod handle_self_2;
+mod i4845_wake_scope;
 mod internal_live;
 mod internal_no;
 mod is_viable;
