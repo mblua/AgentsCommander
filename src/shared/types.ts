@@ -879,10 +879,10 @@ export interface AppSettings {
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
   activityLogEnabled: boolean;
-  /** Seconds the automatic typing hold stays active after the last
-   *  qualifying keystroke in a session. The backend reads it live and clamps it
-   *  to 1..3600; optional so a snapshot saved before the field reads as the
-   *  backend default (30). */
+  ipcBlackBoxEnabled: boolean; // renderer IPC black box; the backend reads it once at start
+  /** Seconds the automatic typing hold stays active after the last qualifying keystroke in a
+   *  session. The backend reads it live and clamps it to 1..3600; optional so a snapshot
+   *  saved before the field reads as the backend default (30). */
   typingHoldSeconds?: number;
   responseCloseEnabled?: boolean;
   responseCloseIdleSeconds?: number;

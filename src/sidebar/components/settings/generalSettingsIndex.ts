@@ -70,6 +70,11 @@ export const GENERAL_SETTINGS_INDEX: GeneralSettingEntry[] = [
   { key: "remoteBlockingMenusEnabled", category: "system", section: "Updates", label: "Download blocking-menu pattern updates from GitHub", keywords: "patterns sync" },
   { key: "logLevel", category: "system", section: "Logging", label: "Log level", keywords: "debug trace verbose verbosity" },
   { key: "activityLogEnabled", category: "system", section: "Logging", label: "Record activity log (activity.jsonl)", keywords: "diagnostic timeline" },
+  {
+    key: "ipcBlackBoxEnabled", category: "system", section: "Logging",
+    label: "Record IPC black box (renderer freeze diagnostics)",
+    keywords: "freeze hang diagnostic renderer ipc",
+  },
 ];
 
 const CATEGORY_LABEL: Record<GeneralCategoryId, string> = Object.fromEntries(

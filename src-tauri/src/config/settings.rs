@@ -164,9 +164,10 @@ use load::{
     default_settings_with_overlay_captured, load_settings_for_cli_from_path,
     load_settings_for_cli_strict_from_path, load_settings_from_path_with_blocking_menus_publish,
     parse_settings_json, parse_settings_json_with_projection_labeled,
-    read_activity_log_enabled_from_path, read_log_level_from_path, read_settings_for_startup,
-    settings_backup_path, startup_profile_legacy_work, PROJECT_SOURCE_CAPTURE_HOOK,
-    SETTINGS_BACKUP_KEEP, SETTINGS_PRESERVE_LOCK_HOOK,
+    read_activity_log_enabled_from_path, read_ipc_blackbox_enabled_from_path,
+    read_log_level_from_path, read_settings_for_startup, settings_backup_path,
+    startup_profile_legacy_work, PROJECT_SOURCE_CAPTURE_HOOK, SETTINGS_BACKUP_KEEP,
+    SETTINGS_PRESERVE_LOCK_HOOK,
 };
 use load::{
     compose_settings_parts, legacy_profiles_shape_present, replace_project_projection,
@@ -176,10 +177,11 @@ use load::{
 pub use load::{
     config_seed_dest_os_token_stem, load_settings, load_settings_for_cli,
     load_settings_for_cli_strict, merge_protected_coding_agent_settings,
-    read_activity_log_enabled_only, read_log_level_only, validate_and_repair_settings,
-    validate_api_server_settings, validate_config_seed_dest, validate_resource_settings,
-    validate_room_number_mask, validate_screenshot_hotkey, validate_sidebar_compact_hotkey,
-    validate_typing_hold_settings, CONFIG_SEED_OS_TOKENS, ROOM_NUMBER_MASK_MAX_WIDTH,
+    read_activity_log_enabled_only, read_ipc_blackbox_enabled_only, read_log_level_only,
+    validate_and_repair_settings, validate_api_server_settings, validate_config_seed_dest,
+    validate_resource_settings, validate_room_number_mask, validate_screenshot_hotkey,
+    validate_sidebar_compact_hotkey, validate_typing_hold_settings, CONFIG_SEED_OS_TOKENS,
+    ROOM_NUMBER_MASK_MAX_WIDTH,
 };
 pub(crate) use owner::CapturedSource;
 #[cfg(test)]
@@ -683,6 +685,8 @@ pub struct AppSettings {
     pub log_level: Option<String>,
     #[serde(default)]
     pub activity_log_enabled: bool,
+    #[serde(default, rename = "ipcBlackBoxEnabled")]
+    pub ipc_blackbox_enabled: bool,
     /// When true, on Coordinator session spawn AC injects a prompt asking the
     /// agent to add a YAML frontmatter `title:` line to its workgroup
     /// `TASK.md` (only if the brief is non-empty and has no `title:` yet).

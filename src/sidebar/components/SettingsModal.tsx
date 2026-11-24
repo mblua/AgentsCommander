@@ -44,6 +44,7 @@ import { CodingAgentsTransfer, type TransferImportHandler } from "./settings/Cod
 import WatchersSettings, { WATCHER_PREVIEW_DEBOUNCE_MS } from "./settings/WatchersSettings";
 import ContextHistorySettings, * as ctxHistory from "./settings/ContextHistorySettings";
 import ScreenshotSettings from "./settings/ScreenshotSettings";
+import IpcBlackBoxSetting from "./settings/IpcBlackBoxSetting";
 import { selectSessionWindow } from "../../shared/context-history";
 import {
   TIMEOUT_SAVE_ERROR, isTimeoutKeyOfAgent, parseTimeoutInput, timeoutKey,
@@ -3418,26 +3419,24 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   class="settings-checkbox"
                   checked={settings.data!.activityLogEnabled}
                   disabled={saving()}
-                  onChange={(e) =>
-                    updateField("activityLogEnabled", e.currentTarget.checked)
-                  }
+                  onChange={(e) => updateField("activityLogEnabled", e.currentTarget.checked)}
                   data-ac-testid="settings.general.activityLogEnabled"
                   data-ac-role="checkbox"
-                  data-ac-state={
-                    settings.data!.activityLogEnabled ? "checked" : "unchecked"
-                  }
+                  data-ac-state={settings.data!.activityLogEnabled ? "checked" : "unchecked"}
                 />
                 <span>Record activity log (activity.jsonl)</span>
               </label>
-              <div
-                class="settings-hint"
-                data-ac-testid="settings.general.activityLogEnabled.hint"
-              >
+              <div class="settings-hint" data-ac-testid="settings.general.activityLogEnabled.hint">
                 Writes a diagnostic timeline (app start/stop, heartbeat, session busy/idle
                 edges) that no other feature reads. Applies on the next launch; the current
                 session is unaffected. Existing activity.jsonl files are left untouched.
                 Disabled by default.
               </div>
+              <IpcBlackBoxSetting
+                checked={settings.data!.ipcBlackBoxEnabled ?? false}
+                disabled={saving()}
+                onChange={(on) => updateField("ipcBlackBoxEnabled", on)}
+              />
             </div>
           </>)}
       </div>

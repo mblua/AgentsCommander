@@ -95,6 +95,7 @@ fn fields_2(s: &AppSettings, d: &mut fmt::DebugStruct<'_, '_>) {
     d.field("always_show_selected_workgroup", &s.always_show_selected_workgroup);
     d.field("log_level", &s.log_level);
     d.field("activity_log_enabled", &s.activity_log_enabled);
+    d.field("ipc_blackbox_enabled", &s.ipc_blackbox_enabled);
     d.field("auto_generate_task_title", &s.auto_generate_task_title);
     d.field("agent_templates_path", &s.agent_templates_path);
     d.field("theme_light", &s.theme_light);
@@ -200,6 +201,6 @@ fn all_fields_listed(s: &AppSettings) {
         response_close_idle_seconds: _, room_idle_confirmation_seconds: _,
         context_history_enabled: _, context_history_retention_days: _,
         context_history_session_windows: _, context_history_color_sessions: _,
-        temp_room_agent: _,
+        temp_room_agent: _, ipc_blackbox_enabled: _,
     } = s;
 }
