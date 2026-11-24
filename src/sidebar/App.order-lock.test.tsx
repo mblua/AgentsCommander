@@ -118,7 +118,7 @@ function quickOrder(rendered: { root: HTMLDivElement }): string[] {
  *  without flushing first would hit a menu that is not yet listening. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("SidebarApp sidebar order lock (#1624)", () => {
+describe("SidebarApp sidebar order lock", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

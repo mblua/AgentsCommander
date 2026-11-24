@@ -42,7 +42,7 @@ function exact(...selectors: string[]): string {
   return hits[0]!.body;
 }
 
-describe("#4752 unleash halo CSS bytes", () => {
+describe("unleash halo CSS bytes", () => {
   it("1. the tile rule sets the red token and the 1.8s infinite breathe", () => {
     const b = exact(BASE);
     expect(declValue(b, "--unleash-red")).toBe("var(--status-exited)");
@@ -77,7 +77,7 @@ describe("#4752 unleash halo CSS bytes", () => {
     );
   });
 
-  it("5. no .session-item selector and no rule beyond the halo and the #4802 dialog", () => {
+  it("5. no .session-item selector and no rule beyond the halo and the unleash-confirm dialog", () => {
     expect(CSS).not.toContain(".session-item");
     const allowed = [BASE, ACTIVE, "0%", "100%", "50%", DIALOG, TITLE, CONFIRM, HOVER];
     for (const r of RULES) {
@@ -90,7 +90,7 @@ describe("#4752 unleash halo CSS bytes", () => {
     expect(imports[imports.length - 1]!.trim()).toBe('@import "./unleash-halo.css";');
   });
 
-  it("7. #4802 dialog rules paint danger red", () => {
+  it("7. unleash-confirm dialog rules paint danger red", () => {
     expect(declValue(exact(DIALOG), "border-color")).toBe(RED);
     expect(declValue(exact(TITLE), "color")).toBe(RED);
     expect(declValue(exact(CONFIRM), "border-color")).toBe(RED);

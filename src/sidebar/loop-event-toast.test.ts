@@ -105,7 +105,7 @@ describe("loopToastFromEvent delivered", () => {
   });
 });
 
-describe("loopToastFromEvent unresolved (#2733)", () => {
+describe("loopToastFromEvent unresolved", () => {
   it("T-C1 uses info styling and names the Loop and the backend message", () => {
     for (const kind of ["unresolved", "targetUnresolved"]) {
       const toast = loopToastFromEvent(
