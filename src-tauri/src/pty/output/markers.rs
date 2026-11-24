@@ -106,11 +106,21 @@ fn skip_dcs(chars: &mut Peekable<Chars<'_>>) {
 /// stateless and consumes `ESC` plus exactly one char, which is fine for deciding whether a chunk
 /// looked busy and wrong for deciding whether a child has painted. See
 /// `SessionIoFanout::has_rendered_visible_content`.
+#[cfg(test)]
 pub(crate) fn strip_ansi_csi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
+    out.extend(visible_chars(s));
+    out
+}
+
+/// The chars `strip_ansi_csi` keeps, yielded lazily so a caller can stop early.
+fn visible_chars(s: &str) -> impl Iterator<Item = char> + '_ {
     let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
+    std::iter::from_fn(move || {
+        while let Some(c) = chars.next() {
+            if c != '\x1b' {
+                return Some(c);
+            }
             match chars.peek() {
                 Some(&'[') => skip_csi(&mut chars),
                 Some(&']') => skip_osc(&mut chars),
@@ -120,17 +130,15 @@ pub(crate) fn strip_ansi_csi(s: &str) -> String {
                 }
                 None => {}
             }
-        } else {
-            out.push(c);
         }
-    }
-    out
+        None
+    })
 }
 
 pub(crate) fn output_has_printable_activity(text: &str) -> bool {
     let is_printable = |c: char| c > ' ' && c != '\u{FFFD}';
     if text.contains('\x1b') {
-        strip_ansi_csi(text).chars().any(is_printable)
+        visible_chars(text).any(is_printable)
     } else {
         text.chars().any(is_printable)
     }
