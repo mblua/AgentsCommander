@@ -214,11 +214,11 @@ class Run:
     def report_agent_list(self, agents, listing):
         """Diagnostics only: print the ids and commands `coding-agent list` returned."""
         if isinstance(agents, list):
-            rows = [{"id": a.get("id"), "command": a.get("command")} if isinstance(a, dict)
+            rows = [{"id": a.get("id"), "baseCommand": a.get("baseCommand")} if isinstance(a, dict)
                     else {"type": type(a).__name__} for a in agents]
         else:
             rows = {"listingType": type(listing).__name__}
-        expected = {"id": "e2e-probe", "command": f"{PYTHON} {self.probe}"}
+        expected = {"id": "e2e-probe", "baseCommand": f"{PYTHON} {self.probe}"}
         print(json.dumps({"agentList": rows, "expected": expected}), file=sys.stderr)
 
     def register_agent(self):
@@ -231,7 +231,7 @@ class Run:
             self.report_agent_list(agents, listing)
             raise Failure("agent_list_mismatch", self.stage)
         agent = agents[0]
-        if agent.get("id") != "e2e-probe" or agent.get("command") != f"{PYTHON} {self.probe}":
+        if agent.get("id") != "e2e-probe" or agent.get("baseCommand") != f"{PYTHON} {self.probe}":
             self.report_agent_list(agents, listing)
             raise Failure("agent_list_mismatch", self.stage)
 
