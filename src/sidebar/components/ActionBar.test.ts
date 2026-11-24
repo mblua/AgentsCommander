@@ -712,7 +712,7 @@ describe("ActionBar #5061 P06 new-project dialog parity", () => {
 
   const count = (selector: string) => document.body.querySelectorAll(selector).length;
   const notice = '[data-ac-testid="project.browserCreateNotice.overlay"]';
-  const noticeDialog = `${notice} [data-ac-testid="project.browserCreateNotice.dialog"]`;
+  const noticeDialog = '[data-ac-testid="project.browserCreateNotice.dialog"]';
   const confirmOverlay = '[data-ac-testid="project.createConfirm.overlay"]';
   const confirmDialog = '[data-ac-testid="project.createConfirm.dialog"]';
 
@@ -735,6 +735,7 @@ describe("ActionBar #5061 P06 new-project dialog parity", () => {
     openNewProject();
     expect(count(notice)).toBe(1);
     expect(count(noticeDialog)).toBe(1);
+    expect(count(`${notice} ${noticeDialog}`)).toBe(1);
     const dismiss = document.body.querySelectorAll<HTMLButtonElement>(
       '[data-ac-testid="project.browserCreateNotice.dismiss"]'
     );
@@ -757,7 +758,8 @@ describe("ActionBar #5061 P06 new-project dialog parity", () => {
     await vi.waitFor(() => expect(projectStore.createAndLoad).toHaveBeenCalledTimes(1));
     expect(projectStore.pickAndCheck).toHaveBeenCalledTimes(1);
     expect(projectStore.createAndLoad).toHaveBeenCalledWith("C:\\Projects\\P06");
-    expect(count(notice) + count(noticeDialog)).toBe(0);
+    expect(count(notice)).toBe(0);
+    expect(count(noticeDialog)).toBe(0);
     expect(count(confirmOverlay) + count(confirmDialog)).toBe(0);
     dispose();
   });

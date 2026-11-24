@@ -10,6 +10,25 @@ import { executeAutomationRequest, resetAutomationBridgeForTests } from "../../s
 import type { UiAutomationAction } from "../../shared/types";
 import { stubAutomationGeometry } from "../../shared/testing/automation-geometry";
 
+const HTML_NS = "http://www.w3.org/1999/xhtml";
+const asciiLower = (value: string) => value.replace(/[A-Z]/g, (c) => c.toLowerCase());
+const hasStatusToken = (role: string) =>
+  role.split(/[\t\n\f\r ]/).some((token) => token !== "" && asciiLower(token) === "status");
+
+// P06 §41: exactly one status region, the native output with the expected testid.
+function expectSingleStatus() {
+  const expected = document.querySelectorAll('[data-ac-testid="newRoom.team.empty"]');
+  expect(expected, "expected testid count").toHaveLength(1);
+  const outputs = [...document.querySelectorAll("output")]
+    .filter((el) => el.localName === "output" && el.namespaceURI === HTML_NS);
+  expect(outputs, "HTML outputs").toHaveLength(1);
+  expect(outputs[0], "identity").toBe(expected[0]);
+  expect(expected[0].hasAttribute("role"), "role presence").toBe(false);
+  const others = [...document.querySelectorAll("[role]")]
+    .filter((el) => el !== expected[0] && hasStatusToken(el.getAttribute("role") ?? ""));
+  expect(others, "forbidden status tokens").toHaveLength(0);
+}
+
 // Geometry enables bridge dispatch in jsdom; it does not establish Windows
 // visibility, hit-testing, physical keyboard/focus behavior or real IME coverage.
 async function request(action: UiAutomationAction, selector: string, value?: string) {
@@ -493,7 +512,7 @@ describe("New Room team search and optional title (#2788)", () => {
     const status = document.querySelector('[data-ac-testid="newRoom.team.empty"]');
     expect(status?.tagName).toBe("OUTPUT");
     expect(status?.getAttribute("data-ac-role")).toBe("status");
-    expect(document.querySelectorAll('output[data-ac-role="status"]')).toHaveLength(1);
+    expectSingleStatus();
     expect((await automate("query", "newRoom.team.empty")).role).toBe("status");
     await projection([], -1);
     const missing = await request("query", "newRoom.team.option.0");
@@ -529,7 +548,7 @@ describe("New Room team search and optional title (#2788)", () => {
     expect(confirmed().textContent).toBe("No team selected.");
     expect(create().disabled).toBe(true);
     input(search(), "missing");
-    expect(document.querySelectorAll('output[data-ac-role="status"]')).toHaveLength(1);
+    expectSingleStatus();
     expect(document.querySelector('output[data-ac-role="status"]')?.textContent)
       .toBe("No teams match your search.");
     input(search(), "");
@@ -543,7 +562,7 @@ describe("New Room team search and optional title (#2788)", () => {
 
   it("shows no teams accessibly and never auto-selects teams added by refresh", () => {
     const { setTeams } = mount([]);
-    expect(document.querySelectorAll('output[data-ac-role="status"]')).toHaveLength(1);
+    expectSingleStatus();
     expect(document.querySelector('output[data-ac-role="status"]')?.textContent)
       .toBe("No teams available.");
     expect(create().disabled).toBe(true);
