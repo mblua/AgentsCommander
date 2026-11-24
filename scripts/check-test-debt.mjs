@@ -901,7 +901,7 @@ describe("clean suite", () => {
 });
 `);
     writeFile(path.join(root, 'src/expressions.test.ts'), `
-describe("formatDuration (#3516)", () => {
+describe("formatDuration", () => {
   it.each([[0, "0 ms"], [1250, "1.3 s"]])(
     "formats %d", (ms, text) => expect(formatDuration(ms)).toBe(text));
 });

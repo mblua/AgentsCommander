@@ -139,7 +139,7 @@ fn append_history(history: &mut std::collections::VecDeque<u8>, aligned: &mut bo
 /// Only the cold attach path calls this, so the scan is unbounded on purpose. `\n` is the one
 /// resync point a replay can trust: a parser reading the ring from an arbitrary byte offset
 /// renders the tail of whatever escape sequence that offset falls inside as literal text
-/// (#1458), and no in-band cancel undoes it, because that parser is already in ground state.
+///, and no in-band cancel undoes it, because that parser is already in ground state.
 fn history_from_first_line<'a>(front: &'a [u8], back: &'a [u8]) -> Option<(&'a [u8], &'a [u8])> {
     if let Some(newline) = front.iter().position(|byte| *byte == b'\n') {
         let aligned_front = &front[newline + 1..];

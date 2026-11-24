@@ -1,6 +1,6 @@
 use super::*;
 
-// ── #2455 - Co-managed logging, read through the test tee ───────────────
+// ── Co-managed logging, read through the test tee ───────────────
 
 /// The lines the tee saw after `before`, filtered by `needle`. The tee
 /// only appends, so skipping the first `before` entries is the difference

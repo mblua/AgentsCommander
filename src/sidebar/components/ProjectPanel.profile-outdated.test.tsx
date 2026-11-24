@@ -87,7 +87,7 @@ async function mount() {
   return rendered;
 }
 
-describe("ProjectPanel replica profile-outdated badge (#592)", () => {
+describe("ProjectPanel replica profile-outdated badge", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -128,7 +128,7 @@ describe("ProjectPanel replica profile-outdated badge (#592)", () => {
   });
 });
 
-describe("ProjectPanel replica tier badge (#2435)", () => {
+describe("ProjectPanel replica tier badge", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -191,7 +191,7 @@ describe("ProjectPanel replica tier badge (#2435)", () => {
   });
 });
 
-describe("ProjectPanel replica orphan notice (#2568)", () => {
+describe("ProjectPanel replica orphan notice", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

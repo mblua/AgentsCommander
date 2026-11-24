@@ -218,13 +218,6 @@
         "linux",
         "windows"
       ]
-    },
-    {
-      "id": "rust:src-tauri/src/telegram/claude_watcher.rs::ClaudeReader",
-      "platforms": [
-        "linux",
-        "windows"
-      ]
     }
   ]
 }

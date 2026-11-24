@@ -34,7 +34,7 @@ const px = (value: string): number => {
   return Number(m[1]);
 };
 
-describe("#2577 picker reorder CSS", () => {
+describe("picker reorder CSS", () => {
   it("picker list packs rows at the top without editing the shared list rule", () => {
     const picker = soleRule([".agent-picker-modal .agent-profile-provider-list"]);
     expect(declarations(picker.body)).toEqual([

@@ -132,9 +132,9 @@ fn manage_launch(
         .manage(Arc::clone(&l.rs.resource_monitor_state))
         .manage(l.rs.voice_tracking)
         .manage(l.rs.settings)
-        .manage(l.idle_detector) // #552 managed type: Arc<IdleDetector>
-        .manage(l.rs.coordinator_clocks) // #552 managed type: CoordinatorClocksState
-        .manage(Arc::new(crate::session::purge_guard::PurgeGuard::default())) // #885
+        .manage(l.idle_detector) // Managed type: Arc<IdleDetector>
+        .manage(l.rs.coordinator_clocks) // Managed type: CoordinatorClocksState
+        .manage(Arc::new(crate::session::purge_guard::PurgeGuard::default()))
         .manage(l.rs.detached_sessions.clone())
         .manage(l.rs.spec_board_state.clone())
         .manage(l.rs.loop_scheduler.clone())
@@ -156,13 +156,13 @@ fn manage_launch(
         .manage(l.shutdown_signal)
         .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
         .manage(Arc::new(PendingSelfClear::default()))
-        .manage(l.rs.screenshot_capture_state) // #714
-        .manage(l.rs.screenshot_hotkey_state) // #714
-        .manage(crate::pty::input_activity::new_state()) // #871 substantive-input tracker
+        .manage(l.rs.screenshot_capture_state)
+        .manage(l.rs.screenshot_hotkey_state)
+        .manage(crate::pty::input_activity::new_state()) // Substantive-input tracker
         .manage(l.response_close.clone())
-        .manage(crate::pty::input_activity::new_typing_hold_state()) // #2336 typing hold
+        .manage(crate::pty::input_activity::new_typing_hold_state()) // Typing hold
         .manage(crate::session::warnings::new_session_warning_state())
-        .manage(Arc::new(QuitGate::new())) // #2296 managed type: Arc<QuitGate>
+        .manage(Arc::new(QuitGate::new())) // Managed type: Arc<QuitGate>
         .setup(move |app| setup::setup(app, l.setup_ctx))
         // Every invoke that reaches the app handler is stamped here,
         // before dispatch: the only place in the process that sees the
@@ -532,7 +532,7 @@ fn prepare_runtime_state(
     // once at startup; flushed by the auto-close tick and on app exit).
     let coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
         Arc::new(Mutex::new(crate::config::coordinator_clocks::load()));
-    // (#621) Conservative backstop: drop clock keys for workgroups confirmed gone
+    // Conservative backstop: drop clock keys for workgroups confirmed gone
     // on disk (historical orphans + CLI-removed wgs). Keep-on-any-doubt.
     crate::config::coordinator_clocks::prune_orphaned_workgroups_and_persist(
         &coordinator_clocks,

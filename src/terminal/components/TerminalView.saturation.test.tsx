@@ -252,7 +252,7 @@ async function waitForFake(condition: () => boolean): Promise<void> {
   throw new Error("condition not reached within fake time");
 }
 
-describe("TerminalView retention and visibility (#1283 fixes kept by #1363)", () => {
+describe("TerminalView retention and visibility", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

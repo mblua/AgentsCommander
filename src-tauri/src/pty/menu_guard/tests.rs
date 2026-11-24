@@ -400,7 +400,7 @@ const OPENCODE_ALWAYS_2251_PATTERN: &str =
 // Per pattern, the captured rows it must NOT match. They include the other
 // states' rows, the one-end truncations of its own captured row, and rows that other
 // entries legitimately own (for example `Esc to cancel · Tab to amend`, the existing
-// #2248 claude footer), so they are negative controls for THIS pattern, not "non-menu"
+// Claude footer), so they are negative controls for THIS pattern, not "non-menu"
 // rows in general. The bullet row is the reviewer's false-positive test for a title
 // anchor.
 const CAPTURED_2251_CLAUDE_NEGATIVES: &[&str] = &[

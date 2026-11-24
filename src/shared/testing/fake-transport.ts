@@ -10,7 +10,7 @@ export interface InvokeCall {
   args: Record<string, unknown>;
 }
 
-/** #1363 - listener registrations, so a test can pin the event TARGET and not
+/** Listener registrations, so a test can pin the event TARGET and not
  *  just the handler. An unscoped `pty_output` listener silently defeats the
  *  backend's `emit_to`; see `ListenOptions`. */
 export interface ListenCall {

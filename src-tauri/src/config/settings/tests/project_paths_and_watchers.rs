@@ -1,6 +1,6 @@
 use super::*;
 
-// ── #778: disk-authoritative project_paths (Design S) ────────────────────
+// ── Disk-authoritative project_paths (Design S) ────────────────────
 
 fn settings_with_project_paths(paths: &[&str]) -> AppSettings {
     AppSettings {
@@ -506,14 +506,14 @@ fn resync_persists_mutation_against_decoded_state() {
     assert_eq!(lists.project_paths, vec![a, b]);
 }
 
-/// #1171, 9.2.17 - **the regression a plain `BTreeMap<String, WatcherConfig>` would let
+/// 9.2.17 - **the regression a plain `BTreeMap<String, WatcherConfig>` would let
 /// through, and whose failure mode is the whole settings file.**
 ///
 /// Three hand-written mistakes, one per entry: a capitalized enum variant, a scalar where
 /// a list belongs, and a quoted number. Without the per-entry wrapper, ONE of them makes
 /// `serde_json::from_value::<AppSettings>` fail, `load_settings_from_path` replaces
 /// everything with `AppSettings::default()`, and `AgentsCommander` starts with no agents
-/// configured and one log line - after which every save is refused by the #1077 gate.
+/// configured and one log line - after which every save is refused by the gate.
 #[test]
 fn one_malformed_watcher_does_not_take_the_settings_file_down() {
     let contents = serde_json::json!({
@@ -567,7 +567,7 @@ fn one_malformed_watcher_does_not_take_the_settings_file_down() {
     );
 }
 
-/// #1171, 9.2.18 - a user who configures nothing never sees either new key appear.
+/// 9.2.18 - a user who configures nothing never sees either new key appear.
 #[test]
 fn a_settings_file_with_no_watchers_round_trips_without_the_new_keys() {
     let contents = serde_json::json!({
@@ -593,7 +593,7 @@ fn a_settings_file_with_no_watchers_round_trips_without_the_new_keys() {
     );
 }
 
-/// #1171, 9.2.19 - a configured watcher round-trips value for value, INCLUDING the
+/// 9.2.19 - a configured watcher round-trips value for value, INCLUDING the
 /// absent-against-`[]` distinction for `commands`, which is the one place where the two
 /// are opposites: absent reaches every agent, `[]` reaches none.
 #[test]
@@ -746,7 +746,7 @@ fn a_remaining_kind_round_trips_and_defaults_enabled_true() {
 
 #[test]
 fn save_settings_preserve_twice_succeeds_no_sharing_violation() {
-    // G4a: the preserve-read closes its handle before the #774 rename, so two
+    // G4a: the preserve-read closes its handle before the rename, so two
     // preserve-saves in a row both succeed on Windows (a lingering read handle
     // would trip MoveFileEx with os 32).
     let temp = tempfile::tempdir().unwrap();

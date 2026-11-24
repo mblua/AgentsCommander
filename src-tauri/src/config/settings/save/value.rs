@@ -136,7 +136,7 @@ pub(crate) fn preflight_duplicate_agents(
     Ok(candidate.get("agents").cloned())
 }
 
-/// The #1077 project-aware atomic writer. Builds the output object per `mode`,
+/// the project-aware atomic writer. Builds the output object per `mode`,
 /// writes it atomically, then re-decodes the exact written value so the returned
 /// `AppSettings` carries fresh runtime projections + hidden state (never the
 /// possibly-stale caller state). See §4.2/§4.3.

@@ -317,7 +317,7 @@ fn preamble_scan_small_file_starts_from_offset_zero() {
     assert_eq!(ids, vec![None]);
 }
 
-// ── #2232 phase 1: absolute line starts ───────────────────────────────
+// ── Absolute line starts ───────────────────────────────
 
 #[test]
 fn read_new_lines_with_starts_indexes_the_raw_line_bytes() {
