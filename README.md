@@ -25,7 +25,7 @@
   <a href="docs/quickstart.md"><b>Your first team</b></a>
 </p>
 
-https://github.com/user-attachments/assets/4e565174-9ef1-48e5-9a71-3db7477f3ef6
+https://github.com/user-attachments/assets/51a00436-e6e1-4e79-acb8-fe3a143a3df4
 
 ## Get started
 
