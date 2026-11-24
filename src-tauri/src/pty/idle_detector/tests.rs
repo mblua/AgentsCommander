@@ -806,12 +806,11 @@ fn issue_2158_second_resize_classification_order() {
     let id = team_session(&detector, IdleTuning::AGENT_DEFAULT, base);
     detector.record_resize_at(id, Some(secs(base, 20.0)));
     detector.record_resize_at(id, Some(secs(base, 22.0)));
-    let silence_before = detector.silence_age(id).unwrap();
+    // Compare stored stamps, not two wall-clock ages (#5126).
+    let stamp = |d: &IdleDetector| lock(&d.silence).get(&id).copied().unwrap();
+    let silence_before = stamp(&detector);
     chunk(&detector, id, secs(base, 21.0), secs(base, 26.0));
-    assert!(
-        detector.silence_age(id).unwrap() <= silence_before,
-        "#2124 counted it"
-    );
+    assert!(stamp(&detector) >= silence_before, "#2124 counted it");
     assert_eq!(eligible_at(&detector, id, base), None);
 
     // Work classified before R2 keeps its decision when promoted after it.
