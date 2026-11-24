@@ -4,7 +4,8 @@ AgentsCommander starts this file as the local coding agent `e2e-probe`. It runs 
 product PTY, so it has no imports from this folder and only uses the standard library.
 
 The driver writes a 0600 map next to this file (`<this file>.json`):
-  {"journal": "<abs path>", "turns": [{"ask": "...", "reply": "...", "emit": true}, ...]}
+  {"turns": [{"ask": "...", "reply": "...", "emit": true}, ...]}
+The journal is always `journal.jsonl` in this file's own folder; no path comes from the map.
 
 Behaviour:
 1. Append a `start` event with this PID and its start ticks before anything else.
@@ -55,14 +56,17 @@ class Journal:
             raise OSError("short journal write")
 
 
+HERE = os.path.dirname(os.path.realpath(__file__))
+JOURNAL = os.path.join(HERE, "journal.jsonl")
+
+
 def load_map():
-    path = os.path.realpath(__file__) + ".json"
-    with open(path, encoding="utf-8") as handle:
+    with open(os.path.realpath(__file__) + ".json", encoding="utf-8") as handle:
         data = json.load(handle)
     turns = data.get("turns")
     if not isinstance(turns, list) or len(turns) != 2:
         raise ValueError("bad probe map")
-    return data["journal"], turns
+    return turns
 
 
 def identity(pid, ticks):
@@ -140,8 +144,8 @@ def serve(journal, turns, ident):
 def main():
     pid = os.getpid()
     ticks = start_ticks(pid)
-    journal_path, turns = load_map()
-    journal = Journal(journal_path)
+    turns = load_map()
+    journal = Journal(JOURNAL)
     ident = identity(pid, ticks)
     start = {"event": "start", "argv": sys.argv}
     start.update(ident)

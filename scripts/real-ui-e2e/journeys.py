@@ -191,7 +191,7 @@ class Run:
             raise Failure("probe_path_invalid", self.stage)
         self.journal = os.path.join(probe_dir, "journal.jsonl")
         self.turns = make_turns()
-        probe_map = {"journal": self.journal, "turns": self.turns}
+        probe_map = {"turns": self.turns}
         fd = os.open(self.probe + ".json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(probe_map, handle)
