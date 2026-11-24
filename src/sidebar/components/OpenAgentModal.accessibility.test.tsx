@@ -275,3 +275,59 @@ describe("OpenAgentModal P2 selectedRepo observer fixture (#4945)", () => {
     expect(observed).toEqual([]);
   });
 });
+
+// #4945 phase 2 (P2): rows are native buttons. jsdom has no native button
+// activation, so a row keydown is checked as unhandled and the native
+// activation is driven by the click it would produce; Chrome covers the keys.
+describe("OpenAgentModal phase 2 native row buttons (#4945)", () => {
+  it("each row is a type=button named by its repo, with phrasing content only", async () => {
+    await mountSettled(OpenAgentModal);
+    for (const [row, repo] of [[rows()[0]!, FIRST_REPO], [rows()[1]!, SECOND_REPO]] as const) {
+      expect(row.tagName).toBe("BUTTON");
+      expect((row as HTMLButtonElement).type).toBe("button");
+      expect(row.textContent).toContain(repo.name.slice(repo.name.lastIndexOf("/") + 1));
+      expect(row.querySelector("div")).toBeNull();
+      row.focus();
+      expect(document.activeElement).toBe(row);
+    }
+  });
+
+  it.each(["Enter", " "])("row %j is left to native activation", async (k) => {
+    await mountSettled(OpenAgentModal);
+    const second = rows()[1]!;
+    second.focus();
+    expect(key(second, k).defaultPrevented).toBe(false);
+    expect(rows()).toHaveLength(2);
+    expect(highlighted()).toEqual([0]);
+    expect(footerEsc()).toBe("esc close");
+  });
+
+  it("Search Enter still selects the highlighted repo", async () => {
+    await mountSettled(OpenAgentModal);
+    hover(rows()[1]!);
+    expect(key(search(), "Enter").defaultPrevented).toBe(true);
+    expect(highlighted()).toEqual([0]);
+    expect(footerEsc()).toBe("esc back");
+  });
+
+  describe("observer fixture", () => {
+    let observed: Array<string | null>;
+    const listener = (event: Event) => observed.push((event as CustomEvent<string | null>).detail);
+    beforeEach(() => {
+      observed = [];
+      document.addEventListener(SELECTED_REPO_EVENT, listener);
+    });
+    afterEach(() => document.removeEventListener(SELECTED_REPO_EVENT, listener));
+
+    it.each(["Enter", " "])("native %j activation of the second row emits its path", async (k) => {
+      const { default: Variant } = await import("@sidebar/components/OpenAgentModal");
+      await mountSettled(Variant as ModalComponent);
+      const second = rows()[1]!;
+      second.focus();
+      expect(key(second, k).defaultPrevented).toBe(false);
+      second.click();
+      expect(observed.at(-1)).toBe(SECOND_REPO.path);
+      expect(observed).not.toContain(FIRST_REPO.path);
+    });
+  });
+});

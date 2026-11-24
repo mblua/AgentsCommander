@@ -19,6 +19,9 @@ const NewWorkgroupModal: Component<{
   let listElement!: HTMLDivElement;
   let compositionActive = false;
   let suppressFocus = false;
+  // The key that confirmed or left an option, held until its keyup so the
+  // autorepeat that lands on Search after the handoff is consumed (P4).
+  let heldKey: string | null = null;
   const [error, setError] = createSignal("");
   const [creating, setCreating] = createSignal(false);
 
@@ -57,7 +60,48 @@ const NewWorkgroupModal: Component<{
     setActiveIndex(index);
     if (index >= 0) listElement.children[index]?.scrollIntoView({ block: "nearest" });
   };
+  const consumeHeldKey = (e: KeyboardEvent): boolean => {
+    if (heldKey === null || e.key !== heldKey) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    return true;
+  };
+  const releaseHeldKey = (e: KeyboardEvent) => {
+    if (e.key === heldKey) heldKey = null;
+  };
+  const insideCombobox = (node: EventTarget | null) =>
+    node instanceof Node && (node === searchInput || listElement.contains(node));
+  // Move focus back to Search without reopening the list, then close it.
+  const returnToSearch = () => {
+    suppressFocus = true;
+    try {
+      searchInput.focus();
+    } finally {
+      suppressFocus = false;
+    }
+    closeTeamList();
+  };
+  const handleOptionKeyDown = (e: KeyboardEvent, name: string) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.repeat || e.isComposing || compositionActive) return;
+      heldKey = e.key;
+      returnToSearch();
+      confirmTeam(name);
+    } else if (e.key === "Escape" || (e.key === "Tab" && e.shiftKey)) {
+      e.preventDefault();
+      e.stopPropagation();
+      returnToSearch();
+    }
+  };
+  const handleListFocusOut = (e: FocusEvent) => {
+    if (insideCombobox(e.relatedTarget)) return;
+    closeTeamList();
+    heldKey = null;
+  };
   const handleTeamKeyDown = (e: KeyboardEvent) => {
+    if (consumeHeldKey(e)) return;
     if (e.isComposing || compositionActive) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       moveActiveTeam(e);
@@ -74,9 +118,11 @@ const NewWorkgroupModal: Component<{
       closeTeamList();
     }
   };
-  const handleTeamBlur = () => {
+  const handleTeamBlur = (e: FocusEvent) => {
+    if (insideCombobox(e.relatedTarget)) return;
     closeTeamList();
     compositionActive = false;
+    heldKey = null;
   };
   const handleTeamsRefresh = () => {
     resetActive();
@@ -117,6 +163,7 @@ const NewWorkgroupModal: Component<{
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (consumeHeldKey(e)) return;
     if (e.defaultPrevented || e.isComposing || compositionActive) return;
     if (e.target instanceof Element && e.target.closest("button")) return;
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -131,9 +178,12 @@ const NewWorkgroupModal: Component<{
 
   document.addEventListener("keydown", handleDocumentKeyDown);
   onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
+  onCleanup(() => {
+    heldKey = null;
+  });
 
   return (
-    <div class="modal-overlay" onKeyDown={handleKeyDown}>
+    <div class="modal-overlay" onKeyDown={handleKeyDown} onKeyUp={releaseHeldKey}>
       <div class="agent-modal new-room-modal" data-ac-testid="newRoom.modal" data-ac-role="dialog">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Room</span>
@@ -165,6 +215,7 @@ const NewWorkgroupModal: Component<{
               }}
               onBlur={handleTeamBlur}
               on:keydown={handleTeamKeyDown}
+              on:keyup={releaseHeldKey}
               onCompositionStart={() => { compositionActive = true; }}
               onCompositionEnd={() => { compositionActive = false; }}
             />
@@ -180,6 +231,7 @@ const NewWorkgroupModal: Component<{
               hidden={!listOpen()}
               data-ac-testid="newRoom.team.list"
               data-ac-detail={JSON.stringify({ options: filteredTeams().map(team => team.name), active: activeIndex() })}
+              onFocusOut={handleListFocusOut}
             >
               <For each={filteredTeams()}>
                 {(team, index) => (
@@ -187,13 +239,19 @@ const NewWorkgroupModal: Component<{
                     id={`new-room-team-option-${index()}`}
                     class="new-room-team-option"
                     role="option"
+                    tabindex="-1"
                     aria-selected={index() === activeIndex()}
                     data-ac-testid={`newRoom.team.option.${index()}`}
                     data-ac-role="text"
                     data-ac-detail={team.name}
                     data-ac-state={index() === activeIndex() ? "active" : "inactive"}
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => confirmTeam(team.name)}
+                    onClick={(e) => {
+                      // A focused option (tabindex -1) hands focus back first.
+                      if (document.activeElement === e.currentTarget) returnToSearch();
+                      confirmTeam(team.name);
+                    }}
+                    onKeyDown={(e) => handleOptionKeyDown(e, team.name)}
                   >{team.name}</div>
                 )}
               </For>

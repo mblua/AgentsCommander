@@ -309,7 +309,7 @@ describe("New Room team search and optional title (#2788)", () => {
   it("row mousedown is canceled to retain focus; click confirms without focusable row or reopening", () => {
     mount();
     const row = rows()[1];
-    expect(row.hasAttribute("tabindex")).toBe(false);
+    expect(row.getAttribute("tabindex")).toBe("-1");
     const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
     row.dispatchEvent(down);
     expect(down.defaultPrevented).toBe(true);
@@ -444,7 +444,7 @@ describe("New Room team search and optional title (#2788)", () => {
       for (const [index, name] of names.entries()) {
         const row = await automate("query", `newRoom.team.option.${index}`);
         expect(rows()[index].getAttribute("role")).toBe("option");
-        expect(rows()[index].hasAttribute("tabindex")).toBe(false);
+        expect(rows()[index].getAttribute("tabindex")).toBe("-1");
         expect(row.role).toBe("text");
         expect(row.text).toBe(name);
         expect(row.metadata.detail).toBe(name);
@@ -742,5 +742,78 @@ describe("#4945 New Room label association and combobox baseline", () => {
     expect(key(search(), "Tab").defaultPrevented).toBe(false);
     expect(list().hidden).toBe(true);
     expect(confirmed().textContent).toBe("No team selected.");
+  });
+});
+
+describe("#4945 P4 option focus and keyboard", () => {
+  const keyup = (element: Element, k: string) =>
+    element.dispatchEvent(new KeyboardEvent("keyup", { key: k, bubbles: true, cancelable: true }));
+  const creates = (fake: FakeTransport) => fake.callsFor("create_workgroup").length;
+  // Open the list with Alpha active, then focus the Beta option directly.
+  function focusBeta() {
+    const m = mount();
+    search().focus();
+    key(search(), "ArrowDown");
+    expectActive(0);
+    rows()[1].focus();
+    expect(document.activeElement).toBe(rows()[1]);
+    expect(list().hidden).toBe(false);
+    return m;
+  }
+
+  it.each(["Enter", " "])("option %j confirms once, refocuses Search, no create", async (k) => {
+    const { fake } = focusBeta();
+    expect(key(rows()[1], k).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(search());
+    expect(confirmed().textContent).toBe("Selected team: Beta");
+    expect(list().hidden).toBe(true);
+    expect(key(search(), k, { repeat: true }).defaultPrevented).toBe(true);
+    expect(key(search(), k, { repeat: true }).defaultPrevented).toBe(true);
+    expect(list().hidden).toBe(true);
+    expect(search().value).toBe("Beta");
+    keyup(search(), k);
+    await Promise.resolve();
+    expect(creates(fake)).toBe(0);
+    // Positive control: once the held key is released, Enter creates once.
+    key(search(), "Enter");
+    await waitFor(() => expect(creates(fake)).toBe(1));
+  });
+
+  it("option Escape returns to Search and closes only the list", () => {
+    const { onClose } = focusBeta();
+    expect(key(rows()[1], "Escape").defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(search());
+    expect(list().hidden).toBe(true);
+    expect(confirmed().textContent).toBe("No team selected.");
+    expect(onClose).not.toHaveBeenCalled();
+    key(search(), "Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("option keys ignore autorepeat and IME composition", () => {
+    const { fake } = focusBeta();
+    expect(key(rows()[1], "Enter", { repeat: true }).defaultPrevented).toBe(true);
+    expect(key(rows()[1], " ", { isComposing: true }).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(rows()[1]);
+    expect(confirmed().textContent).toBe("No team selected.");
+    expect(list().hidden).toBe(false);
+    expect(creates(fake)).toBe(0);
+  });
+
+  it("option Shift+Tab returns to Search and closes the popup", () => {
+    focusBeta();
+    expect(key(rows()[1], "Tab", { shiftKey: true }).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(search());
+    expect(list().hidden).toBe(true);
+    expect(confirmed().textContent).toBe("No team selected.");
+  });
+
+  it("option Tab keeps native traversal and closes on the focus exit", () => {
+    focusBeta();
+    expect(key(rows()[1], "Tab").defaultPrevented).toBe(false);
+    expect(list().hidden).toBe(false);
+    title().focus();
+    expect(document.activeElement).toBe(title());
+    expect(list().hidden).toBe(true);
   });
 });

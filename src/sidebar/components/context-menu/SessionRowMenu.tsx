@@ -375,6 +375,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
           <Show when={props.surface.flyoutKey() === KEY}>
             <div
               class="session-context-flyout"
+              role="none"
               ref={(el) => props.surface.setFlyoutEl(el)}
               style={{
                 left: `${props.surface.flyoutPos()?.x ?? 0}px`,
@@ -491,7 +492,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
         Edit TASK title
       </button>
       <Show when={spec().editing}>
-        <div class="session-context-title-edit" onClick={stop}>
+        <div class="session-context-title-edit" role="none" onClick={stop}>
           <input
             ref={(el) =>
               deferToFrame(() => {

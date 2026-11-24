@@ -517,5 +517,23 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
       expect(q(".telegram.bot.b")).toBeNull();
       expect(fake.callsFor("telegram_attach")).toHaveLength(0);
     });
+
+    it("9g. #4945 phase 2: a boxless role=none shell owns the guarded click", async () => {
+      const r = renderBanner();
+      const shell = r.banner.parentElement as HTMLElement;
+      expect(shell.getAttribute("role")).toBe("none");
+      expect(shell.style.display).toBe("contents");
+      expect(shell.firstElementChild).toBe(r.banner);
+      expect(shell.hasAttribute("tabindex")).toBe(false);
+      expect(r.banner.getAttribute("role")).toBe("group");
+      expect(r.banner.getAttribute("aria-label")).toBe("Open Root Agent session");
+      expect(r.banner.contains(r.open)).toBe(true);
+      fire(r.banner.querySelector(".root-agent-title") ?? r.banner);
+      await waitFor(() => expect(selections(r.fake)).toBe(1));
+      await waitFor(() => expect(r.open.disabled).toBe(false));
+      fire(r.toggle);
+      await Promise.resolve();
+      expect(selections(r.fake)).toBe(1);
+    });
   });
 });
