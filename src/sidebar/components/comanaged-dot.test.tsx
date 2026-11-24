@@ -145,7 +145,7 @@ function railProject(): ProjectState {
   };
 }
 
-describe("Co-managed dot across the three render sites (#2271)", () => {
+describe("Co-managed dot across the three render sites", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -274,7 +274,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     expect([...dot.classList].sort()).toEqual([expected, "session-item-status"].sort());
   }
 
-  it("SessionItem keeps every real activity class under the ring (#2408)", async () => {
+  it("SessionItem keeps every real activity class under the ring", async () => {
     const cases = [
       { expected: "active", overrides: { status: "active" } as Partial<Session>, id: "cm-active" },
       ...ACTIVITY_CASES.map((c, i) => ({ ...c, id: `cm-activity-${i}` })),
@@ -296,7 +296,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  it("RootAgentBanner keeps every real activity class under the ring (#2408)", async () => {
+  it("RootAgentBanner keeps every real activity class under the ring", async () => {
     for (const c of ACTIVITY_CASES) {
       sessionsStore.setSessions([
         session({ id: "root-1", name: "Agent's Commander", isRootAgent: true, ...c.overrides }),
@@ -313,7 +313,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  it("the ProjectPanel replica dot keeps every real activity class under the ring (#2408)", async () => {
+  it("the ProjectPanel replica dot keeps every real activity class under the ring", async () => {
     for (const c of ACTIVITY_CASES) {
       sessionsStore.setSessions([replicaSession({ waitingForInput: false, ...c.overrides })]);
       sessionsStore.setSessionComanaged(REPLICA_SESSION_ID, true);
@@ -354,7 +354,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     await waitFor(() => expect(exactDot(dot())).toEqual(ringed(after)));
   }
 
-  it("SessionItem keeps the ring across activity changes and toggles (#2408 round 4)", async () => {
+  it("SessionItem keeps the ring across activity changes and toggles (round 4)", async () => {
     const id = "cm-transition";
     const running = session({ id, name: "wg-1-dev-team/transition", status: "running" });
     sessionsStore.setSessions([running]);
@@ -377,7 +377,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  it("RootAgentBanner keeps the ring across activity changes and toggles (#2408 round 4)", async () => {
+  it("RootAgentBanner keeps the ring across activity changes and toggles (round 4)", async () => {
     // Grinch reproduction: capture held, the root session goes running -> idle.
     const root = session({ id: "root-1", name: "Agent's Commander", isRootAgent: true, status: "running" });
     sessionsStore.setSessions([root]);
@@ -394,7 +394,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  it("the ProjectPanel replica dot keeps the ring across activity changes and toggles (#2408 round 4)", async () => {
+  it("the ProjectPanel replica dot keeps the ring across activity changes and toggles (round 4)", async () => {
     sessionsStore.setSessions([replicaSession()]);
     sessionsStore.setSessionComanaged(REPLICA_SESSION_ID, true);
     const rendered = await renderPanel();
