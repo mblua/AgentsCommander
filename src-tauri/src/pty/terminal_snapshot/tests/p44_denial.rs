@@ -37,7 +37,7 @@ impl P44Backend {
             .register_session_for_test(id, crate::session::profile::IdleTuning::DEFAULT, 4, 40)
             .unwrap();
         self.fanout
-            .handle_output(&token, &id.to_string(), P44_CANARY.as_bytes().to_vec());
+            .handle_output(&token, &id.to_string(), P44_CANARY.as_bytes());
         self.tokens.lock().unwrap().push(token);
     }
 
