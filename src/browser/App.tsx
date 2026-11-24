@@ -229,7 +229,7 @@ const BrowserApp: Component = () => {
         <div class="browser-divider-handle" />
       </div>
       <div class="browser-terminal">
-        {/* #840 — the web view has no desktop titlebar to host the Left/Right
+        {/* The web view has no desktop titlebar to host the Left/Right
             preset, so expose a compact toggle here. Anchored to the terminal
             pane's top-right corner because the sidebar's ActionBar spans its
             full top edge — floating over the sidebar would cover those buttons. */}
