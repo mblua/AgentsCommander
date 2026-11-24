@@ -59,6 +59,11 @@
 use rust_source_scrub::{scrub, Literals};
 use std::path::{Path, PathBuf};
 
+// Shared with the other layering guards; this crate uses only `every_file_under`.
+#[allow(dead_code)]
+#[path = "support/module_sources.rs"]
+mod module_sources;
+
 /// Every `(file, child)` reference under `src/loops/` that is allowed to name a
 /// child of `crate::commands`, sorted.
 ///
@@ -271,21 +276,7 @@ fn command_children(body: &str) -> Result<Vec<String>, &'static str> {
 /// problem: reaching them needs the module tree resolved, which no filter can do.
 /// They stay in KNOWN UNCOVERED SPELLINGS.
 fn rust_sources(root: &Path) -> Vec<PathBuf> {
-    fn visit(directory: &Path, files: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(directory).expect("read source directory") {
-            let path = entry.expect("source directory entry").path();
-            if path.is_dir() {
-                visit(&path, files);
-            } else {
-                files.push(path);
-            }
-        }
-    }
-
-    let mut files = Vec::new();
-    visit(root, &mut files);
-    files.sort();
-    files
+    module_sources::every_file_under(root)
 }
 
 fn relative_of(path: &Path) -> String {

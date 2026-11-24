@@ -66,8 +66,7 @@ impl FixtureBackend {
             .fanout
             .registration_token_for_session(id)
             .expect("fixture token");
-        self.fanout
-            .handle_output(&token, &id.to_string(), output.to_vec());
+        self.fanout.handle_output(&token, &id.to_string(), output);
     }
 
     pub(super) fn counts(&self, id: Uuid) -> BackendLookupCounts {
