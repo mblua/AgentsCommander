@@ -463,6 +463,26 @@ fn hold_lock(
     (rx, handle)
 }
 
+/// Hold `.co-managed/lock` until `release` fires, signalling once it is held.
+/// No timer: the caller decides when the lock is released.
+fn hold_lock_until(
+    root: &Path,
+    release: std::sync::mpsc::Receiver<()>,
+) -> (std::sync::mpsc::Receiver<()>, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let root = root.to_path_buf();
+    let handle = std::thread::spawn(move || {
+        let LockAttempt::Held(lock) = acquire_lock(&root, Duration::from_secs(5)) else {
+            panic!("the holder must get the lock");
+        };
+        tx.send(()).expect("signal");
+        // A dropped sender also releases, so a failing caller never hangs.
+        let _ = release.recv();
+        drop(lock);
+    });
+    (rx, handle)
+}
+
 // Test 24: contention is `LockBusy`, not `PreconditionsStale`, and it is
 // bounded. This is the test round 2's staleness test could not have
 // written, because it never took contention.
@@ -474,13 +494,16 @@ fn contention_is_lock_busy_and_bounded() {
     let file = temp.path().join("a.jsonl");
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "turn", Some(10), 0), 0);
-    let (ready, holder) = hold_lock(&root, Duration::from_millis(300));
+    let (release, release_rx) = std::sync::mpsc::channel();
+    let (ready, holder) = hold_lock_until(&root, release_rx);
     ready.recv().expect("holder ready");
     let pre = preconditions(EffectKind::Automatic); // a fresh snapshot
     let started = Instant::now();
     let outcome = commit_effect(&root, &slot, seq, &key, &pre, &capture);
     let elapsed = started.elapsed();
     let snapshot_age = pre.observed_at.elapsed();
+    // The lock is held for the whole call by construction, not by a timer.
+    release.send(()).expect("release holder");
     holder.join().expect("holder");
     assert_eq!(outcome, Err(AbstainReason::LockBusy));
     assert!(
