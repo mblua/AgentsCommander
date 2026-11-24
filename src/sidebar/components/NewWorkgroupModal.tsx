@@ -216,7 +216,14 @@ const NewWorkgroupModal: Component<{
               onCompositionEnd={() => { compositionActive = false; }}
             />
             <Show when={filteredTeams().length === 0}>
-              <div role="status" class="new-room-hint" data-ac-testid="newRoom.team.empty">{props.teams.length === 0 ? "No teams available." : "No teams match your search."}</div>
+              <output
+                class="new-room-hint"
+                data-ac-role="status"
+                data-ac-testid="newRoom.team.empty"
+                style={{ display: "block" }}
+              >
+                {props.teams.length === 0 ? "No teams available." : "No teams match your search."}
+              </output>
             </Show>
             <div
               ref={listElement}
