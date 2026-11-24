@@ -1,4 +1,4 @@
-// Child-path tests for the module cycle detector (#3998).
+// Child-path tests for the module cycle detector.
 // Each case is a tiny throwaway lib crate in OS temp. The real detector runs on
 // it, and the test checks the exact module arcs and cyclic member sets.
 // Run: node --test scripts/module-child-paths.test.mjs

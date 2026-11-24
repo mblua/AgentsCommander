@@ -135,7 +135,7 @@ async function mountProject(workgroups: AcWorkgroup[], sessions: Session[]) {
   return rendered;
 }
 
-describe("ProjectPanel blocked-menu communication slot (#1649)", () => {
+describe("ProjectPanel blocked-menu communication slot", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: Awaited<ReturnType<typeof mountProject>> | null = null;
 
@@ -280,7 +280,7 @@ describe("ProjectPanel blocked-menu communication slot (#1649)", () => {
 // row now summarises what it hides. These drive the real UI (clicking the real
 // headers, typing in the real filter input) rather than poking the collapse
 // stores, so they fail if a badge is placed under something a collapse removes.
-describe("ProjectPanel blocked-menu rollup badges (#1859)", () => {
+describe("ProjectPanel blocked-menu rollup badges", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: Awaited<ReturnType<typeof mountProject>> | null = null;
 
@@ -465,7 +465,7 @@ describe("ProjectPanel blocked-menu rollup badges (#1859)", () => {
 // have to: the test renderer never attaches sidebar.css, variables.css or
 // toast.css, so getComputedStyle in jsdom cannot see any of these rules and a
 // DOM test would pass against a stylesheet that does not define them at all.
-describe("ProjectPanel blocked-menu chip and toast action stylesheets (#1858)", () => {
+describe("ProjectPanel blocked-menu chip and toast action stylesheets", () => {
   // The sibling stylesheet guards in src/sidebar/styles read their file with
   // `new URL(relative, import.meta.url)`, which does NOT work here: this file
   // runs under `@vitest-environment jsdom`, and jsdom's URL resolves the

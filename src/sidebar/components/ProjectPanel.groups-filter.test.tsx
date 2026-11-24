@@ -598,7 +598,7 @@ describe("ProjectPanel workgroup groups", () => {
     }
   });
 
-  it("focuses the inline create-group input when it appears (#746)", async () => {
+  it("focuses the inline create-group input when it appears", async () => {
     const fake = new FakeTransport();
     setupProjectTransport(fake);
     fake.resolve("get_project_groups", groupsConfig([]));

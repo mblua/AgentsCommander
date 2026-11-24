@@ -16,7 +16,7 @@
 // history (proving live bytes were rendered immediately), `screen` is what is
 // actually visible now (proving the reconciled result is correct).
 //
-// #1363 restored this suite. The one thing that moved is where the snapshot
+// Restored this suite. The one thing that moved is where the snapshot
 // comes from: it is the value `activate_terminal_output` (the attach) resolves
 // to, not a separate `get_screen_snapshot` fetch. The contract above is
 // unchanged, and every attach now re-seeds with a reset (plan 3.4.2), so the
@@ -128,7 +128,7 @@ vi.mock("@xterm/xterm", () => ({
       this.assertLive();
       this.writes.push(data);
       this.screen.push(data);
-      // The #1489 attach pipeline awaits the optional parse-completion
+      // The attach pipeline awaits the optional parse-completion
       // callback (the write fence) and reads the buffer metrics at settle.
       // This fake applies bytes synchronously, so invoking the callback right
       // after the push is faithful to this file's model.
@@ -293,7 +293,7 @@ function bytes(writes: unknown[]): number[][] {
   return writes.map((write) => Array.from(write as Uint8Array));
 }
 
-describe("TerminalView snapshot render gate (#955)", () => {
+describe("TerminalView snapshot render gate", () => {
   let cleanupDom: (() => void) | null = null;
   let warn: ReturnType<typeof vi.spyOn>;
   let debug: ReturnType<typeof vi.spyOn>;
@@ -535,7 +535,7 @@ describe("TerminalView snapshot render gate (#955)", () => {
     }
   });
 
-  // RE-ATTACH, snapshot WINS the race (the normal, fast path). #1363 changed
+  // RE-ATTACH, snapshot WINS the race (the normal, fast path). A later fix changed
   // one thing here: the seed is applied with a reset even on a clean terminal,
   // because every attach re-seeds and the reset is what makes replaying the
   // 64 KiB history ring safe (plan 3.4.2 / 3.3 rule 2).

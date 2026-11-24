@@ -101,7 +101,7 @@ function renderRoot(fake: FakeTransport): FakeTransport {
   return rendered.fake;
 }
 
-describe("#1871 root menu is derived from data", () => {
+describe("root menu is derived from data", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
@@ -411,7 +411,7 @@ describe("#1871 root menu is derived from data", () => {
     });
   });
 
-  describe("#1896: the menu's bot list dismisses with the menu", () => {
+  describe("the menu's bot list dismisses with the menu", () => {
     it("a left click on something that stops nothing dismisses the menu and clears its bot list", async () => {
       sessionsStore.setSessions([liveRoot()]);
       const fake = newFake();

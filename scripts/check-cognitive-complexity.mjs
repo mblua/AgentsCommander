@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * #2253 (phase 1 of #2234) - cognitive-complexity gate skeleton and scan.
+ * (phase 1) - cognitive-complexity gate skeleton and scan.
  *
  * `--scan-sources` is pure text over files and needs no Rust toolchain:
  *
@@ -26,7 +26,7 @@
  * The self-test runs entirely in memory through the same pure functions the
  * scan uses; every file, byte and environment read is injectable.
  *
- * #2255 (phase 3 of #2234) - the capture pipeline and the verdict.
+ * (phase 3) - the capture pipeline and the verdict.
  *
  * `--capture` reads a `cargo clippy --message-format=json` stream, checks the
  * environment and the capture's integrity, asserts the threshold from both the
@@ -37,7 +37,7 @@
  * annotations with a remedial line and returns 1. `--emit` writes the observed
  * anchors, and only after every check before the comparison has passed.
  *
- * #2256 (phase 4 of #2234) - the baseline ratchet, the merge and the probe
+ * (phase 4) - the baseline ratchet, the merge and the probe
  * classifier.
  *
  * `--baseline-diff` validates the head and base documents against phase 3's
@@ -919,7 +919,7 @@ function defaultReadBytes(file) {
 }
 
 // ---------------------------------------------------------------------------
-// The source lexer and the identity rule (#2254, phase 2 of #2234)
+// The source lexer and the identity rule (phase 2)
 //
 // This is the part of the gate that decides what a function is. It reads a
 // Rust source file as text, walks it once as a lexer (comments, strings and
@@ -1483,7 +1483,7 @@ export function anchorFor(path, line, column, readSource = defaultReadSource) {
 }
 
 // ---------------------------------------------------------------------------
-// The capture pipeline and the verdict (#2255, phase 3 of #2234)
+// The capture pipeline and the verdict (phase 3)
 //
 // `--capture` never guesses: it reprints every non-cognitive diagnostic first
 // so a broken build still shows its human output, then checks the environment,
@@ -2031,7 +2031,7 @@ export function runCapture(options, io = {}) {
   const findings = diffCaptureAnchors(options.platform, observed, baselineDocument,
     renderedByAnchor);
 
-  // 12b. #3182: accepted findings. A function moved with an identical anchor
+  // 12b. Accepted findings. A function moved with an identical anchor
   // pairs its NEW with its STALE; the rest must match sanitizing.allowlist.json,
   // and an allowlist entry that matches nothing fails like a STALE.
   const accepted = acceptFindings(findings.newFindings, findings.staleFindings,
@@ -2051,7 +2051,7 @@ export function runCapture(options, io = {}) {
   return judgeCaptureFindings(findings, accepted, options.platform, underActions, stderr);
 }
 
-/** #4166: the one exit CI blocks on; NEW and STALE baseline findings stay advisory (1). */
+/** The one exit CI blocks on; NEW and STALE baseline findings stay advisory (1). */
 export const STALE_ALLOWLIST_EXIT = 3;
 
 const STALE_ALLOWLIST_REMEDIAL =
@@ -2117,7 +2117,7 @@ function acceptFindings(newFindings, staleFindings, entries) {
 }
 
 // ---------------------------------------------------------------------------
-// The baseline ratchet (#2256, phase 4 of #2234)
+// The baseline ratchet (phase 4)
 //
 // `--baseline-diff` validates both documents against phase 3's schema, then
 // compares anchor multisets per `(id, platform)`: the array length is never
@@ -2229,7 +2229,7 @@ function defaultRunGit(args) {
   return String(result.stdout ?? '');
 }
 
-// #3319 is a historical shrink only, never an exception to baseline growth.
+// Is a historical shrink only, never an exception to baseline growth.
 const HISTORICAL_3319_FILE = 'src-tauri/src/phone/mailbox/self_switch.rs';
 const HISTORICAL_3319_ID = 'rust:' + HISTORICAL_3319_FILE
   + '::impl:MailboxPoller::resolve_repo_path';
@@ -2267,7 +2267,7 @@ function historical3319Shrink({ baseRef, baseDocument, headDocument, diffSet,
   }
 }
 
-// #3527 delegated historical cleanup: frozen identities and Git blobs, never growth.
+// Delegated historical cleanup: frozen identities and Git blobs, never growth.
 const HISTORICAL_3527_SITES = [
   ["rust:src-tauri/src/agent_update.rs::impl:TargetProcessOwner::settle", 'a3d53f9cd47b'],
   ["rust:src-tauri/src/agent_version.rs::impl:ProbeProcessOwner::settle", '059ee76b179f'],
@@ -2371,11 +2371,11 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
       && ['windows', 'linux', 'macos'].every((platform) =>
         entry.sites[platform]?.length === 1 && entry.sites[platform][0] === anchor);
   });
-  if (!exactSites) return false; // #3527 condition-2
+  if (!exactSites) return false; // condition 2
   const actual = removals.map(historical3527TupleKey).sort();
   const expected = historical3527Tuples().map(historical3527TupleKey)
     .sort(compareLexically);
-  if (!historical3527Equal(actual, expected)) return false; // #3527 condition-3
+  if (!historical3527Equal(actual, expected)) return false; // condition 3
   const selected = new Set(HISTORICAL_3527_SITES.map(([id]) => id));
   const equalMetadata = historical3527Equal(historical3527Without(baseDocument, 'entries'),
     historical3527Without(headDocument, 'entries'));
@@ -2383,10 +2383,10 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
     || !headById.has(entry.id)
     || historical3527Equal(historical3527Without(entry, 'sites'),
       historical3527Without(headById.get(entry.id), 'sites')));
-  if (!equalMetadata || !equalEntries) return false; // #3527 equality
+  if (!equalMetadata || !equalEntries) return false; // equality
   try {
     if (runGit(['rev-parse', baseRef + ':' + BASELINE_FILE]).trim()
-        !== HISTORICAL_3527_BASELINE) return false; // #3527 baseline-pin
+        !== HISTORICAL_3527_BASELINE) return false; // baseline pin
     return HISTORICAL_3527_PINS.every(([file, pin]) => {
       if (diffSet.has(file) || !existsWorkspace(file)) return false;
       readWorkspace(file);
@@ -2400,7 +2400,7 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
 }
 
 /** The `--baseline-diff` mode, in the order of phase 4 section 3. */
-// #3965: an id names the file that declares the module, not the file that
+// An id names the file that declares the module, not the file that
 // holds the function. `mod x;` items are resolved to their out-of-line files
 // so a removal is credited when the pull request touched the real file.
 const OUT_OF_LINE_MOD_RE =
@@ -2627,7 +2627,7 @@ export function runBaselineDiff(options, io = {}) {
   // 5. Any addition fails.
   if (additions.length > 0) return reportBaselineGrowth(additions, stderr);
 
-  // 6. Ordinary removals need touched/gone proof; #3319 has exact historical pins.
+  // 6. Ordinary removals need touched/gone proof; one case has exact historical pins.
   const historical = historical3319Shrink({ baseRef, baseDocument, headDocument, diffSet,
     additions, removals, runGit, readWorkspace, existsWorkspace });
   const historical3527 = historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
@@ -2651,7 +2651,7 @@ export function runBaselineDiff(options, io = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// The three-platform merge (#2256, phase 4 of #2234)
+// The three-platform merge (phase 4)
 //
 // `--merge` reads exactly three `--emit` documents, requires one of each
 // platform, requires agreement on `commit` and `rustcVersion`, and unions the
@@ -2814,7 +2814,7 @@ export function runMerge(options, io = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// The probe classifier (#2256, phase 4 of #2234)
+// The probe classifier (phase 4)
 //
 // Integrity is decided first, whatever `--probe-exit` says: a missing, empty,
 // unparseable or non-terminal capture is STOP. Only then does the histogram of
@@ -3209,7 +3209,7 @@ function stdoutText(fixture) {
   return fixture.state.stdout.join('\n');
 }
 
-/** The fixture's #3527 answer to `git rev-parse` / `git hash-object`. */
+/** The fixture's first answer to `git rev-parse` / `git hash-object`. */
 function fixture3527Blob(args, historical3527) {
   let position = 'workspace';
   if (args[0] !== 'hash-object') {
@@ -3223,7 +3223,7 @@ function fixture3527Blob(args, historical3527) {
   return HISTORICAL_3527_PINS.find(([name]) => name === file)?.[1] ?? '';
 }
 
-/** The fixture's #3319 answer to `git rev-parse` / `git hash-object`. */
+/** The fixture's second answer to `git rev-parse` / `git hash-object`. */
 function fixture3319Blob(args, historical, baseRef) {
   if (historical === null) throw new Error('unexpected historical Git invocation');
   if (historical.gitError) throw new GitError('historical Git failure', false);

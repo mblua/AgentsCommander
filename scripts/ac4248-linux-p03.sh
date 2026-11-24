@@ -1,4 +1,4 @@
-# #4248 P03 Linux recipe (Hyprland + WebKitGTK), versioned with the linux_snapshot harness.
+# P03 Linux recipe (Hyprland + WebKitGTK), versioned with the linux_snapshot harness.
 # v2 = visible-only: comment 6813009311 + AC-4248-008 D1-D5; plan v3 (.ac-relative path):
 #   project-shared/4248-testable-mode-linux/plan-v3-ac-4248-p03-recipe-v2-visible.md
 # Run: REPO=<abs> E=<new ignored dir> bash -euo pipefail "$REPO/scripts/ac4248-linux-p03.sh" \

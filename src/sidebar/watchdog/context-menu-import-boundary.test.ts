@@ -52,7 +52,7 @@ const ALLOWED_IMPORTS: Record<string, string[]> = {
 };
 
 /** Assertion 2: ContextMenuSurface is private to the folder. Two siblings,
- *  SessionRowMenu and #2143's SelectionCopyMenu; the surface test is black-box
+ *  SessionRowMenu and SelectionCopyMenu; the surface test is black-box
  *  through SessionRowMenu and imports nothing named ContextMenuSurface. */
 const ALLOWED_SURFACE_IMPORTERS = [
   "sidebar/components/context-menu/SelectionCopyMenu.tsx",
@@ -156,7 +156,7 @@ function endsWithContextMenuSurface(specifier: string): boolean {
   return normalized.endsWith("ContextMenuSurface");
 }
 
-describe("#1871 context-menu import boundary", () => {
+describe("context-menu import boundary", () => {
   it("context-menu/ product files import exactly the allowed specifiers", () => {
     const actual: Record<string, string[]> = {};
     for (const [file, source] of Object.entries(SOURCES)) {

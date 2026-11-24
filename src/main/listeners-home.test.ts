@@ -38,7 +38,7 @@ vi.mock("../shared/ipc", () => ({
 import { wireHomeListeners } from "./listeners-home";
 import { homeStore, __resetHomeStoreForTests } from "./stores/home";
 
-describe("wireHomeListeners (issue #183)", () => {
+describe("wireHomeListeners", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetHomeStoreForTests();
@@ -81,7 +81,7 @@ describe("wireHomeListeners (issue #183)", () => {
     expect(homeStore.visible).toBe(true);
   });
 
-  it("session_destroyed shows Home when no sessions remain (#164 contract)", async () => {
+  it("session_destroyed shows Home when no sessions remain", async () => {
     m.list.mockResolvedValueOnce([]);
     await wireHomeListeners();
     homeStore.hide();

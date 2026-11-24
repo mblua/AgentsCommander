@@ -1,4 +1,4 @@
-// #3832 - controlled, searchable "Test on" picker for the preflight test panel.
+// Controlled, searchable "Test on" picker for the preflight test panel.
 // Follows the NewWorkgroupModal Team combobox. No IPC and no stores: the panel
 // owns the rows, the chosen path and the disabled state.
 import {
@@ -8,20 +8,20 @@ import type { PreflightTestTarget } from "../../../shared/preflightTypes";
 
 const NO_MATCH = "No agents match your search.";
 
-/** #3832 - the last path segment, for either slash style. */
+/** The last path segment, for either slash style. */
 export function targetBasename(path: string): string {
   const parts = path.split(/[\\/]+/).filter(Boolean);
   return parts.at(-1) ?? path;
 }
 
-/** #3832 - the Profile line of one picker row; fallback replaces the plain line. */
+/** The Profile line of one picker row; fallback replaces the plain line. */
 export function targetProfileText(row: PreflightTestTarget): string {
   return row.fallbackApplied
     ? `Asks for Profile ${row.requestedProfile}, launches with Profile ${row.effectiveProfile}.`
     : `Launches with Profile ${row.effectiveProfile}`;
 }
 
-/** #3832 - case-insensitive substring match on the complete path; empty keeps all. */
+/** Case-insensitive substring match on the complete path; empty keeps all. */
 export function searchTargets(
   rows: readonly PreflightTestTarget[], query: string,
 ): PreflightTestTarget[] {
@@ -30,7 +30,7 @@ export function searchTargets(
   return rows.filter((row) => row.replicaPath.toLowerCase().includes(needle));
 }
 
-/** #3832 - next enabled row after `from` in `step` direction, clamped at the ends.
+/** Next enabled row after `from` in `step` direction, clamped at the ends.
  *  With no active row, either key starts at the first enabled row. */
 export function nextEnabledIndex(
   rows: readonly PreflightTestTarget[], from: number, step: 1 | -1,

@@ -107,7 +107,7 @@ function communication(
   return { kind, visible, updatedAt, message } as SessionCommunication;
 }
 
-describe("ProjectPanel Co-managed row text (#2452)", () => {
+describe("ProjectPanel Co-managed row text", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
@@ -227,7 +227,7 @@ describe("ProjectPanel Co-managed row text (#2452)", () => {
   });
 });
 
-describe("Co-managed slot stylesheet rule (#2452)", () => {
+describe("Co-managed slot stylesheet rule", () => {
   // Same file: URL construction as ProjectPanel.menu-guard.test.tsx; the
   // two-argument URL form resolves against the jsdom document base.
   const marker = "/src/sidebar/components/";

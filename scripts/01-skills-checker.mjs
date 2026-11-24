@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Validates SKILL.md structure the way AgentsCommander's indexer does, for issue #1213.
+// Validates SKILL.md structure the way AgentsCommander's indexer does.
 //
 // SOURCE OF TRUTH: src-tauri/src/config/session_context.rs:206-714
 // This script is a second, independent implementation of the rules that module enforces.
@@ -3097,7 +3097,7 @@ function selfTest(out) {
     assertSelf(finding.message.length < 400, 'and the value must be truncated');
   });
 
-  // #4445: trailing-blank trims and the block header keep their results in linear time.
+  // Trailing-blank trims and the block header keep their results in linear time.
   run('4445', () => {
     const indent = (value) => blockScalarHeader(value)?.blockIndent;
     assertSelf(indent('|') === null && indent('|-') === null, 'no indicator is null');

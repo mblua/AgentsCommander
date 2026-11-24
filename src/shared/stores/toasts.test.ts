@@ -9,7 +9,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("toastStore (#574)", () => {
+describe("toastStore", () => {
   it("push returns an id, items contains the toast, and kind defaults to info", () => {
     const id = toastStore.push({ message: "hello" });
     expect(typeof id).toBe("number");
@@ -174,7 +174,7 @@ describe("toastStore (#574)", () => {
 // The aggregated blocked-menu notice is a single PINNED toast. These
 // pin the two measured ways the old per-session toasts were lost: eviction past
 // MAX_VISIBLE, and the dismiss animation deleting a freshly re-pushed message.
-describe("pinned toasts and the dismiss/re-push race (#1857)", () => {
+describe("pinned toasts and the dismiss/re-push race", () => {
   it("1. survives the measured threshold: four sticky errors then a pinned info", () => {
     for (let i = 0; i < 4; i++) toastStore.error(`error-${i}`);
     toastStore.push({ message: "blocked", kind: "info", durationMs: null, pinned: true });

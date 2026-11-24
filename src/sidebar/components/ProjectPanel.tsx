@@ -136,7 +136,7 @@ function sessionStatusSearchText(status: Session["status"]): string {
   return typeof status === "string" ? status : `exited ${status.exited}`;
 }
 
-// #2271 - the dot class doubles as this row's search text, so the sidecar flag
+// The dot class doubles as this row's search text, so the sidecar flag
 // must be threaded in here or a Co-managed replica would stay searchable as
 // `waiting` (epic.md 5.5).
 function sessionEffectiveStatusSearchText(session: Session, comanaged: boolean): string {
@@ -144,7 +144,7 @@ function sessionEffectiveStatusSearchText(session: Session, comanaged: boolean):
   return dotClass === "exited" ? sessionStatusSearchText(session.status) : dotClass;
 }
 
-// #2232 phase 9 - the enablement UI's reason wording. `RoomFlagOff` and `Ready`
+// The enablement UI's reason wording. `RoomFlagOff` and `Ready`
 // have no line: the control alone shows those states. `UnsupportedProvider`
 // names the agent, because round 1 rendered such a room as ready and it then
 // silently never acted (plan section 6).
@@ -203,7 +203,7 @@ function replicaScopeContext(wg: AcWorkgroup, replica: AcAgentReplica): AgentPic
     targetReplicaName: replica.name,
     currentCodingAgentId: replica.currentCodingAgentId ?? null,
     currentProfile: replica.currentProfile ?? null,
-    // #1943 - the persisted protection snapshot, so the picker's lock bar starts
+    // The persisted protection snapshot, so the picker's lock bar starts
     // from the stored state instead of waiting for its own first preview.
     savedPair: replica.savedPair,
     selectionState: replica.selectionState,
@@ -211,7 +211,7 @@ function replicaScopeContext(wg: AcWorkgroup, replica: AcAgentReplica): AgentPic
   };
 }
 
-/** #1943 - lock chip label: the tooltip and, since #2030 made the chip
+/** Lock chip label: the tooltip and, since the chip became
  *  icon-only, the accessible name. Reads the SAVED pair, never the session's
  *  launch-time pair, and falls back to the stored identifier when the provider
  *  is no longer configured instead of dropping the fact. */
@@ -355,7 +355,7 @@ function runningCoordinatorPeers(wg: AcWorkgroup, replica: AcAgentReplica): AcAg
   );
 }
 
-/** #2064 — the additive CI and staleness classes for one repo chip, in the fixed
+/** The additive CI and staleness classes for one repo chip, in the fixed
  *  order `ci-running` then `stale` so the className string is deterministic and
  *  assertable. `unknown`, `idle` and `current` carry NO class: a user without `gh`,
  *  or with the feature off, sees exactly today's UI, and a marker for "we do not
@@ -410,7 +410,7 @@ const ProjectPanel: Component = () => {
     unlistenManualClose = await onCoordinatorManualCloseChanged((data) => {
       replicaVolatileStore.setManuallyClosedAt(data.replicaPath, data.manuallyClosedAt);
     });
-    // #2064 — the fifth listener, same shape as the four above. A registration
+    // The fifth listener, same shape as the four above. A registration
     // failure is caught ONCE per mount (a remount is new information) and leaves
     // the handle null, so the chip degrades to today's UI instead of failing the
     // mount. Section 7's last row is that degradation.
@@ -503,7 +503,7 @@ const ProjectPanel: Component = () => {
   const [newWorkgroupTarget, setNewWorkgroupTarget] = createSignal<{ projectPath: string } | null>(null);
   const [newLoopTarget, setNewLoopTarget] = createSignal<{ projectPath: string } | null>(null);
   const [editingLoopTarget, setEditingLoopTarget] = createSignal<{ projectPath: string; loopId: string } | null>(null);
-  // #2171 - Loops whose configured room cannot be resolved, loaded once per
+  // Loops whose configured room cannot be resolved, loaded once per
   // mount. In-memory and per-session: dismissing does not persist.
   const [loopTargetAlerts, setLoopTargetAlerts] = createSignal<UnresolvedLoopTarget[]>([]);
   const [loopTargetOpenErrors, setLoopTargetOpenErrors] = createSignal<Record<string, string>>({});
@@ -580,7 +580,7 @@ const ProjectPanel: Component = () => {
     }
   };
 
-  /** #2733 - disable the Loop from the notice (config is synced: every machine). */
+  /** Disable the Loop from the notice (config is synced: every machine). */
   const disableLoopFromAlert = async (alert: UnresolvedLoopTarget) => {
     const generation = loopTargetNoticeGeneration;
     setAlertOpenError(alert.loopId, "");
@@ -609,7 +609,7 @@ const ProjectPanel: Component = () => {
     return proj && wg && replica ? { proj, wg, replica } : null;
   });
 
-  /** #1943 - the discovery replica behind the LIVE-session picker, resolved by the
+  /** The discovery replica behind the LIVE-session picker, resolved by the
    *  session's working directory, so its lock bar reads the same persisted
    *  snapshot as the gray rows. Not found means unknown, never assumed. */
   const livePickerReplica = createMemo(() => {
@@ -726,7 +726,7 @@ const ProjectPanel: Component = () => {
     });
   };
 
-  /** #2046 - an Agent Matrix row is not launchable: a left click only explains it. */
+  /** An Agent Matrix row is not launchable: a left click only explains it. */
   const handleAgentClick = (agent: { name: string; path: string }) => {
     setAgentMatrixNotice({ name: agent.name, path: agent.path });
   };
@@ -820,7 +820,7 @@ const ProjectPanel: Component = () => {
           bots: TelegramBotConfig[];
         } | null>(null);
         let replicaCtxMenuEpoch = 0;
-        // #3027 - the exact row that opened the replica menu. A fresh object per
+        // The exact row that opened the replica menu. A fresh object per
         // opening is the halo's identity: reclamps rewrite the menu object, so
         // neither the menu nor the geometry can key the halo node.
         const [replicaMenuOrigin, setReplicaMenuOrigin] = createSignal<{ el: HTMLElement } | null>(null);
@@ -828,7 +828,7 @@ const ProjectPanel: Component = () => {
           clip: { left: number; top: number; width: number; height: number };
           row: { left: number; top: number; width: number; height: number };
         } | null>(null);
-        // #1536 - inline TASK-title editor state (shared by both menu branches;
+        // Inline TASK-title editor state (shared by both menu branches;
         // only one menu is ever open). titleEdit pins the raw wg.path + the
         // resolved live-session id at click time, so guards compare strings,
         // never menu/wg object identity (positionReplicaCtxMenu rewrites the
@@ -837,7 +837,7 @@ const ProjectPanel: Component = () => {
         const [titleDraft, setTitleDraft] = createSignal("");
         const [titleBusy, setTitleBusy] = createSignal(false);
         const [titleError, setTitleError] = createSignal<string | null>(null);
-        // Monotonic invocation epoch (#1536 BLOCKER-2 token): every
+        // Monotonic invocation epoch (the invocation token): every
         // startReplicaTitleEdit captures the current value after setting state;
         // resetTitleEditState() bumps it, so menu close, menu replacement, and
         // cancel invalidate every in-flight getTitle continuation SYNCHRONOUSLY
@@ -852,8 +852,8 @@ const ProjectPanel: Component = () => {
           setTitleBusy(false);
           setTitleError(null);
         };
-        // #1536 BLOCKER-1 net 1: the reset effect fires on menu CLOSE (the null
-        // transition). Menu REPLACEMENT (never through null, #943) is covered by
+        // The reset effect fires on menu CLOSE (the null
+        // transition). Menu REPLACEMENT (never through null) is covered by
         // the resetTitleEditState() calls in both menu-open handlers; the render
         // guard in the editor JSX is the structural third net.
         createEffect(() => {
@@ -996,10 +996,10 @@ const ProjectPanel: Component = () => {
           document.addEventListener("keydown", handleDeleteModalKeyDown);
           onCleanup(() => document.removeEventListener("keydown", handleDeleteModalKeyDown));
         });
-        const applyWgDeleteFailure = (e: any, forceDelete: boolean, myGen: number) => {
+        const applyWgDeleteFailure = (e: unknown, forceDelete: boolean, myGen: number) => {
           if (myGen !== retryGen) return;
           console.error("delete_workgroup failed:", e);
-          const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
+          const msg = typeof e === "string" ? e : (e as Error | null | undefined)?.message ?? "Failed to delete room";
           if (msg.startsWith("BLOCKERS:")) {
             try {
               const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
@@ -1026,8 +1026,8 @@ const ProjectPanel: Component = () => {
           setWgDeleteError(msg);
           setWgDeleteInProgress(false);
         };
-        const applyWgRetryFailure = (e: any) => {
-          const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete room";
+        const applyWgRetryFailure = (e: unknown) => {
+          const msg = typeof e === "string" ? e : (e as Error | null | undefined)?.message ?? "Failed to delete room";
           if (msg.startsWith("BLOCKERS:")) {
             try {
               const report = JSON.parse(msg.slice("BLOCKERS:".length)) as BlockerReport;
@@ -1070,7 +1070,7 @@ const ProjectPanel: Component = () => {
             await projectStore.reloadProject(proj.path);
             if (myGen !== retryGen) return;
             closeWgDeleteModal();
-          } catch (e: any) {
+          } catch (e: unknown) {
             if (myGen !== retryGen) return;
             applyWgRetryFailure(e);
           }
@@ -1204,9 +1204,9 @@ const ProjectPanel: Component = () => {
           const session = sessionsStore.findSessionByName(agent.name);
           const repoText = sessionRepoSearchText(session);
           const codingAgentLabel = liveAgentLabel(session);
-          // #1730 - the profile badge is passed unconditionally. This call used to
+          // The profile badge is passed unconditionally. This call used to
           // gate it on `!!codingAgentLabel || repoText !== ""`, a second copy of the
-          // meta-strip gate SessionItem.tsx carried before #1730. That gate is gone,
+          // meta-strip gate SessionItem.tsx used to carry. That gate is gone,
           // so every session row now carries this badge's data, and the filter has
           // to find it. Do not re-add a gate here: replicaSearchText above never had
           // one, and a voice transient hiding the strip is not a rule about the data.
@@ -1300,7 +1300,7 @@ const ProjectPanel: Component = () => {
           if (dismissCtx) {
             window.removeEventListener("click", dismissCtx);
             window.removeEventListener("contextmenu", dismissCtx);
-            window.removeEventListener("keydown", dismissCtx as any);
+            window.removeEventListener("keydown", dismissCtx);
             dismissCtx = null;
           }
         };
@@ -1312,7 +1312,7 @@ const ProjectPanel: Component = () => {
           cleanupCtx();
         };
 
-        // #3027 - the halo lives exactly while the replica menu is open, whatever
+        // The halo lives exactly while the replica menu is open, whatever
         // path closes it.
         const haloOrigin = createMemo(() => (replicaCtxMenu() ? replicaMenuOrigin() : null));
         createEffect(on(haloOrigin, (o) => {
@@ -1486,7 +1486,7 @@ const ProjectPanel: Component = () => {
         };
 
         const openGroupFlyout = (anchor: HTMLElement) => {
-          closeRepoFlyout(); // #943 - only one flyout at a time
+          closeRepoFlyout(); // Only one flyout at a time
           cancelGroupFlyoutClose();
           groupFlyoutAnchorEl = anchor;
           positionGroupFlyout(anchor);
@@ -1495,7 +1495,7 @@ const ProjectPanel: Component = () => {
         };
 
         const activateGroupFlyout = (anchor: HTMLElement) => {
-          closeRepoFlyout(); // #943 - the early-return path below skips openGroupFlyout
+          closeRepoFlyout(); // The early-return path below skips openGroupFlyout
           if (groupFlyoutOpen() && groupFlyoutAnchorEl === anchor) {
             cancelGroupFlyoutClose();
             positionGroupFlyout(anchor);
@@ -1635,7 +1635,7 @@ const ProjectPanel: Component = () => {
           const m = replicaCtxMenu();
           return m?.kind === "inactive" ? m : null;
         };
-        // #2408 - per-room Co-managed enablement lives in the orchestrator's
+        // Per-room Co-managed enablement lives in the orchestrator's
         // replica menu. `co_managed_get` reads the stored flag;
         // `co_managed_effective_state` answers WHY the room is not effective for
         // the orchestrator session. Every continuation is pinned to the menu
@@ -1997,17 +1997,17 @@ const ProjectPanel: Component = () => {
                 style={{ left: `${groupFlyoutPos().x}px`, top: `${groupFlyoutPos().y}px` }}
                 onMouseEnter={() => {
                   cancelGroupFlyoutClose();
-                  cancelReplicaCtxMenuClose(); // #977 - still inside the menu
+                  cancelReplicaCtxMenuClose(); // Still inside the menu
                 }}
                 onMouseLeave={() => {
                   scheduleGroupFlyoutClose();
-                  scheduleReplicaCtxMenuClose(); // #977 - re-armed; the menu cancels it on re-entry
+                  scheduleReplicaCtxMenuClose(); // Re-armed; the menu cancels it on re-entry
                 }}
                 onClick={(e) => e.stopPropagation()}
                 onContextMenu={(e) => e.stopPropagation()}
                 data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.flyout`}
               >
-                {/* #777: built-in Non-stop slot, pinned above the user groups. */}
+                {/* Built-in Non-stop slot, pinned above the user groups. */}
                 <button
                   class="session-context-option session-context-group-option session-context-group-option-nonstop"
                   title={`Watch this room in the ${DEFAULT_NON_STOP_NAME} group`}
@@ -2082,7 +2082,7 @@ const ProjectPanel: Component = () => {
                       }}
                       data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.create`}
                     >
-                      {/* #1731 - 👥 reads as "a group", which is what this row
+                      {/* 👥 reads as "a group", which is what this row
                           PRODUCES; it moved here from Add to Group. No colour
                           class: an emoji is painted by the system emoji font and
                           ignores `color`, so one would be dead CSS. */}
@@ -2092,7 +2092,7 @@ const ProjectPanel: Component = () => {
                   }
                 >
                   <div class="session-context-inline-create">
-                    {/* #746 — deliberately unconditional: a discovery-driven
+                    {/* Deliberately unconditional: a discovery-driven
                         re-render disposes this subtree (focus falls to <body>
                         regardless), so re-focusing the fresh input preserves
                         typing continuity; the value lives in groupCreateName. */}
@@ -2145,7 +2145,7 @@ const ProjectPanel: Component = () => {
               }}
               data-ac-testid={`replica.${automationIdPart(wg.path)}.groups.trigger`}
             >
-              {/* #1731 - user-plus, not 👥: this row ADDS a room to a group, it
+              {/* User-plus, not 👥: this row ADDS a room to a group, it
                   does not produce one. Tinted through the class, never a hex. */}
               <span class="session-context-option-icon" aria-hidden="true">
                 <UserPlusIcon class="session-context-group-add-icon" />
@@ -2185,11 +2185,11 @@ const ProjectPanel: Component = () => {
                     style={{ left: `${repoFlyoutPos().x}px`, top: `${repoFlyoutPos().y}px` }}
                     onMouseEnter={() => {
                       cancelRepoFlyoutClose();
-                      cancelReplicaCtxMenuClose(); // #977 - still inside the menu
+                      cancelReplicaCtxMenuClose(); // Still inside the menu
                     }}
                     onMouseLeave={() => {
                       scheduleRepoFlyoutClose();
-                      scheduleReplicaCtxMenuClose(); // #977 - re-armed; the menu cancels it on re-entry
+                      scheduleReplicaCtxMenuClose(); // Re-armed; the menu cancels it on re-entry
                     }}
                     onClick={(e) => e.stopPropagation()}
                     onContextMenu={(e) => e.stopPropagation()}
@@ -2310,7 +2310,7 @@ const ProjectPanel: Component = () => {
           }
         };
 
-        // #1536 - liveness-aware session resolution for the EDITOR only. The
+        // Liveness-aware session resolution for the EDITOR only. The
         // broom keeps the existing resolveWorkgroupSessionId (first non-inactive
         // id, live or not). An exited/dropped session would make the
         // session-based commands reject with "session not found", so the editor
@@ -2328,7 +2328,7 @@ const ProjectPanel: Component = () => {
           setTitleError(null);
           setTitleDraft(wg.taskTitle ?? "");
           setTitleEdit({ wgPath: wg.path, sessionId });
-          // Invocation token (#1536 BLOCKER-2). Each start bumps the epoch; any
+          // Invocation token. Each start bumps the epoch; any
           // later resetTitleEditState() (menu close, replacement, cancel) or
           // newer start bumps it again, so this invocation detects staleness
           // with zero microtask window - including same-wg-same-session
@@ -2510,7 +2510,7 @@ const ProjectPanel: Component = () => {
           setTimeout(() => {
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -2592,7 +2592,7 @@ const ProjectPanel: Component = () => {
             workgroupOwnMatches(item.wg) ||
             replicaMatches(item.replica, item.wg, item.wg.name, item.wg.taskTitle) ||
             // "RUNNING" is deliberately part of this match text even though the chip
-            // no longer renders the word (#1790), so the filter keeps answering
+            // no longer renders the word, so the filter keeps answering
             // "which teams have someone working right now".
             matchesFilterText(runningCoordinatorPeers(item.wg, item.replica).map((peer) => `${peer.name} RUNNING`).join(" "))
           );
@@ -2663,7 +2663,7 @@ const ProjectPanel: Component = () => {
           setTimeout(() => {
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -2704,7 +2704,7 @@ const ProjectPanel: Component = () => {
           setTimeout(() => {
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -2731,7 +2731,7 @@ const ProjectPanel: Component = () => {
           setTimeout(() => {
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -2749,9 +2749,9 @@ const ProjectPanel: Component = () => {
           setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           resetGroupMenuState();
-          resetTitleEditState(); // #1536 - opening any menu closes any in-flight editor
-          closeRepoFlyout(); // #943 - the A->B switch never nulls replicaCtxMenu()
-          setReplicaMenuOrigin({ el: e.currentTarget as HTMLElement }); // #3027
+          resetTitleEditState(); // Opening any menu closes any in-flight editor
+          closeRepoFlyout(); // The A->B switch never nulls replicaCtxMenu()
+          setReplicaMenuOrigin({ el: e.currentTarget as HTMLElement });
           setReplicaCtxMenu({
             kind: "active",
             sessionId: session.id,
@@ -2762,7 +2762,7 @@ const ProjectPanel: Component = () => {
             x: e.clientX,
             y: e.clientY,
           });
-          startCoManagedMenu(wg, replica, session.id); // #2408
+          startCoManagedMenu(wg, replica, session.id);
           resolveRepoRemotes(replicaRepoMenuEntries(wg, replica)); // #943 - one call per repo path
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -2773,7 +2773,7 @@ const ProjectPanel: Component = () => {
             positionReplicaCtxMenu(e.clientX, e.clientY);
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -2791,11 +2791,11 @@ const ProjectPanel: Component = () => {
           setLoopsHeaderCtxMenu(null);
           setTeamsHeaderCtxMenu(null);
           resetGroupMenuState();
-          resetTitleEditState(); // #1536 - opening any menu closes any in-flight editor
-          closeRepoFlyout(); // #943 - the A->B switch never nulls replicaCtxMenu()
-          setReplicaMenuOrigin({ el: e.currentTarget as HTMLElement }); // #3027
+          resetTitleEditState(); // Opening any menu closes any in-flight editor
+          closeRepoFlyout(); // The A->B switch never nulls replicaCtxMenu()
+          setReplicaMenuOrigin({ el: e.currentTarget as HTMLElement });
           setReplicaCtxMenu({ kind: "inactive", wg, replica, x: e.clientX, y: e.clientY });
-          startCoManagedMenu(wg, replica, null); // #2408
+          startCoManagedMenu(wg, replica, null);
           resolveRepoRemotes(replicaRepoMenuEntries(wg, replica)); // #943 - one call per repo path
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
@@ -2806,7 +2806,7 @@ const ProjectPanel: Component = () => {
             positionReplicaCtxMenu(e.clientX, e.clientY);
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
-            window.addEventListener("keydown", dismiss as any);
+            window.addEventListener("keydown", dismiss);
           });
         };
 
@@ -2823,7 +2823,7 @@ const ProjectPanel: Component = () => {
             const s = session();
             return s ? sessionsStore.comanagedBySessionId[s.id] ?? false : false;
           };
-          // #2408 - the real activity class; Co-managed capture is an additive ring.
+          // The real activity class; Co-managed capture is an additive ring.
           const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => replica.isCoordinator;
           const communication = createMemo(() => session()?.communication ?? null);
@@ -2836,7 +2836,7 @@ const ProjectPanel: Component = () => {
           const showBlockedMenu = createMemo(() =>
             communication()?.kind === "blockedMenu" && communication()?.visible === true
           );
-          // #2452 - no gate, like blockedMenu: every replica row shows the text.
+          // No gate, like blockedMenu: every replica row shows the text.
           const showCoManaged = createMemo(() =>
             communication()?.kind === "coManaged" &&
             communication()?.visible === true &&
@@ -2848,26 +2848,26 @@ const ProjectPanel: Component = () => {
               ? s.gitRepos
               : configuredReplicaRepoBadgesLive(replica, wg);
           });
-          // #2131 - CI running on this orchestrator row's repo is work the room is
+          // CI running on this orchestrator row's repo is work the room is
           // waiting on, so the row takes the existing wash while its chip carries
           // `ci-running`. It reads the SAME published entry the chip class reads
           // (`remoteActivityClasses`) and the SAME badge list the chip <For>
           // renders, so the chip and the row cannot disagree.
           // Non-orchestrator rows are excluded here, not at the chip.
-          // #2202 - CI now DOES reach the group-rail counter, dot and tooltip and
+          // CI now DOES reach the group-rail counter, dot and tooltip and
           // the `.ac-wg-subgroup.working` class, all through `roomIsActive`.
           // The body below delegates to `replicaCiRunning`, the one shared CI
           // definition those surfaces read, so no surface can hold its own.
           // Room ordering still reads no working predicate at all: it sorts on
-          // `lastActivityBySessionId` only (#2202 adds a CI-stop stamp there).
+          // `lastActivityBySessionId` only (a CI-stop stamp is added there too).
           const orchestratorCiRunning = () => replicaCiRunning(wg, replica);
-          // #1783 - the quick-access panel answers "is anyone in this room
+          // The quick-access panel answers "is anyone in this room
           // working, or is its repo running CI", so an orchestrator row there
           // tints when ANY agent in its room is working, the orchestrator
           // included. Every other render site (rowContext "workgroups" and
           // "selected", both inside .ac-wg-subgroup) keeps the per-row meaning:
           // own session only, plus CI. Do not collapse this branch.
-          // #2151 - the CI term is added on BOTH branches, so an orchestrator can
+          // The CI term is added on BOTH branches, so an orchestrator can
           // no longer be tinted in the room tree and untinted in the Orchestrators
           // strip in the same frame.
           const rowIsWorking = () =>
@@ -2903,17 +2903,17 @@ const ProjectPanel: Component = () => {
             `replica.repoBadge.${rowKey()}.${index}.${automationIdPart(label)}`;
           const tierBadgeTestId = () => `replica.tierBadge.${rowKey()}`;
           const lockChipTestId = () => `replica.lockChip.${rowKey()}`;
-          // #2030 - the chip is icon-only, so its tooltip and its accessible name
+          // The chip is icon-only, so its tooltip and its accessible name
           // come from the same accessor; the glyph itself is aria-hidden.
           const lockChipLabel = () => selectionLockChipTitle(replica, settingsStore.current);
           const liveAgentLabel = () => resolveReplicaAgentLabel(session(), replica);
           const profileBadge = () => resolveReplicaProfileBadge(session(), replica);
-          // #2435 - a dormant row has no session, so it can never carry a tier.
+          // A dormant row has no session, so it can never carry a tier.
           const tierBadge = () => {
             const s = session();
             return s ? sessionTierBadge(s) : null;
           };
-          // #2568 - same rule: a dormant row has no session, so no notice. The
+          // Same rule: a dormant row has no session, so no notice. The
           // key reads the session's fields, not replica.path, so one agent has
           // one key on both surfaces.
           const orphanNotice = () => {
@@ -2937,7 +2937,7 @@ const ProjectPanel: Component = () => {
               ? { projectPath: proj.path, runtimeSessionId: s.id }
               : undefined;
           };
-          // #2566 - keyed by AGENT id, so a replica with no live session shows the value
+          // Keyed by AGENT id, so a replica with no live session shows the value
           // of its configured agent's command, and two rooms of one agent agree.
           const quotaUsed = () => {
             const agentId = resolveReplicaAgentId(session(), replica);
@@ -3050,10 +3050,10 @@ const ProjectPanel: Component = () => {
                       }}
                     />
                   </Show>
-                  {/* #552/#580/#1730: the mutually exclusive trio, positions 2, 3 and 4 of this
+                  {/* The mutually exclusive trio, positions 2, 3 and 4 of this
                       strip. AUTO-CLOSED and MANUALLY-CLOSED lead it and the coordinator idle
-                      (minutes) badge now trails them; before #1730 the idle badge led the whole
-                      row. The #580 XOR gate is unchanged: at most one of the three ever renders,
+                      (minutes) badge now trails them; before, the idle badge led the whole
+                      row. The XOR gate is unchanged: at most one of the three ever renders,
                       and the three stay contiguous, so a closed pill and the counter can never
                       appear together. They no longer lead the strip: the blocked-menu alert slot
                       and the drift badge come first. */}
@@ -3065,7 +3065,7 @@ const ProjectPanel: Component = () => {
                       AUTO-CLOSED
                     </span>
                   </Show>
-                  {/* #588 MANUALLY-CLOSED pill: same coord-autoclosed style as
+                  {/* MANUALLY-CLOSED pill: same coord-autoclosed style as
                       AUTO-CLOSED (pixel-identical, only the label differs). Manual
                       wins the XOR — the AUTO-CLOSED gate above is `&& !manuallyClosed()`. */}
                   <Show when={manuallyClosed()}>
@@ -3110,7 +3110,7 @@ const ProjectPanel: Component = () => {
                       >{tier().text}</span>
                     )}
                   </Show>
-                  {/* #1943 - lock chip for a locked replica; icon-only since #2030.
+                  {/* Lock chip for a locked replica; icon-only.
                       Only an established `locked` state renders it, so an unknown
                       or invalid state is never drawn as unlocked. The same helper
                       covers every renderReplicaItem call site (workgroups,
@@ -3217,7 +3217,7 @@ const ProjectPanel: Component = () => {
                   &#x25BE;
                 </span>
                 <div class="ac-wg-header-text">
-                  {/* #1859 - collapsing this subgroup hides the per-row chip, so
+                  {/* Collapsing this subgroup hides the per-row chip, so
                       the header has to carry the state itself. Presence only, no
                       count, and it does not check wgCollapsed(): redundant while
                       expanded is deliberate, and it is what makes the regex
@@ -3277,7 +3277,7 @@ const ProjectPanel: Component = () => {
                 </span>
                 <span class="project-title">Project: {proj.folderName}</span>
               </button>
-              {/* #1859 - the last level that can hide the chip: collapsing the
+              {/* The last level that can hide the chip: collapsing the
                   project panel removes every row and every subgroup header, so
                   this badge is the one that must survive. Deliberately a SIBLING
                   of .project-header-main, not a child: inside that <button> it
@@ -3375,7 +3375,7 @@ const ProjectPanel: Component = () => {
               </Portal>
             )}
 
-            {/* #710: entity-creation + edit-loop modals moved out of this row to
+            {/* Entity-creation + edit-loop modals moved out of this row to
                 the stable ProjectPanel scope (after the projects <For>) so a
                 background refresh that re-creates the row no longer disposes an
                 open modal. See the hoisted render blocks below. */}
@@ -3397,7 +3397,7 @@ const ProjectPanel: Component = () => {
                             &#x25BE;
                           </span>
                           <div class="ac-wg-header-text">
-                            {/* #1859 - same rollup for the orchestrators quick
+                            {/* Same rollup for the orchestrators quick
                                 group. This one reads the per-replica helper, not
                                 the workgroup-level one: the section is a flat
                                 list of coordinator rows drawn from many
@@ -3494,7 +3494,7 @@ const ProjectPanel: Component = () => {
                     setTimeout(() => {
                       window.addEventListener("click", dismiss);
                       window.addEventListener("contextmenu", dismiss);
-                      window.addEventListener("keydown", dismiss as any);
+                      window.addEventListener("keydown", dismiss);
                     });
                   };
 
@@ -3712,7 +3712,7 @@ const ProjectPanel: Component = () => {
                     setTimeout(() => {
                       window.addEventListener("click", dismiss);
                       window.addEventListener("contextmenu", dismiss);
-                      window.addEventListener("keydown", dismiss as any);
+                      window.addEventListener("keydown", dismiss);
                     });
                   };
 
@@ -3739,7 +3739,7 @@ const ProjectPanel: Component = () => {
                     setTimeout(() => {
                       window.addEventListener("click", dismiss);
                       window.addEventListener("contextmenu", dismiss);
-                      window.addEventListener("keydown", dismiss as any);
+                      window.addEventListener("keydown", dismiss);
                     });
                   };
 
@@ -3914,9 +3914,9 @@ const ProjectPanel: Component = () => {
                                   try {
                                     await EntityAPI.deleteAgentMatrix(proj.path, agent.path);
                                     await projectStore.reloadProject(proj.path);
-                                  } catch (e: any) {
+                                  } catch (e: unknown) {
                                     console.error("delete_agent_matrix failed:", e);
-                                    const msg = typeof e === "string" ? e : e?.message ?? "Failed to delete agent";
+                                    const msg = typeof e === "string" ? e : (e as Error | null | undefined)?.message ?? "Failed to delete agent";
                                     if (msg.startsWith(AGENT_DELETE_PARTIAL_REMOVAL_PREFIX)) {
                                       toastStore.info(formatAgentDeletePartialRemovalWarning(msg), { durationMs: null });
                                       closeAgentDeleteModal();
@@ -3975,7 +3975,7 @@ const ProjectPanel: Component = () => {
                     setTimeout(() => {
                       window.addEventListener("click", dismiss);
                       window.addEventListener("contextmenu", dismiss);
-                      window.addEventListener("keydown", dismiss as any);
+                      window.addEventListener("keydown", dismiss);
                     });
                   };
 
@@ -4273,7 +4273,7 @@ const ProjectPanel: Component = () => {
               </Portal>
             )}
 
-            {/* #3027 - decorative halo around the exact row that opened the replica
+            {/* Decorative halo around the exact row that opened the replica
                 menu; keyed by opening so tracking only restyles the same node. */}
             <Show when={haloOrigin()} keyed>
               {(_origin) => (
@@ -4305,7 +4305,7 @@ const ProjectPanel: Component = () => {
             </Show>
 
             {/* Replica context menu — full menu for green/live AND red/exited
-                (red adds the broom); gray (no session) gets Coding Agent + broom (#545) */}
+                (red adds the broom); gray (no session) gets Coding Agent + broom */}
             {replicaCtxMenu() && (
               <Portal>
                 <div
@@ -4316,14 +4316,14 @@ const ProjectPanel: Component = () => {
                   onMouseEnter={cancelReplicaCtxMenuClose}
                   onMouseLeave={() => {
                     scheduleRepoFlyoutClose();
-                    // #1536 - the editor keeps the menu open while the user is
+                    // The editor keeps the menu open while the user is
                     // interacting with it (mirrors the groupErrorPinned guard
                     // inside scheduleReplicaCtxMenuClose).
                     if (titleEdit()) {
                       cancelReplicaCtxMenuClose();
                       return;
                     }
-                    scheduleReplicaCtxMenuClose(); // #977
+                    scheduleReplicaCtxMenuClose();
                   }}
                 >
                   <Show when={activeReplicaMenu()}>
@@ -4411,7 +4411,7 @@ const ProjectPanel: Component = () => {
                           class="session-context-option"
                           onClick={() => toggleReplicaDetach(menu().sessionId)}
                         >
-                          {/* #987, #1708 - the same icon pair the session row's detach button uses. */}
+                          {/* The same icon pair the session row's detach button uses. */}
                           <span class="session-context-option-icon" aria-hidden="true">
                             {sessionsStore.isDetached(menu().sessionId) ? (
                               <ReattachIcon class="session-context-detach-icon" />
@@ -4572,7 +4572,7 @@ const ProjectPanel: Component = () => {
                 </div>
               </Portal>
             )}
-            {/* #710: live + inactive Coding Agent pickers moved out of this row
+            {/* Live + inactive Coding Agent pickers moved out of this row
                 to the stable ProjectPanel scope (after the projects <For>) so a
                 background refresh that re-creates the row no longer disposes an
                 open picker. See the hoisted render blocks below. */}
@@ -4770,7 +4770,7 @@ const ProjectPanel: Component = () => {
                             if (myGen !== retryGen) return;
                             await projectStore.reloadProject(proj.path);
                             if (myGen !== retryGen) return;
-                          } catch (e: any) {
+                          } catch (e: unknown) {
                             applyWgDeleteFailure(e, forceDelete, myGen);
                             return;
                           }
@@ -4827,9 +4827,9 @@ const ProjectPanel: Component = () => {
                           try {
                             await EntityAPI.deleteTeam(proj.path, team.name);
                             await projectStore.reloadProject(proj.path);
-                          } catch (e: any) {
+                          } catch (e: unknown) {
                             console.error("delete_team failed:", e);
-                            setDeleteError(typeof e === "string" ? e : e?.message ?? "Failed to delete team");
+                            setDeleteError(typeof e === "string" ? e : (e as Error | null | undefined)?.message ?? "Failed to delete team");
                             setDeleteInProgress(false);
                             return;
                           }
@@ -4848,7 +4848,7 @@ const ProjectPanel: Component = () => {
       }}
     </For>
 
-    {/* #710: entity-creation / edit-loop modals + coding-agent pickers hoisted
+    {/* Entity-creation / edit-loop modals + coding-agent pickers hoisted
         out of the projects <For> so a background discovery refresh (which
         replaces row objects and disposes their local signals) cannot tear them
         down mid-interaction. Each resolves its live project / loop / session
@@ -4856,7 +4856,7 @@ const ProjectPanel: Component = () => {
         editingTeamTarget / pendingLaunch precedent below. */}
     {/* Gated on findProjectByPath (like the New Workgroup / New Loop / Edit Loop
         blocks below) — not just the raw target signal — so the modal auto-closes
-        if its project is removed, matching the pre-#710 row-disposal behavior and
+        if its project is removed, matching the old row-disposal behavior and
         keeping all five entity-creation modals consistent. */}
     <Show when={findProjectByPath(newAgentTarget()?.projectPath)}>
       {(proj) => (
@@ -4996,7 +4996,7 @@ const ProjectPanel: Component = () => {
       )}
     </Show>
 
-    {/* #669: hoisted out of the project row so project refreshes that replace
+    {/* Hoisted out of the project row so project refreshes that replace
         row objects do not dispose the edit modal or its unsaved local state. */}
     {editingTeamTarget() && (
       <Portal>
@@ -5008,7 +5008,7 @@ const ProjectPanel: Component = () => {
       </Portal>
     )}
 
-    {/* #588 Coordinator manual-close confirmation. Hoisted to the stable
+    {/* Coordinator manual-close confirmation. Hoisted to the stable
         ProjectPanel root (outside the projects <For>, like pendingLaunch) so a
         background discovery refresh that re-creates each <For> row cannot tear it
         down mid-decision. Driven by the module-level pendingCoordinatorClose
@@ -5084,7 +5084,7 @@ const ProjectPanel: Component = () => {
       </Portal>
     )}
 
-    {/* #2046: an Agent Matrix row is not launchable. Rendered at the stable
+    {/* An Agent Matrix row is not launchable. Rendered at the stable
         ProjectPanel root (outside the projects <For>, like pendingLaunch and the
         restart prompt) so a discovery refresh that re-creates the row cannot
         unmount the notice mid-read. */}
@@ -5099,7 +5099,7 @@ const ProjectPanel: Component = () => {
     )}
     <UnleashPromptHost restart={restartReplicaSessionCore} />
 
-    {/* #537: post-assign "Restart now?" prompt, rendered here at the stable
+    {/* Post-assign "Restart now?" prompt, rendered here at the stable
         ProjectPanel root (outside the projects <For>) so a background discovery
         refresh that replaces project references, re-creating each <For> row,
         cannot unmount it mid-decision. It closes only on Later / Restart now /

@@ -112,7 +112,7 @@ describe("OnboardingModal", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the Welcome title and intro message (#975)", async () => {
+  it("renders the Welcome title and intro message", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(() => OnboardingModal({ onClose: vi.fn() }), root);
@@ -171,7 +171,7 @@ describe("OnboardingModal", () => {
     dispose();
   });
 
-  it("continues to persist dismissal when cancelled (#975)", async () => {
+  it("continues to persist dismissal when cancelled", async () => {
     const onClose = vi.fn();
     const root = document.createElement("div");
     document.body.append(root);
@@ -194,7 +194,7 @@ describe("OnboardingModal", () => {
     dispose();
   });
 
-  it("persists dismissal when Escape cancels the Welcome flow (#975)", async () => {
+  it("persists dismissal when Escape cancels the Welcome flow", async () => {
     const onClose = vi.fn();
     const root = document.createElement("div");
     document.body.append(root);
@@ -215,7 +215,7 @@ describe("OnboardingModal", () => {
     dispose();
   });
 
-  it("closes on Escape in the success state with no second settings write (#975)", async () => {
+  it("closes on Escape in the success state with no second settings write", async () => {
     const onClose = vi.fn();
     const root = document.createElement("div");
     document.body.append(root);

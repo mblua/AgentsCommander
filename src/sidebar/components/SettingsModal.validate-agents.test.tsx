@@ -65,7 +65,7 @@ async function expectFooterError(root: HTMLElement, text: string): Promise<void>
 const CODEX_RESUME_ERROR =
   ": Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically";
 
-describe("SettingsModal validateAgents (#2611)", () => {
+describe("SettingsModal validateAgents", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -137,7 +137,7 @@ describe("SettingsModal validateAgents (#2611)", () => {
 });
 
 // Base/profile labels and canonical keys on save after a mixed-key reload.
-describe("SettingsModal command field labels and writes (#3021)", () => {
+describe("SettingsModal command field labels and writes", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

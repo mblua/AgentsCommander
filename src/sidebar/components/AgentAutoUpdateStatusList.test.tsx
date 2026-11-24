@@ -108,7 +108,7 @@ function mount(
   );
 }
 
-describe("AgentAutoUpdateStatusList (#1551)", () => {
+describe("AgentAutoUpdateStatusList", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

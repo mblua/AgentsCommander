@@ -48,7 +48,7 @@ function byTestId<T extends HTMLElement = HTMLElement>(testId: string): T {
   return element;
 }
 
-describe("ProjectPanel Archive Project action (#881)", () => {
+describe("ProjectPanel Archive Project action", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

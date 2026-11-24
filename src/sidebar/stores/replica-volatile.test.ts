@@ -11,7 +11,7 @@ import {
 } from "./replica-volatile";
 
 // The live event layer for the volatile replica fields. These cover the
-// contract the old in-place projectStore patches had (#552 normalized-path
+// contract the old in-place projectStore patches had (normalized-path
 // matching, set/clear semantics) plus the new one: reads are reactive and
 // fine-grained, so a badge/pill updates WITHOUT re-creating its row.
 
@@ -21,7 +21,7 @@ const COORD_B = "C:\\Users\\Maria\\Project\\.ac\\wg-2-team\\__agent_coord-b";
 // session working_directory arrives on the clock/auto-close events.
 const COORD_A_EVENT = "c:/users/maria/project/.ac/wg-1-team/__agent_coord-a";
 
-describe("replicaVolatileStore (#748)", () => {
+describe("replicaVolatileStore", () => {
   beforeEach(() => {
     replicaVolatileStore.clearAll();
   });
@@ -109,7 +109,7 @@ describe("replicaVolatileStore (#748)", () => {
 });
 
 // `ac_discovery_branch_updated` now also carries per-repo branches.
-describe("replicaVolatileStore per-repo branches (#943 B2)", () => {
+describe("replicaVolatileStore per-repo branches (B2)", () => {
   const REPO_A = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
   const REPO_B = "C:\\proj\\.ac\\wg-1-team\\repo-webpage";
 
@@ -209,7 +209,7 @@ describe("replicaVolatileStore per-repo branches (#943 B2)", () => {
 // The same `ac_discovery_branch_updated` event now also carries per-repo
 // worktree-dirty. It rides the B2 feed exactly, so it inherits B2's by-path merge
 // and, critically, B2's clearForPaths PRESERVE.
-describe("replicaVolatileStore per-repo dirty (#1028)", () => {
+describe("replicaVolatileStore per-repo dirty", () => {
   const REPO_A = "C:\\proj\\.ac\\wg-1-team\\repo-AgentsCommander";
   const REPO_B = "C:\\proj\\.ac\\wg-1-team\\repo-webpage";
 

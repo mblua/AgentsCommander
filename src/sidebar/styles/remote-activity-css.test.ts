@@ -20,7 +20,7 @@ const CSS_PATH = new URL("./sidebar.css", import.meta.url);
 const RAW_CSS = readFileSync(CSS_PATH, "utf8");
 const CSS = RAW_CSS.split("\r\n").join("\n");
 
-/** Comment spans blanked, length and line breaks preserved: the #2064 comment above
+/** Comment spans blanked, length and line breaks preserved: the remote-activity comment above
  *  the rules names `ci-running` and `stale` in prose, and an unstripped scan would
  *  read a sentence as a selector. */
 const NO_COMMENTS = CSS.replace(/\/\*[\s\S]*?\*\//g, (span) => span.replace(/[^\n]/g, " "));
@@ -114,7 +114,7 @@ const BRANCH_DIRTY_BODY = "\n  color: var(--status-exited);\n";
 const COMPOSED_SELECTOR =
   ".ac-discovery-badge.branch.ci-running,\n.ac-discovery-badge.branch.stale";
 
-describe("#2064 remote-activity chip markers (bytes on disk)", () => {
+describe("remote-activity chip markers (bytes on disk)", () => {
   it("stale_marker_occupies_no_layout_box", () => {
     const rules = chipSignalRules();
     expect(rules.map((rule) => rule.selector)).toEqual([

@@ -7,7 +7,7 @@ import { declProps, declValue, scanRules } from "./css-test-helpers";
 // .sidebar-scrollable. jsdom never renders scrollbars, so the stylesheet bytes
 // are the contract. scanRules() is brace-based and so CRLF-safe; every helper
 // throws on a miss, so no assertion below can pass on an empty match.
-// #2579 moved the scrollbar values to src/shared/styles/scrollbars.css; they are
+// Moved the scrollbar values to src/shared/styles/scrollbars.css; they are
 // now owned by src/shared/styles/scrollbars-css.test.ts (G1/G3), and T4 here
 // asserts the rails inherit that global rule.
 const CSS = readFileSync(new URL("./sidebar.css", import.meta.url), "utf8");
@@ -23,7 +23,7 @@ function ruleFor(selector: string): string {
 
 const SCROLLERS = [".workgroup-group-rail-scroll", ".workgroup-group-rail-favorites-scroll"];
 
-describe("#2578 rail scrollbars", () => {
+describe("rail scrollbars", () => {
   it("T1 Favorites container has no horizontal padding", () => {
     expect(declValue(ruleFor(".workgroup-group-rail-favorites"), "padding")).toBe("6px 0 4px");
   });

@@ -237,7 +237,7 @@ function sidebarWidth(root: HTMLElement): string {
   return (root.querySelector(".main-sidebar-pane") as HTMLElement).style.width;
 }
 
-describe("MainApp sidebar layout pulse (#1532)", () => {
+describe("MainApp sidebar layout pulse", () => {
   let cleanupDom: (() => void) | null = null;
   let frames: ManualFrames;
   let error: ReturnType<typeof vi.spyOn>;

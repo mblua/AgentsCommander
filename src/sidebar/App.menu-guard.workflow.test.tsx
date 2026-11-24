@@ -108,7 +108,7 @@ function blockedMenu(message = menuMessage, at = updatedAt): SessionCommunicatio
   };
 }
 
-describe("SidebarApp menu-guard workflow (#1649)", () => {
+describe("SidebarApp menu-guard workflow", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

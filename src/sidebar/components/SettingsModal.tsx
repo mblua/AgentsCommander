@@ -22,15 +22,8 @@ import type {
   QuotaSourceConfig,
 } from "../../shared/types";
 import { agentsUnreadableNotice } from "../../shared/types";
-import {
-  SettingsAPI,
-  TelegramAPI,
-  ReposAPI,
-  CodingAgentsAPI,
-  PtyAPI,
-  assertCodingAgentMoveOrder,
-  onCodingAgentSettingsUpdated,
-} from "../../shared/ipc";
+import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI, PtyAPI } from "../../shared/ipc";
+import { assertCodingAgentMoveOrder, onCodingAgentSettingsUpdated } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
 import { validateScreenshotHotkeySyntax } from "../../shared/screenshot-hotkey";
 import { letterFromCaptureEvent, parseAppHotkey } from "../../shared/app-hotkey";
@@ -47,6 +40,7 @@ import { createAgentDragReorder } from "./settings/agentDragReorder";
 import { GripIcon } from "./settings/GripIcon";
 import { PreflightFields } from "./settings/PreflightFields";
 import { PreflightTestPanel } from "./settings/PreflightTestPanel";
+import { CodingAgentsTransfer, type TransferImportHandler } from "./settings/CodingAgentsTransfer";
 import WatchersSettings, { WATCHER_PREVIEW_DEBOUNCE_MS } from "./settings/WatchersSettings";
 import ContextHistorySettings, * as ctxHistory from "./settings/ContextHistorySettings";
 import { selectSessionWindow } from "../../shared/context-history";
@@ -1861,7 +1855,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       })),
     );
 
-  const addAgent = (preset?: Omit<AgentConfig, "id">) => {
+  const addAgent = (preset?: Omit<AgentConfig, "id"> & { id?: string }) => {
     if (!settings.data) return;
     setDraftDirty(true);
     const agent: AgentConfig = preset
@@ -1880,6 +1874,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     if (seeded) setQuotaSource(agent.id, seeded);
     else pendingQuotaSeed.add(agent.id);
     setActiveAgentId(agent.id);
+  };
+
+  const importCodingAgents: TransferImportHandler = (added, profiles) => {
+    setSettings("data", "codingAgentProfiles", profiles);
+    for (const agent of added) addAgent(agent);
   };
 
   /** #1965 — a preset captured from an older catalog generation must not be
@@ -1944,8 +1943,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const chatId = await TelegramAPI.sendTest(bot.token);
       updateBot(index, "chatId", chatId);
       setTestResult({ id: bot.id, ok: true });
-    } catch (e: any) {
-      setTestResult({ id: bot.id, ok: false, msg: e?.toString() });
+    } catch (e: unknown) {
+      setTestResult({ id: bot.id, ok: false, msg: (e as { toString(): string } | null | undefined)?.toString() });
     }
     setTestingBot(null);
   };
@@ -4905,6 +4904,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
         <div class="settings-compare-wrap">
           <div class="settings-compare-toolbar">
+            <CodingAgentsTransfer data={settings.data} onImport={importCodingAgents} />
             <select
               class="settings-input settings-rail-count-select"
               value={railCount() === 2 ? "2" : "1"}

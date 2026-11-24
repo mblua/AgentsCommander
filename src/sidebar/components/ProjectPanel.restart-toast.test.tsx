@@ -127,7 +127,7 @@ async function driveToReplicaContextMenu(root: HTMLElement): Promise<void> {
   await waitFor(() => expect(findButtonByText("Restart Session")).toBeTruthy());
 }
 
-describe("ProjectPanel restart-failure toast (#574)", () => {
+describe("ProjectPanel restart-failure toast", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

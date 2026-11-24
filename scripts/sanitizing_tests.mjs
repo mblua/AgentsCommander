@@ -828,7 +828,7 @@ test('P02 explicit aliases obey local shadowing and grouped imports', () => {
       'x.rs']:'// mod a {} #[test]\nfn f(){ let x="use a::*;"; }'})).exit,0);
 });
 
-// #3182: sanitizing.allowlist.json turns listed FAILs into ACCEPTED; an unused entry only warns.
+// Sanitizing.allowlist.json turns listed FAILs into ACCEPTED; an unused entry only warns.
 const allow = (gate, rule, file) => ({ gate, rule, path: file, reason: 'moved code', issue: 3182,
     since: '2026-10-23' });
 test('allowlist: accepted, stale entry and unlisted finding', () => {

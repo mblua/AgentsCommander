@@ -130,7 +130,7 @@ function px(value: string): number {
 // The contract.
 // ---------------------------------------------------------------------------
 
-describe("#2038 independent column scroll CSS bytes", () => {
+describe("independent column scroll CSS bytes", () => {
   it("C1. the wide block is exactly the three planned rules with exactly their declarations", () => {
     const rules = blockRules(wideBlock());
     expect(rules.map((r) => r.selectorList)).toEqual([

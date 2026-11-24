@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// #4690: CI gate `actions-pinned` (workflow .github/workflows/actions-pinned.yml, also
+// CI gate `actions-pinned` (workflow .github/workflows/actions-pinned.yml, also
 // `npm run actions-pinned`). Fails when any `uses:` under .github/workflows or
 // .github/actions is external and not `@<40-hex lowercase SHA> # vX.Y.Z`. Zero rule, no
 // baseline. Two fixed exemptions:

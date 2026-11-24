@@ -1,6 +1,6 @@
 // Creates the per-user ~/Applications alias for a global npm install on macOS.
 // install.js calls it after the bundle is extracted and validated; a failure
-// only warns. Issue #2065.
+// only warns.
 //
 // The bundle stays where npm put it, inside the package's bin/ directory. Only a
 // symlink is added, so Launchpad and Spotlight can index the app and the user can

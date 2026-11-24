@@ -14,7 +14,7 @@
   margin-bottom: var(--spacing-xs);
 }
 
-/* #2704 - Settings > General: category list + search on the left, one pane on the right. */
+/* Settings > General: category list + search on the left, one pane on the right. */
 .modal-body-general {
   overflow: hidden;
   padding: 0;
@@ -575,7 +575,7 @@ html.light-theme .settings-api-client-warning {
   color: #fbbf24;
 }
 
-/* ── Config Screen: per coding-agent profile rails (#384 B2C1A) ── */
+/* ── Config Screen: per coding-agent profile rails (B2C1A) ── */
 .settings-profile-letter-badge {
   display: inline-flex;
   align-items: center;
@@ -681,7 +681,7 @@ html.light-theme .settings-api-client-warning {
 
 .settings-profile-badge.match { color: var(--status-active, #35f2a6); border-color: rgba(53, 242, 166, 0.4); }
 /* CONFIGURED = a non-A slot with its own cell. Cyan filled chip: a "positive"
-   state like MATCH, deliberately out of the amber fallback family (#526). */
+   state like MATCH, deliberately out of the amber fallback family. */
 .settings-profile-badge.configured {
   color: var(--sidebar-accent, #00d4ff);
   border-color: rgba(0, 212, 255, 0.4);
@@ -705,7 +705,7 @@ html.light-theme .settings-api-client-warning {
   gap: 6px;
 }
 
-/* #576: compact always-visible "?" that surfaces the AC path placeholder
+/* Compact always-visible "?" that surfaces the AC path placeholder
    reference via a native title tooltip + aria-label (mirrors the existing
    `title=` hover-help in this modal). Opacity-based separation, no border, per
    the industrial-dark UI. */
@@ -732,7 +732,7 @@ html.light-theme .settings-api-client-warning {
   color: var(--sidebar-bg, #0b0f14);
 }
 
-/* #2143: the docs link reuses the help circle but is a link, not a tooltip. */
+/* The docs link reuses the help circle but is a link, not a tooltip. */
 .settings-field-help-link {
   text-decoration: none;
   cursor: pointer;
@@ -817,7 +817,7 @@ html.light-theme .settings-api-client-warning {
   line-height: 1.4;
 }
 
-/* #597 - hint above a profile cell editor showing the agent base command the
+/* Hint above a profile cell editor showing the agent base command the
    cell params append to. */
 .settings-profile-command-base {
   font-size: 11px;
@@ -861,7 +861,7 @@ html.light-theme .settings-api-client-warning {
   color: var(--sidebar-accent);
 }
 
-/* Footer holding the slot-level "Delete Profile" affordance (#538: the per-cell
+/* Footer holding the slot-level "Delete Profile" affordance (the per-cell
    "Delete cell" button was removed). */
 .settings-profile-card-footer {
   display: flex;
@@ -908,7 +908,7 @@ html.light-theme .settings-api-client-warning {
   color: var(--status-exited);
 }
 
-/* #3516 - the collapsed Preflight block (agent card and profile cell) and the
+/* The collapsed Preflight block (agent card and profile cell) and the
    shared test panel. Colors come only from theme variables. */
 .settings-preflight {
   border: 1px solid var(--sidebar-border);
@@ -1013,14 +1013,14 @@ html.light-theme .settings-api-client-warning {
   color: var(--sidebar-fg);
 }
 
-/* #2057 (D5) - "Clear in this agent": per-agent clear reinstated after #538
+/* "Clear in this agent": per-agent clear, reinstated after the change that
    removed the per-cell delete. It wears .settings-profile-cell-btn for its
    visual weight; this hook keeps the per-agent role addressable. */
 .settings-profile-clear-cell {
   color: var(--sidebar-fg-dim);
 }
 
-/* #2057 (D4) - blocked slot delete: the notice names the holders and sits on
+/* Blocked slot delete: the notice names the holders and sits on
    its own line below the footer buttons. Typography matches
    .settings-profile-cell-error; the colour stays neutral, not an error. */
 .settings-profile-delete-blocked {
@@ -1033,7 +1033,7 @@ html.light-theme .settings-api-client-warning {
   align-self: flex-start;
 }
 
-/* ── #526 Config Screen: unified dual-rail comparison (agent list + 2 rails) ── */
+/* ── Config Screen: unified dual-rail comparison (agent list + 2 rails) ── */
 /* The dual-rail compare-zone needs width — the user asked explicitly for the
    Settings modal to span 90% of the screen. The two-class selector is
    deliberate: the shared `.modal-container-lg` rule (max-width: 520px) is
@@ -1067,7 +1067,7 @@ html.light-theme .settings-api-client-warning {
   gap: var(--spacing-md);
 }
 
-/* #1095 - 1-rail view: drop the fixed 250px pin so the freed width is shared by
+/* 1-rail view: drop the fixed 250px pin so the freed width is shared by
    BOTH columns. The agents list keeps a 250px floor (never narrower than the
    2-rail view) but may now grow; the single config rail takes the larger share. */
 .settings-config-screen[data-ac-rail-count="1"] {
@@ -1106,7 +1106,7 @@ html.light-theme .settings-api-client-warning {
   color: var(--sidebar-fg-dim);
 }
 
-/* #526: the panel-header "Add Agent" is the primary creation action here, so it
+/* The panel-header "Add Agent" is the primary creation action here, so it
    gets a clearly visible accent treatment (the dim shared .settings-add-btn was
    nearly invisible). Mirrors the cyan accent-tint of .settings-rail-pill.left so
    it reads as an actionable button without being loud. */
@@ -1127,7 +1127,7 @@ html.light-theme .settings-api-client-warning {
 }
 
 .settings-agents-panel-body {
-  /* #2544 - the rows' offset parent: the drop indicator's top is an offsetTop. */
+  /* The rows' offset parent: the drop indicator's top is an offsetTop. */
   position: relative;
   min-height: 0;
   overflow-y: auto;
@@ -1160,7 +1160,7 @@ html.light-theme .settings-api-client-warning {
   cursor: pointer;
 }
 
-/* #895 — a row already sitting on the rail its click would target does nothing.
+/* A row already sitting on the rail its click would target does nothing.
    Don't offer a pointer for it; the nested delete/expand buttons re-arm their
    own cursor. */
 .settings-agent-row-head[aria-disabled="true"] {
@@ -1171,7 +1171,7 @@ html.light-theme .settings-api-client-warning {
   cursor: pointer;
 }
 
-/* #2544 - grip handle, drag ghost, drop line and the reorder feedback states. */
+/* Grip handle, drag ghost, drop line and the reorder feedback states. */
 .settings-agent-drag-handle,
 .agent-profile-provider-drag-handle {
   display: flex;
@@ -1387,7 +1387,7 @@ body.is-dragging * {
   cursor: not-allowed;
 }
 
-/* #895 — always-visible delete affordance on the agent row. Unlike
+/* Always-visible delete affordance on the agent row. Unlike
    .settings-agent-remove (hover-revealed inside .settings-button-card) the agent
    row head is itself clickable, so the destructive action has to announce itself
    rather than wait for a hover. */
@@ -1465,7 +1465,7 @@ body.is-dragging * {
   gap: var(--spacing-xs);
 }
 
-/* #1551 Settings > Coding Agents read-only Auto-update table (plan 5.14). */
+/* Settings > Coding Agents read-only Auto-update table (plan 5.14). */
 .settings-auto-update-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); }
 .settings-auto-update-table th, .settings-auto-update-table td { text-align: left; vertical-align: top; padding: 2px var(--spacing-xs); border-bottom: 1px solid var(--sidebar-border); }
 .settings-auto-update-table th { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sidebar-fg-dim); }
@@ -1485,7 +1485,7 @@ body.is-dragging * {
   flex: 1 1 auto;
 }
 
-/* #1095 - wraps the top-right rail-count dropdown above the rails. */
+/* Wraps the top-right rail-count dropdown above the rails. */
 .settings-compare-wrap {
   min-width: 0;
   min-height: 0;
@@ -1509,7 +1509,7 @@ body.is-dragging * {
   max-width: 140px;
 }
 
-/* #1095 - 1-rail view collapses the rails grid to one full-width column. */
+/* 1-rail view collapses the rails grid to one full-width column. */
 .settings-config-screen[data-ac-rail-count="1"] .settings-compare-zone {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -1542,7 +1542,7 @@ body.is-dragging * {
   /* Shrinkable (0 1 auto): the old `0 0 auto` + 110px floor could not shrink, so
      in a narrow rail it forced an internal horizontal scrollbar and rode over the
      title. At comfortable widths it still sizes to its content up to 160px.
-     #895: `min-width: 0` — the 72px floor was the last thing keeping this header
+     `min-width: 0` — the 72px floor was the last thing keeping this header
      from fitting, and it pushed the sibling clear button out of the clipped
      `.settings-compare-zone`. The select is the item that should give way here;
      it stays operable at any width, and the header stops overflowing at all. */
@@ -1552,7 +1552,7 @@ body.is-dragging * {
   max-width: 160px;
 }
 
-/* #895 — clears the comparison rail. Two constraints:
+/* Clears the comparison rail. Two constraints:
    1. NOT `.danger`, and not red: it drops a selection, it deletes nothing. The
       trash on the agent row is the only destructive control in this area.
    2. Icon-only and never shrinking. A 42px text button was a third unshrinkable
