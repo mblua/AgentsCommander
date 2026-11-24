@@ -620,7 +620,9 @@ impl OwnedReplacementContinuation {
         binding: PendingCreateBinding,
         evidence: &PendingCleanupEvidence<'_>,
     ) -> Result<Option<(RollbackResume<'_>, PendingRollback)>, ()> {
-        let mut state = self.owner.state.lock().map_err(|_| ())?;
+        let Ok(mut state) = self.owner.state.lock() else {
+            return Err(());
+        };
         if state.executor_nonce != self.executor_nonce {
             return Err(());
         }
