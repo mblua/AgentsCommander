@@ -69,6 +69,7 @@ describe("SettingsModal coding agents export/import (#5071)", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
@@ -97,6 +98,7 @@ describe("SettingsModal coding agents export/import (#5071)", () => {
   it("exports all agents and warns about env values", async () => {
     const fake = makeFake([agent("a1", "Claude", "secret"), agent("a2", "Codex")]);
     fake.resolve(EXPORT_CMD, "/tmp/out.json");
+    const info = vi.spyOn(toastStore, "info");
     const r = render(fake);
     try {
       await waitFor(() => expect(labels(r.root)).toHaveLength(2));
@@ -110,6 +112,7 @@ describe("SettingsModal coding agents export/import (#5071)", () => {
       expect(args.defaultFileName).toMatch(/^ac-coding-agents-exports_\d{8}_\d{6}\.json$/);
       expect(toastStore.items[0].kind).toBe("info");
       expect(toastStore.items[0].message).toContain("environment variable values");
+      expect(info).toHaveBeenCalledWith(expect.any(String), { durationMs: null });
     } finally {
       r.cleanup();
     }
@@ -140,12 +143,13 @@ describe("SettingsModal coding agents export/import (#5071)", () => {
       btn(r.root, "import")?.click();
       await waitFor(() => expect(labels(r.root)).toEqual(["Claude", "Claude (1)"]));
       expect(toastStore.items.some((t) => t.kind === "success")).toBe(true);
-      expect(fake.callsFor("update_settings")).toHaveLength(0);
+      expect(fake.callsFor("save_settings_draft")).toHaveLength(0);
       r.root.querySelector<HTMLButtonElement>('[data-ac-testid="settings.cancel"]')?.click();
+      await tick();
     } finally {
       r.cleanup();
     }
-    expect(fake.callsFor("update_settings")).toHaveLength(0);
+    expect(fake.callsFor("save_settings_draft")).toHaveLength(0);
     const again = render(fake);
     try {
       await waitFor(() => expect(labels(again.root)).toEqual(["Claude"]));
@@ -199,6 +203,22 @@ describe("SettingsModal coding agents export/import (#5071)", () => {
     await waitFor(() => expect(fake.callsFor(IMPORT_CMD)).toHaveLength(1));
     r.cleanup();
     finish("not json");
+    await tick();
+    expect(toastStore.items).toHaveLength(0);
+  });
+
+  it("drops a valid import result after the modal unmounts", async () => {
+    const fake = makeFake([agent("a1", "Claude")]);
+    const file = buildTransferFile([agent("x", "Codex")], baseSettings().codingAgentProfiles,
+      new Date());
+    let finish: (text: string) => void = () => {};
+    fake.onInvoke(IMPORT_CMD, () => new Promise<string>((res) => (finish = res)));
+    const r = render(fake);
+    await waitFor(() => expect(btn(r.root, "import")).toBeTruthy());
+    btn(r.root, "import")?.click();
+    await waitFor(() => expect(fake.callsFor(IMPORT_CMD)).toHaveLength(1));
+    r.cleanup();
+    finish(JSON.stringify(file));
     await tick();
     expect(toastStore.items).toHaveLength(0);
   });
