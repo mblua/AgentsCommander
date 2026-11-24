@@ -10,7 +10,7 @@ const ruleFor = (selector: string): string => soleRuleBody(RULES, selector);
 
 const HEADER = ".workgroup-group-rail-favorites > .workgroup-group-rail-header";
 
-describe("#2584 rail Favorites header", () => {
+describe("rail Favorites header", () => {
   it("T1 header never shrinks below its content height", () => {
     expect(declValue(ruleFor(HEADER), "flex-shrink")).toBe("0");
   });

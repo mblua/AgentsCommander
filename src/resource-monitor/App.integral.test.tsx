@@ -312,7 +312,7 @@ const key = (el: HTMLElement, init: KeyboardEventInit): KeyboardEvent => {
   return event;
 };
 
-describe("#2245 Resource Monitor integral view", () => {
+describe("Resource Monitor integral view", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

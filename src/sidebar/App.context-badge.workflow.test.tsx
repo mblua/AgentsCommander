@@ -137,7 +137,7 @@ async function mounted(fake: FakeTransport) {
   return rendered;
 }
 
-describe("SidebarApp CTX badge workflow (#1033)", () => {
+describe("SidebarApp CTX badge workflow", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -381,7 +381,7 @@ describe("SidebarApp CTX badge workflow (#1033)", () => {
 // The weekly-quota fill on the ORIGIN agent chip, through the REAL
 // App listener and the REAL mount-time snapshot. Every case asserts the NodeList
 // length first: a missing chip must fail, never pass a "no quota-fill" check.
-describe("SidebarApp weekly-quota workflow (#2482)", () => {
+describe("SidebarApp weekly-quota workflow", () => {
   let cleanupDom: (() => void) | null = null;
 
   const originChip = (root: Element) =>

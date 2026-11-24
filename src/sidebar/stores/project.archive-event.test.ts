@@ -66,7 +66,7 @@ async function flushArchiveQueueStart(): Promise<void> {
   await Promise.resolve();
 }
 
-describe("projectStore archive event reconciliation (#881)", () => {
+describe("projectStore archive event reconciliation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     projectStore.clear();

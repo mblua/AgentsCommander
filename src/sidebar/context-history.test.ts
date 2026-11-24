@@ -64,7 +64,7 @@ const neutral = (id: string, kind: "ambiguous" | "unknown", teamIds: string[]): 
   sessionWindows: null,
 });
 
-describe("sidebar context-history owner (#3532 P10)", () => {
+describe("sidebar context-history owner", () => {
   let fake: FakeTransport;
   let restore: () => void;
   let pending: Pending[];

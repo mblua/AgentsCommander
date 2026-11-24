@@ -184,7 +184,7 @@ async function mountWith(snapshot: string[], drained: ErrorLogEntry[]): Promise<
   await hop();
 }
 
-describe("ErrorModal popup mute (#3037)", () => {
+describe("ErrorModal popup mute", () => {
   it("registers the listener, then snapshots, then drains; box enabled only after snapshot", async () => {
     const snap = deferred<string[]>();
     ipc.getErrorPopupMutes.mockReturnValueOnce(snap.promise);

@@ -30,7 +30,7 @@ function findProject(path: string) {
   return projectStore.projects.find((p) => p.path === path);
 }
 
-describe("projectStore context-template updates (#695)", () => {
+describe("projectStore context-template updates", () => {
   beforeEach(() => {
     projectStore.clear();
   });

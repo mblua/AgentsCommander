@@ -3,7 +3,7 @@ import { __resetWebBrowserStoreForTests, webBrowserStore } from "./webBrowser";
 
 const page = (url: string) => ({ url, title: "", loading: false, visible: true });
 
-describe("webBrowserStore error (#3367)", () => {
+describe("webBrowserStore error", () => {
   afterEach(() => __resetWebBrowserStoreForTests());
 
   it("keeps the error through show/hide snapshots of the same page", () => {

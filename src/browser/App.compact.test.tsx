@@ -99,7 +99,7 @@ function dragTouchTo(rendered: Rendered, widthPx: number): void {
   touchAt(document, "touchend");
 }
 
-describe("BrowserApp compact host (#2280)", () => {
+describe("BrowserApp compact host", () => {
   beforeEach(() => {
     resetSidebarCompactForTests();
   });

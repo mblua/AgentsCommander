@@ -18,7 +18,7 @@ vi.mock("./audio-sink-warning", async (importOriginal) => {
 });
 vi.mock("./components/TemporaryRoomsPanel", () => ({ default: () => null }));
 
-describe("SidebarApp sound sink check (#4843)", () => {
+describe("SidebarApp sound sink check", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

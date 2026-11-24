@@ -147,7 +147,7 @@ const byId = (caps: Capability[], id: string) => {
   return found;
 };
 
-describe("#4330 Tauri capabilities per window", () => {
+describe("Tauri capabilities per window", () => {
   it("positive control: the checked-in layout has no problems", () => {
     expect(problems(load())).toEqual([]);
   });

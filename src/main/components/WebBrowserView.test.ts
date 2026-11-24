@@ -22,7 +22,7 @@ const rect = (left: number, top: number, width: number, height: number) =>
   ({ left, top, width, height, right: left + width, bottom: top + height }) as DOMRect;
 const floating = (r: DOMRect) => ({ getBoundingClientRect: () => r }) as Element;
 
-describe("WebBrowserView geometry (#3367)", () => {
+describe("WebBrowserView geometry", () => {
   it("scales CSS pixels by the device pixel ratio", () => {
     expect(physicalBounds(rect(10, 20, 300, 200), 1.5)).toEqual({
       x: 15,
@@ -42,7 +42,7 @@ describe("WebBrowserView geometry (#3367)", () => {
   });
 });
 
-describe("WebBrowserView Go button (#3367)", () => {
+describe("WebBrowserView Go button", () => {
   it("navigates to the typed URL like Enter does", () => {
     vi.stubGlobal(
       "ResizeObserver",
@@ -68,7 +68,7 @@ describe("WebBrowserView Go button (#3367)", () => {
   });
 });
 
-describe("WebBrowserView rejected URL (#3367)", () => {
+describe("WebBrowserView rejected URL", () => {
   it("shows the backend error after Go", async () => {
     vi.stubGlobal(
       "ResizeObserver",
@@ -99,7 +99,7 @@ describe("WebBrowserView rejected URL (#3367)", () => {
   });
 });
 
-describe("WebBrowserView typed URL (#3367)", () => {
+describe("WebBrowserView typed URL", () => {
   it("keeps the typed URL when the field blurs before Go and when a snapshot arrives", async () => {
     vi.stubGlobal(
       "ResizeObserver",

@@ -31,7 +31,7 @@ import type { SessionStatus } from "../../shared/types";
 // The ROOT AGENT badge must look exactly like a Coordinator row's badge:
 // the same class pair, plus root-agent-badge for inline placement only. jsdom does
 // not apply sidebar.css, so the pin is on the emitted classes and attributes.
-describe("RootAgentBanner coding-agent badge is style-invariant (#1167)", () => {
+describe("RootAgentBanner coding-agent badge is style-invariant", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -82,7 +82,7 @@ describe("RootAgentBanner coding-agent badge is style-invariant (#1167)", () => 
 });
 
 // The Root chip never carries a context history: no scope, no card.
-describe("RootAgentBanner CTX badge stays without history (#3532 P11)", () => {
+describe("RootAgentBanner CTX badge stays without history", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

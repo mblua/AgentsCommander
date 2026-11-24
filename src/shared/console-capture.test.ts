@@ -19,7 +19,7 @@ afterAll(() => {
   setLogLevel("info"); // restore the module default for any later consumer
 });
 
-describe("console-capture severity gate (#612)", () => {
+describe("console-capture severity gate", () => {
   it("Info: suppresses debug, keeps warn + error", () => {
     setLogLevel("info");
     const d = marker("debug");

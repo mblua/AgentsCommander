@@ -1,4 +1,4 @@
-/* #714 Screenshot overlay window styles.
+/* Screenshot overlay window styles.
  *
  * CRITICAL (dev-webpage-ui enrichment §A): src/main.tsx bundles EVERY window App
  * (and its CSS) into ONE bundle, so a BARE `html, body, #root { background:
