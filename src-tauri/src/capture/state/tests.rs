@@ -457,7 +457,12 @@ fn hold_lock(
         };
         let acquired = Instant::now();
         tx.send(()).expect("signal");
-        release.map_or_else(|| std::thread::sleep(hold), |r| drop(r.recv_timeout(hold)));
+        release.map_or_else(
+            || std::thread::sleep(hold),
+            |r| {
+                let _ = r.recv_timeout(hold);
+            },
+        );
         drop(lock);
         acquired.elapsed()
     });
