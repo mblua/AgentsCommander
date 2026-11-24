@@ -465,6 +465,10 @@ const ActionBar: Component = () => {
       <Show when={showBrowserCreateProjectNotice()}>
         <div
           class="modal-overlay"
+          role="none"
+          onClick={(e) => {
+            if (e.target !== e.currentTarget) e.stopPropagation();
+          }}
           data-ac-testid="project.browserCreateNotice.overlay"
           data-ac-role="overlay"
         >
@@ -474,7 +478,6 @@ const ActionBar: Component = () => {
             aria-modal="true"
             aria-labelledby="projectBrowserCreateNoticeTitle"
             style={{ "max-width": "380px" }}
-            onClick={(e) => e.stopPropagation()}
             data-ac-testid="project.browserCreateNotice.dialog"
             data-ac-role="dialog"
           >
@@ -505,12 +508,15 @@ const ActionBar: Component = () => {
       <Show when={confirmPath()}>
         <div
           class="confirm-overlay"
+          role="none"
+          onClick={(e) => {
+            if (e.target !== e.currentTarget) e.stopPropagation();
+          }}
           data-ac-testid="project.createConfirm.overlay"
           data-ac-role="overlay"
         >
           <div
             class="confirm-dialog"
-            onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
             data-ac-testid="project.createConfirm.dialog"

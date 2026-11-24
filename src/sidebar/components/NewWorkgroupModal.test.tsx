@@ -309,7 +309,7 @@ describe("New Room team search and optional title (#2788)", () => {
   it("row mousedown is canceled to retain focus; click confirms without focusable row or reopening", () => {
     mount();
     const row = rows()[1];
-    expect(row.hasAttribute("tabindex")).toBe(false);
+    expect(row.getAttribute("tabindex")).toBe("-1");
     const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
     row.dispatchEvent(down);
     expect(down.defaultPrevented).toBe(true);
@@ -444,7 +444,7 @@ describe("New Room team search and optional title (#2788)", () => {
       for (const [index, name] of names.entries()) {
         const row = await automate("query", `newRoom.team.option.${index}`);
         expect(rows()[index].getAttribute("role")).toBe("option");
-        expect(rows()[index].hasAttribute("tabindex")).toBe(false);
+        expect(rows()[index].getAttribute("tabindex")).toBe("-1");
         expect(row.role).toBe("text");
         expect(row.text).toBe(name);
         expect(row.metadata.detail).toBe(name);
@@ -646,5 +646,198 @@ describe("New Room team search and optional title (#2788)", () => {
     click(create());
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(fake.callsFor("create_workgroup")).toHaveLength(2);
+  });
+});
+
+describe("#4945 New Room label association and combobox baseline", () => {
+  const labelFor = (id: string) =>
+    document.querySelector<HTMLLabelElement>(`label[for="${id}"]`)!;
+  const cancelBtn = () =>
+    document.querySelector<HTMLButtonElement>('[data-ac-testid="newRoom.cancel"]')!;
+  const expectLabelled = (id: string, text: string, control: HTMLElement, away: HTMLElement) => {
+    const label = labelFor(id);
+    expect(label.textContent).toBe(text);
+    expect(label.control).toBe(control);
+    const labels = Array.from((control as HTMLInputElement).labels ?? []);
+    expect(labels).toEqual([label]);
+    away.focus();
+    expect(document.activeElement).toBe(away);
+    // jsdom forwards label activation as a click on the control but, unlike
+    // browsers, does not move focus; pin that and focus the forwarded target.
+    const forwarded: EventTarget[] = [];
+    const seen = (e: Event) => forwarded.push(e.target!);
+    control.addEventListener("click", seen);
+    label.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    control.removeEventListener("click", seen);
+    expect(forwarded).toEqual([control]);
+    expect(document.activeElement).toBe(away);
+    (forwarded[0] as HTMLElement).focus();
+    expect(document.activeElement).toBe(control);
+  };
+
+  it("Team label (AaHUB_6qkehT9D_3bUHY) is bound to new-room-team-search", () => {
+    mount();
+    expectLabelled("new-room-team-search", "Team", search(), cancelBtn());
+  });
+
+  it("Task Title label (AaHUB_6qkehT9D_3bUHd) is bound to new-room-task-title", () => {
+    mount();
+    expect(title().id).toBe("new-room-task-title");
+    expectLabelled("new-room-task-title", "Task Title", title(), cancelBtn());
+  });
+
+  it("positive control: a for/id mismatch is detected by the same assertions", () => {
+    mount();
+    const stray = document.createElement("label");
+    stray.htmlFor = "new-room-task-title-missing";
+    stray.textContent = "Task Title";
+    document.body.appendChild(stray);
+    expect(stray.control).toBeNull();
+    expect(Array.from(title().labels ?? [])).not.toContain(stray);
+    expect(() => expect(stray.control).toBe(title())).toThrow();
+  });
+
+  it("baseline: clicking a row confirms the team", () => {
+    mount();
+    choose("Beta");
+    expect(confirmed().textContent).toBe("Selected team: Beta");
+    expect(list().hidden).toBe(true);
+  });
+
+  it("baseline: row mousedown keeps focus in the search input", () => {
+    mount();
+    search().focus();
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    rows()[0].dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(search());
+  });
+
+  it("baseline: ArrowDown then Enter on the combobox confirms via aria-activedescendant", () => {
+    mount();
+    search().focus();
+    key(search(), "ArrowDown");
+    key(search(), "ArrowDown");
+    expect(search().getAttribute("aria-activedescendant")).toBe("new-room-team-option-1");
+    expect(key(search(), "Enter").defaultPrevented).toBe(true);
+    expect(confirmed().textContent).toBe("Selected team: Beta");
+    expect(document.activeElement).toBe(search());
+  });
+
+  it("baseline: Escape closes the list first, then the modal", () => {
+    const { onClose } = mount();
+    search().focus();
+    expect(list().hidden).toBe(false);
+    key(search(), "Escape");
+    expect(list().hidden).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+    key(search(), "Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("baseline: Tab closes the list and does not cancel leaving", () => {
+    mount();
+    search().focus();
+    expect(list().hidden).toBe(false);
+    expect(key(search(), "Tab").defaultPrevented).toBe(false);
+    expect(list().hidden).toBe(true);
+    expect(confirmed().textContent).toBe("No team selected.");
+  });
+});
+
+describe("#4945 P4 option focus and keyboard", () => {
+  const keyup = (element: Element, k: string) =>
+    element.dispatchEvent(new KeyboardEvent("keyup", { key: k, bubbles: true, cancelable: true }));
+  const creates = (fake: FakeTransport) => fake.callsFor("create_workgroup").length;
+  // Open the list with Alpha active, then focus the Beta option directly.
+  function focusBeta() {
+    const m = mount();
+    search().focus();
+    key(search(), "ArrowDown");
+    expectActive(0);
+    rows()[1].focus();
+    expect(document.activeElement).toBe(rows()[1]);
+    expect(list().hidden).toBe(false);
+    return m;
+  }
+
+  it.each(["Enter", " "])("option %j confirms once, refocuses Search, no create", async (k) => {
+    const { fake } = focusBeta();
+    expect(key(rows()[1], k).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(search());
+    expect(confirmed().textContent).toBe("Selected team: Beta");
+    expect(list().hidden).toBe(true);
+    expect(key(search(), k, { repeat: true }).defaultPrevented).toBe(true);
+    expect(key(search(), k, { repeat: true }).defaultPrevented).toBe(true);
+    expect(list().hidden).toBe(true);
+    expect(search().value).toBe("Beta");
+    keyup(search(), k);
+    await Promise.resolve();
+    expect(creates(fake)).toBe(0);
+    // Positive control: once the held key is released, Enter creates once.
+    key(search(), "Enter");
+    await waitFor(() => expect(creates(fake)).toBe(1));
+  });
+
+  it("option Escape returns to Search and closes only the list", () => {
+    const { onClose } = focusBeta();
+    expect(key(rows()[1], "Escape").defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(search());
+    expect(list().hidden).toBe(true);
+    expect(confirmed().textContent).toBe("No team selected.");
+    expect(onClose).not.toHaveBeenCalled();
+    keyup(search(), "Escape");
+    key(search(), "Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("held option Escape repeats on Search without closing the modal until keyup", () => {
+    const { onClose } = focusBeta();
+    expect(key(rows()[1], "Escape").defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(search());
+    expect(key(search(), "Escape", { repeat: true }).defaultPrevented).toBe(true);
+    expect(key(search(), "Escape", { repeat: true }).defaultPrevented).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+    keyup(search(), "Escape");
+    key(search(), "Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("option Escape and Shift+Tab ignore autorepeat and IME composition", () => {
+    const { onClose } = focusBeta();
+    expect(key(rows()[1], "Escape", { repeat: true }).defaultPrevented).toBe(true);
+    expect(key(rows()[1], "Escape", { isComposing: true }).defaultPrevented).toBe(true);
+    const shiftTab = { shiftKey: true, isComposing: true };
+    expect(key(rows()[1], "Tab", shiftTab).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(rows()[1]);
+    expect(list().hidden).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("option keys ignore autorepeat and IME composition", () => {
+    const { fake } = focusBeta();
+    expect(key(rows()[1], "Enter", { repeat: true }).defaultPrevented).toBe(true);
+    expect(key(rows()[1], " ", { isComposing: true }).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(rows()[1]);
+    expect(confirmed().textContent).toBe("No team selected.");
+    expect(list().hidden).toBe(false);
+    expect(creates(fake)).toBe(0);
+  });
+
+  it("option Shift+Tab returns to Search and closes the popup", () => {
+    focusBeta();
+    expect(key(rows()[1], "Tab", { shiftKey: true }).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(search());
+    expect(list().hidden).toBe(true);
+    expect(confirmed().textContent).toBe("No team selected.");
+  });
+
+  it("option Tab keeps native traversal and closes on the focus exit", () => {
+    focusBeta();
+    expect(key(rows()[1], "Tab").defaultPrevented).toBe(false);
+    expect(list().hidden).toBe(false);
+    title().focus();
+    expect(document.activeElement).toBe(title());
+    expect(list().hidden).toBe(true);
   });
 });

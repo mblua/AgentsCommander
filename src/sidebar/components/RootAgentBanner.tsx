@@ -392,17 +392,24 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
       {/* A group, not a widget: the row's activation is the real
           .root-agent-banner-open button and the toggle is its sibling. The
           guarded onClick keeps automation-bridge's container click() working. */}
+      {/* Boxless shell: it owns the guarded primary click so the group stays
+          a plain named group. firstElementChild is that group. */}
+      <div
+        role="none"
+        style={{ display: "contents" }}
+        onClick={(e) => {
+          const group = e.currentTarget.firstElementChild;
+          const t = e.target as Element;
+          if (t !== group && t.closest(CONTROL_SEL)) return;
+          void handleClick();
+        }}
+      >
       <div
         class="root-agent-banner"
         classList={{ active: isActive(), disabled: busy() }}
         role="group"
         aria-disabled={busy()}
         aria-label={rowLabel()}
-        onClick={(e) => {
-          const t = e.target as Element;
-          if (t !== e.currentTarget && t.closest(CONTROL_SEL)) return;
-          void handleClick();
-        }}
         onContextMenu={handleContextMenu}
         title={
           rootSession()
@@ -548,6 +555,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
         >
           {toggleGlyph()}
         </button>
+      </div>
       </div>
       <Show when={showAgentPicker()}>
         <Portal>

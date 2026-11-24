@@ -1,8 +1,9 @@
 import { defineConfig } from 'vitest/config';
 import solidPlugin from "vite-plugin-solid";
+import { issue4945FixtureVariants } from "./src/sidebar/testing/issue-4945-fixture-variants.mts";
 
 export default defineConfig({
-  plugins: [solidPlugin({ hot: false })],
+  plugins: [issue4945FixtureVariants(), solidPlugin({ hot: false })],
   define: {
     __APP_VERSION__: JSON.stringify("test"),
     __BUILD_PROFILE__: JSON.stringify("test"),

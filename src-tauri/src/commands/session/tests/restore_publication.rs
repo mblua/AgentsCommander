@@ -1,36 +1,163 @@
 use super::*;
+use crate::config::agent_command::AgentSpawnCommand;
+use crate::config::sessions_persistence::PersistedSession;
+use crate::session::selection::SelectionTransaction;
+use tauri::Listener;
+
+type MockApp = tauri::App<tauri::test::MockRuntime>;
+
+/// A codex restore target: temp cwd, configured spawn, scripted PTY backend and
+/// a test selection transaction on a fresh session app.
+struct CodexRestoreFixture {
+    _cwd: tempfile::TempDir,
+    cwd_text: String,
+    spawn: AgentSpawnCommand,
+    sessions: Arc<tokio::sync::RwLock<SessionManager>>,
+    pty: Arc<Mutex<crate::pty::manager::PtyManager>>,
+    app: MockApp,
+    transaction: SelectionTransaction<tauri::test::MockRuntime>,
+}
+
+fn codex_restore_fixture() -> CodexRestoreFixture {
+    let cwd = tempfile::tempdir().unwrap();
+    let cwd_text = cwd.path().to_string_lossy().into_owned();
+    let settings = test_settings();
+    let spawn =
+        super::super::build_configured_agent_spawn_for_cwd(&settings, "codex", &cwd_text, None)
+            .unwrap()
+            .unwrap();
+    let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let backend = Arc::new(ScriptedSpawnBackend::default());
+    let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+        backend,
+    )));
+    let app = session_test_app(settings, sessions.clone(), pty.clone());
+    let transaction = SelectionTransaction::for_test(app.handle().clone());
+    CodexRestoreFixture {
+        _cwd: cwd,
+        cwd_text,
+        spawn,
+        sessions,
+        pty,
+        app,
+        transaction,
+    }
+}
+
+fn codex_recipe(name: &str, spawn: &AgentSpawnCommand, cwd_text: &str) -> PersistedSession {
+    PersistedSession {
+        name: name.into(),
+        shell: spawn.shell.clone(),
+        shell_args: spawn.shell_args.clone(),
+        working_directory: cwd_text.to_owned(),
+        agent_id: Some("codex".into()),
+        requested_profile: Some(spawn.profile_resolution.requested_profile.clone()),
+        effective_profile: Some(spawn.profile_resolution.effective_profile.clone()),
+        ..Default::default()
+    }
+}
+
+/// Collects every JSON payload the app emits for `event_name`.
+fn capture_events(app: &MockApp, event_name: &str) -> Arc<Mutex<Vec<serde_json::Value>>> {
+    let events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let captured = events.clone();
+    app.listen(event_name, move |event| {
+        captured
+            .lock()
+            .unwrap()
+            .push(serde_json::from_str(event.payload()).unwrap());
+    });
+    events
+}
+
+async fn restore_codex_live(
+    fixture: &CodexRestoreFixture,
+    spawn: AgentSpawnCommand,
+    cwd_text: String,
+    recipe: &PersistedSession,
+    fresh: bool,
+) -> SessionInfo {
+    super::super::create_session_inner_for_restore(
+        &fixture.transaction,
+        &fixture.sessions,
+        &fixture.pty,
+        spawn.shell.clone(),
+        spawn.shell_args.clone(),
+        cwd_text,
+        Some(recipe.name.clone()),
+        Some("codex".into()),
+        None,
+        true,
+        Vec::new(),
+        fresh,
+        Some(spawn),
+        None,
+        None,
+        Some(fresh),
+        None,
+        None,
+        Some(recipe),
+    )
+    .await
+    .unwrap()
+}
+
+async fn restore_codex_dormant(
+    fixture: &CodexRestoreFixture,
+    recipe: &PersistedSession,
+    cwd_text: String,
+    is_root_agent: bool,
+) -> SessionInfo {
+    fixture
+        .transaction
+        .restore_dormant_inline(crate::session::selection::DormantRestoreRequest {
+            persisted: recipe.clone(),
+            working_directory: cwd_text,
+            is_coordinator: false,
+            is_root_agent,
+        })
+        .await
+        .unwrap()
+}
+
+/// Restores the recipe dormant or live (never fresh) through the fixture.
+async fn restore_codex(
+    fixture: &CodexRestoreFixture,
+    spawn: AgentSpawnCommand,
+    cwd_text: String,
+    recipe: &PersistedSession,
+    dormant: bool,
+    is_root_agent: bool,
+) -> SessionInfo {
+    if dormant {
+        restore_codex_dormant(fixture, recipe, cwd_text, is_root_agent).await
+    } else {
+        restore_codex_live(fixture, spawn, cwd_text, recipe, false).await
+    }
+}
+
+async fn close_fixture(fixture: CodexRestoreFixture) {
+    let CodexRestoreFixture {
+        _cwd,
+        app,
+        transaction,
+        ..
+    } = fixture;
+    drop(transaction);
+    close_test_coordinator(&app).await;
+}
 
 #[tokio::test]
 async fn issue_3145_cold_duplicate_recipes_block_before_first_restore_publication() {
-    use tauri::Listener;
     for fresh in [false, true] {
-        let cwd = tempfile::tempdir().unwrap();
-        let cwd_text = cwd.path().to_string_lossy().into_owned();
-        let settings = test_settings();
-        let spawn =
-            super::super::build_configured_agent_spawn_for_cwd(&settings, "codex", &cwd_text, None)
-                .unwrap()
-                .unwrap();
-        let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-        let backend = Arc::new(ScriptedSpawnBackend::default());
-        let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-            backend,
-        )));
-        let app = session_test_app(settings, sessions.clone(), pty.clone());
-        let transaction =
-            crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
-        let recipe = crate::config::sessions_persistence::PersistedSession {
-            name: "first duplicate".into(),
-            shell: spawn.shell.clone(),
-            shell_args: spawn.shell_args.clone(),
-            working_directory: cwd_text.clone(),
-            agent_id: Some("codex".into()),
-            requested_profile: Some(spawn.profile_resolution.requested_profile.clone()),
-            effective_profile: Some(spawn.profile_resolution.effective_profile.clone()),
+        let fixture = codex_restore_fixture();
+        let cwd_text = fixture.cwd_text.clone();
+        let spawn = fixture.spawn.clone();
+        let recipe = PersistedSession {
             start_fresh_on_restore: fresh,
-            ..Default::default()
+            ..codex_recipe("first duplicate", &spawn, &cwd_text)
         };
-        let manager = sessions.read().await.clone();
+        let manager = fixture.sessions.read().await.clone();
         crate::config::sessions_persistence::initialize_prompt_retention(&manager).await;
         let key = crate::config::sessions_persistence::prompt_key(
             &cwd_text,
@@ -56,126 +183,35 @@ async fn issue_3145_cold_duplicate_recipes_block_before_first_restore_publicatio
             &[recipe.clone(), dormant_competitor],
         )
         .await;
-        let events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-        let captured = events.clone();
-        app.listen("session_created", move |event| {
-            captured
-                .lock()
-                .unwrap()
-                .push(serde_json::from_str(event.payload()).unwrap());
-        });
-        let result = super::super::create_session_inner_for_restore(
-            &transaction,
-            &sessions,
-            &pty,
-            spawn.shell.clone(),
-            spawn.shell_args.clone(),
-            cwd_text,
-            Some(recipe.name.clone()),
-            Some("codex".into()),
-            None,
-            true,
-            Vec::new(),
-            fresh,
-            Some(spawn),
-            None,
-            None,
-            Some(fresh),
-            None,
-            None,
-            Some(&recipe),
-        )
-        .await
-        .unwrap();
+        let events = capture_events(&fixture.app, "session_created");
+        let result = restore_codex_live(&fixture, spawn, cwd_text, &recipe, fresh).await;
         assert_eq!(result.last_prompt, None);
         assert!(manager.retained_prompt_snapshot().await.unwrap()[&key].blocked);
         let events = events.lock().unwrap().clone();
         assert_eq!(events.len(), 1);
         assert!(events[0]["lastPrompt"].is_null());
-        drop(transaction);
-        close_test_coordinator(&app).await;
+        close_fixture(fixture).await;
     }
 }
 
 #[tokio::test]
 async fn issue_3145_wake_and_dormant_publish_initial_prompt_before_observation() {
-    use tauri::Listener;
     for (dormant, root) in [(false, false), (false, true), (true, false), (true, true)] {
-        let cwd = tempfile::tempdir().unwrap();
-        let cwd_text = cwd.path().to_string_lossy().into_owned();
-        let settings = test_settings();
-        let spawn =
-            super::super::build_configured_agent_spawn_for_cwd(&settings, "codex", &cwd_text, None)
-                .unwrap()
-                .unwrap();
-        let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-        let backend = Arc::new(ScriptedSpawnBackend::default());
-        let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-            backend,
-        )));
-        let app = session_test_app(settings, sessions.clone(), pty.clone());
-        let transaction =
-            crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
+        let fixture = codex_restore_fixture();
+        let cwd_text = fixture.cwd_text.clone();
+        let spawn = fixture.spawn.clone();
         if root {
             super::super::coordinator_create_seam::force_root(&cwd_text);
         }
-        let recipe = crate::config::sessions_persistence::PersistedSession {
-            name: "restore prompt".into(),
-            shell: spawn.shell.clone(),
-            shell_args: spawn.shell_args.clone(),
-            working_directory: cwd_text.clone(),
-            agent_id: Some("codex".into()),
-            requested_profile: Some(spawn.profile_resolution.requested_profile.clone()),
-            effective_profile: Some(spawn.profile_resolution.effective_profile.clone()),
+        let recipe = PersistedSession {
             last_prompt: Some("A".into()),
-            ..Default::default()
+            ..codex_recipe("restore prompt", &spawn, &cwd_text)
         };
-        let events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-        let captured = events.clone();
-        app.listen("session_created", move |event| {
-            captured
-                .lock()
-                .unwrap()
-                .push(serde_json::from_str(event.payload()).unwrap());
-        });
-        let info = if dormant {
-            transaction
-                .restore_dormant_inline(crate::session::selection::DormantRestoreRequest {
-                    persisted: recipe.clone(),
-                    working_directory: cwd_text,
-                    is_coordinator: false,
-                    is_root_agent: root,
-                })
-                .await
-                .unwrap()
-        } else {
-            super::super::create_session_inner_for_restore(
-                &transaction,
-                &sessions,
-                &pty,
-                spawn.shell.clone(),
-                spawn.shell_args.clone(),
-                cwd_text,
-                Some(recipe.name.clone()),
-                Some("codex".into()),
-                None,
-                true,
-                Vec::new(),
-                false,
-                Some(spawn),
-                None,
-                None,
-                Some(false),
-                None,
-                None,
-                Some(&recipe),
-            )
-            .await
-            .unwrap()
-        };
+        let events = capture_events(&fixture.app, "session_created");
+        let info = restore_codex(&fixture, spawn, cwd_text, &recipe, dormant, root).await;
         assert_eq!(info.last_prompt.as_deref(), Some("A"));
         assert_eq!(
-            sessions.read().await.list_sessions().await[0]
+            fixture.sessions.read().await.list_sessions().await[0]
                 .last_prompt
                 .as_deref(),
             Some("A")
@@ -185,93 +221,34 @@ async fn issue_3145_wake_and_dormant_publish_initial_prompt_before_observation()
         assert_eq!(events[0]["lastPrompt"], "A");
         assert_eq!(info.is_root_agent, root);
         super::super::coordinator_create_seam::unforce_root(&recipe.working_directory);
-        drop(transaction);
-        close_test_coordinator(&app).await;
+        close_fixture(fixture).await;
     }
 }
 
 #[tokio::test]
 async fn issue_3145_reused_root_live_and_dormant_seed_event_never_overwrite_new_input() {
-    use tauri::Listener;
     for dormant in [false, true] {
         for newer in [None, Some("N"), Some("")] {
-            let cwd = tempfile::tempdir().unwrap();
-            let cwd_text = cwd.path().to_string_lossy().into_owned();
-            let settings = test_settings();
-            let spawn = super::super::build_configured_agent_spawn_for_cwd(
-                &settings, "codex", &cwd_text, None,
-            )
-            .unwrap()
-            .unwrap();
-            let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-            let backend = Arc::new(ScriptedSpawnBackend::default());
-            let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-                backend,
-            )));
-            let app = session_test_app(settings, sessions.clone(), pty.clone());
-            let transaction =
-                crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
-            let mut recipe = crate::config::sessions_persistence::PersistedSession {
-                name: "reused root".into(),
-                shell: spawn.shell.clone(),
-                shell_args: spawn.shell_args.clone(),
-                working_directory: cwd_text.clone(),
-                agent_id: Some("codex".into()),
-                requested_profile: Some(spawn.profile_resolution.requested_profile.clone()),
-                effective_profile: Some(spawn.profile_resolution.effective_profile.clone()),
-                ..Default::default()
-            };
-            let info = if dormant {
-                transaction
-                    .restore_dormant_inline(crate::session::selection::DormantRestoreRequest {
-                        persisted: recipe.clone(),
-                        working_directory: cwd_text,
-                        is_coordinator: false,
-                        is_root_agent: true,
-                    })
-                    .await
-                    .unwrap()
-            } else {
-                super::super::create_session_inner_for_restore(
-                    &transaction,
-                    &sessions,
-                    &pty,
-                    spawn.shell.clone(),
-                    spawn.shell_args.clone(),
-                    cwd_text,
-                    Some(recipe.name.clone()),
-                    Some("codex".into()),
-                    None,
-                    true,
-                    Vec::new(),
-                    false,
-                    Some(spawn),
-                    None,
-                    None,
-                    Some(false),
-                    None,
-                    None,
-                    Some(&recipe),
-                )
-                .await
-                .unwrap()
-            };
+            let fixture = codex_restore_fixture();
+            let cwd_text = fixture.cwd_text.clone();
+            let spawn = fixture.spawn.clone();
+            let mut recipe = codex_recipe("reused root", &spawn, &cwd_text);
+            let info = restore_codex(&fixture, spawn, cwd_text, &recipe, dormant, true).await;
             let id = Uuid::parse_str(&info.id).unwrap();
-            let manager = sessions.read().await.clone();
+            let manager = fixture.sessions.read().await.clone();
             manager.set_is_root_agent(id, true).await;
             if let Some(text) = newer {
                 manager.set_last_prompt(id, text.into()).await;
             }
-            let events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-            let captured = events.clone();
-            app.listen("last_prompt", move |event| {
-                captured
-                    .lock()
-                    .unwrap()
-                    .push(serde_json::from_str(event.payload()).unwrap());
-            });
+            let events = capture_events(&fixture.app, "last_prompt");
             recipe.last_prompt = Some("A".into());
-            super::super::seed_root_last_prompt(app.handle(), &sessions, id, &recipe).await;
+            super::super::seed_root_last_prompt(
+                fixture.app.handle(),
+                &fixture.sessions,
+                id,
+                &recipe,
+            )
+            .await;
             assert_eq!(
                 manager
                     .get_session(id)
@@ -286,8 +263,7 @@ async fn issue_3145_reused_root_live_and_dormant_seed_event_never_overwrite_new_
             if newer.is_none() {
                 assert_eq!(observed[0]["text"], "A");
             }
-            drop(transaction);
-            close_test_coordinator(&app).await;
+            close_fixture(fixture).await;
         }
     }
 }
