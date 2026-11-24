@@ -1520,7 +1520,6 @@ P4-log	src-tauri/src/commands/entity_creation.rs	"[entity_creation] Renamed work
 P4-log	src-tauri/src/commands/entity_creation/workgroup_delete.rs	User-visible WG is gone; orphan remains on disk.",
 P1-comment	src-tauri/src/commands/entity_creation/room_number.rs	/// post-allocate `wg_dir.exists()` guard in `create_workgroup` will
 P1-comment	src-tauri/src/commands/entity_creation/room_number.rs	// A `0` may end up in `taken` (from a stray `wg-0-{team}`) but is never
-P2-fixture	src-tauri/src/commands/entity_creation/tests.rs	//! `delete_workgroup` helper added in a follow-up dispatch, plus
 P2-fixture	src-tauri/src/commands/entity_creation.rs	let wg_dir = ac_root.join("wg-1-dev-team");
 P2-fixture	src-tauri/src/commands/entity_creation.rs	"proj-a:wg-1-dev-team/dev-rust",
 P2-fixture	src-tauri/src/commands/entity_creation/tests/matrix_layout.rs	std::fs::create_dir_all(&wg_dir).expect("workgroup");
@@ -2289,6 +2288,7 @@ P2-fixture	src-tauri/src/config/session_context/tests/token_accounting.rs	print_
 P2-fixture	src-tauri/src/config/session_context/tests/host_platform.rs	let replica = ac.join("wg-1-team").join("__agent_dev");
 P2-fixture	src-tauri/src/config/session_context/tests/token_accounting.rs	"the platform block must render in the WG profile"
 P1-comment	src-tauri/src/config/session_context/tests/token_accounting.rs	// The platform block renders in the WG profile on every OS (linux/
+P1-comment	src-tauri/src/config/session_context/tests/token_accounting.rs	// 20 + "C:/fake/.ac/wg-1-team/TASK.md".len()
 P1-comment	src-tauri/src/config/sessions_persistence/project_scope.rs	///   4. Registered but the directory does not exist (deleted workgroup or
 P2-fixture	src-tauri/src/config/sessions_persistence/tests/serde_snapshot.rs	working_directory: r"C:\proj\.ac\wg-1-devs\__agent_alice".into(),
 P2-fixture	src-tauri/src/config/sessions_persistence.rs	"workingDirectory": "C:/proj/.ac/wg-1-dev-team/__agent_tech-lead",
@@ -2412,7 +2412,6 @@ P2-fixture	src-tauri/src/config/teams/tests.rs	// Non-WG (origin) path: falls ba
 P2-fixture	src-tauri/src/config/teams/tests.rs	let cwd = "C:/repos/proj-a/.ac/wg-1-devs/__agent_alice/some/deep/subdir";
 P2-fixture	src-tauri/src/config/teams/tests.rs	let cwd = r"\\?\C:\repos\proj-a\.ac\wg-1-devs\__agent_alice";
 P2-fixture	src-tauri/src/config/teams/tests.rs	let cwd = "C:/.ac/repos/proj-a/.ac/wg-1-devs/__agent_alice";
-P2-fixture	src-tauri/src/config/teams/tests.rs	// ── workgroup_and_agent_from_path ──
 P2-fixture	src-tauri/src/config/teams/tests.rs	fn workgroup_and_agent_from_path_wg_replica() {
 P2-fixture	src-tauri/src/config/teams/tests.rs	let cwd = "C:/repos/proj-a/.ac/wg-5-dev-team/__agent_dev-rust";
 P2-fixture	src-tauri/src/config/teams/tests.rs	workgroup_and_agent_from_path(cwd),
@@ -2435,6 +2434,7 @@ P2-fixture	src-tauri/src/config/teams/tests.rs	split_project_prefix("wg-1-devs/a
 P2-fixture	src-tauri/src/config/teams/tests.rs	(None, "wg-1-devs/alice")
 P2-fixture	src-tauri/src/config/teams/tests.rs	extract_wg_team("proj-a:wg-1-dev-team/alice"),
 P2-fixture	src-tauri/src/config/teams/tests.rs	assert_eq!(extract_wg_team("wg-1-dev-team/alice"), Some("dev-team"));
+P1-comment	src-tauri/src/config/teams/tests.rs	// ── Workgroup_and_agent_from_path ──
 P2-fixture	src-tauri/src/config/teams.rs	let wg_dir = ac_root.join("wg-1-dev-team");
 P2-fixture	src-tauri/src/config/teams/tests/resolve_agent_target.rs	verify_pty_input_route(&tech_lead, false, "proj-a:wg-1-dev-team/dev-rust", &paths)
 P2-fixture	src-tauri/src/config/teams/tests/resolve_agent_target.rs	assert_eq!(route.sender.canonical_fqn, "proj-a:wg-1-dev-team/tech-lead");
@@ -2823,7 +2823,6 @@ P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/resource.rs	const REQUESTER
 P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/resource.rs	const TARGET: &str = "project:wg-1-team/member";
 P0-identifier	src-tauri/src/resource_monitor/registry.rs	workgroup: Option<String>,
 P0-identifier	src-tauri/src/resource_monitor/registry.rs	self.metadata.workgroup.clone(),
-P1-comment	src-tauri/src/resource_monitor/registry.rs	// (H3) - a relaunch of the same wg/role must not leave its prior
 P1-comment	src-tauri/src/resource_monitor/registry.rs	// unrelated non-WG launches (workgroup = agent = None) are never merged.
 P0-identifier	src-tauri/src/resource_monitor/registry.rs	if workgroup.is_some() || agent.is_some() {
 P0-identifier	src-tauri/src/resource_monitor/registry.rs	&& g.workgroup == workgroup
@@ -2837,6 +2836,7 @@ P2-fixture	src-tauri/src/resource_monitor/registry.rs	let (workgroup, agent, pro
 P2-fixture	src-tauri/src/resource_monitor/registry.rs	Some((workgroup, agent, project)) => (
 P2-fixture	src-tauri/src/resource_monitor/registry.rs	Some(workgroup.to_string()),
 P2-fixture	src-tauri/src/resource_monitor/registry.rs	workgroup,
+P1-comment	src-tauri/src/resource_monitor/registry.rs	// A relaunch of the same wg/role must not leave its prior
 P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	// same workgroup/agent/project under a NEW uuid, so register_group's relaunch dedup
 P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	let triple = ("wg-1", "dev-rust", "ac");
 P2-fixture	src-tauri/src/resource_monitor/registry/tests/groups.rs	let wg = || Some(triple.0.to_string());
@@ -3230,3 +3230,4 @@ P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/acceptance/room_targets.rs	
 P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/acceptance/room_targets.rs	assert_eq!(strip_entity_prefix(WORKGROUP), Some("1-dev-team"));	section 9.1 fixture twin: the room- case added BESIDE the kept wg- one (Rule P2)
 P1-comment	src-tauri/src/pty/terminal_snapshot/tests/acceptance/room_targets.rs	// directory name, so a Room and a legacy Workgroup at the same slot are	section 9.1 fixture twin's doc comment, stating why the wg- fixture is kept
 P2-fixture	src-tauri/src/pty/terminal_snapshot/tests/acceptance/room_targets.rs	let legacy_fqn = format!("{PROJECT}:{WORKGROUP}/coordinator");	section 9.1 fixture twin: the room- case added BESIDE the kept wg- one (Rule P2)
+P1-comment	src-tauri/src/commands/entity_creation/tests.rs	//! `delete_workgroup` helper added in the follow-up dispatch, plus
