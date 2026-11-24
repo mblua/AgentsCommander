@@ -929,3 +929,20 @@ pub fn read_activity_log_enabled_only() -> bool {
         None => false,
     }
 }
+
+/// (D16): routed through the merged (base plus `settings.local.json`) view.
+pub(crate) fn read_ipc_blackbox_enabled_from_path(path: &std::path::Path) -> bool {
+    read_merged_top_level_key(path, "ipcBlackBoxEnabled")
+        .as_ref()
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Read once at boot (#1707): the renderer black box follows the value the
+/// process started with, never a later save.
+pub fn read_ipc_blackbox_enabled_only() -> bool {
+    match settings_path() {
+        Some(path) => read_ipc_blackbox_enabled_from_path(&path),
+        None => false,
+    }
+}

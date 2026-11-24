@@ -176,7 +176,7 @@ fn restore_session_should_wake_never_wakes_an_idle_replica() {
 
 #[test]
 fn restore_session_should_wake_arms_are_disjoint_on_is_coord() {
-    // Coordinator: wakes through the #248 arm, and the replica arm is false
+    // Coordinator: wakes through the arm, and the replica arm is false
     // for it.
     assert!(restore_session_should_wake(
         RestoreWakeOptions {
@@ -192,7 +192,7 @@ fn restore_session_should_wake_arms_are_disjoint_on_is_coord() {
     ));
     assert!(!should_wake_working_agent_on_restore(true, true, true));
 
-    // Non-coordinator: wakes through the new arm, and the #248 arm is false
+    // Non-coordinator: wakes through the new arm, and the arm is false
     // for it.
     assert!(restore_session_should_wake(
         RestoreWakeOptions {

@@ -550,7 +550,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
 
     let bot = configured_telegram_attach_bot(&settings, bot_id).await?;
 
-    // #2232 phase 4: the reader no longer lives in the bridge. The bridge owns
+    // The reader no longer lives in the bridge. The bridge owns
     // the bot-side tasks; the reader is raised as a **Bot demand** below, which
     // starts one if none is running and otherwise attaches over the live one.
     let reader_mode = reader.is_some();
@@ -600,7 +600,7 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
             if let Some(shutdown) = shutdown {
                 shutdown.spawn_wait_or_abort();
             }
-            // #2232 phase 4 section 5: this attach raises the Bot demand only
+            // This attach raises the Bot demand only
             // **after** persistence succeeds, so the rollback has no demand of
             // its own to release. Releasing here would tear down the demand of
             // an earlier, still-valid attach (an idempotent repeat attach lands
@@ -685,7 +685,7 @@ pub(crate) async fn detach_telegram_inner<R: tauri::Runtime>(
         shutdown.spawn_wait_or_abort();
     }
 
-    // #2232 phase 4 section 5: a live detach releases the **bot** demand even
+    // A live detach releases the **bot** demand even
     // when `sessions.json` persistence fails, so the reader stops sending and
     // a Room demand, if any, keeps capturing. The persistence error and event
     // below are unchanged.

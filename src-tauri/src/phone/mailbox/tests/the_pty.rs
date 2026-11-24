@@ -484,6 +484,11 @@ async fn live_sender_token_host_request_authenticates_and_injects_end_to_end() {
     let delivered = outbox
         .join("delivered")
         .join(format!("{injection_id}.json"));
+    assert!(
+        delivered.exists(),
+        "no delivered artifact; sibling outbox artifacts:\n{}",
+        describe_outbox_artifacts(&outbox)
+    );
     let artifact: PtyInputHostArtifact =
         serde_json::from_slice(&std::fs::read(&delivered).unwrap()).unwrap();
     assert_eq!(artifact.result.injection_id, injection_id);
@@ -525,6 +530,26 @@ async fn host_terminal_artifact_is_source_correlated_and_idempotently_repairable
     }
     let fixture = make_mailbox_fixture();
     assert_host_terminal_artifact_repair(&fixture, fixture._temp.path(), false).await;
+}
+
+/// Lists every `rejected/` and `indeterminate/` artifact with its contents,
+/// so a missing delivered artifact reports why the request was not injected.
+fn describe_outbox_artifacts(outbox: &std::path::Path) -> String {
+    let mut report = String::new();
+    for dir in ["rejected", "indeterminate"] {
+        let Ok(entries) = std::fs::read_dir(outbox.join(dir)) else {
+            report.push_str(&format!("{dir}/: <absent>\n"));
+            continue;
+        };
+        for entry in entries.flatten() {
+            let body = std::fs::read_to_string(entry.path()).unwrap_or_default();
+            report.push_str(&format!(
+                "{dir}/{}: {body}\n",
+                entry.file_name().to_string_lossy()
+            ));
+        }
+    }
+    report
 }
 
 fn enqueue_rejected_host_artifact_operation(

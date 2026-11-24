@@ -174,7 +174,7 @@ impl ContainerTransportBackend {
             .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
 
         let session_id_str = session_id.to_string();
-        self.fanout.handle_output(&token, &session_id_str, data);
+        self.fanout.handle_output(&token, &session_id_str, &data);
         Ok(())
     }
 

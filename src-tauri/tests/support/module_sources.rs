@@ -1,9 +1,13 @@
+//! The module-tree resolver shared by the layering guards in
+//! `tests/instance_gitignore_layering` and `tests/project_settings_layering`.
+//! Each crate includes it with `#[path]` and supplies `normalized` at its root.
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use rust_source_scrub::{scrub, Literals};
 
-use super::source_text::normalized;
+use super::normalized;
 
 // ---------------------------------------------------------------------------
 // Resolving what the compiler compiles
@@ -34,7 +38,7 @@ pub(crate) fn scrubbed(path: &Path, literals: Literals) -> Result<String, String
 /// The directory rustc searches for the children of the module whose own file is
 /// `file`: the file's own directory for a crate root or a `mod.rs`, and a
 /// directory named after the file otherwise.
-fn child_directory(file: &Path) -> PathBuf {
+pub(crate) fn child_directory(file: &Path) -> PathBuf {
     let parent = file.parent().unwrap_or(Path::new("."));
     let stem = file
         .file_stem()
@@ -50,9 +54,9 @@ fn child_directory(file: &Path) -> PathBuf {
 /// A file's two readings: `structure` has literal bodies removed and is what
 /// braces and declarations are counted in; `with_literals` keeps them and is
 /// what a `path = "..."` value is read out of.
-struct ModuleBody {
-    structure: String,
-    with_literals: String,
+pub(crate) struct ModuleBody {
+    pub(crate) structure: String,
+    pub(crate) with_literals: String,
 }
 
 /// Both readings of `owner`, after refusing the file outright if it declares a
@@ -64,7 +68,7 @@ struct ModuleBody {
 /// to a different file, whenever one happened to exist at the path it looks in,
 /// and then reported green having read the wrong file. A scanner that cannot
 /// tell which file it should be reading has to say so.
-fn module_body(owner: &Path) -> Result<ModuleBody, String> {
+pub(crate) fn module_body(owner: &Path) -> Result<ModuleBody, String> {
     let structure = normalized(&scrubbed(owner, Literals::Drop)?);
     if let Some(identifier) = nested_module_declaration(&structure) {
         return Err(format!(
@@ -87,7 +91,7 @@ fn module_body(owner: &Path) -> Result<ModuleBody, String> {
 ///
 /// `body` must be scrubbed with `Literals::Drop` and normalized, because a brace
 /// inside a string literal is not a block and would throw the depth off.
-fn nested_module_declaration(body: &str) -> Option<String> {
+pub(crate) fn nested_module_declaration(body: &str) -> Option<String> {
     let mut depth = 0usize;
     for (index, character) in body.char_indices() {
         match character {
@@ -130,7 +134,7 @@ fn nested_module_declaration(body: &str) -> Option<String> {
 /// declarations of one name under opposite `cfg`s, and reading only the first
 /// means scanning the Unix file in a Windows build while reporting that the set
 /// of files is the set rustc compiles.
-fn find_declarations(body: &str, segment: &str) -> Vec<usize> {
+pub(crate) fn find_declarations(body: &str, segment: &str) -> Vec<usize> {
     let needle = format!("mod {segment};");
     let mut found = Vec::new();
     let mut from = 0usize;
@@ -150,7 +154,7 @@ fn find_declarations(body: &str, segment: &str) -> Vec<usize> {
 
 /// The text of the item that ends at `declaration_at`, so its attributes can be
 /// read without scanning back into the previous item.
-fn attributes_before(body: &str, declaration_at: usize) -> &str {
+pub(crate) fn attributes_before(body: &str, declaration_at: usize) -> &str {
     let start = body[..declaration_at]
         .rfind([';', '}', '{'])
         .map_or(0, |index| index + 1);
@@ -163,7 +167,7 @@ fn attributes_before(body: &str, declaration_at: usize) -> &str {
 /// Matching the bare key rather than the text `#[path` is what covers the second
 /// form, which is otherwise invisible: the resolver would fall back to the
 /// default candidates while rustc compiles the file the `cfg_attr` names.
-fn path_attributes(attributes: &str) -> Vec<String> {
+pub(crate) fn path_attributes(attributes: &str) -> Vec<String> {
     let mut values = Vec::new();
     let mut from = 0usize;
     while let Some(offset) = attributes[from..].find("path") {
@@ -207,7 +211,11 @@ fn path_attributes(attributes: &str) -> Vec<String> {
 ///   itself rejects `x.rs` and `x/mod.rs` both existing; for a `path` value, two
 ///   candidates is exactly the situation where this scan cannot know which file
 ///   it is meant to read, and the house rule is that it must then say so.
-fn resolve_children(owner: &Path, owner_body: &str, segment: &str) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn resolve_children(
+    owner: &Path,
+    owner_body: &str,
+    segment: &str,
+) -> Result<Vec<PathBuf>, String> {
     let declarations = find_declarations(owner_body, segment);
     if declarations.is_empty() {
         return Err(format!(
@@ -292,7 +300,7 @@ fn resolve_children(owner: &Path, owner_body: &str, segment: &str) -> Result<Vec
 /// Every `mod <ident>;` declared in `body`, which must be `ModuleBody::structure`,
 /// deduplicated. `resolve_children` finds every declaration of each name, so one
 /// entry per name is enough here.
-fn declared_children(body: &str) -> Vec<String> {
+pub(crate) fn declared_children(body: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut from = 0usize;
     while let Some(offset) = body[from..].find("mod ") {
@@ -323,15 +331,15 @@ fn declared_children(body: &str) -> Vec<String> {
     found
 }
 
-/// The files rustc compiles for `module` and every module below it, resolved by
-/// walking `mod` declarations down from the crate root.
+/// The files rustc compiles for `module` itself, resolved by walking `mod`
+/// declarations down from the crate root; `sources_of` adds every module below.
 ///
 /// The walk carries a frontier rather than a single file, because a segment can
 /// be declared more than once under opposite `cfg`s and this resolver keeps both
 /// arms. An error at any step is propagated rather than skipped: a module that
 /// cannot be located is the one case where reading nothing must not look like
 /// reading nothing forbidden.
-pub(crate) fn sources_of(module: &[&str]) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn own_files_of(module: &[&str]) -> Result<Vec<PathBuf>, String> {
     let root = manifest_dir().join("src").join("lib.rs");
     if !root.is_file() {
         return Err(format!("{} does not exist", relative_of(&root)));
@@ -352,6 +360,14 @@ pub(crate) fn sources_of(module: &[&str]) -> Result<Vec<PathBuf>, String> {
         frontier = next;
     }
 
+    Ok(frontier)
+}
+
+/// The files rustc compiles for `module` and every module below it: the files of
+/// `own_files_of`, then every `mod` declaration below them. An error at any step
+/// is propagated rather than skipped.
+pub(crate) fn sources_of(module: &[&str]) -> Result<Vec<PathBuf>, String> {
+    let frontier = own_files_of(module)?;
     let mut files = Vec::new();
     let mut queue = frontier;
     while let Some(current) = queue.pop() {

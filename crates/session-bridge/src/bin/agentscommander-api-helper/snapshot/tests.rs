@@ -61,7 +61,9 @@ async fn terminal_snapshot_streamed_body_uses_one_absolute_deadline() {
     let (base, _, task) = scripted_server(vec![ScriptedReply::Trickle {
         head,
         first: b"{".to_vec(),
-        delay: Duration::from_millis(100),
+        // Long on purpose: the 20 ms deadline must expire before the body
+        // arrives, even if the client stalls after the headers.
+        delay: Duration::from_secs(2),
         rest: b"}\n\n".to_vec(),
     }])
     .await;

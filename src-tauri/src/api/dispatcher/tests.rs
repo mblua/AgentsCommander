@@ -112,6 +112,10 @@ async fn dispatch_failure_retries_then_poisons() {
     assert!(leased.is_empty(), "poisoned rows must not lease again");
 }
 
+/// Only catches a hang. The blocked worker awaits `pending()` forever, so the
+/// awaited work finishing at all is the proof; a passing run never waits this long.
+const HANG_GUARD: Duration = Duration::from_secs(30);
+
 #[tokio::test]
 async fn blocked_pty_worker_does_not_block_ordinary_or_different_target_progress() {
     let store = store();
@@ -151,7 +155,7 @@ async fn blocked_pty_worker_does_not_block_ordinary_or_different_target_progress
     );
 
     let processed = tokio::time::timeout(
-        Duration::from_secs(1),
+        HANG_GUARD,
         dispatch_due_with(
             &store,
             chrono::Utc::now(),
@@ -180,14 +184,14 @@ async fn blocked_pty_worker_does_not_block_ordinary_or_different_target_progress
             different_done_tx.send(()).unwrap();
         },
     ));
-    tokio::time::timeout(Duration::from_secs(1), different_done_rx)
+    tokio::time::timeout(HANG_GUARD, different_done_rx)
         .await
         .expect("a different target must progress while the first is blocked")
         .unwrap();
 
     shutdown.cancel();
     tokio::time::timeout(
-        Duration::from_secs(1),
+        HANG_GUARD,
         stop_pty_workers(&mut workers, Duration::from_millis(100)),
     )
     .await

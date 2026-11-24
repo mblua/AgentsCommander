@@ -257,7 +257,7 @@ impl SpawnRecord {
         self.exit_reported.load(Ordering::SeqCst)
     }
 
-    /// #1873 test-only: the cause stamped by the single accepted `log_child_exit`.
+    /// Test-only: the cause stamped by the single accepted `log_child_exit`.
     #[cfg(test)]
     pub fn exit_cause(&self) -> Option<ExitCause> {
         *self
@@ -316,7 +316,7 @@ impl SpawnRecord {
     /// be pasted in public.
     fn scrub(&self, text: &str) -> String {
         // The exact secret-keyed env values this child was given AND the URL/credential
-        // shapes, masked in one pass over the original text (#4319).
+        // shapes, masked in one pass over the original text.
         crate::telegram::redact::redact_with_needles(text, &self.redact)
     }
 
@@ -465,7 +465,7 @@ impl SpawnRecord {
         self.ac_stop.store(true, Ordering::SeqCst);
     }
 
-    /// #1271 - the child monitor's last observation, published before the
+    /// The child monitor's last observation, published before the
     /// monitor stops polling so integration regressions can read the awaited
     /// child's exit code.
     fn record_final_liveness(&self, liveness: &ChildLiveness) {
@@ -702,7 +702,7 @@ impl SpawnRecord {
         let uptime = self.started.elapsed();
         let bytes = self.bytes_read.load(Ordering::Relaxed);
         // A child that ends itself without ever painting a screen, or with a failing
-        // status, is the #942 smoking gun. A clean exit from a session that did come up
+        // status, is the smoking gun. A clean exit from a session that did come up
         // is just someone quitting.
         let never_came_up = self.is_stalled();
         let unexpected =
@@ -910,7 +910,7 @@ pub fn forget(session_id: Uuid, owner: &SpawnRegistry) {
         .remove(&session_id);
 }
 
-/// #1271 - read the spawn record for one session, when one exists. Test
+/// Read the spawn record for one session, when one exists. Test
 /// postcondition seam (Finding E): lets a test assert that a rejected spawn
 /// never recorded launch provenance, and lets the Windows integration
 /// regression read the exact adapted argv and awaited child exit.

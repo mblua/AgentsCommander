@@ -6,14 +6,11 @@ async fn target_panic_during_real_updater_settlement_retains_owner() {
     let (app, mut frames) = app_with_broadcaster();
     let handle = app.handle().clone();
     let gate = Arc::new(AgentUpdateGate::new());
-    let dir = tempfile::tempdir().expect("tempdir");
-    let target = UpdateTarget {
-        command: "missing-updater-panic-target".to_string(),
-        label: "Updater panic target".to_string(),
-        commands: vec!["exit 0".to_string()],
-        cwd: dir.path().to_path_buf(),
-    };
-    seed_retained_target(&gate, &target.command, &target.label);
+    let (_dir, target) = retained_target(
+        &gate,
+        "missing-updater-panic-target",
+        "Updater panic target",
+    );
     let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
     let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
     let target_task = tokio::spawn({
@@ -64,40 +61,19 @@ async fn target_panic_during_real_updater_settlement_retains_owner() {
         response.disposition,
         AgentUpdateCancelDisposition::Requested
     );
-    assert!(!target_task.is_finished());
-    assert!(gate.snapshot().results.is_empty());
-    assert!(frames.try_recv().is_err(), "terminal remains proof-blocked");
+    assert_target_blocked_without_results(
+        &target_task,
+        &gate,
+        &mut frames,
+        "terminal remains proof-blocked",
+    );
     release_proof_tx
         .send(())
         .expect("release updater proof into injected panic");
     let result = target_task.await.expect("retained updater target task");
     assert_eq!(result.outcome, AgentUpdateOutcome::Failed);
     assert_eq!(result.error.as_deref(), Some(CANCELLATION_CLEANUP_ERROR));
-    PassSupervisor {
-        app: handle,
-        gate: Arc::clone(&gate),
-    }
-    .finalize(PassRuntime {
-        started: true,
-        ..PassRuntime::default()
-    })
-    .await;
-    let events = drain_frames(&mut frames);
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event["event"] == "agent_update_command_finished")
-            .count(),
-        1
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event["event"] == "agent_updates_finished")
-            .count(),
-        1
-    );
-    assert_eq!(events[0]["payload"]["error"], CANCELLATION_CLEANUP_ERROR);
+    finalize_and_assert_single_finish(handle, &gate, &mut frames, CANCELLATION_CLEANUP_ERROR).await;
 }
 
 #[cfg(any(windows, unix))]
@@ -106,14 +82,11 @@ async fn target_panic_during_real_updater_reader_settlement_recovers_same_reader
     let (app, mut frames) = app_with_broadcaster();
     let handle = app.handle().clone();
     let gate = Arc::new(AgentUpdateGate::new());
-    let dir = tempfile::tempdir().expect("tempdir");
-    let target = UpdateTarget {
-        command: "missing-updater-reader-panic-target".to_string(),
-        label: "Updater reader panic target".to_string(),
-        commands: vec!["exit 0".to_string()],
-        cwd: dir.path().to_path_buf(),
-    };
-    seed_retained_target(&gate, &target.command, &target.label);
+    let (_dir, target) = retained_target(
+        &gate,
+        "missing-updater-reader-panic-target",
+        "Updater reader panic target",
+    );
     let (reader_ready_tx, reader_ready_rx) = tokio::sync::oneshot::channel();
     let (release_panic_tx, release_panic_rx) = tokio::sync::oneshot::channel();
     let (retry_started_tx, retry_started_rx) = tokio::sync::oneshot::channel();
@@ -193,6 +166,22 @@ async fn target_panic_during_real_updater_reader_settlement_recovers_same_reader
         "Update task failed unexpectedly.",
     )
     .await;
+}
+
+fn retained_target(
+    gate: &AgentUpdateGate,
+    command: &str,
+    label: &str,
+) -> (tempfile::TempDir, UpdateTarget) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = UpdateTarget {
+        command: command.to_string(),
+        label: label.to_string(),
+        commands: vec!["exit 0".to_string()],
+        cwd: dir.path().to_path_buf(),
+    };
+    seed_retained_target(gate, &target.command, &target.label);
+    (dir, target)
 }
 
 fn assert_target_blocked_without_results<T>(
@@ -323,15 +312,8 @@ async fn target_panic_during_real_probe_settlement_retains_owner() {
     let (app, mut frames) = app_with_broadcaster();
     let handle = app.handle().clone();
     let gate = Arc::new(AgentUpdateGate::new());
-    let dir = tempfile::tempdir().expect("tempdir");
     let (command, stem, args) = probe_shell_fixture();
-    let target = UpdateTarget {
-        command: command.to_string(),
-        label: "Probe panic target".to_string(),
-        commands: vec!["exit 0".to_string()],
-        cwd: dir.path().to_path_buf(),
-    };
-    seed_retained_target(&gate, &target.command, &target.label);
+    let (_dir, target) = retained_target(&gate, command, "Probe panic target");
     let (proof_ready_tx, proof_ready_rx) = tokio::sync::oneshot::channel();
     let (release_proof_tx, release_proof_rx) = tokio::sync::oneshot::channel();
     let target_task = tokio::spawn({
@@ -408,15 +390,8 @@ async fn target_panic_during_real_probe_reader_settlement_recovers_same_reader()
     let (app, mut frames) = app_with_broadcaster();
     let handle = app.handle().clone();
     let gate = Arc::new(AgentUpdateGate::new());
-    let dir = tempfile::tempdir().expect("tempdir");
     let (command, stem, args) = probe_shell_fixture();
-    let target = UpdateTarget {
-        command: command.to_string(),
-        label: "Probe reader panic target".to_string(),
-        commands: vec!["exit 0".to_string()],
-        cwd: dir.path().to_path_buf(),
-    };
-    seed_retained_target(&gate, &target.command, &target.label);
+    let (_dir, target) = retained_target(&gate, command, "Probe reader panic target");
     let (reader_ready_tx, reader_ready_rx) = tokio::sync::oneshot::channel();
     let (release_panic_tx, release_panic_rx) = tokio::sync::oneshot::channel();
     let (retry_started_tx, retry_started_rx) = tokio::sync::oneshot::channel();

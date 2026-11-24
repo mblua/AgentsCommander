@@ -831,8 +831,8 @@ const ProjectPanel: Component = () => {
         // Inline TASK-title editor state (shared by both menu branches;
         // only one menu is ever open). titleEdit pins the raw wg.path + the
         // resolved live-session id at click time, so guards compare strings,
-        // never menu/wg object identity (positionReplicaCtxMenu rewrites the
-        // menu object on every reclamp; store events replace wg objects).
+        // never menu/room object identity (positionReplicaCtxMenu rewrites the
+        // menu object on every reclamp; store events replace room objects).
         const [titleEdit, setTitleEdit] = createSignal<{ wgPath: string; sessionId: string | null } | null>(null);
         const [titleDraft, setTitleDraft] = createSignal("");
         const [titleBusy, setTitleBusy] = createSignal(false);
@@ -2331,7 +2331,7 @@ const ProjectPanel: Component = () => {
           // Invocation token. Each start bumps the epoch; any
           // later resetTitleEditState() (menu close, replacement, cancel) or
           // newer start bumps it again, so this invocation detects staleness
-          // with zero microtask window - including same-wg-same-session
+          // with zero microtask window - including same-room-same-session
           // double-clicks.
           const epoch = ++titleEditEpoch;
           const stillCurrent = () =>
@@ -2383,7 +2383,7 @@ const ProjectPanel: Component = () => {
             }
             await projectStore.refreshTaskSnapshot(target.wgPath);
             // Close only if the same workgroup's menu is still open (raw path
-            // equality - store events replace wg objects, so reference identity
+            // equality - store events replace room objects, so reference identity
             // would fail right after the save event lands).
             if (replicaCtxMenu() && replicaCtxMenu()!.wg.path === target.wgPath) {
               closeReplicaCtxMenu();

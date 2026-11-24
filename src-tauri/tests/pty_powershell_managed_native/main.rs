@@ -33,6 +33,9 @@ use agentscommander_lib::pty::manager::PtyManager;
 use agentscommander_lib::pty::spawn_diagnostics;
 
 mod fixture;
+#[allow(dead_code)]
+#[path = "../support/pty_fixture.rs"]
+mod pty_fixture;
 
 use fixture::{
     agent_config, base_settings, create_plain_session, create_resolved_session, make_fixture,
