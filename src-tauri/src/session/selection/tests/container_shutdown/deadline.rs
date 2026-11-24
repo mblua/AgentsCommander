@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::pty::container_backend::ShutdownStage;
-use crate::session::selection::shutdown_cleanup::probe::{CloseProbe, CLOSE_PROBE};
+use crate::session::selection::shutdown_cleanup::{CloseProbe, CLOSE_PROBE};
 use crate::session::selection::task::SelectionTask;
 use futures::task::{waker, ArcWake};
 use std::sync::atomic::AtomicU64;

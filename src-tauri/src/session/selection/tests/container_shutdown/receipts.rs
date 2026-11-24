@@ -3,7 +3,7 @@
 use super::deadline::{Gate, ReturnWait, WakeFlag, Watchdog};
 use super::*;
 use crate::pty::container_backend::ShutdownStage;
-use crate::session::selection::shutdown_cleanup::probe::CloseProbe;
+use crate::session::selection::shutdown_cleanup::CloseProbe;
 use crate::session::selection::task::SelectionTask;
 use futures::future::BoxFuture;
 use futures::task::ArcWake;

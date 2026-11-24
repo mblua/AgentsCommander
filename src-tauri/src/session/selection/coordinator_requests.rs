@@ -725,11 +725,11 @@ impl SelectionCoordinator {
 
         retained.extend(cleanup_pending_creates_after_join(&self.inner, deadline).await);
         #[cfg(test)]
-        super::shutdown_cleanup::probe::at_site("between-joins").await;
+        super::shutdown_cleanup::close_probe_at_site("between-joins").await;
         retained
             .extend(seal_and_drain_container_shutdown_work_after_join(&self.inner, deadline).await);
         #[cfg(test)]
-        super::shutdown_cleanup::probe::at_site("return").await;
+        super::shutdown_cleanup::close_probe_at_site("return").await;
         match self.inner.critical_keys.try_lock() {
             Ok(mut keys) => keys.clear(),
             Err(error) => {
