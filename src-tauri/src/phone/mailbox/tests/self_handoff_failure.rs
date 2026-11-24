@@ -62,6 +62,16 @@ fn assert_locked_persist_reports(
     }
 }
 
+fn unlock_replica_selection(settings: &AppSettings, replica: &Path) {
+    let expected = crate::config::coding_agent_profiles::read_replica_selection_state(replica)
+        .expectation()
+        .unwrap();
+    crate::config::coding_agent_profiles::clear_replica_selection_lock(
+        settings, replica, &expected,
+    )
+    .unwrap();
+}
+
 #[tokio::test]
 async fn issue_3189_locked_persist_retains_and_reports() {
     let id = Uuid::new_v4();
@@ -83,14 +93,7 @@ async fn issue_3189_locked_persist_retains_and_reports() {
     std::fs::write(replica.join("SELF-HANDOFF.md"), notes).unwrap();
     for locked in [true, false] {
         if !locked {
-            let expected =
-                crate::config::coding_agent_profiles::read_replica_selection_state(&replica)
-                    .expectation()
-                    .unwrap();
-            crate::config::coding_agent_profiles::clear_replica_selection_lock(
-                &settings, &replica, &expected,
-            )
-            .unwrap();
+            unlock_replica_selection(&settings, &replica);
         }
         let settings = settings.clone();
         assert!(pending.seed_legacy(id));
@@ -449,6 +452,27 @@ async fn issue_3189_retry_historical_after_completed_clear() {
     assert!(text.contains("if no later attempt superseded it, retry"));
 }
 
+fn assert_cap_failure(
+    outcome: SelfHandoffOutcome,
+    second_leg: bool,
+    expected_current: Uuid,
+    pending: &crate::PendingSelfClear,
+    root: &Path,
+) {
+    let SelfHandoffOutcome::Failed(failure) = outcome else {
+        panic!("cap must report failure");
+    };
+    assert_eq!(failure.continuation, second_leg);
+    assert_eq!(failure.current, Some(expected_current));
+    assert!(failure.reason.contains("MAX_DEFER cap"));
+    assert!(pending.is_empty());
+    assert_eq!(
+        std::fs::read(root.join("SELF-HANDOFF.md")).unwrap(),
+        b"cap notes"
+    );
+    assert!(!root.join("self-clear").exists());
+}
+
 #[tokio::test]
 async fn issue_3189_cap_each_leg_all_actions() {
     use crate::phone::mailbox::handoff::SELF_HANDOFF_FLAVOR_RESTART;
@@ -469,11 +493,7 @@ async fn issue_3189_cap_each_leg_all_actions() {
                     (true, true)
                 }
             };
-            let cap = if second_leg {
-                Duration::from_secs(1)
-            } else {
-                Duration::ZERO
-            };
+            let cap = Duration::from_secs(u64::from(second_leg));
             let root = tempfile::tempdir().unwrap();
             std::fs::write(root.path().join("SELF-HANDOFF.md"), "cap notes").unwrap();
             let outcome = if action == 0 {
@@ -522,53 +542,68 @@ async fn issue_3189_cap_each_leg_all_actions() {
                 )
                 .await
             };
-            let SelfHandoffOutcome::Failed(failure) = outcome else {
-                panic!("cap must report failure");
+            let expected_current = if second_leg && action != 0 {
+                new_id
+            } else {
+                id
             };
-            assert_eq!(failure.continuation, second_leg);
-            assert_eq!(
-                failure.current,
-                Some(if second_leg && action != 0 {
-                    new_id
-                } else {
-                    id
-                })
-            );
-            assert!(failure.reason.contains("MAX_DEFER cap"));
-            assert!(pending.is_empty());
-            assert_eq!(
-                std::fs::read(root.path().join("SELF-HANDOFF.md")).unwrap(),
-                b"cap notes"
-            );
-            assert!(!root.path().join("self-clear").exists());
+            assert_cap_failure(outcome, second_leg, expected_current, &pending, root.path());
         }
     }
+}
+
+fn reserve_plain_for_phase(pending: &crate::PendingSelfClear, id: Uuid, phase: usize) {
+    use crate::session::maintenance::{PlainIdentity, PlainReservation};
+    if phase == 0 {
+        return;
+    }
+    let owner = PlainIdentity {
+        session_id: id,
+        request_id: Uuid::new_v4(),
+        action: "self-clear".into(),
+        requested_by: "test".into(),
+    };
+    let PlainReservation::New(lease) = pending.reserve_plain(owner) else {
+        panic!("expected fresh Plain reservation");
+    };
+    if phase == 2 {
+        pending.arm_plain(&lease).unwrap();
+    }
+}
+
+fn assert_missing_lease_failure(
+    outcome: SelfHandoffOutcome,
+    action: &str,
+    driver: &str,
+    id: Uuid,
+    root: &Path,
+) {
+    let SelfHandoffOutcome::Failed(failure) = outcome else {
+        panic!("missing lease must report failure");
+    };
+    assert_eq!(failure.action, action);
+    assert!(!failure.attempt.is_nil());
+    assert_eq!(failure.original, id);
+    assert_eq!(failure.current, Some(id));
+    assert_eq!(failure.root, root);
+    assert!(!failure.continuation);
+    assert!(!failure.forgotten);
+    assert_eq!(
+        failure.reason,
+        format!("{driver} driver missing legacy reservation for {id}")
+    );
 }
 
 #[tokio::test]
 async fn missing_legacy_lease_reports_failure_without_driver_effects() {
     use crate::phone::mailbox::handoff::SELF_HANDOFF_FLAVOR_RESTART;
-    use crate::session::maintenance::{PlainIdentity, PlainReservation};
     for mode in 0..3 {
         for phase in 0..3 {
             let pending = Arc::new(crate::PendingSelfClear::default());
             let id = Uuid::new_v4();
             let other = Uuid::new_v4();
             let other_lease = pending.reserve_legacy(other).unwrap();
-            if phase != 0 {
-                let owner = PlainIdentity {
-                    session_id: id,
-                    request_id: Uuid::new_v4(),
-                    action: "self-clear".into(),
-                    requested_by: "test".into(),
-                };
-                let PlainReservation::New(lease) = pending.reserve_plain(owner) else {
-                    panic!("expected fresh Plain reservation");
-                };
-                if phase == 2 {
-                    pending.arm_plain(&lease).unwrap();
-                }
-            }
+            reserve_plain_for_phase(&pending, id, phase);
             let root = tempfile::tempdir().unwrap();
             let state = |_| -> std::future::Ready<(bool, bool)> { panic!("state callback") };
             let inject =
@@ -619,28 +654,13 @@ async fn missing_legacy_lease_reports_failure_without_driver_effects() {
                 )
                 .await
             };
-            let SelfHandoffOutcome::Failed(failure) = outcome else {
-                panic!("missing lease must report failure");
+            let action = if mode == 0 {
+                SELF_CLEAR_ACTION
+            } else {
+                flavor.action
             };
-            assert_eq!(
-                failure.action,
-                if mode == 0 {
-                    SELF_CLEAR_ACTION
-                } else {
-                    flavor.action
-                }
-            );
-            assert!(!failure.attempt.is_nil());
-            assert_eq!(failure.original, id);
-            assert_eq!(failure.current, Some(id));
-            assert_eq!(failure.root, root.path());
-            assert!(!failure.continuation);
-            assert!(!failure.forgotten);
             let driver = if mode == 0 { "clear" } else { "switch" };
-            assert_eq!(
-                failure.reason,
-                format!("{driver} driver missing legacy reservation for {id}")
-            );
+            assert_missing_lease_failure(outcome, action, driver, id, root.path());
             assert_eq!(pending.legacy_lease(other), Some(other_lease));
             assert_eq!(pending.contains(id), phase != 0);
             assert_eq!(pending.len(), 1 + usize::from(phase != 0));
