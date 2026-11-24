@@ -1,17 +1,26 @@
 //! Per-instance close probe: wait receipts, child joins and the attributable bound `C`.
 
+use super::deadline::{Gate, ReturnWait, WakeFlag, Watchdog};
 use super::*;
+use crate::pty::container_backend::ShutdownStage;
+use crate::session::selection::shutdown_cleanup::probe::CloseProbe;
+use crate::session::selection::task::SelectionTask;
+use futures::future::BoxFuture;
+use futures::task::ArcWake;
+use std::collections::BTreeMap;
+use std::sync::atomic::AtomicU64;
+use std::task::{Context, Poll};
 
 /// Waits the probe performs at one close site, inline or as children joined by the close.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(in super::super) struct SiteWait {
-    pub(in super::super) site: &'static str,
-    pub(in super::super) waits: Vec<ReturnWait>,
-    pub(in super::super) children: bool,
+pub(super) struct SiteWait {
+    pub(super) site: &'static str,
+    pub(super) waits: Vec<ReturnWait>,
+    pub(super) children: bool,
 }
 
 impl SiteWait {
-    pub(in super::super) fn inline(site: &'static str, wait: ReturnWait) -> Self {
+    pub(super) fn inline(site: &'static str, wait: ReturnWait) -> Self {
         Self {
             site,
             waits: vec![wait],
@@ -19,7 +28,7 @@ impl SiteWait {
         }
     }
 
-    pub(in super::super) fn children(site: &'static str, waits: Vec<ReturnWait>) -> Self {
+    pub(super) fn children(site: &'static str, waits: Vec<ReturnWait>) -> Self {
         Self {
             site,
             waits,
@@ -29,21 +38,21 @@ impl SiteWait {
 }
 
 #[derive(Clone, Debug)]
-pub(in super::super) struct Receipt {
-    pub(in super::super) wait: ReturnWait,
-    pub(in super::super) site: &'static str,
+pub(super) struct Receipt {
+    pub(super) wait: ReturnWait,
+    pub(super) site: &'static str,
     /// Child task that performed the wait; `None` when the close awaited it inline.
-    pub(in super::super) owner: Option<tokio::task::Id>,
-    pub(in super::super) arm_seq: u64,
-    pub(in super::super) q: Duration,
-    pub(in super::super) p: Option<Duration>,
-    pub(in super::super) release: Option<(u64, Duration)>,
-    pub(in super::super) native_waited: Option<Duration>,
-    pub(in super::super) consume_seq: Option<u64>,
+    pub(super) owner: Option<tokio::task::Id>,
+    pub(super) arm_seq: u64,
+    pub(super) q: Duration,
+    pub(super) p: Option<Duration>,
+    pub(super) release: Option<(u64, Duration)>,
+    pub(super) native_waited: Option<Duration>,
+    pub(super) consume_seq: Option<u64>,
     /// First Pending of the parent's join of `owner`, before the child may arm.
-    pub(in super::super) permit_seq: Option<u64>,
+    pub(super) permit_seq: Option<u64>,
     /// The close's join that returned the child's result.
-    pub(in super::super) joined_seq: Option<u64>,
+    pub(super) joined_seq: Option<u64>,
 }
 
 #[derive(Default)]
@@ -60,7 +69,7 @@ pub(super) struct ProbeLog {
     pub(super) worker_ready: Vec<Result<(), String>>,
 }
 
-pub(in super::super) struct FixtureProbe {
+pub(super) struct FixtureProbe {
     pub(super) log: Mutex<ProbeLog>,
     pub(super) external: AtomicBool,
     /// Child Tokio timers armed and not yet released; the driver ticks while any is armed.
@@ -397,7 +406,7 @@ fn credited(receipt: &Receipt, start: Duration) -> Result<Duration, String> {
 
 /// Attributable delay `C`: expired product deadlines and the waits that conditioned R.
 /// Inline waits add in series; children of one site start together from the parent cursor.
-pub(in super::super) fn attributable(
+pub(super) fn attributable(
     worker_phase: Option<Duration>,
     shared: Option<Duration>,
     receipts: &[Receipt],

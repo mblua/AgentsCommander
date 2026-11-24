@@ -18,40 +18,6 @@ use super::admission::CriticalAdmissionKey;
 use super::replacement::{OwnedReplacementContinuation, ReplacementOwner};
 use super::CoordinatorInner;
 
-/// Test-only view of the joins and waits the bounded shutdown future performs.
-#[cfg(test)]
-pub(crate) mod probe {
-    use std::sync::Arc;
-
-    use futures::future::BoxFuture;
-
-    pub(crate) trait CloseProbe: Send + Sync {
-        /// One poll of an effective rollback or drain join, with this poll's result.
-        fn join_polled(&self, site: &'static str, id: tokio::task::Id, pending: bool);
-        /// A join that missed its deadline moved to its retained collection.
-        fn transferred(&self, site: &'static str, id: tokio::task::Id);
-        /// Await requested at a close site: `between-joins` (after the rollback join,
-        /// before the drain) or `return` (after the drain join).
-        fn return_wait(&self, site: &'static str) -> Option<BoxFuture<'static, ()>>;
-    }
-
-    tokio::task_local! {
-        pub(crate) static CLOSE_PROBE: Arc<dyn CloseProbe>;
-    }
-
-    pub(super) fn current() -> Option<Arc<dyn CloseProbe>> {
-        CLOSE_PROBE.try_with(Arc::clone).ok()
-    }
-
-    /// Clones the callback, ends the borrow, then awaits what it returned.
-    pub(crate) async fn at_site(site: &'static str) {
-        let wait = current().and_then(|probe| probe.return_wait(site));
-        if let Some(wait) = wait {
-            wait.await;
-        }
-    }
-}
-
 /// `timeout(remaining, &mut handle)`; tests also observe each poll of the join.
 async fn timed_join<T>(
     site: &'static str,
@@ -408,6 +374,40 @@ pub(super) fn remove_critical_key(inner: &Arc<CoordinatorInner>, key: CriticalAd
                 key.kind,
                 error
             );
+        }
+    }
+}
+
+/// Test-only view of the joins and waits the bounded shutdown future performs.
+#[cfg(test)]
+pub(crate) mod probe {
+    use std::sync::Arc;
+
+    use futures::future::BoxFuture;
+
+    pub(crate) trait CloseProbe: Send + Sync {
+        /// One poll of an effective rollback or drain join, with this poll's result.
+        fn join_polled(&self, site: &'static str, id: tokio::task::Id, pending: bool);
+        /// A join that missed its deadline moved to its retained collection.
+        fn transferred(&self, site: &'static str, id: tokio::task::Id);
+        /// Await requested at a close site: `between-joins` (after the rollback join,
+        /// before the drain) or `return` (after the drain join).
+        fn return_wait(&self, site: &'static str) -> Option<BoxFuture<'static, ()>>;
+    }
+
+    tokio::task_local! {
+        pub(crate) static CLOSE_PROBE: Arc<dyn CloseProbe>;
+    }
+
+    pub(super) fn current() -> Option<Arc<dyn CloseProbe>> {
+        CLOSE_PROBE.try_with(Arc::clone).ok()
+    }
+
+    /// Clones the callback, ends the borrow, then awaits what it returned.
+    pub(crate) async fn at_site(site: &'static str) {
+        let wait = current().and_then(|probe| probe.return_wait(site));
+        if let Some(wait) = wait {
+            wait.await;
         }
     }
 }

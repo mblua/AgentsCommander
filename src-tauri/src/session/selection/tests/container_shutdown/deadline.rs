@@ -8,9 +8,7 @@ use super::*;
 use crate::pty::container_backend::ShutdownStage;
 use crate::session::selection::shutdown_cleanup::probe::{CloseProbe, CLOSE_PROBE};
 use crate::session::selection::task::SelectionTask;
-use futures::future::BoxFuture;
 use futures::task::{waker, ArcWake};
-use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::Condvar;
 use std::task::{Context, Poll};
@@ -204,7 +202,7 @@ impl Gate {
         self.changed.notify_all();
     }
 
-    fn wait(&self) {
+    pub(super) fn wait(&self) {
         let mut open = self
             .open
             .lock()
@@ -219,8 +217,8 @@ impl Gate {
 }
 
 #[derive(Default)]
-struct WatchState {
-    stamps: Stamps,
+pub(super) struct WatchState {
+    pub(super) stamps: Stamps,
     first_failure: Option<String>,
     findings: Vec<String>,
     rescue_at: Option<Instant>,
@@ -230,8 +228,8 @@ struct WatchState {
 /// Wakes the driver from a waker, the watchdog or a native thread; permits are kept.
 #[derive(Default)]
 pub(super) struct WakeFlag {
-    woke: AtomicBool,
-    notify: tokio::sync::Notify,
+    pub(super) woke: AtomicBool,
+    pub(super) notify: tokio::sync::Notify,
 }
 
 impl ArcWake for WakeFlag {
@@ -250,13 +248,13 @@ pub(super) struct Watchdog {
 }
 
 impl Watchdog {
-    fn lock(&self) -> std::sync::MutexGuard<'_, WatchState> {
+    pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, WatchState> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn stamp(&self, update: impl FnOnce(&mut Stamps)) {
+    pub(super) fn stamp(&self, update: impl FnOnce(&mut Stamps)) {
         update(&mut self.lock().stamps);
         self.changed.notify_all();
     }
@@ -332,11 +330,7 @@ impl Watchdog {
     }
 }
 
-// Leaf file beside this one (tests/container_shutdown/receipts.rs).
-#[path = "receipts.rs"]
-mod receipts;
-pub(super) use receipts::SiteWait;
-use receipts::{attributable, FixtureProbe, ProbeWorker};
+use super::receipts::{attributable, FixtureProbe, ProbeWorker, SiteWait};
 
 // ---------------------------------------------------------------- driver
 
@@ -691,14 +685,15 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
         let inner = &domain.coordinator.inner;
         assert!(inner.retained_rollback_tasks.lock().unwrap().is_empty());
         assert!(inner.retained_cleanup_tasks.lock().unwrap().is_empty());
-        let log = probe.log();
-        assert!(log.joins[site].1, "{site} join pending at 199 ms");
-        if site == "rollback" {
-            assert!(!log.joins.contains_key("drain"), "drain not entered");
-        } else {
-            assert!(!log.joins["rollback"].1, "rollback joined before the drain");
+        {
+            let log = probe.log();
+            assert!(log.joins[site].1, "{site} join pending at 199 ms");
+            if site == "rollback" {
+                assert!(!log.joins.contains_key("drain"), "drain not entered");
+            } else {
+                assert!(!log.joins["rollback"].1, "rollback joined before the drain");
+            }
         }
-        drop(log);
         driver.mark(format!("{site} pending at 199"));
         report = driver.tick_to(ms(202)).await;
         driver.mark(format!("{site} expired at 202 ready={}", report.is_some()));
@@ -738,18 +733,19 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
     let checkpoints = std::mem::take(&mut driver.checkpoints);
     drop(driver);
 
-    let log = probe.log();
-    let worker_expired = log.worker_aborts > 0;
-    let shared_expired = !log.transfers.is_empty();
-    let c = attributable(
-        worker_expired.then_some(worker_phase),
-        shared_expired.then_some(budget),
-        &log.receipts,
-        log.drain_seq,
-        ready_seq,
-    );
-    let transfers = log.transfers.clone();
-    drop(log);
+    let (c, transfers) = {
+        let log = probe.log();
+        let worker_expired = log.worker_aborts > 0;
+        let shared_expired = !log.transfers.is_empty();
+        let c = attributable(
+            worker_expired.then_some(worker_phase),
+            shared_expired.then_some(budget),
+            &log.receipts,
+            log.drain_seq,
+            ready_seq,
+        );
+        (c, log.transfers.clone())
+    };
 
     // Release product guards, resume Tokio and join every owned handle once.
     drop(manager_hold);

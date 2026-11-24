@@ -13,6 +13,7 @@ use tokio::time::error::Elapsed;
 const GLOBAL_SWEEP_CEILING: Duration = Duration::from_secs(10);
 
 mod deadline;
+mod receipts;
 use deadline::{CloseCase, CloseRun, Hold};
 
 pub(super) fn build_selection_test_app(
