@@ -330,6 +330,22 @@ impl Watchdog {
     }
 }
 
+/// Stops the watchdog thread and opens its gates if the test panics before `finish`,
+/// so the runtime can shut down and the first assertion stays the reported failure.
+struct StopOnPanic(Arc<Watchdog>);
+
+impl Drop for StopOnPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            for gate in &self.0.gates {
+                gate.open();
+            }
+            self.0.lock().done = true;
+            self.0.changed.notify_all();
+        }
+    }
+}
+
 use super::receipts::{attributable, FixtureProbe, ProbeWorker, SiteWait};
 
 // ---------------------------------------------------------------- driver
@@ -554,6 +570,7 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
     let (started, started_rx) = oneshot::channel();
     let watch = Arc::clone(&watchdog);
     let watcher = tokio::task::spawn_blocking(move || watch.watch(started));
+    let _stop_on_panic = StopOnPanic(Arc::clone(&watchdog));
     started_rx.await.expect("watchdog acknowledges its start");
     let manager_hold = if hold == Hold::Rollback {
         Some(domain.manager.write().await)
