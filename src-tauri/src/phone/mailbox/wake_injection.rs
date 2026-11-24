@@ -7,7 +7,8 @@ use super::notice::{
     WakeDeliveryOrigin,
 };
 use super::poller::{
-    log_wake_ended_without_input, reserve_response_request_at_write, MailboxPoller,
+    log_wake_ended_without_input, reserve_response_request_at_write, wake_deadline, MailboxPoller,
+    WakeDispatch,
 };
 use super::pty_claim::{response_diag_debug_only, ResponseWakeWork};
 #[cfg(test)]
@@ -50,6 +51,25 @@ fn record_spawn_call(hooks: &super::pty_claim::MailboxTestHooks, call: MailboxSp
 }
 
 impl MailboxPoller {
+    pub(super) async fn dispatch_peer_wake_input<S: MailboxHost>(
+        &self,
+        app: &S,
+        id: Uuid,
+        msg: &OutboxMessage,
+        delivery: (WakeDeliveryOrigin, bool),
+        settle: SettleReadiness,
+        context: (
+            Option<&ResponseWakeWork>,
+            Option<&crate::session::selection::OwnedReplacementContinuation>,
+        ),
+    ) -> Result<(), String> {
+        WakeDispatch::Input.mark();
+        #[cfg(test)]
+        super::poller::observe_wake_attempt("input", Some(id)).await;
+        self.inject_wake_into_pty(app, id, msg, delivery, settle, context)
+            .await
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "wake spawn passes resolved command, cwd, shell, args and resume flags"
@@ -93,7 +113,7 @@ impl MailboxPoller {
 
         let session_mgr = app.pty_sessions();
         let pty_mgr = app.pty_routes();
-        app.create_session_inner(MailboxSessionCreate {
+        let request = MailboxSessionCreate {
             session_mgr,
             pty_mgr,
             shell: spawn_shell,
@@ -113,18 +133,20 @@ impl MailboxPoller {
             // #973 - headless caller: no terminal to measure, keep 120x30.
             viewport: None,
             selection_intent: CreateSelectionIntent::Background,
-        })
-        .await
-        .inspect_err(|e| {
-            if e == ERR_WAKE_CREATE_RETAINED {
-                log_wake_ended_without_input(
-                    &msg.id,
-                    &msg.to,
-                    None,
-                    "wake create retained without input: stage=fallback_create_retained",
-                );
-            }
-        })
+        };
+        WakeDispatch::GenericCreate.mark();
+        app.create_session_inner_for_wake(request, wake_deadline())
+            .await
+            .inspect_err(|e| {
+                if e == ERR_WAKE_CREATE_RETAINED {
+                    log_wake_ended_without_input(
+                        &msg.id,
+                        &msg.to,
+                        None,
+                        "wake create retained without input: stage=fallback_create_retained",
+                    );
+                }
+            })
     }
 
     pub(crate) async fn attach_persisted_telegram_for_wake<S: MailboxHost>(

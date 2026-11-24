@@ -7,8 +7,11 @@ use super::super::pty_observation::{PtyAuthorityState, WakeDeliveryState};
 use super::claim_and::prime_route_tracker;
 use super::support_core::{make_mailbox_fixture, MailboxFixture, MailboxMockPtyBackend};
 use super::*;
-use crate::config::sessions_persistence::{classify_create_carrier_scope, CreateCarrierScope};
-use crate::phone::mailbox::host::MailboxHost;
+use crate::config::sessions_persistence::{
+    classify_create_carrier_scope, persist_initial_carrier, retire_carrier_for_discard,
+    CreateCarrierScope, InitialCarrierIntent, PublishedCarrier,
+};
+use crate::phone::mailbox::host::{MailboxHost, WakeCreateEvents, WakeCreateProbe};
 use crate::phone::types::PtyInputSourcePlane;
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::manager::{
@@ -26,6 +29,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::OnceLock;
 use std::time::Instant;
+use tauri::{test::MockRuntime, AppHandle, Manager};
+use tokio::sync::oneshot;
 
 type WakeCoreResult = Result<OwnedPeerWakeStep, String>;
 type WakeCoreFuture = Pin<Box<dyn Future<Output = WakeCoreResult> + Send>>;
@@ -599,4 +604,373 @@ async fn wake_owner_does_not_settle_pty_handoff() {
 async fn close_coordinator(coordinator: &SelectionCoordinator) {
     coordinator.shutdown_token().cancel();
     completes(coordinator.close_and_join()).await;
+}
+
+fn deadline_events(
+    app: &AppHandle<MockRuntime>,
+    cuts: &[(&'static str, usize)],
+) -> WakeCreateEvents {
+    let (probe, events) = WakeCreateProbe::pause_at(Duration::from_secs(4), cuts);
+    assert!(app.manage(probe));
+    events
+}
+
+async fn deadline_event(
+    events: &mut WakeCreateEvents,
+    stage: &str,
+) -> (Option<Uuid>, oneshot::Sender<bool>) {
+    let (actual, binding, resume) = completes(events.recv()).await.unwrap();
+    assert_eq!(actual, stage);
+    (binding, resume)
+}
+
+async fn deadline_claim(
+    poller: &MailboxPoller,
+    app: &impl MailboxHost,
+    wake: &OutboxMessage,
+) -> Result<(), String> {
+    let temp = tempfile::tempdir().unwrap();
+    let origin = temp.path().join(format!("{}.json", wake.id));
+    let claim = wake_claim_path(&origin);
+    std::fs::write(&claim, serde_json::to_vec(wake).unwrap()).unwrap();
+    let message = wake.clone();
+    let validated = ValidatedWake {
+        message,
+        response: None,
+    };
+    deliver_claimed_wake(poller, app, &claim, &origin, &validated)
+        .await
+        .inspect_err(|_| assert!(origin.is_file() && !claim.exists()))
+}
+
+fn assert_deadline(result: Result<(), String>, dispatch: &str) {
+    let error = result.unwrap_err();
+    let diagnostic = format!("stage=deadline last_dispatch={dispatch} settlement=unknown");
+    assert!(error.contains(&diagnostic), "{error}");
+}
+
+async fn generic_wake_conflict(fixture: &MailboxFixture) -> PublishedCarrier {
+    let cwd = fixture.target_cwd.join("conflicting-carrier");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let manager = SessionManager::new();
+    let row = manager
+        .create_session(
+            "codex".into(),
+            vec![],
+            cwd.to_string_lossy().into_owned(),
+            None,
+            None,
+            vec![],
+            false,
+            SessionBackendKind::LocalProcess,
+        )
+        .await
+        .unwrap();
+    manager.set_start_fresh_on_restore(row.id, true).await;
+    let permit = acquire_carrier_mutation_permit().await;
+    let version = manager
+        .with_current_carrier_snapshot(&permit, |s| s.versions[&row.id])
+        .await;
+    drop(permit);
+    let directory = fixture._temp.path().join("deadline-conflict");
+    persist_initial_carrier(
+        &manager,
+        directory,
+        vec![cwd.to_string_lossy().into_owned()],
+        InitialCarrierIntent::new("deadline-conflict".into(), row.id, row.token, version, cwd),
+    )
+    .await
+    .unwrap()
+    .expect("the overlapping carrier is genuinely protected")
+}
+
+async fn assert_generic_conflict(fixture: &MailboxFixture, target: &str) {
+    let permit = acquire_carrier_mutation_permit().await;
+    assert!(matches!(
+        classify_create_carrier_scope(&permit, target, &fixture.target_cwd),
+        CreateCarrierScope::Waiting
+    ));
+}
+
+async fn remove_deadline_fixture_origin(app: &impl MailboxHost, previous: Uuid) {
+    let permit = acquire_carrier_mutation_permit().await;
+    assert!(retire_carrier_for_discard(&permit, previous));
+    drop(permit);
+    let manager = app.pty_sessions().read().await.clone();
+    assert_eq!(manager.remove_exited_sessions(&[previous]).await, 1);
+}
+
+async fn retry_generic_create(
+    coordinator: &SelectionCoordinator,
+    app: &impl MailboxHost,
+    wake: &OutboxMessage,
+) -> Uuid {
+    let capacity = coordinator.port_test_state();
+    assert_eq!(
+        capacity.create_tickets_available,
+        capacity.expected_create_ticket_capacity
+    );
+    assert_eq!(capacity.queue_capacity, capacity.expected_queue_capacity);
+    reacquire_lexical_guards(app, &wake.to).await;
+    let poller = MailboxPoller::default();
+    let plan = poller.resolve_wake_spawn_plan(app, wake).await.unwrap();
+    let (id, _, _) = completes(poller.spawn_peer_wake_fallback(app, wake, plan, false, false))
+        .await
+        .unwrap();
+    assert_eq!(mock_backend(&rollback_backend(app)).spawn_attempts(id), 1);
+    id
+}
+
+async fn pending_ids(app: &impl MailboxHost) -> std::collections::HashSet<Uuid> {
+    let manager = app.pty_sessions().read().await.clone();
+    let permit = acquire_carrier_mutation_permit().await;
+    manager
+        .with_current_carrier_snapshot(&permit, |s| s.pending_ids.clone())
+        .await
+}
+
+async fn resume_deadline_event(events: &mut WakeCreateEvents, stage: &str) {
+    deadline_event(events, stage).await.1.send(false).unwrap();
+}
+
+#[tokio::test]
+async fn wake_owner_generic_deadline_and_retained_controls() {
+    const NAME: &str = "wake_owner_generic_deadline_and_retained_controls";
+    let cases = [
+        "publication",
+        "archive",
+        "resource",
+        "bound",
+        "retained",
+        "generic",
+        "live",
+    ];
+    let Some(case) = run_child_cases(module_path!(), NAME, &cases).await else {
+        return;
+    };
+    let fixture = make_mailbox_fixture();
+    let (coordinator, _, _, previous) = prepare_retained_exited_respawn(&fixture).await;
+    let app = fixture.app.handle();
+    remove_deadline_fixture_origin(app, previous).await;
+    let wake = wake_message_to_target();
+    match case.as_str() {
+        "generic" | "live" => {
+            check_unowned_input(app, &coordinator, &wake, case == "generic").await
+        }
+        "retained" => {
+            check_generic_retained(app, &wake).await;
+            retry_generic_create(&coordinator, app, &wake).await;
+        }
+        case => {
+            exercise_generic_conflict(&fixture, &wake, case).await;
+            if case != "bound" {
+                retry_generic_create(&coordinator, app, &wake).await;
+            }
+        }
+    }
+    close_coordinator(&coordinator).await;
+}
+
+async fn exercise_generic_conflict(fixture: &MailboxFixture, wake: &OutboxMessage, case: &str) {
+    let app = fixture.app.handle();
+    let archive = case == "archive";
+    let bound = case == "bound";
+    let deferred = matches!(case, "resource" | "bound");
+    let project = fixture.target_cwd.ancestors().nth(3).unwrap();
+    let archived = vec![project.to_string_lossy().into_owned()];
+    if archive {
+        app.pty_settings().write().await.archived_project_paths = archived.clone();
+    }
+    let refusal = match case {
+        "archive" => "archive_refused",
+        "resource" => "resource_refused",
+        _ => "publication_refused",
+    };
+    let mut cuts = vec![(refusal, 1), ("generic_exit", 1)];
+    if deferred {
+        cuts.insert(0, ("publication_before", if bound { 3 } else { 2 }));
+    }
+    if archive {
+        cuts.insert(1, ("archive_exit", 1));
+    }
+    let mut events = deadline_events(app, &cuts);
+    let poller = MailboxPoller::default();
+    let actor = deadline_claim(&poller, app, wake);
+    tokio::pin!(actor);
+    let start = if deferred {
+        let before = deadline_event(&mut events, "publication_before");
+        Some(at_cut(actor.as_mut(), before).await.1)
+    } else {
+        None
+    };
+    let ids = pending_ids(app).await;
+    assert_eq!(ids.len(), usize::from(bound));
+    let _conflict = generic_wake_conflict(fixture).await;
+    if let Some(resume) = start {
+        resume.send(false).unwrap();
+    }
+    let (_, resume) = at_cut(actor.as_mut(), deadline_event(&mut events, refusal)).await;
+    assert_generic_conflict(fixture, &wake.to).await;
+    assert_deadline(completes(actor).await, "generic_create");
+    resume.send(false).unwrap();
+    if bound {
+        let awaited = tokio::time::timeout(Duration::from_millis(300), events.recv());
+        assert!(awaited.await.is_err(), "bound producer remains owned");
+        assert_eq!(pending_ids(app).await, ids);
+    } else {
+        if archive {
+            resume_deadline_event(&mut events, "archive_exit").await;
+            let settings = app.pty_settings().read().await;
+            assert_eq!(settings.archived_project_paths, archived);
+        }
+        resume_deadline_event(&mut events, "generic_exit").await;
+        assert_generic_conflict(fixture, &wake.to).await;
+        assert!(pending_ids(app).await.is_empty());
+    }
+}
+
+async fn check_unowned_input(
+    app: &AppHandle<MockRuntime>,
+    coordinator: &SelectionCoordinator,
+    wake: &OutboxMessage,
+    cold: bool,
+) {
+    let manager = app.pty_sessions().read().await.clone();
+    let mut cuts = vec![("input", 1)];
+    if cold {
+        cuts.insert(0, ("generic_exit", 1));
+    } else {
+        let id = retry_generic_create(coordinator, app, wake).await;
+        manager.mark_idle(id).await;
+    }
+    let mut events = deadline_events(app, &cuts);
+    let poller = MailboxPoller::default();
+    let actor = deadline_claim(&poller, app, wake);
+    tokio::pin!(actor);
+    if cold {
+        let (id, resume) =
+            at_cut(actor.as_mut(), deadline_event(&mut events, "generic_exit")).await;
+        manager.mark_idle(id.unwrap()).await;
+        resume.send(false).unwrap();
+    }
+    let (_, _input) = at_cut(actor.as_mut(), deadline_event(&mut events, "input")).await;
+    assert_deadline(completes(actor).await, "input");
+}
+
+async fn check_generic_retained(app: &AppHandle<MockRuntime>, wake: &OutboxMessage) {
+    use crate::session::create_contracts::ERR_WAKE_CREATE_RETAINED;
+    app.pty_settings().write().await.resource_monitor_enabled = false;
+    assert!(!app.pty_settings().read().await.resource_monitor_enabled);
+    let mut events = deadline_events(app, &[("pending_mutex", 1)]);
+    let poller = MailboxPoller::default();
+    let actor = deadline_claim(&poller, app, wake);
+    tokio::pin!(actor);
+    let cut = "pending_mutex";
+    let (binding, poison) = at_cut(actor.as_mut(), deadline_event(&mut events, cut)).await;
+    poison.send(true).unwrap();
+    let error = completes(actor).await.unwrap_err();
+    assert_eq!(error, ERR_WAKE_CREATE_RETAINED);
+    let id = binding.unwrap();
+    assert!(pending_ids(app).await.is_empty());
+    let manager = app.pty_sessions().read().await.clone();
+    assert!(manager.get_session(id).await.is_none());
+    assert_eq!(mock_backend(&rollback_backend(app)).spawn_attempts(id), 0);
+    assert!(!app.pty_settings().read().await.resource_monitor_enabled);
+}
+
+#[tokio::test]
+async fn wake_owner_owned_deadline_reports_dispatch_and_settles_exact_owner() {
+    const NAME: &str = "wake_owner_owned_deadline_reports_dispatch_and_settles_exact_owner";
+    let cases = [
+        "before_context",
+        "first_refresh",
+        "final_refresh",
+        "input",
+        "late_native",
+    ];
+    let Some(case) = run_child_cases(module_path!(), NAME, &cases).await else {
+        return;
+    };
+    let fixture = make_mailbox_fixture();
+    let (coordinator, _, _, previous) = prepare_retained_exited_respawn(&fixture).await;
+    let app = fixture.app.handle();
+    let pre_context = case == "before_context";
+    let stage = match case.as_str() {
+        "before_context" => "owned_admission",
+        "first_refresh" | "late_native" => "owned_create",
+        "final_refresh" => "work_transfer",
+        _ => "input",
+    };
+    let cut = cases.into_iter().find(|name| *name == case).unwrap();
+    let mut events = deadline_events(app, &[(cut, 1)]);
+    let (poller, control) = rollback_poller(true);
+    let rollback = OwnedReplacementContinuation::install_wake_rollback_fixture();
+    let producer_return = rollback.before_return.arm();
+    let source_cut = if pre_context {
+        Cut::SourceCoreEntered
+    } else {
+        Cut::BeforeBackendSpawn
+    };
+    let source = (pre_context || case == "late_native").then(|| pause_at(&control, source_cut));
+    let capture = Arc::new(CapturedCore::default());
+    let wake = wake_message_to_target();
+    let actor = WAKE_CORE_CAPTURE.scope(capture.clone(), deadline_claim(&poller, app, &wake));
+    tokio::pin!(actor);
+    if let Some(resume) = source {
+        at_recorded_cut(actor.as_mut(), &control, source_cut).await;
+        assert_deadline(completes(actor).await, stage);
+        resume.send(()).unwrap();
+    } else {
+        let (_, resume) = at_cut(actor.as_mut(), deadline_event(&mut events, &case)).await;
+        if case == "input" {
+            assert_deadline(completes(actor).await, stage);
+            resume.send(false).unwrap();
+        } else {
+            let permit = acquire_carrier_mutation_permit().await;
+            resume.send(false).unwrap();
+            assert_deadline(completes(actor).await, stage);
+            drop(permit);
+        }
+    }
+    completes(rollback.before_return.entered.notified()).await;
+    let owner = capture.owner.lock().unwrap().take().unwrap();
+    let observation = owner.fixture_observe_publication();
+    let id = observation.binding.session_id();
+    let backend = rollback_backend(app);
+    let backend = mock_backend(&backend);
+    if pre_context {
+        assert!(owner.precommit_rollback_completed());
+        assert_eq!(backend.spawn_attempts(id), 0);
+        assert!(!observation.publication);
+    } else if matches!(case.as_str(), "first_refresh" | "late_native") {
+        assert!(observation.not_started() && observation.work_attempt.is_none());
+        assert_eq!(backend.spawn_attempts(id), 1);
+        assert_eq!(backend.write_attempts.load(Ordering::SeqCst), 0);
+    } else if case == "final_refresh" {
+        assert!(observation.no_input_attempt().is_some());
+        assert_eq!(observation.no_input_attempt(), observation.work_attempt);
+        assert_eq!(backend.write_attempts.load(Ordering::SeqCst), 0);
+    } else {
+        assert_eq!(backend.spawn_attempts(id), 1);
+    }
+    producer_return.send(()).unwrap();
+    completes(async {
+        while coordinator.fixture_root_count() != Some(0) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    if pre_context {
+        assert_unpublished_and_reacquire(app, &wake, &fixture.target_cwd, previous, id).await;
+    } else {
+        let manager = app.pty_sessions().read().await.clone();
+        manager.mark_idle(id).await;
+        let hooks = MailboxTestHooks::default();
+        hooks.real_inject_sessions.lock().unwrap().insert(id);
+        let retry = MailboxPoller::new_with_test_hooks(hooks);
+        completes(retry.deliver_wake(app, &wake)).await.unwrap();
+        assert_eq!(backend.spawn_attempts(id), 1);
+        assert!(!backend.writes_for(id).is_empty());
+    }
+    close_coordinator(&coordinator).await;
 }

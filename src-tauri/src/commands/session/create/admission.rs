@@ -1,10 +1,6 @@
 //! Admission state for one session create: target lease, carrier reservation and resources.
-//! Owns `OwnedCreateAdmission`, `OwnedCreateTargetLease`, `CreateResourceAdmission` and the
-//! coordinator marker ticket `CoordinatorCreateTicket`, which restores cleared close markers
-//! when a create fails before any PTY may exist.
-//! Acquires the create publication region (carrier permit plus target and capacity checks) and
-//! seeds coordinator clocks in `note_coordinator_create_on_app`.
-//! It does not spawn or publish; that is `create::core` and `create::publication`.
+//! Owns the create publication region and restores coordinator close markers when a
+//! create fails before any PTY may exist. Spawn and publication live in sibling modules.
 
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 #[cfg(test)]
@@ -27,8 +23,51 @@ use std::sync::Mutex;
 use tauri::AppHandle;
 use tauri::Emitter;
 use tauri::Manager;
+use tokio::time::Instant;
 use uuid::Uuid;
 
+#[cfg(test)]
+type WakeCreateObserver =
+    dyn Fn(&'static str, Option<Uuid>) -> futures::future::BoxFuture<'static, bool> + Send + Sync;
+
+#[derive(Clone, Default)]
+pub(super) struct WakeCreateScope {
+    pub(super) deadline: Option<Instant>,
+    #[cfg(test)]
+    pub(super) probe: Option<Arc<WakeCreateObserver>>,
+}
+
+tokio::task_local! {
+    pub(super) static WAKE_CREATE_SCOPE: WakeCreateScope;
+}
+
+pub(super) fn wake_create_scope() -> WakeCreateScope {
+    WAKE_CREATE_SCOPE.try_with(Clone::clone).unwrap_or_default()
+}
+
+#[cfg(test)]
+pub(super) async fn observe_wake_create(stage: &'static str, binding: Option<Uuid>) -> bool {
+    match wake_create_scope().probe {
+        Some(probe) => probe(stage, binding).await,
+        None => false,
+    }
+}
+
+fn check_unbound_wake_deadline(owner: &Mutex<OwnedCreateAdmission>) -> Result<(), String> {
+    if wake_create_scope()
+        .deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+        && owner.lock().is_ok_and(|owner| {
+            !owner.preheld_target
+                && owner.owned_replacement.is_none()
+                && !owner.blocked_bound
+                && owner.capacity_error.is_none()
+        })
+    {
+        return Err("wake delivery timed out".into());
+    }
+    Ok(())
+}
 /// (#2413) One in-flight coordinator create. Must end with `succeeded()` or
 /// `failed()`; Drop without either counts as `failed()` (cancel/panic safety);
 /// `failed()`/Drop with the spawn fence set counts as `succeeded()`.
@@ -492,6 +531,9 @@ pub(crate) async fn resume_create_resource_admission(
         if eligible {
             break;
         }
+        #[cfg(test)]
+        observe_wake_create("resource_refused", None).await;
+        check_unbound_wake_deadline(owner)?;
         tokio::task::yield_now().await;
     }
     // Fresh limits, outside U/S/target guards. No retry on a real quota error.
@@ -668,9 +710,14 @@ pub(crate) async fn acquire_create_publication_region(
 ) -> Result<crate::session::manager::CarrierMutationPermit, String> {
     loop {
         ensure_owned_create_target(owner).await?;
+        #[cfg(test)]
+        observe_wake_create("publication_before", None).await;
         if let Some(permit) = try_acquire_create_publication_region(owner, manager).await {
             return Ok(permit);
         }
+        #[cfg(test)]
+        observe_wake_create("publication_refused", None).await;
+        check_unbound_wake_deadline(owner)?;
         tokio::task::yield_now().await;
     }
 }
@@ -780,16 +827,23 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
     lifecycle_domain: Option<&LifecycleEntryAuthority>,
     inline_transaction: Option<&SelectionTransaction<R>>,
 ) -> Result<(), String> {
+    let tracker = app
+        .state::<Arc<Mutex<PtyManager>>>()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .response_close_state();
+    let publish = move |written: &crate::config::settings::AppSettings| {
+        tracker.apply_settings(
+            written.response_close_enabled,
+            written.response_close_idle_seconds,
+            std::time::Instant::now(),
+        );
+    };
     if lifecycle_domain.is_some()
         || inline_transaction.is_some_and(SelectionTransaction::has_restore_context)
     {
         // The actual outer lifecycle/restore executor already owns this effect.
         // Its borrow and outcome must return to that same executor, not a child.
-        let tracker = app
-            .state::<Arc<Mutex<PtyManager>>>()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .response_close_state();
         return crate::config::archive_gate::enforce_unarchived_for_spawn(
             app,
             cwd,
@@ -805,13 +859,7 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
                 .await
                 .map(Some)
             },
-            |written| {
-                tracker.apply_settings(
-                    written.response_close_enabled,
-                    written.response_close_idle_seconds,
-                    std::time::Instant::now(),
-                );
-            },
+            publish,
         )
         .await;
     }
@@ -820,45 +868,53 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
     let app = app.clone();
     let cwd = cwd.to_owned();
     let session_label = session_label.to_owned();
-    let tracker = app
-        .state::<Arc<Mutex<PtyManager>>>()
+    let mut scope = wake_create_scope();
+    // The later archive recheck owns a resource region and may already be bound.
+    let first_archive_probe = create_owner
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .response_close_state();
-    crate::config::sessions_persistence::run_owned_persist_core(async move {
-        crate::config::archive_gate::enforce_unarchived_for_spawn(
+        .is_ok_and(|owner| owner.resource.is_none());
+    if !first_archive_probe {
+        scope.deadline = None;
+    }
+    let archive = WAKE_CREATE_SCOPE.scope(scope, async move {
+        let result = crate::config::archive_gate::enforce_unarchived_for_spawn(
             &app,
             &cwd,
             &session_label,
             || {
                 let owner = create_owner.clone();
-                async move { ensure_owned_create_target(&owner).await }
+                async move {
+                    check_unbound_wake_deadline(&owner)?;
+                    ensure_owned_create_target(&owner).await
+                }
             },
             || {
                 let owner = create_owner.clone();
                 let manager = manager.clone();
                 async move {
                     let admitted = try_acquire_create_publication_region(&owner, &manager).await;
+                    #[cfg(test)]
+                    if admitted.is_none() {
+                        observe_wake_create("archive_refused", None).await;
+                    }
                     if admitted.is_none() && owner.lock().is_ok_and(|owner| owner.preheld_target) {
                         if let Ok(mut owner) = owner.lock() {
                             owner.blocked_bound = true;
                         }
                         return Err("targetCreateGateUnavailable".to_string());
                     }
+                    check_unbound_wake_deadline(&owner)?;
                     Ok::<_, String>(admitted)
                 }
             },
-            |written| {
-                tracker.apply_settings(
-                    written.response_close_enabled,
-                    written.response_close_idle_seconds,
-                    std::time::Instant::now(),
-                );
-            },
+            publish,
         )
-        .await
-    })
-    .await
+        .await;
+        #[cfg(test)]
+        observe_wake_create("archive_exit", None).await;
+        result
+    });
+    crate::config::sessions_persistence::run_owned_persist_core(archive).await
 }
 
 pub(crate) fn release_resource_launch_permit(

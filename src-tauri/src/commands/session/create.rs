@@ -1,6 +1,8 @@
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 use crate::config::agent_command::AgentSpawnCommand;
 use crate::phone::mailbox::host::MailboxSessionCreate;
+#[cfg(test)]
+use crate::phone::mailbox::host::WakeCreateProbe;
 use crate::pty::backend::PtyViewport;
 use crate::pty::backend::ResolvedAgentHostShell;
 use crate::pty::manager::PtyManager;
@@ -183,7 +185,15 @@ pub async fn create_session_inner<R: tauri::Runtime>(
 pub(crate) async fn create_session_inner_for_wake<R: tauri::Runtime>(
     app: &AppHandle<R>,
     request: MailboxSessionCreate<'_>,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<SessionInfo, String> {
+    let scope = admission::WakeCreateScope {
+        deadline,
+        #[cfg(test)]
+        probe: app
+            .try_state::<WakeCreateProbe>()
+            .map(|probe| probe.observe.clone()),
+    };
     let MailboxSessionCreate {
         session_mgr,
         pty_mgr,
@@ -202,36 +212,40 @@ pub(crate) async fn create_session_inner_for_wake<R: tauri::Runtime>(
         selection_intent,
     } = request;
     wake_create_result(
-        create_session_inner_impl(
-            app,
-            session_mgr,
-            pty_mgr,
-            shell,
-            shell_args,
-            cwd,
-            session_name,
-            agent_id,
-            agent_label,
-            skip_tooling_save,
-            git_repos,
-            skip_auto_resume,
-            resolved_spawn,
-            resolved_agent_host_shell,
-            viewport,
-            selection_intent,
-            None,
-            None,
-            None,
-            None,
-            false,
-            None,
-            crate::config::sessions_persistence::default_creation_gate_enforcement(),
-            None,
-            None,
-            None,
-            None,
-        )
-        .await?,
+        admission::WAKE_CREATE_SCOPE
+            .scope(
+                scope,
+                create_session_inner_impl(
+                    app,
+                    session_mgr,
+                    pty_mgr,
+                    shell,
+                    shell_args,
+                    cwd,
+                    session_name,
+                    agent_id,
+                    agent_label,
+                    skip_tooling_save,
+                    git_repos,
+                    skip_auto_resume,
+                    resolved_spawn,
+                    resolved_agent_host_shell,
+                    viewport,
+                    selection_intent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                    crate::config::sessions_persistence::default_creation_gate_enforcement(),
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            )
+            .await?,
     )
 }
 
@@ -413,6 +427,47 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
     .await
 }
 
+fn use_lexical_create_core<R: tauri::Runtime>(
+    preheld: bool,
+    inline_transaction: Option<&SelectionTransaction<R>>,
+    lifecycle_domain: Option<&LifecycleEntryAuthority>,
+) -> Result<bool, String> {
+    if inline_transaction.is_some_and(|transaction| {
+        transaction.has_restore_context() && !transaction.has_active_restore_capability()
+    }) {
+        if let Some(domain) = lifecycle_domain {
+            domain
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    // The accepted lifecycle job or PTY producer keeps its lexical lease.
+    Ok(preheld
+        || inline_transaction.is_some_and(|transaction| {
+            transaction.has_accepted_lifecycle_core() || transaction.has_active_restore_capability()
+        })
+        || lifecycle_domain.is_some())
+}
+
+async fn run_detached_create(
+    create: impl std::future::Future<Output = Result<CreateCompletion, String>> + Send + 'static,
+) -> Result<CreateCompletion, String> {
+    let core = admission::WAKE_CREATE_SCOPE.scope(admission::wake_create_scope(), async move {
+        let result = create.await;
+        #[cfg(test)]
+        {
+            let id = match &result {
+                Ok(CreateCompletion::Finalized(info)) => uuid::Uuid::parse_str(&info.id).ok(),
+                _ => None,
+            };
+            admission::observe_wake_create("generic_exit", id).await;
+        }
+        result
+    });
+    crate::config::sessions_persistence::run_owned_persist_core(core).await
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "impl threads every create, restore and inline-selection input"
@@ -436,35 +491,17 @@ pub(crate) async fn create_session_inner_impl<R: tauri::Runtime>(
     selection_intent: CreateSelectionIntent,
     pending_start_fresh: Option<bool>,
     pending_communication: Option<SessionCommunication>,
-    inline_transaction: Option<&SelectionTransaction<R>>,
+    transaction: Option<&SelectionTransaction<R>>,
     inline_cause: Option<SelectionCause>,
     defer_inline_finalization: bool,
-    preheld_target: Option<&crate::api::message_store::PtyInputTargetOwnership<'_>>,
+    preheld: Option<&crate::api::message_store::PtyInputTargetOwnership<'_>>,
     enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
     coding_agent_binding: Option<crate::session::manager::CodingAgentBinding>,
-    lifecycle_domain: Option<&LifecycleEntryAuthority>,
+    domain: Option<&LifecycleEntryAuthority>,
     owned_replacement: Option<crate::session::selection::OwnedReplacementContinuation>,
     initial_last_prompt: Option<InitialLastPrompt>,
 ) -> Result<CreateCompletion, String> {
-    if inline_transaction.is_some_and(|transaction| {
-        transaction.has_restore_context() && !transaction.has_active_restore_capability()
-    }) {
-        if let Some(domain) = lifecycle_domain {
-            domain
-                .interrupted
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
-        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
-    }
-    if preheld_target.is_some()
-        || inline_transaction.is_some_and(|transaction| {
-            transaction.has_accepted_lifecycle_core() || transaction.has_active_restore_capability()
-        })
-        || lifecycle_domain.is_some()
-    {
-        // Accepted lifecycle jobs already own the one outer create core.
-        // The PTY producer owns its entire operation, target stripe/file and
-        // exact target guard. Its borrowed proof stays in that task's scope.
+    if use_lexical_create_core(preheld.is_some(), transaction, domain)? {
         return create_session_inner_core(
             app,
             session_mgr,
@@ -484,23 +521,21 @@ pub(crate) async fn create_session_inner_impl<R: tauri::Runtime>(
             selection_intent,
             pending_start_fresh,
             pending_communication,
-            inline_transaction,
+            transaction,
             inline_cause,
             defer_inline_finalization,
-            preheld_target,
+            preheld,
             enforcement,
             coding_agent_binding,
-            lifecycle_domain,
+            domain,
             owned_replacement,
             initial_last_prompt,
         )
         .await;
     }
-    let app = app.clone();
-    let session_mgr = session_mgr.clone();
-    let pty_mgr = pty_mgr.clone();
-    let inline_transaction = inline_transaction.cloned();
-    crate::config::sessions_persistence::run_owned_persist_core(async move {
+    let (app, session_mgr, pty_mgr) = (app.clone(), session_mgr.clone(), pty_mgr.clone());
+    let transaction = transaction.cloned();
+    run_detached_create(async move {
         create_session_inner_core(
             &app,
             &session_mgr,
@@ -520,7 +555,7 @@ pub(crate) async fn create_session_inner_impl<R: tauri::Runtime>(
             selection_intent,
             pending_start_fresh,
             pending_communication,
-            inline_transaction.as_ref(),
+            transaction.as_ref(),
             inline_cause,
             defer_inline_finalization,
             None,

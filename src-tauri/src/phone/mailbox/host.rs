@@ -60,6 +60,55 @@ pub(crate) struct MailboxSessionCreate<'a> {
     pub(crate) selection_intent: CreateSelectionIntent,
 }
 
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct WakeCreateProbe {
+    pub(crate) budget: std::time::Duration,
+    pub(crate) observe:
+        Arc<dyn Fn(&'static str, Option<Uuid>) -> BoxFuture<'static, bool> + Send + Sync>,
+}
+
+#[cfg(test)]
+pub(crate) type WakeCreateEvents = tokio::sync::mpsc::UnboundedReceiver<(
+    &'static str,
+    Option<Uuid>,
+    tokio::sync::oneshot::Sender<bool>,
+)>;
+
+#[cfg(test)]
+impl WakeCreateProbe {
+    pub(crate) fn pause_at(
+        budget: std::time::Duration,
+        cuts: &[(&'static str, usize)],
+    ) -> (Self, WakeCreateEvents) {
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let cuts = Mutex::new(std::collections::VecDeque::from(cuts.to_vec()));
+        let observe = Arc::new(move |stage, binding| -> BoxFuture<'static, bool> {
+            let events = events.clone();
+            let mut cuts = cuts.lock().unwrap();
+            let pause = cuts
+                .front_mut()
+                .filter(|cut| cut.0 == stage)
+                .is_some_and(|cut| {
+                    cut.1 -= 1;
+                    cut.1 == 0
+                });
+            if pause {
+                cuts.pop_front();
+            }
+            Box::pin(async move {
+                if !pause {
+                    return false;
+                }
+                let (resume, wait) = tokio::sync::oneshot::channel();
+                events.send((stage, binding, resume)).unwrap();
+                wait.await.unwrap_or(false)
+            })
+        });
+        (Self { budget, observe }, receiver)
+    }
+}
+
 /// Native capabilities available to captured mailbox work.
 pub(crate) trait MailboxHost:
     WakeDeliveryState
@@ -100,10 +149,23 @@ pub(crate) trait MailboxHost:
 
     fn outbox(&self) -> &AppOutbox;
 
+    #[cfg(test)]
+    fn wake_create_probe(&self) -> Option<WakeCreateProbe> {
+        None
+    }
+
     fn create_session_inner<'a>(
         &'a self,
         request: MailboxSessionCreate<'a>,
     ) -> impl Future<Output = Result<SessionInfo, String>> + Send + 'a;
+
+    fn create_session_inner_for_wake<'a>(
+        &'a self,
+        request: MailboxSessionCreate<'a>,
+        _deadline: Option<tokio::time::Instant>,
+    ) -> impl Future<Output = Result<SessionInfo, String>> + Send + 'a {
+        self.create_session_inner(request)
+    }
 
     fn create_session_inner_with_pty_target_ownership<'a, 'guard>(
         &'a self,

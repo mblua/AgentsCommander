@@ -7,9 +7,10 @@ use super::notice::{
     OutboxOrigin, WakeDeliveryOrigin, ERR_INVALID_DISPATCH_PROFILE,
 };
 use super::poller::{
-    log_wake_ended_without_input, owned_replacement_launch_recipe, MailboxPoller,
-    OutboxAuthenticationFacts, OutboxStage, OwnedPeerTarget, OwnedPeerWakeExecution,
-    OwnedPeerWakeStep, RetainedExit, ValidatedWake, ERR_WAKE_RETAINED,
+    check_wake_deadline, log_wake_ended_without_input, owned_replacement_launch_recipe,
+    MailboxPoller, OutboxAuthenticationFacts, OutboxStage, OwnedPeerTarget, OwnedPeerWakeExecution,
+    OwnedPeerWakeStep, RetainedExit, ValidatedWake, WakeDispatch, ERR_WAKE_DELIVERY_TIMEOUT,
+    ERR_WAKE_RETAINED, WAKE_ATTEMPT,
 };
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
@@ -240,6 +241,9 @@ fn log_core_end(result: &Result<OwnedPeerWakeStep, String>, id: &str, to: &str, 
 }
 
 fn retained_wake_error(msg: &OutboxMessage, previous: Uuid, exit: &RetainedExit) -> String {
+    if exit.stage == "deadline" {
+        return ERR_WAKE_DELIVERY_TIMEOUT.into();
+    }
     let error = format!("{ERR_WAKE_RETAINED}: stage={} rollback=none", exit.stage);
     log_wake_ended_without_input(
         &msg.id,
@@ -803,6 +807,7 @@ impl MailboxPoller {
             }
             drop(exact);
             drop(stripe);
+            check_wake_deadline()?;
             tokio::task::yield_now().await;
         }
     }
@@ -829,6 +834,7 @@ impl MailboxPoller {
         super::wake_injection::admit_peer_text(msg, &msg.body, delivery.0, delivery.1)?;
         let (request, resolved_command) = owned_replacement_request(plan, dispatch.1);
         let manager = app.pty_sessions().read().await.clone();
+        WakeDispatch::OwnedAdmission.mark();
         let target = match self
             .admit_owned_peer_replacement(app, msg, &request, previous)
             .await?
@@ -880,7 +886,8 @@ impl MailboxPoller {
         }
         // Common create borrows the lexical proof inside the existing owned core.
         let (id, to) = (msg.id.clone(), msg.to.clone());
-        let result = run_owned_persist_core(async move {
+        let attempt = WAKE_ATTEMPT.try_with(Clone::clone).ok().flatten();
+        run_owned_persist_core(WAKE_ATTEMPT.scope(attempt, async move {
             let result = delivery
                 .execute_owned_peer_replacement(&app, &pty, &mut execution)
                 .await;
@@ -895,9 +902,8 @@ impl MailboxPoller {
             let result = owned_peer_completion(result, &completion, &manager, &pty).await;
             log_core_end(&result, &id, &to, previous);
             result
-        })
-        .await;
-        result
+        }))
+        .await
     }
 
     fn with_owned_source_validation<S: MailboxHost>(

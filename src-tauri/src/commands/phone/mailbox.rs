@@ -69,11 +69,25 @@ impl<R: tauri::Runtime> MailboxHost for tauri::AppHandle<R> {
         self.state::<AppOutbox>().inner()
     }
 
+    #[cfg(test)]
+    fn wake_create_probe(&self) -> Option<crate::phone::mailbox::host::WakeCreateProbe> {
+        self.try_state::<crate::phone::mailbox::host::WakeCreateProbe>()
+            .map(|probe| probe.inner().clone())
+    }
+
     async fn create_session_inner<'a>(
         &'a self,
         request: MailboxSessionCreate<'a>,
     ) -> Result<SessionInfo, String> {
-        crate::commands::session::create_session_inner_for_wake(self, request).await
+        crate::commands::session::create_session_inner_for_wake(self, request, None).await
+    }
+
+    async fn create_session_inner_for_wake<'a>(
+        &'a self,
+        request: MailboxSessionCreate<'a>,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<SessionInfo, String> {
+        crate::commands::session::create_session_inner_for_wake(self, request, deadline).await
     }
 
     async fn create_session_inner_with_pty_target_ownership<'a, 'guard>(

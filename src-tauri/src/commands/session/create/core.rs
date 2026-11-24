@@ -342,19 +342,30 @@ pub(crate) async fn reserve_launch<R: tauri::Runtime>(
     create_pending(ctx, input, state).await
 }
 
+#[cfg(test)]
+async fn force_unreadable_create_owner(owner: &Mutex<super::admission::OwnedCreateAdmission>) {
+    let binding = owner.lock().ok().map(|owner| owner.binding.session_id());
+    if super::admission::observe_wake_create("pending_mutex", binding).await {
+        let unwind = std::panic::catch_unwind(|| {
+            let _guard = owner.lock().unwrap();
+            panic!("force exact pre-Pending create-owner refusal");
+        });
+        assert!(unwind.is_err() && owner.is_poisoned());
+    }
+}
+
 pub(crate) async fn create_pending<R: tauri::Runtime>(
     ctx: &CreateBodyContext<'_, R>,
     mut input: CreateInput,
     mut state: LaunchState,
 ) -> Result<CreateCompletion, String> {
     let (pty_mgr, shell, cwd) = (ctx.pty_mgr, ctx.shell, ctx.cwd);
-    let create_owner = ctx.create_owner;
     let resource_monitor = &state.resource_monitor;
     let resource_permit = &mut state.resource_permit;
     let mgr = &state.mgr;
-    // Reuse retained B capability; publication must not mint another binding.
-    let prepared_binding = create_owner.lock().ok().map(|owner| owner.binding);
-    let Some(prepared_binding) = prepared_binding else {
+    #[cfg(test)]
+    force_unreadable_create_owner(ctx.create_owner).await;
+    let Some(prepared_binding) = ctx.create_owner.lock().ok().map(|owner| owner.binding) else {
         return Ok(CreateCompletion::Retained);
     };
     let carrier_u0 = pending_carrier(ctx, mgr, resource_monitor, resource_permit).await?;
@@ -375,12 +386,10 @@ pub(crate) async fn create_pending<R: tauri::Runtime>(
         Some(permit) => permit,
         None => return Ok(CreateCompletion::Retained),
     };
-    let spawn_mark = {
-        let pty = pty_mgr
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        pty.mark_spawning(cwd, &input.session_label)
-    };
+    let spawn_mark = pty_mgr
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .mark_spawning(cwd, &input.session_label);
     let pending_result = mgr
         .create_pending_session_with_binding_and_carrier_permit(
             prepared_binding,
