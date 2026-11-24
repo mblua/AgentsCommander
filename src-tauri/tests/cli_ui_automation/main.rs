@@ -323,11 +323,11 @@ where
     spawn_request_watcher(automation_dir.join("requests"), move |_path, request| {
         let request_id = request["requestId"].as_str().unwrap().to_string();
         let response = make_response(request);
-        std::fs::write(
-            responses_dir.join(format!("{request_id}.json")),
-            serde_json::to_string(&response).unwrap(),
-        )
-        .unwrap();
+        // Stage then rename, as the app's own writer does: the CLI parses the
+        // response as soon as `<id>.json` exists, so it must never see it half written.
+        let staged = responses_dir.join(format!("{request_id}.tmp"));
+        std::fs::write(&staged, serde_json::to_string(&response).unwrap()).unwrap();
+        std::fs::rename(&staged, responses_dir.join(format!("{request_id}.json"))).unwrap();
     })
 }
 
