@@ -33,6 +33,7 @@ const CURRENT_KEY = "ac.ipc.bb.cur.web";
 const ROTATED_KEY = "ac.ipc.bb.prev.web";
 const TICK_MS = 1_000;
 const on = () => Promise.resolve(true);
+const off = () => Promise.resolve(false);
 
 /** The 23 fields of phase 1's `BlackBoxRecord`, camelCase, in schema order. */
 const SCHEMA_FIELDS = [
@@ -450,4 +451,86 @@ describe("ipc black box", () => {
     expect(survivor.overdueTotal).toBe(1);
   });
 
+  describe("activation", () => {
+    const OWN_EVENTS = ["pointerdown", "pointermove", "pagehide", "visibilitychange"];
+    type Spy = { mock: { calls: unknown[][] } };
+    const ownListeners = (spy: Spy) =>
+      spy.mock.calls.filter(([name]) => OWN_EVENTS.includes(name as string));
+    const spies = () =>
+      [vi.spyOn(window, "addEventListener"), vi.spyOn(document, "addEventListener")] as const;
+    const expectInert = (winSpy: Spy, docSpy: Spy) => {
+      vi.advanceTimersByTime(5 * TICK_MS);
+      const keys = Object.keys(localStorage).filter((k) => k.startsWith("ac.ipc.bb."));
+      expect(keys).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(ownListeners(winSpy)).toEqual([]);
+      expect(ownListeners(docSpy)).toEqual([]);
+      expect(mocks.listen).not.toHaveBeenCalled();
+    };
+
+    it("off: no storage, timers, rAF or listeners", async () => {
+      const [winSpy, docSpy] = spies();
+      await installIpcBlackBox(off);
+      expectInert(winSpy, docSpy);
+    });
+
+    it("off: the registry costs one check and records nothing", async () => {
+      noteInvokeStart("before");
+      await installIpcBlackBox(off);
+      expect(noteInvokeStart("x")).toBe(0);
+      expect(() => noteInvokeSettle(0)).not.toThrow();
+      expect(() => noteEvent("e")).not.toThrow();
+      const first = installIpcBlackBox(off);
+      expect(installIpcBlackBox(on)).toBe(first);
+      await first;
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("a rejecting reader means off", async () => {
+      const [winSpy, docSpy] = spies();
+      await expect(
+        installIpcBlackBox(() => Promise.reject(new Error("x"))),
+      ).resolves.toBeUndefined();
+      expectInert(winSpy, docSpy);
+    });
+
+    it("off: harvest drains this window's own previous-run record", async () => {
+      localStorage.setItem(CURRENT_KEY, '{"previous":"cur"}');
+      localStorage.setItem(ROTATED_KEY, '{"previous":"prev"}');
+      await installIpcBlackBox(off);
+      expect(localStorage.getItem(CURRENT_KEY)).toBe('{"previous":"cur"}');
+      const send = vi.fn(async (records: StoredBlackBox[]) => records.map((r) => r.key));
+      await harvestIpcBlackBox(send);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[0][0].map((r) => r.key)).toEqual([ROTATED_KEY, CURRENT_KEY]);
+      expect(localStorage.getItem(CURRENT_KEY)).toBeNull();
+      expect(localStorage.getItem(ROTATED_KEY)).toBeNull();
+    });
+
+    it("off: harvest still calls send with nothing stored", async () => {
+      await installIpcBlackBox(off);
+      const send = vi.fn(async () => [] as string[]);
+      await harvestIpcBlackBox(send);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith([]);
+    });
+
+    it("on: a call issued before the decision is in the first record", async () => {
+      const id = noteInvokeStart("early");
+      await installIpcBlackBox(on);
+      vi.advanceTimersByTime(TICK_MS);
+      expect(readRecord().pending).toContainEqual(expect.objectContaining({ id, cmd: "early" }));
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+    });
+
+    it("on: a later reader does not change the decision", async () => {
+      const first = installIpcBlackBox(on);
+      await first;
+      expect(installIpcBlackBox(off)).toBe(first);
+      vi.advanceTimersByTime(TICK_MS);
+      const tick1 = readRecord().tickSeq;
+      vi.advanceTimersByTime(TICK_MS);
+      expect(readRecord().tickSeq).toBe(tick1 + 1);
+    });
+  });
 });
