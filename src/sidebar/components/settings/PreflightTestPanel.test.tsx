@@ -15,7 +15,7 @@ import type {
   PreflightTestSnapshot, PreflightTestTarget,
 } from "../../../shared/types";
 
-// #3516/#3832 - the shared test panel: draft payload, target picker, chained
+// Draft payload, target picker, chained
 // polling, cancel-on-close, stale and cancelled results, and Escape ownership.
 // Fake timers: each poll is scheduled 500 ms after an awaited response, so every
 // poll is one advanceTimersByTimeAsync.
@@ -216,7 +216,7 @@ function draftOf(args: Args | undefined): PreflightTestDraft {
   return args?.draft as PreflightTestDraft;
 }
 
-describe("PreflightTestAPI (#3516)", () => {
+describe("PreflightTestAPI", () => {
   it("sends the exact command names and argument keys", async () => {
     const fake = new FakeTransport();
     fake.resolve("describe_preflight_target", target());
@@ -244,7 +244,7 @@ describe("PreflightTestAPI (#3516)", () => {
   });
 });
 
-describe("PreflightTestPanel (#3516/#3832)", () => {
+describe("PreflightTestPanel", () => {
   let cleanupDom: (() => void) | null = null;
   let h: Harness | null = null;
 

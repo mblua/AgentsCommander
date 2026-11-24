@@ -38,7 +38,7 @@ function config(overrides: Partial<WatcherConfig> = {}): WatcherConfig {
   return { ...newWatcherConfig(), ...overrides };
 }
 
-describe("isWatcherConfig (#1171)", () => {
+describe("isWatcherConfig", () => {
   it("accepts an entry carrying every field the Rust serializer always writes", () => {
     expect(isWatcherConfig(config())).toBe(true);
   });
@@ -105,7 +105,7 @@ describe("isWatcherConfig (#1171)", () => {
   });
 
   /**
-   * #1171 test 58g, the whole numeric contract and not only the obvious member of it.
+   * Test 58g, the whole numeric contract and not only the obvious member of it.
    *
    * `typeof n === "number" && n >= 0` is the naive correction and it must FAIL this: it still
    * admits `1.5` and `1e30`, both of which serde rejects for a `u64`, so both would be sent
@@ -138,12 +138,12 @@ describe("isWatcherConfig (#1171)", () => {
 });
 
 /**
- * #1171 - the birth state of a new row is a decision, not a preference.
+ * The birth state of a new row is a decision, not a preference.
  *
  * An empty pattern is a valid regex that matches every row, so a row born enabled turns Add
  * plus an accidental Save into a watcher that matches everything on every agent.
  */
-describe("a brand-new watcher row (#1171 test 58k)", () => {
+describe("a brand-new watcher row (test 58k)", () => {
   it("is born disabled", () => {
     expect(newWatcherConfig().enabled).toBe(false);
   });
@@ -157,13 +157,13 @@ describe("a brand-new watcher row (#1171 test 58k)", () => {
 });
 
 /**
- * #1171 test 58g and 58h, the request half.
+ * Test 58g and 58h, the request half.
  *
  * Both halves of the draft travel and nothing comes from disk, because running is a property
  * of the whole set and the modal edits agents and watchers in one store that one Save writes
  * together.
  */
-describe("the reach request (#1171)", () => {
+describe("the reach request", () => {
   const agents = [agent("a1", "claude"), agent("a2", "codex")];
 
   it("carries every valid row in key order, plus the draft agents", () => {
@@ -250,8 +250,8 @@ describe("the reach request (#1171)", () => {
   });
 });
 
-/** #1171 test 58i, the three wordings, which answer three different questions. */
-describe("how a row states its reach (#1171 test 58i)", () => {
+/** Test 58i, the three wordings, which answer three different questions. */
+describe("how a row states its reach (test 58i)", () => {
   const entry = (agentId: string, allocated: boolean): WatcherReachEntry => ({
     agentId,
     agentLabel: agentId.toUpperCase(),
@@ -292,7 +292,7 @@ describe("how a row states its reach (#1171 test 58i)", () => {
   });
 });
 
-describe("the commands selector (#1171)", () => {
+describe("the commands selector", () => {
   // The whole point of the two-state control: an empty multiselect must not become "[]".
   it("reports absent and null as All agents, and any list as Selected", () => {
     expect(selectorMode(config({ commands: undefined }))).toBe("all");
@@ -321,7 +321,7 @@ describe("the commands selector (#1171)", () => {
   });
 });
 
-describe("watcher ids (#1171)", () => {
+describe("watcher ids", () => {
   it("accepts the documented shape and rejects what it does not match", () => {
     expect(validateWatcherId("permission-prompt", [])).toBeNull();
     expect(validateWatcherId("w1", [])).toBeNull();
@@ -344,7 +344,7 @@ describe("watcher ids (#1171)", () => {
   });
 });
 
-describe("renaming a watcher (#1171)", () => {
+describe("renaming a watcher", () => {
   // Renaming is delete plus create, so what must be proven is that it takes nothing else
   // with it -- above all the entry this build could not read.
   it("moves one key and preserves every other entry, unreadable ones included", () => {
@@ -414,7 +414,7 @@ describe("renaming a watcher (#1171)", () => {
   });
 });
 
-describe("command stems for the Selected options (#1171)", () => {
+describe("command stems for the Selected options", () => {
   it("collapses five entries sharing one executable into one option", () => {
     const stems = distinctCommandStems([
       agent("a", "claude"),
@@ -431,7 +431,7 @@ describe("command stems for the Selected options (#1171)", () => {
   });
 });
 
-describe("watcher map ordering (#1171)", () => {
+describe("watcher map ordering", () => {
   it("lists ids in key order, which is the order the budget resolves in", () => {
     expect(sortedWatcherIds({ b: config(), a: config(), c: config() })).toEqual([
       "a",

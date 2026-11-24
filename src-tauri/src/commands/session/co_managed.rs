@@ -1,4 +1,4 @@
-//! SCC-side gathering for the Co-managed predicates and the Room reader demand (#2232).
+//! SCC-side gathering for the Co-managed predicates and the Room reader demand.
 //! Collects session, settings, orchestrator and reader-kind inputs (`CoManagedInputs`) and calls
 //! the leaf `config::co_managed` for `effective_state` and `capturable`.
 //! Raises and releases the Room reader demand, and implements `ReaderDemandHost` for `AppHandle`.
@@ -19,7 +19,7 @@ use tauri::Runtime;
 use uuid::Uuid;
 
 /// Gather every SCC-owned value the Co-managed effective state needs and call
-/// the leaf `config::co_managed::effective_state` (#2265, epic #2232).
+/// the leaf `config::co_managed::effective_state`.
 ///
 /// **The home of this function is a layering requirement, not a preference.**
 /// `commands::session` is already inside the 88-member SCC, so the arcs it
@@ -49,7 +49,7 @@ pub(crate) async fn co_managed_effective_state_for_session<R: Runtime>(
     ))
 }
 
-/// #2756 U2a sibling of [`co_managed_effective_state_for_session`]: whether the
+/// U2a sibling of [`co_managed_effective_state_for_session`]: whether the
 /// session may hold a Room reader and keep its candidate. Same gathering, so
 /// the two predicates cannot read different inputs; never reads the key or
 /// the catalog.
@@ -138,7 +138,7 @@ pub(crate) async fn co_managed_inputs_for_session<R: Runtime>(
 }
 
 /// Raise the **Room** demand for `session_id`, in `room_root`, if and only if
-/// the session is capturable (#2232 phase 4 section 5.1, #2756 U2a).
+/// the session is capturable.
 ///
 /// One call to the shared gathering function decides: it encodes global
 /// switch, orchestrator-only, provider-supported and flag-on. The key and the
@@ -153,7 +153,7 @@ pub(crate) async fn raise_room_reader_demand_in<R: Runtime>(
     room_root: &std::path::Path,
     session_id: Uuid,
 ) -> bool {
-    // #2516: sampled before readiness, so a release anywhere in the window up
+    // Sampled before readiness, so a release anywhere in the window up
     // to the install aborts the raise under the bridge lock.
     let expected = crate::commands::telegram::room_demand_epoch(app, session_id).await;
     #[cfg(test)]

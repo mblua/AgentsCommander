@@ -3,7 +3,7 @@ import { automationAttrs } from "../../shared/automation-hooks";
 import { focusOnMount } from "../../shared/focus-on-mount";
 
 /**
- * #4752 - confirmation before a replica is unleashed. Escape handling and classes
+ * Confirmation before a replica is unleashed. Escape handling and classes
  * from AgentMatrixNoticeModal; the backdrop button and Escape cancel. Cancel has the
  * default focus, so a stray Enter never unleashes the agent.
  */

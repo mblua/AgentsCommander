@@ -16,7 +16,7 @@ use rusqlite::{params, OptionalExtension};
 use std::time::Duration;
 
 impl MessageStore {
-    /// Lock the connection, recovering a poisoned lock (#98 Rule A).
+    /// Lock the connection, recovering a poisoned lock.
     fn lock_conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
         self.conn
             .lock()

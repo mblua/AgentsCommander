@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4805 P03 - temp-room groups, Alert me! and TASK title from the agent-row menu.
+// Temp-room groups, Alert me! and TASK title from the agent-row menu.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TemporaryRoomsPanel from "./TemporaryRoomsPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";
@@ -127,7 +127,7 @@ async function openDeleteModal() {
 const enter = (el: HTMLElement) =>
   el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 
-describe("#4805 TemporaryRoomsPanel groups and TASK title", () => {
+describe("TemporaryRoomsPanel groups and TASK title", () => {
   let cleanupDom: (() => void) | null = null;
   let cleanups: (() => void)[] = [];
   const track = <T extends { rendered: { cleanup: () => void } }>(r: T): T => {
@@ -176,6 +176,44 @@ describe("#4805 TemporaryRoomsPanel groups and TASK title", () => {
     click(byId(`${P}.groups.nonstop`)!);
     await waitFor(() => expect(fake.callsFor("update_temp_room_groups")).toHaveLength(1));
     expect(lastGroups(fake).nonStop).toMatchObject({ show: true, regex: TOKEN });
+  });
+
+  it("shows the title, disabled state and checkmark for each group membership kind", async () => {
+    track(setup({
+      config: {
+        ...defaultGroupsConfig(),
+        groups: [
+          { id: "invalid", name: "Invalid", regex: "[" },
+          { id: "custom", name: "Custom", regex: "^temp-room-" },
+          { id: "exact", name: "Exact", regex: TOKEN },
+          { id: "unmatched", name: "Unmatched", regex: "^other-room$" },
+        ],
+      },
+    }));
+    expect(byId(`${P}.groups.trigger`)).toBeNull();
+    await openGroups();
+    const choice = (id: string) => {
+      const button = byId(`${P}.groups.${id}`) as HTMLButtonElement;
+      return {
+        title: button.title,
+        disabled: button.disabled,
+        checkmark: button.querySelector(".session-context-option-check")?.textContent,
+      };
+    };
+    expect(choice("invalid")).toEqual({
+      title: "Fix this group's regex before adding a room", disabled: true, checkmark: "",
+    });
+    expect(choice("custom")).toEqual({
+      title: "Membership comes from a custom regex. Use Edit groups to change it.",
+      disabled: true,
+      checkmark: "✓",
+    });
+    expect(choice("exact")).toEqual({
+      title: "Remove this room from the group", disabled: false, checkmark: "✓",
+    });
+    expect(choice("unmatched")).toEqual({
+      title: "^other-room$", disabled: false, checkmark: "",
+    });
   });
 
   it("Create new group sends a group named as typed; a blank name shows the error", async () => {

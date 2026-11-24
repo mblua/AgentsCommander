@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# #4248 recipe v2 offline proof of scripts/ac4248-visible-check.jq (plan v3). No GUI.
+# Recipe v2 offline proof of scripts/ac4248-visible-check.jq (plan v3). No GUI.
 # Run: bash scripts/ac4248-visible-check-test.sh   (exit 0 only when every case passes)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -9,15 +9,17 @@ T=
 
 # S3 command, as run by the recipe; $1 is the GATE_FOCUS value.
 check() {
+  local focus=$1
   jq -rn --slurpfile s "$T/visible.samples" --slurpfile a0 "$T/visible-pre-active.json" \
     --slurpfile w0 "$T/visible-pre-workspace.json" \
     --slurpfile c0 "$T/visible-pre-cursor.json" \
-    --argjson focus "$1" -f "$checker"
+    --argjson focus "$focus" -f "$checker"
 }
 
 result() {
-  if test "$1" = ok; then echo "PASS $2"; else
-    echo "FAIL $2 ($1)"; fails=$((fails + 1)); fi
+  local status=$1 name=$2
+  if [[ "$status" = ok ]]; then echo "PASS $name"; else
+    echo "FAIL $name ($status)"; fails=$((fails + 1)); fi
   rm -rf -- "$T"
 }
 
@@ -28,7 +30,7 @@ expect() {
   got=$(check "$focus")
   rc=$?
   set -e
-  if test "$rc" -eq 0 && test "$got" = "$want"; then result ok "$name"
+  if [[ "$rc" -eq 0 && "$got" = "$want" ]]; then result ok "$name"
   else result "exit $rc, got '$got', want '$want'" "$name"; fi
 }
 
@@ -40,7 +42,7 @@ expect_error() {
   set -e
   rc=${out##*rc=}
   out=${out%rc=*}
-  if test "$rc" -ne 0 || test "$(printf '%s' "$out" | wc -l)" -ne 1; then
+  if [[ "$rc" -ne 0 || "$(printf '%s' "$out" | wc -l)" -ne 1 ]]; then
     result ok "$name"
   else result "exit $rc, output '$out' would be accepted" "$name"; fi
 }
@@ -67,7 +69,8 @@ good() {
 lines() { jq -c '.[]' "$T/samples.json" > "$T/visible.samples"; }
 # Apply a jq update to samples.json, then rewrite visible.samples.
 samples() {
-  jq "$1" "$T/samples.json" > "$T/samples.tmp"
+  local update=$1
+  jq "$update" "$T/samples.json" > "$T/samples.tmp"
   mv -- "$T/samples.tmp" "$T/samples.json"
   lines
 }
@@ -91,4 +94,4 @@ good; printf '{"utc": \n' >> "$T/visible.samples"; expect_error B1
 good; printf 'not json\n' > "$T/visible-pre-cursor.json"; expect_error B2
 
 echo "failures $fails"
-test "$fails" -eq 0 || exit 1
+[[ "$fails" -eq 0 ]] || exit 1

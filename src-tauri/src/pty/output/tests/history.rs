@@ -51,7 +51,7 @@ fn history_ring_is_bounded_and_line_aligned() {
     assert_eq!(state.parser_availability, ParserAvailability::Available);
 }
 
-/// #1458. A ring saturated by a newline-free stream (a coding agent's spinner rewriting one
+/// A ring saturated by a newline-free stream (a coding agent's spinner rewriting one
 /// line with `\r`) leaves the ring's front at an arbitrary byte offset, which lands inside an
 /// escape sequence most of the time. The seed must never emit that sequence's literal tail;
 /// with no `\n` anywhere in the ring there is nothing to realign to, so the attach takes the
@@ -81,7 +81,7 @@ fn a_newline_free_ring_seeds_the_mirror_instead_of_a_partial_sequence() {
     assert_eq!(data, expected);
 }
 
-/// #1458. The healthy path must stay byte identical: when the capped trim did realign the
+/// The healthy path must stay byte identical: when the capped trim did realign the
 /// ring, the seed is the ring verbatim, from its very first byte. Asserting the whole body
 /// against the ring is the point. An alignment scan applied unconditionally would silently
 /// drop the ring's first line here, and a `starts_with` on the line's prefix would still pass,
@@ -117,7 +117,7 @@ fn a_line_aligned_ring_still_seeds_the_whole_ring() {
     );
 }
 
-/// #1458 edge case. A ring whose only `\n` is its last byte does have a line start, but has
+/// Edge case. A ring whose only `\n` is its last byte does have a line start, but has
 /// nothing after it: aligning to it would seed the prologue and zero bytes of content, which
 /// blanks the attaching terminal. That case must take the mirror, exactly like a ring with no
 /// `\n` at all.
@@ -150,7 +150,7 @@ fn a_ring_whose_only_newline_is_its_last_byte_seeds_the_mirror() {
     assert_eq!(data, expected);
 }
 
-/// #1458. The recovering case, and the only one that exercises `history_from_first_line`'s
+/// The recovering case, and the only one that exercises `history_from_first_line`'s
 /// `Some` arm: an unaligned ring that still holds lines must seed from the byte after its
 /// first `\n`, not fall back to the mirror. Asserting the whole body is the point; a stub
 /// helper that always returns `None` passes every other test in this file.
@@ -193,7 +193,7 @@ fn an_unaligned_ring_with_a_later_newline_seeds_from_that_line() {
     );
 }
 
-/// #1458. The helper's four decided branches, pinned without a fixture because which half of
+/// The helper's four decided branches, pinned without a fixture because which half of
 /// the ring holds the first `\n` is a `VecDeque` layout detail no fanout test can choose.
 /// Covers 7.2 rows 8, 9 and 10 and the both-halves emptiness check.
 #[test]

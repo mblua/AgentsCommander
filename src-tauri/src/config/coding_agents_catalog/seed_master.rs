@@ -21,13 +21,13 @@ use super::{
 };
 
 // ---------------------------------------------------------------------------
-// #769 Phase 2 - dest-keyed config-folder masters + the re-seed button.
+// Dest-keyed config-folder masters + the re-seed button.
 //
 // A "master" is the shipped default config folder for a built-in, stored at
 // `<config_dir>/coding-agents/_seed/<dest>/` (e.g. `_seed/.claude/`). It is
 // seeded once at boot (create-if-absent, from the compiled-in embedded default),
 // user-editable thereafter, and used two ways:
-//   - the absent-only #598 `CatalogDefault` tier fills a NEW replica's `<dest>`
+//   - the absent-only `CatalogDefault` tier fills a NEW replica's `<dest>`
 //     from it (never overwriting existing config), and
 //   - the Settings re-seed button restores it to the embedded default (`.bak`
 //     first, then a trash-first atomic swap).
@@ -48,7 +48,7 @@ pub(crate) struct EmbeddedMasterFile {
 
 /// A dest-keyed embedded master: the shipped default config folder for a built-in.
 pub(crate) struct EmbeddedSeedMaster {
-    /// The catalog `key` this master belongs to (the #1912 support identity).
+    /// The catalog `key` this master belongs to (the support identity).
     pub(crate) key: &'static str,
     /// The command executable basename (lowercase) this master belongs to. Used
     /// for the re-seed button's exact-basename gating.
@@ -93,7 +93,7 @@ pub(crate) const EMBEDDED_SEED_MASTERS: &[EmbeddedSeedMaster] = &[
     },
 ];
 
-/// #1912 - the masters whose key is enabled in the table in force.
+/// The masters whose key is enabled in the table in force.
 pub(crate) fn supported_embedded_masters() -> impl Iterator<Item = &'static EmbeddedSeedMaster> {
     let table = active_builtin_agent_support();
     EMBEDDED_SEED_MASTERS
@@ -135,7 +135,7 @@ pub fn reseedable_command_basenames() -> Vec<String> {
 /// Reduce a coding-agent command to its executable basename (lowercase), mirroring
 /// the settings save path. `None` if the command does not tokenize.
 ///
-/// #1171 promoted this from private to `pub(crate)`. It is now the ONLY stem rule in the
+/// Promoted this from private to `pub(crate)`. It is now the ONLY stem rule in the
 /// tree and a second one must not be written, in Rust or in TypeScript: the `starts_with`
 /// rule in the frontend's `suggestedContextRegex` must not be ported here or reused, for the
 /// reason `reseed_master_for_command` states below - `pi` and `agent` false-match under a
@@ -148,10 +148,10 @@ pub(crate) fn command_executable_basename(command: &str) -> Option<String> {
     ))
 }
 
-/// #2566 - the ACCOUNT identity of a configured agent command: its program token,
+/// The ACCOUNT identity of a configured agent command: its program token,
 /// verbatim. Same key means same account and one shared weekly-quota reading. NOT
 /// `command_executable_basename` above, whose basename step folds `/a/claude` onto
-/// `claude`, and NOT resolved through PATH or the filesystem: see #2566 D1/D2.
+/// `claude`, and NOT resolved through PATH or the filesystem.
 pub(crate) fn command_account_key(command: &str) -> Option<String> {
     let normalized = crate::config::agent_command::normalize_legacy_agent_command(command).ok()?;
     Some(normalized.shell)
@@ -188,7 +188,7 @@ pub(crate) fn write_embedded_files_into(
 /// race). Present masters are user-owned and never touched. Fail-soft: logs and
 /// continues; never panics or aborts boot.
 ///
-/// #1318 - `ac_dir` is the project's `.ac` directory; `legacy_catalog_dir` is
+/// `ac_dir` is the project's `.ac` directory; `legacy_catalog_dir` is
 /// the legacy `<config_dir>/coding-agents` directory. When the project master is
 /// ABSENT and the legacy `<legacy>/_seed/<dest>/` is a real directory, the tree
 /// is copied VERBATIM (`copy_tree`, substitution OFF, symlinks skipped); an
@@ -198,7 +198,7 @@ pub(crate) fn write_embedded_files_into(
 /// legacy-copy ERROR the partial destination is removed and the embedded master
 /// is staged instead (a partial copy must never win). No size cap: a large
 /// legacy master is copied into every registered project (the verbatim promise
-/// wins). #1912: a de-supported master (a `false` row) is skipped ENTIRELY from
+/// wins). A de-supported master (a `false` row) is skipped ENTIRELY from
 /// every source - embedded staging and legacy `_seed/<dest>` tree copy alike.
 pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
     if all_masters_present(ac_dir) {
@@ -218,7 +218,7 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
             }
         }
 
-        // #1318 migration: absent project master + legacy REAL-directory master
+        // Migration: absent project master + legacy REAL-directory master
         // -> verbatim tree copy.
         let mut copied_from_legacy = false;
         if let Some(legacy) = legacy_catalog_dir {
@@ -283,7 +283,7 @@ pub fn ensure_seeded_masters(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) {
     }
 }
 
-/// #1912 - existence-only steady-state check for the MASTER dirs only. A
+/// Existence-only steady-state check for the MASTER dirs only. A
 /// de-supported master is never required. The catalog itself deliberately has
 /// no existence shortcut: every startup/registration must validate ownership
 /// and revision and recover or refresh, so only master staging keeps this

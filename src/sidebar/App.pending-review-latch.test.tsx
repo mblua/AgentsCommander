@@ -20,7 +20,7 @@ import {
 import { sessionsStore } from "./stores/sessions";
 import type { Session, SessionStatus } from "../shared/types";
 
-// #1779: the sidebar's pendingReview/waitingForInput mirror is fed by exactly two
+// The sidebar's pendingReview/waitingForInput mirror is fed by exactly two
 // events, session_idle and session_busy. A single missed session_busy latches the
 // amber dot forever, because nothing re-reads the backend's own view of the
 // session. This mounts the real SidebarApp and drives the real edge sequence over
@@ -99,7 +99,7 @@ function badge(root: HTMLElement, id: string): Element | null {
   return row(root, id).querySelector(".profile-outdated-badge");
 }
 
-describe("SidebarApp pending-review latch reconciliation (#1779)", () => {
+describe("SidebarApp pending-review latch reconciliation", () => {
   let cleanupDom: (() => void) | null = null;
   let reconcileIntervals: ReconcileIntervalSpy;
 

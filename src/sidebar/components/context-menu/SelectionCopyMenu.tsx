@@ -1,4 +1,4 @@
-// #2143 D-D - the one-item right-click menu over selected text. The text is
+// The one-item right-click menu over selected text. The text is
 // captured by the caller when the menu opens: pressing the item collapses the
 // selection, so reading it at click time would copy the empty string.
 import type { Component } from "solid-js";

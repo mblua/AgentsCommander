@@ -83,7 +83,7 @@ pub(crate) struct ResolvedLoopAgentCommand {
     agent_id: Option<String>,
     agent_label: Option<String>,
     resolved_spawn: Option<AgentSpawnCommand>,
-    /// #1271 - the configured host shell paired with the resolved agent, built
+    /// The configured host shell paired with the resolved agent, built
     /// from the same settings snapshot that produced the spawn.
     resolved_agent_host_shell: Option<crate::pty::backend::ResolvedAgentHostShell>,
 }
@@ -101,7 +101,7 @@ pub async fn deliver_loop_prompt<H: LoopDeliveryHost + ?Sized>(
     };
     let target_fqn = target.target_fqn.clone();
 
-    // (#885 J1/J2) A purge is destroying this agent right now.
+    // A purge is destroying this agent right now.
     // `deliver_loop_prompt` both injects into a live session and SPAWNS one
     // when none exists (`spawn_coordinator_session`), so an unguarded loop
     // tick can resurrect a peer the purge already destroyed. Keyed on the
@@ -282,7 +282,7 @@ async fn delivered_report<H: LoopDeliveryHost + ?Sized>(
     session_id: Uuid,
     prompt: String,
 ) -> LoopDeliveryReport {
-    // (#756) loop prompt = AC-injected post-boundary content: drop any
+    // Loop prompt = AC-injected post-boundary content: drop any
     // pending fresh intent (record + mirror).
     app.note_post_boundary(session_id).await;
     if let Err(e) = set_last_prompt(app, session_id, prompt.clone()).await {
@@ -473,7 +473,7 @@ fn stale_delivery_report(
     }
 }
 
-/// #2733 - the target room/orchestrator does not resolve on this machine.
+/// The target room/orchestrator does not resolve on this machine.
 /// Its own kind so the scheduler notifies once per transition, not per tick.
 fn target_unresolved_report(error: String) -> LoopDeliveryReport {
     LoopDeliveryReport {
@@ -503,7 +503,7 @@ fn failed_report(
     }
 }
 
-/// #2176 - the agent pin carried by the replica's persisted session record:
+/// The agent pin carried by the replica's persisted session record:
 /// the `agentId` the session was launched with and its stored
 /// `requestedProfile` (always from the same record).
 #[derive(Debug, Clone, PartialEq)]
@@ -528,7 +528,7 @@ async fn find_coordinator_session<H: LoopDeliveryHost + ?Sized>(
     let session_mgr = app.sessions();
     let mgr = session_mgr.read().await;
     let sessions = mgr.list_sessions().await;
-    // #2176 - the persisted agent pin is extracted from the same unfiltered
+    // The persisted agent pin is extracted from the same unfiltered
     // snapshot the live/stale logic uses. The helper repeats the filter and
     // status ordering on purpose, so the extraction is one tested unit.
     let persisted_agent = persisted_agent_for_replica(&sessions, coordinator_replica_dir);
@@ -555,11 +555,10 @@ async fn find_coordinator_session<H: LoopDeliveryHost + ?Sized>(
                 false
             } else {
                 let pty_mgr = app.ptys();
-                let has_pty = pty_mgr
+                pty_mgr
                     .lock()
                     .map_err(|_| "PtyManager lock poisoned".to_string())?
-                    .has_session(id);
-                has_pty
+                    .has_session(id)
             }
         };
         if loop_candidate_is_live(&session.status, has_pty) {
@@ -586,7 +585,7 @@ async fn find_coordinator_session<H: LoopDeliveryHost + ?Sized>(
     })
 }
 
-/// #2176 - pure extraction of the replica's pinned agent from the unfiltered
+/// Pure extraction of the replica's pinned agent from the unfiltered
 /// `list_sessions()` output. It reproduces, in order, what
 /// `find_coordinator_session` does to its own candidates: the same
 /// working-directory filter, then the same status ordering (`sort_by_key` is
@@ -686,7 +685,7 @@ async fn spawn_coordinator_session<H: LoopDeliveryHost + ?Sized>(
 
 /// Provider auto-resume policy for a loop spawn. Every prior provider keeps its
 /// historical `false` (cold creation and known-state wake both allow the
-/// provider's own resume logic). #1873: a cold Muse creation (`had_existing_match
+/// provider's own resume logic). A cold Muse creation (`had_existing_match
 /// == false`) on a trusted, exact, empty-argv local recipe must launch plain
 /// `muse`; a Muse exited/missing-PTY wake (`true`) resumes with `resume --last`.
 fn loop_spawn_skip_auto_resume(
@@ -830,7 +829,7 @@ async fn resolve_loop_agent_command<H: LoopDeliveryHost + ?Sized>(
     resolve_loop_agent_command_from_settings(&settings, replica_dir, persisted_agent)
 }
 
-/// #2176 - the whole Loop wake agent decision, kept free of transport so it
+/// The whole Loop wake agent decision, kept free of transport so it
 /// is directly unit-testable.
 ///
 /// Rank 1 (`tooling.currentCodingAgent`, validated) and rank 2 (the persisted
@@ -908,7 +907,7 @@ fn resolved_loop_command_from_spawn(
         agent_id: Some(spawn.trusted_agent_id.clone()),
         agent_label: Some(spawn.trusted_agent_label.clone()),
         resolved_spawn: Some(spawn),
-        // #1271 - same-snapshot host shell: `settings` is the exact snapshot
+        // Same-snapshot host shell: `settings` is the exact snapshot
         // the caller used to build the spawn.
         resolved_agent_host_shell: Some(crate::pty::backend::ResolvedAgentHostShell {
             program: settings.default_shell.clone(),

@@ -42,3 +42,6 @@ dist-portable/
 # Generated module arcs and task-owned publication temporaries (#3288).
 /src-tauri/module-arcs.txt
 /src-tauri/module-arcs.txt.*.tmp
+
+# Per-user Claude Code local settings (#4939). The RTK template under docs/ stays tracked.
+/.claude/settings.local.json

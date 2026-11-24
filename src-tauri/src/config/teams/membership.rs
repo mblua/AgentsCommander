@@ -37,14 +37,14 @@ pub fn resolve_agent_target(
     project_paths: &[String],
 ) -> Result<String, ResolutionError> {
     // Canonical Root Agent reply target. Symmetric with `ROOT_AGENT_SENDER`
-    // appearing as `msg.from` on root-originated messages. See #293.
+    // appearing as `msg.from` on root-originated messages.
     // Identity-verified-coordinator gating happens later (CLI:
     // `coordinator_to_root_target_allowed`; mailbox:
     // `validate_coordinator_to_root_route`).
     if crate::config::root_agent::is_root_agent_target(target) {
         return Ok(target.to_string());
     }
-    // Temp-room address passthrough (#4780). Gating happens in the CLI route
+    // Temp-room address passthrough. Gating happens in the CLI route
     // check and the mailbox.
     if crate::config::temp_rooms::is_temp_room_address(target) {
         return Ok(target.to_string());
@@ -55,7 +55,7 @@ pub fn resolve_agent_target(
         return Err(ResolutionError::InvalidShape(target.to_string()));
     }
 
-    // Issue #134: reject filesystem-directory names (`__agent_*`, `_agent_*`)
+    // Reject filesystem-directory names (`__agent_*`, `_agent_*`)
     // anywhere in the agent segment. `agent_name_from_path` strips these
     // prefixes when deriving display names, so a legitimate peer FQN never
     // contains them — accepting them silently routes the message into the void.

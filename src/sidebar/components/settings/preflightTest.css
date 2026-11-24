@@ -1,4 +1,4 @@
-/* #3832 - preflight test panel: unsaved-draft warning and the "Test on" picker.
+/* Preflight test panel: unsaved-draft warning and the "Test on" picker.
    Every warning use passes the same --sidebar-warning fallback. */
 
 .settings-preflight-panel.preflight-test-unsaved {

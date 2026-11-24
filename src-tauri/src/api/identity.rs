@@ -1,4 +1,4 @@
-//! API identity resolution (#791 §9, §0.5 G5 + HIGH-3).
+//! API identity resolution.
 //!
 //! The API replaces the filesystem model's LOCATION-based identity with a
 //! TOKEN-based one. The `from` is derived AT REQUEST TIME from the matched

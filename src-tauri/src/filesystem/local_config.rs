@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 const CONFIG_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// #1938 - a held sidecar lock. The `File` IS the lock: dropping this guard
+/// A held sidecar lock. The `File` IS the lock: dropping this guard
 /// closes the handle and releases the OS lock. The sidecar file itself is
 /// deliberately left on disk.
 #[derive(Debug)]

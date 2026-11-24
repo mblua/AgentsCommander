@@ -1,3 +1,7 @@
+//! Telegram bridge supervisor: spawns the session reader and the poll loop
+//! that link one session to a Telegram bot, and handles network errors.
+//! It does not format messages or own bot settings.
+
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -187,7 +191,7 @@ impl PollNetworkErrorState {
 pub enum SessionReaderKind {
     /// Watch Claude Code's append-only JSONL session log at the resolved projects dir.
     ///
-    /// `transcript_id` is the transcript id AC minted at spawn (#2454), when
+    /// `transcript_id` is the transcript id AC minted at spawn, when
     /// the effective argv names one; the reader pins its first attach to
     /// `<id>.jsonl`. `None` keeps the attach by newest mtime.
     Claude {
@@ -210,7 +214,7 @@ pub struct BridgeHandle {
     pub tasks: Vec<JoinHandle<()>>,
 }
 
-/// The Telegram destination a reader sends to (#2232 phase 4 section 6).
+/// The Telegram destination a reader sends to (phase 4 section 6).
 ///
 /// This is the Claude watcher's own target type under the supervisor's name.
 /// The watchers must stay outside the 88-member SCC (section 10), so the arc
@@ -229,7 +233,7 @@ pub struct ReaderTask {
     pub frontier: Arc<Mutex<Option<Cut>>>,
 }
 
-/// The supervisor's send side of a reader's destination watch (#2232 phase 4).
+/// The supervisor's send side of a reader's destination watch (phase 4).
 ///
 /// Each watcher declares its own `BotTarget` (section 4.1/§10), so the
 /// supervisor keeps one sender per watcher flavour rather than sharing a type
@@ -430,7 +434,7 @@ pub fn spawn_reader(
 ///
 /// `reader_mode` is `true` when the session has a transcript reader: the PTY
 /// 6-phase pipeline is then skipped, and the reader itself is owned by the
-/// supervisor, not by this handle (#2232 phase 4).
+/// supervisor, not by this handle (phase 4).
 #[allow(
     clippy::too_many_arguments,
     reason = "bridge spawn needs bot, chat, session, PTY, ports and reader mode"
@@ -505,7 +509,7 @@ const STABILIZATION_MS: u64 = 800;
 const TICK_MS: u64 = 200;
 const FLUSH_DELAY_MS: u64 = 500;
 
-// The 8-argument signature is the frozen plan spec (#1549 §5.4): the PTY-bridge
+// The 8-argument signature is the frozen plan spec (§5.4): the PTY-bridge
 // chain threads `agent_kind` as a loose parameter by design (no struct grouping).
 #[allow(
     clippy::too_many_arguments,

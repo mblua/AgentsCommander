@@ -15,7 +15,7 @@ import {
 import { sessionsStore } from "./stores/sessions";
 import { liveSelection, SESSION_A, SESSION_B } from "../shared/testing/session-selection";
 
-// #1624 end-to-end: the full SidebarApp keeps the coordinator tile order frozen
+// End-to-end: the full SidebarApp keeps the coordinator tile order frozen
 // while a context menu is open even after the pointer leaves the sidebar, and
 // releases on Escape / outside click.
 
@@ -118,7 +118,7 @@ function quickOrder(rendered: { root: HTMLDivElement }): string[] {
  *  without flushing first would hit a menu that is not yet listening. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("SidebarApp sidebar order lock (#1624)", () => {
+describe("SidebarApp sidebar order lock", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -160,7 +160,7 @@ describe("SidebarApp sidebar order lock (#1624)", () => {
         layout.dispatchEvent(new Event("pointerenter"));
         layout.dispatchEvent(new Event("pointerleave"));
         await Promise.resolve();
-        // The exact #1624 repro state: pointer left the sidebar, menu still open.
+        // The exact repro state: pointer left the sidebar, menu still open.
         expect(sessionsStore.sidebarPointerInside).toBe(false);
         expect(sessionsStore.sidebarMenuOpen).toBe(true);
 

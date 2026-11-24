@@ -152,7 +152,7 @@ pub fn resolve_profile(
             normalize_profile_from_source(Some(letter.clone()), &mut warnings, "agent default")
         });
 
-    // #1635-2 D2: a wake dispatch request outranks the replica pin for that
+    // 2 D2: a wake dispatch request outranks the replica pin for that
     // spawn only; every other caller keeps the historical ranking (instance
     // override wins over the explicit request).
     let requested_profile = if request.requested_profile_authoritative {

@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::settings::default_blocking_menus_for_command;
 use crate::config::settings::BlockingMenusStore;
-// #1757 - T11 builds a real ScreenFrame. Test-module only: widening the
+// T11 builds a real ScreenFrame. Test-module only: widening the
 // production use statement at the top of this file would remove a production line.
 use crate::pty::watchers::ScreenFrame;
 
@@ -125,7 +125,7 @@ fn test_menu_guard_invalid_regex_tolerance() {
     assert_eq!(eval.matched_notification.as_deref(), Some("good regex"));
 }
 
-/// #1757 G2 - the Codex "Hooks need review" dialog as a REPLAYED terminal
+/// G2 - the Codex "Hooks need review" dialog as a REPLAYED terminal
 /// mirror, not as hand-typed row text. Every content row is inset by two
 /// columns, carries SGR attributes, and ends CRLF; U+203A is the selection
 /// marker Codex actually renders.
@@ -141,7 +141,7 @@ const CODEX_HOOKS_REVIEW_FRAME: &str = concat!(
     "  \x1b[2mPress enter to confirm or esc to go back\x1b[0m\r\n",
 );
 
-/// #1757 T11. Drives the product's own frame-building and row-joining code
+/// T11. Drives the product's own frame-building and row-joining code
 /// over a replayed vt100 mirror, so the two-column inset, the trailing-blank
 /// trim and the wrap join are what the shipped pattern is measured against.
 #[test]
@@ -214,7 +214,7 @@ fn codex_hooks_review_matches_the_mirror_of_a_styled_inset_dialog() {
     }
 }
 
-// #1905 phase 2 fixtures. `agent` builds an `AgentConfig` with the eleven fields exactly
+// Phase 2 fixtures. `agent` builds an `AgentConfig` with the eleven fields exactly
 // as the loader tests in `settings.rs` do; `CUSTOM` is the docs page's own example entry
 // (`docs/features/menu-guard.md`), test-only and independent of the shipped file.
 fn agent(id: &str, command: &str, blocking_menus: Option<Vec<BlockingMenuEntry>>) -> AgentConfig {
@@ -377,7 +377,7 @@ fn a_remote_pattern_in_the_cache_reaches_the_evaluator_1925() {
     assert!(!control_eval.is_blocked);
 }
 
-// #2251 - the three captures transcribed as the rows the scanner evaluates.
+// The three captures transcribed as the rows the scanner evaluates.
 // claude (room-shared/2250-claude-menu.png): the footer line of the numbered selection
 // menu, its words on one row. opencode permission
 // (room-shared/2250-opencode-permission-menu.png): the title line of the
@@ -391,16 +391,16 @@ const CAPTURED_2251_OPENCODE_PERMISSION: &str = "Permission required";
 const CAPTURED_2251_OPENCODE_ALWAYS: &str =
     "This will allow the following patterns until OpenCode is restarted";
 
-// #2251 - the exact published patterns under proof; must equal the file's bytes.
+// The exact published patterns under proof; must equal the file's bytes.
 const CLAUDE_2251_PATTERN: &str = r"^[^A-Za-z0-9]*Enter to select\b.{1,64}Esc to cancel\b";
 const OPENCODE_PERMISSION_2251_PATTERN: &str = r"^[^A-Za-z0-9]*Permission required\b";
 const OPENCODE_ALWAYS_2251_PATTERN: &str =
     r"^[^A-Za-z0-9]*This will allow the following patterns until OpenCode is restarted\b";
 
-// #2251 - per pattern, the captured rows it must NOT match. They include the other
+// Per pattern, the captured rows it must NOT match. They include the other
 // states' rows, the one-end truncations of its own captured row, and rows that other
 // entries legitimately own (for example `Esc to cancel · Tab to amend`, the existing
-// #2248 claude footer), so they are negative controls for THIS pattern, not "non-menu"
+// Claude footer), so they are negative controls for THIS pattern, not "non-menu"
 // rows in general. The bullet row is the reviewer's false-positive test for a title
 // anchor.
 const CAPTURED_2251_CLAUDE_NEGATIVES: &[&str] = &[
@@ -523,7 +523,7 @@ fn the_published_2251_entries_block_the_captured_rows_and_ignore_their_neighbour
     }
 }
 
-// #2292 - the published claude mid-response disconnect entry. The captured row
+// The published claude mid-response disconnect entry. The captured row
 // (room-shared/2292-claude-midresponse-api-error.png) is a single terminal row; the
 // pattern's `[^A-Za-z0-9]*` prefix absorbs any leading gutter the capture trimmed.
 const CLAUDE_2292_PATTERN: &str = r"^[^A-Za-z0-9]*API Error: Connection lost mid-response\b";
@@ -533,7 +533,7 @@ const CLAUDE_2292_NOTIFICATION: &str =
     "claude lost the API connection mid-response; its response may be incomplete; \
      check this terminal";
 
-// #2292 - the six published claude entries that must survive the addition byte-identical.
+// The six published claude entries that must survive the addition byte-identical.
 const CLAUDE_PATTERNS_BEFORE_2292: [&str; 6] = [
     r"API Error: Can['’]t reach the API server",
     r"^\s*Claude in Chrome extension detected",
@@ -543,7 +543,7 @@ const CLAUDE_PATTERNS_BEFORE_2292: [&str; 6] = [
     r"^[^A-Za-z0-9]*Enter to select\b.{1,64}Esc to cancel\b",
 ];
 
-// #2292 - rows the new entry must NOT trigger: the two existing API-error rows, one-end
+// Rows the new entry must NOT trigger: the two existing API-error rows, one-end
 // truncations of its own row, the message without its prefix, and an alphanumeric-prefixed
 // quote.
 const CAPTURED_2292_NEGATIVES: &[&str] = &[

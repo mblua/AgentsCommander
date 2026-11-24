@@ -1,4 +1,4 @@
-/// #1857: ask the OS to flash the taskbar button when a session starts waiting
+/// Ask the OS to flash the taskbar button when a session starts waiting
 /// on a blocking menu while the AgentsCommander window is not focused.
 ///
 /// This mirrors the guard and the dynamic import in

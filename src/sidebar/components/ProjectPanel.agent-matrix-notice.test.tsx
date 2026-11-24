@@ -16,7 +16,7 @@ import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 
-// #2046 — an offline Agent Matrix row in the sidebar Agents section is NOT a
+// An offline Agent Matrix row in the sidebar Agents section is NOT a
 // launchable unit: a left click must explain the row (matrix vs replica), never
 // run handleAgentClick's old launch flow (setPendingLaunch -> AgentPickerModal ->
 // SessionAPI.create/switch). Only a live matrix session row (SessionItem) keeps
@@ -67,7 +67,7 @@ async function mount() {
   return { fake, rendered };
 }
 
-describe("ProjectPanel Agent Matrix row notice (#2046)", () => {
+describe("ProjectPanel Agent Matrix row notice", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

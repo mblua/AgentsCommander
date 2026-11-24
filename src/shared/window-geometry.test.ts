@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #2349 - deterministic unit tests for the renderer-side main-window placement
+// Deterministic unit tests for the renderer-side main-window placement
 // observation and the bounded quit flush. The real `window-geometry` module, the
 // real IPC funnel and the real `FakeTransport` are used; only the Tauri window
 // API and the platform flag are stubbed.
@@ -135,7 +135,7 @@ afterEach(async () => {
   errorSpy.mockRestore();
 });
 
-describe("main window placement observation (#2349)", () => {
+describe("main window placement observation", () => {
   it("persists the persisted seed with maximized state on a start-maximized first observation", async () => {
     setWindowState({ isMaximized: true, geometry: MAXED });
     await mountMain();
@@ -343,7 +343,7 @@ describe("main window placement observation (#2349)", () => {
   });
 });
 
-describe("main window quit flush (#2349)", () => {
+describe("main window quit flush", () => {
   it("resolves noop when no main controller exists", async () => {
     expect(await flushMainWindowGeometry()).toEqual({ kind: "noop" });
   });

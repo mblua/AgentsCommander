@@ -21,7 +21,7 @@ import {
 } from "../stores/workgroup-groups";
 import type { WorkgroupGroupsConfig } from "../../shared/types";
 
-// #977 - the replica context menu closes when the pointer leaves it, after a
+// The replica context menu closes when the pointer leaves it, after a
 // grace period that any re-entry cancels.
 //
 // The load-bearing case is the submenu: `Add to Group` (and the repo Browse
@@ -159,7 +159,7 @@ function domRect(left: number, top: number, width: number, height: number): DOMR
  *  without flushing first would hit a menu that is not yet listening. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("ProjectPanel replica context menu - close on pointer leave (#977)", () => {
+describe("ProjectPanel replica context menu - close on pointer leave", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
@@ -354,7 +354,7 @@ describe("ProjectPanel replica context menu - close on pointer leave (#977)", ()
   // write (another workgroup, the Edit-groups modal) or an invalid groups.toml at
   // load sets it, and only a LATER successful save clears it. If the close bailed
   // on that flag bare, one failed write anywhere would silently disable the
-  // pointer-leave close for every replica menu in the project - #977 all over again.
+  // pointer-leave close for every replica menu in the project - the old bug all over again.
   it("still closes after a failed groups write when the flyout was never opened", async () => {
     const fake = await setupPanel();
     fake.reject("update_project_groups", "groups.toml changed on disk");

@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- #698 grinch HIGH: atomic raise-hand + persist with rollback ----
+// ---- grinch HIGH: atomic raise-hand + persist with rollback ----
 
 /// Happy path: a coordinator's raised hand reaches `sessions.json` through the
 /// single save-lock acquisition.
@@ -143,7 +143,7 @@ async fn raise_hand_and_persist_waits_for_save_lock_before_mutating() {
     assert!(mgr.list_sessions().await[0].communication.is_some());
 }
 
-/// (#747) Acceptance criterion 5's persist-restore-persist half: a hand
+/// Acceptance criterion 5's persist-restore-persist half: a hand
 /// raised and persisted in run A re-applies onto run B's dormant (Exited)
 /// record via `restore_communication` and survives B's own persist, so a
 /// SECOND restart still sees it. The user-input clear tail is already
@@ -152,7 +152,7 @@ async fn raise_hand_and_persist_waits_for_save_lock_before_mutating() {
 async fn dormant_restore_round_trip_preserves_visible_raise_hand() {
     let temp = tempfile::tempdir().expect("tempdir");
 
-    // Run A: live coordinator raises its hand; #698 persists it durably.
+    // Run A: live coordinator raises its hand; the store persists it durably.
     let mgr_a = SessionManager::new();
     let session_a = mgr_a
         .create_session(
@@ -232,7 +232,7 @@ async fn dormant_restore_round_trip_preserves_visible_raise_hand() {
     );
 }
 
-// ---- #1669: atomic blocked-menu set/clear + persist, no rollback ----
+// ---- atomic blocked-menu set/clear + persist, no rollback ----
 
 /// Happy path: a real blocked-menu transition reaches `sessions.json` through
 /// the single save-lock acquisition.
@@ -625,7 +625,7 @@ async fn clear_blocked_menu_and_persist_without_a_config_dir_still_reports_the_c
     );
 }
 
-// ---- #698 grinch MEDIUM: single-critical-section user-input clear ----
+// ---- grinch MEDIUM: single-critical-section user-input clear ----
 
 /// MEDIUM grinch fix: both user-input transitions (re-arm `start_fresh_on_restore`
 /// + lower raise-hand) clear together and the cleared state reaches disk.
@@ -778,9 +778,9 @@ async fn clear_user_input_transitions_waits_for_save_lock_before_mutating() {
     assert!(after[0].communication.is_none());
 }
 
-// ---- (#756) fresh-intent stamp/drop persist wrappers ----
+// ---- fresh-intent stamp/drop persist wrappers ----
 
-/// (#756) The stamp persists `startFreshOnRestore: true` exactly once: the
+/// The stamp persists `startFreshOnRestore: true` exactly once: the
 /// first call transitions and saves, the second returns Ok(false) (no
 /// rewrite needed).
 #[tokio::test]
@@ -842,7 +842,7 @@ async fn set_start_fresh_persists_true_transition_exactly_once() {
     );
 }
 
-/// (#756) The drop persists the true -> false transition.
+/// The drop persists the true -> false transition.
 #[tokio::test]
 async fn clear_start_fresh_persists_false_transition() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -885,7 +885,7 @@ async fn clear_start_fresh_persists_false_transition() {
     );
 }
 
-/// (#756) Dropping an unset record is Ok(false) and does not save.
+/// Dropping an unset record is Ok(false) and does not save.
 #[tokio::test]
 async fn clear_start_fresh_on_unset_record_is_noop_and_does_not_save() {
     let temp = tempfile::tempdir().expect("tempdir");

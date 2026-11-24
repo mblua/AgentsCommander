@@ -1,3 +1,6 @@
+//! Session manager metadata setters: coding agent kind and pending spawn
+//! details. It does not spawn or restart sessions.
+
 use super::super::profile::CodingAgentKind;
 use super::super::session::SessionRepo;
 use super::carrier::{acquire_carrier_mutation_permit, CarrierMutationPermit};
@@ -158,13 +161,7 @@ impl SessionManager {
         clippy::too_many_arguments,
         reason = "pending binding plus each separately stored profile field"
     )]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn set_pending_profile_metadata(
         &self,
         binding: PendingCreateBinding,
@@ -466,7 +463,7 @@ impl SessionManager {
 
     /// Compare-and-swap variant for the watcher. Only writes if `expected_gen` still
     /// matches `git_repos_gen`. On mismatch a concurrent refresh has landed; the watcher
-    /// discards its stale detection to prevent emit reordering (see §2.1.d / Grinch #14).
+    /// discards its stale detection to prevent emit reordering (see §2.1.d).
     /// Returns true on successful write.
     pub async fn set_git_repos_if_gen(
         &self,
@@ -567,7 +564,7 @@ impl SessionManager {
 
     /// Replace `git_repos` for sessions whose name matches. Bumps `git_repos_gen` on every
     /// write so an in-flight `GitWatcher::poll` that captured the pre-refresh snapshot
-    /// cannot overwrite us (see §2.1.d / Grinch #14).
+    /// cannot overwrite us (see §2.1.d).
     /// Returns the list of (`session_id`, `new_repos`) pairs where a write actually happened.
     pub async fn refresh_git_repos_for_sessions(
         &self,

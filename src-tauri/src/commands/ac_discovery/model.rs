@@ -54,36 +54,36 @@ pub struct AcAgentReplica {
     /// True if this replica is a coordinator of any discovered team.
     /// Computed at construction against a fresh `config::teams` snapshot;
     /// covers WG-aware suffix matching that simple `originProject/name`
-    /// comparison on the frontend misses. See issue #69.
+    /// comparison on the frontend misses.
     pub is_coordinator: bool,
-    /// #552/#580 RFC3339 timestamp of the unified team-idle anchor
+    /// RFC3339 timestamp of the unified team-idle anchor
     /// `max(last_user_message_at, last_activity_at)` for this coordinator, or
     /// None. Only meaningful when `is_coordinator`. The badge displays and
     /// auto-close triggers on this value (closed time counts). The field keeps
-    /// its #552 name (rename to `idleSinceAt` deferred, Decision C). Read from
+    /// its name (rename to `idleSinceAt` deferred, Decision C). Read from
     /// the persisted `CoordinatorClocks` store keyed by FQN.
     pub last_user_message_at: Option<String>,
-    /// #552 RFC3339 timestamp this coordinator's team was auto-closed for
+    /// RFC3339 timestamp this coordinator's team was auto-closed for
     /// inactivity, or None. Only meaningful when `is_coordinator`. Drives the
     /// "auto-closed" pill; cleared on reopen. Read from the same store entry.
     pub auto_closed_at: Option<String>,
-    /// #588 RFC3339 time this coordinator was manually closed, or None. Only
+    /// RFC3339 time this coordinator was manually closed, or None. Only
     /// meaningful when `is_coordinator`. Drives the MANUALLY-CLOSED pill;
     /// cleared on reopen. Read from the same persisted store entry.
     pub manually_closed_at: Option<String>,
-    /// #1941 - the stored selection pair from the strict #1939 read, or `null`
+    /// The stored selection pair from the strict read, or `null`
     /// when no complete pair exists (including an invalid state).
     pub saved_pair: Option<AcReplicaSavedPair>,
-    /// #1941 - `unlocked` | `locked` | `invalid`, from the strict state read.
+    /// `unlocked` | `locked` | `invalid`, from the strict state read.
     /// Never a synthesized default: an unreadable/malformed state is `invalid`.
     pub selection_state: Option<String>,
-    /// #1941 - the strict-read diagnostic when `selection_state` is `invalid`.
+    /// The strict-read diagnostic when `selection_state` is `invalid`.
     pub selection_error: Option<String>,
-    // #4752: true when the user unleashed this replica (persisted per replica path).
+    // True when the user unleashed this replica (persisted per replica path).
     pub unleashed: bool,
 }
 
-/// #1941 - the selection pair as discovery exposes it. A strict complete pair
+/// The selection pair as discovery exposes it. A strict complete pair
 /// fills both fields; the option type leaves room for legacy/partial data.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

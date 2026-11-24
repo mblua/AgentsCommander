@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #1455 regression suite. `terminalStore.activeWorkgroupTask` is a pure cache with
+// Regression suite. `terminalStore.activeWorkgroupTask` is a pure cache with
 // no periodic refresh, so its two asynchronous writers (a local TASK mutation and a
 // `SessionAPI.list()` snapshot) must be sequenced instead of resolving
 // last-write-wins.
@@ -235,7 +235,7 @@ async function forceHydration(fake: FakeTransport, generation: number): Promise<
   await flush();
 }
 
-describe("#1455 TASK header write ordering", () => {
+describe("TASK header write ordering", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

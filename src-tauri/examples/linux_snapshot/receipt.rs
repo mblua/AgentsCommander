@@ -1,4 +1,4 @@
-// Artifact owner for the #4248 snapshot experiment: the output directory, the
+// Artifact owner for the snapshot experiment: the output directory, the
 // PNG files and receipt.json. Every file is created new; nothing is replaced.
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};

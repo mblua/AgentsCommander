@@ -27,7 +27,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
 use uuid::Uuid;
 
-/// #291 — in-process mutex serializing all `save_sessions` calls.
+/// In-process mutex serializing all `save_sessions` calls.
 ///
 /// The historical race: two concurrent callers both wrote to the shared
 /// `sessions.json.tmp`, then both tried to `rename` it. The first rename
@@ -119,25 +119,34 @@ where
         let result = operation.await;
         owner.complete(result);
     });
+    let mut reported = false;
     loop {
         let changed = cell.changed.notified();
-        let result = {
+        let (result, ambiguous) = {
             match cell.state.lock() {
                 Ok(mut state) => match &mut *state {
-                    PersistOperationState::Completed(result) => result.take(),
-                    PersistOperationState::Running | PersistOperationState::Ambiguous => None,
+                    PersistOperationState::Completed(result) => (result.take(), false),
+                    PersistOperationState::Running => (None, false),
+                    PersistOperationState::Ambiguous => (None, true),
                 },
-                Err(_) => None,
+                Err(_) => (None, true),
             }
         };
         if let Some(result) = result {
             return result;
         }
+        if ambiguous && !reported {
+            reported = true;
+            log::error!(
+                "[persist] persist operation ended without a result \
+                    (task panicked or state lock poisoned); waiter parked"
+            );
+        }
         changed.await;
     }
 }
 
-/// #291 — counter feeding the per-call unique temp filename for
+/// Counter feeding the per-call unique temp filename for
 /// `save_sessions`. Combined with the PID it makes the temp filename
 /// `sessions.json.<pid>.<op_id>.tmp` distinct from any concurrent in-process
 /// or cross-process save, and from any leftover temp file written by a
@@ -159,7 +168,7 @@ pub(crate) fn rename_with_retry(tmp: &Path, dst: &Path) -> Result<(), (String, R
 /// (b) probes `Path::exists` per drop to decide the disposition label.
 ///
 /// Runs PRE-LOCK on the hot path so a hung/offline SMB share during classify
-/// stalls NO other persistence writer. The in-lock callers (the #698 atomic
+/// stalls NO other persistence writer. The in-lock callers (the atomic
 /// helpers and the startup merge path) accept the bounded stall (S2's allowed
 /// branch): they concern rare user actions and one startup call, never the
 /// ~25 s loop, and B1 guarantees no data loss.
@@ -173,7 +182,7 @@ pub(crate) struct PersistPreparation {
 /// (`remove_exited_sessions`); it is used ONLY by the three steady-state
 /// background persist drivers (lib.rs:731/1096/1121). Every other persist site
 /// (all `SelectionTransaction::persist` transitions, mailbox, lifecycle,
-/// app-exit, #698 helpers, purge) is `PersistMode::NoPrune`: it still archives
+/// app-exit, atomic helpers, purge) is `PersistMode::NoPrune`: it still archives
 /// each dropped recipe once and drops out-of-roots rows from disk, but leaves
 /// transition-owned rows in RAM. The enum is threaded so the compiler forces
 /// every call site to declare its intent.
@@ -185,7 +194,7 @@ pub(crate) enum PersistMode {
 
 /// Save current sessions to the app config directory (see `config_dir()`).
 ///
-/// Concurrency model (#291):
+/// Concurrency model:
 /// - **In-process callers are serialized** by `SAVE_SESSIONS_LOCK`; the
 ///   rename order matches the order of `lock()` acquisition, so "last
 ///   writer wins" deterministically.
@@ -196,7 +205,7 @@ pub(crate) enum PersistMode {
 ///   AV, or the Indexer) is absorbed by `rename_with_retry`. Per-call temp
 ///   names also keep cross-process callers from colliding on `.tmp`.
 ///
-/// What this does NOT solve (out of scope for #291):
+/// What this does NOT solve (out of scope here):
 /// - **Snapshot freshness races.** Callers usually call
 ///   `snapshot_sessions(&mgr).await` and then `save_sessions(&snapshot)`
 ///   non-atomically. A concurrent `SessionManager` mutation between the
@@ -701,3 +710,6 @@ pub(super) struct FixturePublicationAction {
     pub(super) directory: PathBuf,
     pub(super) kind: FixturePublicationActionKind,
 }
+
+#[cfg(test)]
+mod tests;

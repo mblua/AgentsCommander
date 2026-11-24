@@ -180,7 +180,7 @@ struct PendingSession {
     credential_binding: Option<ContainerCredentialBinding>,
     logical_resource_slot: Option<ResourceLogicalAgentSlot>,
     attach_notify: Option<Arc<Notify>>,
-    // #930 - dest of a copied host credential, threaded so every teardown funnel
+    // Dest of a copied host credential, threaded so every teardown funnel
     // can delete it. None when copy-in was not applicable.
     container_credential_path: Option<PathBuf>,
 }
@@ -287,7 +287,16 @@ pub struct ContainerTransportBackend {
     runtime_settings_override: Option<crate::config::settings::AppSettings>,
     #[cfg(test)]
     issued_tickets_for_test: Arc<Mutex<HashMap<Uuid, String>>>,
+    /// Per-backend hook run right after a Resize is published, without locks.
+    #[cfg(test)]
+    resize_published_hook: Arc<Mutex<Option<ResizePublishedHook>>>,
+    /// Spy: how many times the real prepublish resize mark ran.
+    #[cfg(test)]
+    resize_marks_for_test: Arc<std::sync::atomic::AtomicUsize>,
 }
+
+#[cfg(test)]
+type ResizePublishedHook = Box<dyn FnMut(&ContainerTransportBackend) + Send>;
 
 impl ContainerTransportBackend {
     pub fn new(
@@ -327,6 +336,31 @@ impl ContainerTransportBackend {
             runtime_settings_override: None,
             #[cfg(test)]
             issued_tickets_for_test: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            resize_published_hook: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            resize_marks_for_test: Arc::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_resize_published_hook(&self, hook: ResizePublishedHook) {
+        *self.resize_published_hook.lock().unwrap() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resize_marks_for_test(&self) -> usize {
+        self.resize_marks_for_test
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Runs the hook with its own lock released, so it may call back into the backend.
+    #[cfg(test)]
+    fn run_resize_published_hook(&self) {
+        let hook = self.resize_published_hook.lock().unwrap().take();
+        if let Some(mut hook) = hook {
+            hook(self);
+            *self.resize_published_hook.lock().unwrap() = Some(hook);
         }
     }
 
@@ -521,12 +555,20 @@ impl PtyBackend for ContainerTransportBackend {
     }
 
     fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), AppError> {
-        self.send_text_frame(
+        // The resize mark is taken after the queue slot is reserved and before the
+        // frame is published, so the bridge's repaint can never precede it.
+        self.send_marked_text_frame(
             id,
             HostToBridgeTextFrame::Resize {
                 version: TRANSPORT_PROTOCOL_VERSION,
                 cols,
                 rows,
+            },
+            || {
+                #[cfg(test)]
+                self.resize_marks_for_test
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.fanout.record_resize(id);
             },
         )?;
 
@@ -541,7 +583,6 @@ impl PtyBackend for ContainerTransportBackend {
             }
         }
 
-        self.fanout.record_resize(id);
         self.fanout.resize_screen_and_broadcast(id, cols, rows);
         Ok(())
     }
@@ -621,7 +662,7 @@ impl PtyBackend for ContainerTransportBackend {
         }
     }
 
-    /// #1171 - the same read as `get_screen_rows` above, on the seam that can also say
+    /// The same read as `get_screen_rows` above, on the seam that can also say
     /// "nothing changed", and with the same oracle: parser-absent IS this backend's liveness
     /// answer, so it maps to `Gone` rather than to `Missing`.
     ///

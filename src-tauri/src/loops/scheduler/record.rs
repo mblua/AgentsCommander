@@ -1,3 +1,6 @@
+//! Loop scheduler records: coalesces pending runs, records missed runs and
+//! applies delivery reports. It does not deliver prompts itself.
+
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -169,7 +172,7 @@ impl LoopScheduler {
         if !loop_is_current_for_delivery(dir, config)? {
             return Ok(state);
         }
-        // #2733 - an unresolved target repeating the previous result is not a
+        // An unresolved target repeating the previous result is not a
         // new transition: no audit row, no event.
         let repeat_unresolved = report.kind == LoopAuditKind::TargetUnresolved
             && state.last_result.as_ref().map(|r| r.kind.as_str()) == Some("targetUnresolved");
@@ -311,7 +314,7 @@ impl LoopScheduler {
             .remove(&generation_key(dir))
     }
 
-    /// #2698: commit a delivered run's recorded state and audit row, with no
+    /// Commit a delivered run's recorded state and audit row, with no
     /// new delivery. The caller proved the on-disk state is the one the
     /// failed commit started from or the one it wrote.
     pub(super) async fn retry_unrecorded_delivery(
@@ -372,7 +375,7 @@ impl LoopScheduler {
     }
 
     /// The one commit order for every scan-side write, run under `io_lock`
-    /// and the cross-process Loop lock (#2682): (1) freshness, (2) guarded state
+    /// and the cross-process Loop lock: (1) freshness, (2) guarded state
     /// write, (3) audit append only after a `Written`. So no audit row exists
     /// without its state write.
     pub(super) fn commit_scan_section(
@@ -386,7 +389,7 @@ impl LoopScheduler {
         self.commit_scan_section_checked(dir, s0_generation, s0_raw, audit, state, None)
     }
 
-    /// `commit_scan_section`, plus (#2698) a delivery identity check under the
+    /// `commit_scan_section`, plus a delivery identity check under the
     /// Loop lock when `delivery_config` is set: a config edit that raced the
     /// caller's check makes the commit `Stale`.
     pub(super) fn commit_scan_section_checked(

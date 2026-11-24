@@ -310,7 +310,7 @@ fn list_peers_lean_help_documents_peer_filter() {
     assert!(after.contains("--peer"));
 }
 
-// ── #2228 phase 2: stderr notes disclose counts and closed literals only ──
+// ── stderr notes disclose counts and closed literals only ──
 
 /// Tier-B boundary test: the counts note may carry integers and nothing
 /// else, whatever the candidate paths were.

@@ -43,7 +43,7 @@ fn ok_output(body: &str) -> GhCallOutput {
 }
 
 /// Republishes a repo's branch: `Harness::repo` publishes `main`, and every
-/// #2141 staleness test needs a branch that is NOT the default one.
+/// Staleness test needs a branch that is NOT the default one.
 fn publish_branch(path: &str, branch: &str, git_state: &crate::pty::git_watcher::GitState) {
     crate::pty::git_watcher::publish_git_status(
         path,
@@ -458,7 +458,7 @@ fn tick(now: &mut Instant, wall: &mut DateTime<Local>, secs: u64) {
 
 // --- 1: the positive control the verification-difficulty veto rests on ---
 
-// --- the #2126 incident: runs on a different branch must not count ---
+// --- the incident: runs on a different branch must not count ---
 
 fn drain(harness: &Harness) {
     let _ = harness.drain_transitions();
@@ -486,7 +486,7 @@ fn compare_count(harness: &Harness, nwo: &str) -> usize {
         .count()
 }
 
-// --- #2152: the global call budget, the priority order and the gate ---
+// --- The global call budget, the priority order and the gate ---
 
 fn secondary_limit_output() -> GhCallOutput {
     GhCallOutput {
@@ -596,12 +596,12 @@ fn fixture_nwo(index: usize) -> String {
     format!("repo-{index:02}")
 }
 
-// --- #2374: the neutral snapshot producer. Tests are prefixed
+// --- The neutral snapshot producer. Tests are prefixed
 // `remote_activity_cache_producer_` on purpose: the cache-unit guard runs
 // `cargo test --lib config::remote_activity_cache::` and must be satisfied
 // only by `config/remote_activity_cache.rs`'s own unit tests. ---
 
-// --- #2473: run ids, PR numbers and the failure reason ---
+// --- Run ids, PR numbers and the failure reason ---
 
 fn run_row(id: u64, sha40: &str, branch: &str, status: &str, prs: &[u64]) -> serde_json::Value {
     let prs: Vec<serde_json::Value> = prs

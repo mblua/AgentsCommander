@@ -69,7 +69,7 @@ fn delivered_report() -> LoopDeliveryReport {
     }
 }
 
-/// #2695 scheduler-side fixture: a project with one Loop whose pending
+/// Scheduler-side fixture: a project with one Loop whose pending
 /// run makes the next scan deliver, then apply the report (S2).
 fn pending_loop_fixture() -> (tempfile::TempDir, PathBuf) {
     let config = sample_config();

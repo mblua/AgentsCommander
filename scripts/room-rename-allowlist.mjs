@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// #1614 plan section 9.4 AC1: the visible-text gate, and the script that
+// Plan section 9.4 AC1: the visible-text gate, and the script that
 // derives and classifies the allowlist beside it.
 //
 //   node scripts/room-rename-allowlist.mjs sweep [--rev <rev>]
@@ -130,7 +130,7 @@ const GATES = {
 // MOVE, whatever else it looks like.
 const FROZEN = {
   "src-tauri/src/config/session_context.rs": [
-    [3735, 3736], // LEGACY_GIT_SCOPE_*_BEFORE_1072, frozen by #1072
+    [3735, 3736], // LEGACY_GIT_SCOPE_*_BEFORE_1072, frozen
     [3769, 4025], // legacy_rendered_default_context_for_generation, whole body
   ],
   "src-tauri/src/config/root_agent.rs": [

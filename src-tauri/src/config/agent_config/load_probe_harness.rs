@@ -557,11 +557,11 @@ pub(crate) fn expect_child_pass(name: &str) -> String {
 /// so it can only resolve through its descriptor.
 pub(crate) const SNAPSHOT_ID: &str = "foreign-claude";
 
-/// #2786 C1 E14/E15: the one fixture both callers' rows build. `config.json`
+/// C1 E14/E15: the one fixture both callers' rows build. `config.json`
 /// holds the id under `id_key` plus a descriptor with `command: "old"`; the
 /// state file holds the descriptor for that id with `state_command` and no
 /// marker. Rewriting it on the same directory changes only the state side.
-/// Written through `write_file_atomic`, the shared writer the #1938 scan
+/// Written through `write_file_atomic`, the shared writer the scan
 /// requires outside a `mod tests` block.
 pub(crate) fn write_snapshot_fixture(dir: &std::path::Path, id_key: &str, state_command: &str) {
     let tracked = serde_json::json!({"tooling": {

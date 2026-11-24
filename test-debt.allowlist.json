@@ -42,118 +42,6 @@
       "resolution": "Run manually with cargo test --release --test cli_powershell_capture -- --ignored on a machine with bash.exe."
     },
     {
-      "id": "rust:src-tauri/src/commands/telegram/tests/attach_detach_persistence.rs::telegram_attach_detach_persistence_ordering_harness_note",
-      "category": "ignored-rust-test",
-      "owner": "dev-rust",
-      "issue": 295,
-      "reason": "Full attach and detach ordering regression needs a Tauri AppHandle fixture with injectable persistence failure.",
-      "resolution": "Convert to an executable integration test when a command-level Tauri fixture is available."
-    },
-    {
-      "id": "rust:src-tauri/src/commands/telegram/tests/attach_detach_persistence.rs::telegram_attach_detach_persistence_ordering_harness_note",
-      "category": "placeholder-rust-test",
-      "owner": "dev-rust",
-      "issue": 295,
-      "reason": "The test body is a harness note documenting required fixture shape and has no executable assertions.",
-      "resolution": "Replace the note with an executable attach and detach persistence regression test."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::close_session_rejects_direct_outbox_write_with_unqualified_target",
-      "category": "ignored-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "Full mailbox pipeline coverage needs a two-project Tauri AppHandle fixture.",
-      "resolution": "Convert to an end-to-end mailbox test when the fixture exists."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::close_session_rejects_direct_outbox_write_with_unqualified_target",
-      "category": "placeholder-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "The body is a comment-only stub that points to lower-level resolver coverage.",
-      "resolution": "Replace with executable full-pipeline close-session coverage."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::deliver_wake_rejects_unqualified_to_with_cross_project_matches",
-      "category": "ignored-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "Full wake routing coverage needs a two-project Tauri AppHandle fixture.",
-      "resolution": "Convert to an end-to-end mailbox wake routing test when the fixture exists."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::deliver_wake_rejects_unqualified_to_with_cross_project_matches",
-      "category": "placeholder-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "The body is a comment-only stub that points to resolver-layer coverage.",
-      "resolution": "Replace with executable full-pipeline wake routing coverage."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::resolve_repo_path_wg_fallback_honors_target_project",
-      "category": "ignored-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "Full resolve_repo_path fixture coverage needs filesystem setup under a Tauri AppHandle.",
-      "resolution": "Convert to an executable integration test when the AppHandle filesystem fixture exists."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::resolve_repo_path_wg_fallback_honors_target_project",
-      "category": "placeholder-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "The ignored test currently has an empty body.",
-      "resolution": "Replace with executable target-project fallback coverage."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::resolve_repo_path_returns_none_on_ambiguous_unqualified",
-      "category": "ignored-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "Full ambiguous unqualified target coverage needs AppHandle and session CWD fixtures.",
-      "resolution": "Convert to an executable integration test when the mailbox fixture exists."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/process_message.rs::resolve_repo_path_returns_none_on_ambiguous_unqualified",
-      "category": "placeholder-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "The ignored test currently has an empty body.",
-      "resolution": "Replace with executable ambiguous target coverage."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/project_refresh.rs::deliver_wake_spawned_session_name_has_no_colon",
-      "category": "ignored-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "Full spawned-session naming coverage needs a Tauri runtime and session manager fixture.",
-      "resolution": "Convert to an executable integration test when the mailbox fixture exists."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/project_refresh.rs::deliver_wake_spawned_session_name_has_no_colon",
-      "category": "placeholder-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "The ignored test currently has an empty body.",
-      "resolution": "Replace with executable spawned-session naming coverage."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/project_refresh.rs::resolve_to_target_round_trip_integration",
-      "category": "ignored-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "Full round-trip CLI send and mailbox route coverage needs a two-project fixture.",
-      "resolution": "Convert to an executable full round-trip integration test when the fixture exists."
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox/tests/project_refresh.rs::resolve_to_target_round_trip_integration",
-      "category": "placeholder-rust-test",
-      "owner": "dev-rust",
-      "issue": 228,
-      "reason": "The ignored test currently has an empty body.",
-      "resolution": "Replace with executable CLI send to mailbox round-trip coverage."
-    },
-    {
       "id": "rust:src-tauri/src/config/session_context/tests/template_heal.rs::measure_default_context_size_for_workgroup_replica",
       "category": "ignored-rust-test",
       "owner": "dev-rust",
@@ -304,6 +192,54 @@
       "issue": 2786,
       "reason": "#2786 C1 harness sleeper: blocks 120 s until killed, driven only by the child-ownership and cleanup-control rows (load_probe_harness), so those rows always act on a live child.",
       "resolution": "Stays ignored by design; its parent row runs it with cargo test --lib <name> --exact --ignored --test-threads=1 in a child process armed with AC2786_LOAD_PROBE=1."
+    },
+    {
+      "id": "rust:src-tauri/src/commands/session/tests/muse_spawn.rs::retained_exited_respawn_c19_completed_restarts_reclaim_more_than_64_entries",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 2854,
+      "reason": "#2854 WIP/technical debt: simulator-dependent C19 reclaim test.",
+      "resolution": "Fix the fixture under #2854, then remove #[ignore] and this entry."
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox/tests/retained_exited.rs::retained_exited_respawn_ordinary_ticket_source_and_newer_b",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 2854,
+      "reason": "#2854 AC-2854-005 WIP/technical debt: native stack overflow in the retained-source fixture.",
+      "resolution": "Fix the fixture under #2854, then remove #[ignore] and this entry."
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox/tests/retained_exited.rs::retained_exited_respawn_pty_ticket_source_and_newer_b",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 2854,
+      "reason": "#2854 AC-2854-005 WIP/technical debt: native stack overflow in the retained-source fixture.",
+      "resolution": "Fix the fixture under #2854, then remove #[ignore] and this entry."
+    },
+    {
+      "id": "rust:src-tauri/src/phone/mailbox/tests/retained_exited.rs::retained_exited_respawn_pty_inline_source_and_newer_b",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 2854,
+      "reason": "#2854 AC-2854-005 WIP/technical debt: native stack overflow in the retained-source fixture.",
+      "resolution": "Fix the fixture under #2854, then remove #[ignore] and this entry."
+    },
+    {
+      "id": "rust:src-tauri/src/pty/terminal_snapshot/tests/acceptance/window_screenshot_router.rs::authenticated_live_window_png_capture",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 5162,
+      "reason": "Windows-only live capture: needs an unlocked interactive desktop and a visible Notepad window, which hosted CI runners do not provide.",
+      "resolution": "Run manually on an interactive Windows desktop with cargo test --lib authenticated_live_window_png_capture -- --ignored."
+    },
+    {
+      "id": "rust:src-tauri/tests/wake_consumption_measure/main.rs::measure_wake_consumption_signals",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 1001,
+      "reason": "#1001 on-demand real-agent measurement harness, not a behavior test: needs an installed and authenticated coding agent on Windows/ConPTY.",
+      "resolution": "Run manually with cargo test --test wake_consumption_measure -- --ignored on a Windows host with an authenticated agent."
     }
   ]
 }

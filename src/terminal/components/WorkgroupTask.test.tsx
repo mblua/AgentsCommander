@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #1614 section 9.1 frontend tests / section 15.4. F6
+// Section 9.1 frontend tests / section 15.4. F6
 // (`WorkgroupTask.tsx:74`, `hasWorkgroupContext`) gates the TASK.md Edit and
 // Clean buttons. Left unrewired it leaves both buttons permanently disabled in
 // every Room, and it fails silently: nothing errors, the buttons are simply
@@ -44,7 +44,7 @@ async function renderWithCwd(cwd: string, fake = new FakeTransport()): Promise<{
   return rendered;
 }
 
-describe("WorkgroupTask, F6 dual-prefix gate (#1614)", () => {
+describe("WorkgroupTask, F6 dual-prefix gate", () => {
   beforeEach(() => {
     resetUiStoresForTests();
     terminalStore.resetForTests();
@@ -106,7 +106,7 @@ describe("WorkgroupTask, F6 dual-prefix gate (#1614)", () => {
   });
 });
 
-describe("WorkgroupTask, frontmatter title parsing (#2608)", () => {
+describe("WorkgroupTask, frontmatter title parsing", () => {
   beforeEach(() => {
     resetUiStoresForTests();
     terminalStore.resetForTests();
@@ -140,6 +140,16 @@ describe("WorkgroupTask, frontmatter title parsing (#2608)", () => {
 
   it("shows no title when the frontmatter has no closer", async () => {
     expect(await shownTitle("---\ntitle: a\n")).toBeNull();
+  });
+
+  it.each([
+    { task: '\uFEFF---\t\r\nTITLE: "CRLF"\r\n---\u00a0\r\n body\r\n', title: "CRLF" },
+    { task: "--- \t\ntitle: eof\n---\u2028", title: "eof" },
+    { task: " ---\ntitle: leading space\n---\n", title: null },
+    { task: "---\ntitle: bad closer\n----\nraw\n", title: null },
+    { task: "---\u200B\ntitle: lookalike\n---\n", title: null },
+  ])("shows $title for frontmatter with exact delimiters", async ({ task, title }) => {
+    expect(await shownTitle(task)).toBe(title);
   });
 });
 

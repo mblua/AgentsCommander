@@ -1,4 +1,4 @@
-//! #1171 - generic, user-configured regex watchers over the plain de-ANSI'd rows of the
+//! Generic, user-configured regex watchers over the plain de-ANSI'd rows of the
 //! `vt100` screen mirror AC already keeps for every session.
 //!
 //! A sibling of `context_scrape`, not an extension of it. The two engines share only the
@@ -58,7 +58,7 @@ pub use resolution::{
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -313,11 +313,11 @@ impl WatcherSessionState {
 
 /// One session the engine is sampling.
 struct RegisteredSession {
-    /// `None` for a session sampled only by an internal activity consumer (#2879).
+    /// `None` for a session sampled only by an internal activity consumer.
     agent_id: Option<String>,
-    /// #2879 - the internal consumer attached at registration, if any.
+    /// The internal consumer attached at registration, if any.
     activity: Option<ActivityConsumer>,
-    /// #2879 - the consumer's own view: the last frame it judged, and whether it must see a
+    /// The consumer's own view: the last frame it judged, and whether it must see a
     /// complete frame again (after `Missing`) before it may trust an `Unchanged`. Separate
     /// from `stamp`, which belongs to the user watchers.
     activity_stamp: Option<FrameStamp>,
@@ -456,9 +456,9 @@ pub struct WatcherEngine {
     /// Test-visible: the number of `pattern::compile` calls. The compile site is also the log
     /// site, so this is what "logged once per change, not once per tick" is measured by.
     compiles: AtomicUsize,
-    /// #2879 - fixed at construction. `None` keeps the engine exactly user-watchers-only.
+    /// Fixed at construction. `None` keeps the engine exactly user-watchers-only.
     activity_factory: Option<ActivityFactory>,
-    /// #2879 - `CODEX_WORKING_PATTERN`, compiled once. `None` with a factory means it did not
+    /// `CODEX_WORKING_PATTERN`, compiled once. `None` with a factory means it did not
     /// compile, and every verdict is `Unavailable`.
     codex_working: Option<pattern::WatcherPattern>,
 }
@@ -475,7 +475,7 @@ impl WatcherEngine {
         Self::new_with_activity_factory(backends, patterns, sink, history, None)
     }
 
-    /// #2879 - `new`, plus an internal activity factory consulted once per registration.
+    /// `new`, plus an internal activity factory consulted once per registration.
     pub(crate) fn new_with_activity_factory(
         backends: Arc<dyn WatcherBackendSource>,
         patterns: Arc<dyn WatcherPatternSource>,
@@ -553,7 +553,7 @@ impl WatcherEngine {
     /// with no agent and no internal activity consumer is never registered, so a plain shell
     /// costs nothing - the same rule `ContextScraper` follows (`commands/session.rs:2268-2274`).
     ///
-    /// #2879 - the factory attaches outside every engine guard, and the attach is validated
+    /// The factory attaches outside every engine guard, and the attach is validated
     /// before the entry exists: one invalidated in between never samples, so it can neither
     /// publish nor reinstate detector state. A replaced entry's consumer is retired outside
     /// the guards; its identity is its own attach, so that can never release the new one.
@@ -576,27 +576,31 @@ impl WatcherEngine {
         }
         let replaced = {
             let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
-            self.registered
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(
-                    id,
-                    RegisteredSession {
-                        agent_id,
-                        activity,
-                        activity_stamp: None,
-                        activity_full_read: false,
-                        reader,
-                        stamp: None,
-                        seq: 0,
-                        diff: frame::FrameDiffState::default(),
-                        watchers: HashMap::new(),
-                    },
-                )
+            self.registered().insert(
+                id,
+                RegisteredSession {
+                    agent_id,
+                    activity,
+                    activity_stamp: None,
+                    activity_full_read: false,
+                    reader,
+                    stamp: None,
+                    seq: 0,
+                    diff: frame::FrameDiffState::default(),
+                    watchers: HashMap::new(),
+                },
+            )
         };
         if let Some(consumer) = replaced.and_then(|session| session.activity) {
             consumer(ActivityObservation::Retired);
         }
+    }
+
+    /// Locks the registration map, recovering the data if the lock was poisoned.
+    fn registered(&self) -> MutexGuard<'_, HashMap<Uuid, RegisteredSession>> {
+        self.registered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Stop sampling a session. Idempotent, so every caller can just call it. #2879 - its
@@ -604,21 +608,16 @@ impl WatcherEngine {
     pub fn retire_session(&self, id: Uuid) {
         let retired = {
             let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
-            self.registered
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&id)
+            self.registered().remove(&id)
         };
         if let Some(consumer) = retired.and_then(|session| session.activity) {
             consumer(ActivityObservation::Retired);
         }
     }
 
-    /// #2879 - whether any registered session has an internal consumer to sample for.
+    /// Whether any registered session has an internal consumer to sample for.
     fn samples_activity(&self) -> bool {
-        self.registered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.registered()
             .values()
             .any(|session| session.activity.is_some())
     }
@@ -626,10 +625,7 @@ impl WatcherEngine {
     // Retained for unit-test assertions; production does not query registration.
     #[cfg(test)]
     pub fn is_session_registered(&self, id: Uuid) -> bool {
-        self.registered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(&id)
+        self.registered().contains_key(&id)
     }
 
     /// Compile every watcher this tick resolved, once each, and drop the cache entries of
@@ -693,12 +689,9 @@ impl WatcherEngine {
     /// registration" rule that stops a purged session from being resurrected still holds.
     fn publish_unwatched(&self, resolved: &HashMap<String, AgentResolution>) {
         let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
-        let registered = self
-            .registered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let registered = self.registered();
         for (id, session) in registered.iter() {
-            // #2879 - a session registered only for internal observation has no user view.
+            // A session registered only for internal observation has no user view.
             let Some(agent_id) = &session.agent_id else {
                 continue;
             };
@@ -725,7 +718,7 @@ impl WatcherEngine {
         // no backend resolved, no liveness probed.
         let Some(resolved) = self.patterns.resolve().await else {
             let mut ids: Vec<(Uuid, bool)> = {
-                let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+                let registered = self.registered();
                 registered
                     .iter()
                     .map(|(id, session)| (*id, session.activity.is_some()))
@@ -756,7 +749,7 @@ impl WatcherEngine {
             }
             return;
         };
-        // #2879 - an internal consumer is sampled whatever the user configured.
+        // An internal consumer is sampled whatever the user configured.
         if resolved.is_empty() && !self.samples_activity() {
             self.publish_unwatched(&resolved);
             return;
@@ -772,7 +765,7 @@ impl WatcherEngine {
         // Snapshot first: the loop must not mutate `registered` while iterating it. The ids
         // are the union of sessions a user watcher reaches and those with internal consumers.
         let mut ids: Vec<(Uuid, Option<String>)> = {
-            let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+            let registered = self.registered();
             registered
                 .iter()
                 .filter(|(_, session)| {
@@ -829,12 +822,12 @@ impl WatcherEngine {
         at: chrono::DateTime<chrono::Utc>,
     ) -> (Option<WatcherMatchBatch>, bool, ActivityDelivery) {
         let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registered = self.registered();
         let Some(session) = registered.get_mut(&id) else {
             return (None, false, None);
         };
 
-        // #2879 - one read serves both views. When they disagree on what they last saw (the
+        // One read serves both views. When they disagree on what they last saw (the
         // consumer owes itself a complete frame after `Missing`, or one view is newer), read
         // the complete frame and let each view decide below whether it is new to it.
         let consumer = session.activity.clone();
@@ -858,7 +851,7 @@ impl WatcherEngine {
         };
         let logical = frame.as_ref().map(frame::logical_rows);
 
-        // #3059 - the internal verdict: ANY complete physical or logical indicator is `Present`.
+        // The internal verdict: ANY complete physical or logical indicator is `Present`.
         // Independent of every user watcher, cap, suspension and budget.
         let delivery = consumer.and_then(|consumer| {
             let observation = match &frame {
@@ -976,7 +969,7 @@ impl WatcherEngine {
     /// `(degraded, suspended, count)` for one `(session, watcher)` pair.
     #[cfg(test)]
     fn watcher_state(&self, id: Uuid, watcher_id: &str) -> Option<(bool, bool, u64)> {
-        let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let registered = self.registered();
         let state = registered.get(&id)?.watchers.get(watcher_id)?;
         Some((state.degraded, state.suspended_until.is_some(), state.count))
     }
@@ -985,7 +978,7 @@ impl WatcherEngine {
     /// sleeps for the suspension window.
     #[cfg(test)]
     fn expire_suspension_for_test(&self, id: Uuid, watcher_id: &str) {
-        let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registered = self.registered();
         if let Some(state) = registered
             .get_mut(&id)
             .and_then(|session| session.watchers.get_mut(watcher_id))

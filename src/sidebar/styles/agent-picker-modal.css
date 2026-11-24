@@ -16,7 +16,7 @@
   max-height: min(760px, 88vh);
 }
 
-/* ── #2014 layout A: full-window frame, startup lines, left-only filter ──
+/* ── Layout A: full-window frame, startup lines, left-only filter ──
    Ported from ac/project-shared coding-agent-prototype/build/v4-framing.css
    (sections 1-6, [V4-STARTUP-LINES], [V4-FILTER]) with the prototype's
    `.pp-v4-frame` scope replaced by `.agent-picker-modal`, so no other surface
@@ -356,7 +356,7 @@
   flex-wrap: wrap;
 }
 
-/* #1167 - per-TOOL colours for the Open-Agent modal's repo chips, and ONLY those.
+/* Per-TOOL colours for the Open-Agent modal's repo chips, and ONLY those.
    These are NOT coding-agent labels: the four values come from AGENT_DETECTORS in
    src-tauri/src/commands/repos.rs:9-14 ("Claude", "Codex", "OpenCode", "Cursor"),
    which reports which tooling directories a repo contains. That vocabulary is
@@ -364,9 +364,9 @@
    falls through to the grey .agent-badge base.
 
    Anchored on .agent-modal-item-badges, which occurs exactly once in the repo
-   (OpenAgentModal.tsx:156), so these rules cannot reach a sidebar row. Before
-   #1167 they were written as `.agent-badge:not(.running)[data-agent=...]` and were
-   shared with the sidebar badge, which is what produced the divergence the issue
+   (OpenAgentModal.tsx:156), so these rules cannot reach a sidebar row. Earlier
+   they were written as `.agent-badge:not(.running)[data-agent=...]` and were
+   shared with the sidebar badge, which is what produced the divergence these rules
    fixes; the sidebar badge no longer emits data-agent at all.
 
    Specificity: (0,2,0), still above the .agent-badge base (0,1,0) for background
@@ -485,7 +485,7 @@
   border-left-color: var(--agent-color, var(--sidebar-border));
 }
 
-/* #2577 - picker-scoped: rows keep their own height (no stretch), and the
+/* Picker-scoped: rows keep their own height (no stretch), and the
    grip sits INSIDE the card border as in Settings. The grip stays a sibling
    button painted over the card's left padding (no nested buttons). */
 .agent-picker-modal .agent-profile-provider-list {
@@ -520,7 +520,7 @@
   background: rgba(0, 212, 255, 0.08);
 }
 
-/* #563: cosmetic-only hover affordance. Selection is click-driven — hovering a
+/* Cosmetic-only hover affordance. Selection is click-driven — hovering a
    card must never pre-select it or update the active comparison row. Only color
    shifts here (border width and box size are unchanged), so nothing reflows.
    `:not(.active)` keeps the selected card's distinct accent tint. */
@@ -538,7 +538,7 @@
   font-weight: 700;
 }
 
-/* #2681 - agent name plus weekly quota remaining on one line. */
+/* Agent name plus weekly quota remaining on one line. */
 .agent-quota-name-line {
   display: flex;
   align-items: baseline;
@@ -593,7 +593,7 @@
   border-style: dashed;
 }
 
-/* #527: per-card status pill on the Selection profile cards. Same taxonomy and
+/* Per-card status pill on the Selection profile cards. Same taxonomy and
    colors as the Config rails so a given (agent, letter) reads identically on
    both screens. */
 .agent-profile-card-tags {
@@ -763,7 +763,7 @@
   line-height: 1.4;
 }
 
-/* ── Selection Screen V2: scope-picker botonera (#384) ── */
+/* ── Selection Screen V2: scope-picker botonera ── */
 .agent-picker-botonera {
   display: flex;
   flex-direction: column;
@@ -838,7 +838,7 @@
   color: var(--status-exited);
 }
 
-/* #537: prominent persistent failure banner for a failed Coding Agent assign.
+/* Prominent persistent failure banner for a failed Coding Agent assign.
    Separation by color/fill plus a left accent bar (industrial-dark: minimal
    full borders). The toast handles the loud transient alert; this keeps the
    human-readable backend message and retry on screen. */
@@ -953,14 +953,14 @@
   color: var(--sidebar-fg-dim);
 }
 
-/* ── #1943 selection lock: lock chip, lock bar, conflict review ──
+/* ── Selection lock: lock chip, lock bar, conflict review ──
    Ported from the approved v3 stylistic reference
    (.ac/plans/issue_1937/prototypes/index-v3.html, section "Candado de
    selección"). Amber marks protection everywhere; green marks the eligible
    set. Nothing here changes an unrelated theme or class. */
 
-/* The sidebar lock chip: only a locked replica renders it. Icon-only since
-   #2030, so the label's gap and padding are gone. */
+/* The sidebar lock chip: only a locked replica renders it. Icon-only now,
+   so the label's gap and padding are gone. */
 .selection-lock-chip {
   display: inline-flex;
   align-items: center;
@@ -1698,7 +1698,7 @@
   }
 }
 
-/* ── #2038: the two right-hand columns of the Coding Agent profile modal scroll
+/* ── The two right-hand columns of the Coding Agent profile modal scroll
    independently. Above the 900px stacking breakpoint the wrapper only lays the
    columns out: its single row is the frame height (scroll range 0), each column
    panel is its own scroll area, and the comparison-table row keeps the 220px floor

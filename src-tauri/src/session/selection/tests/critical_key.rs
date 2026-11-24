@@ -116,7 +116,7 @@ async fn assert_fresh_probe_releases_key(
         .expect("fresh same-kind submission succeeds"),
         CriticalAdmissionOutcome::Completed(())
     );
-    // #1580 releases the key before Completed; this bounded wait is kept unchanged.
+    // The fix releases the key before Completed; this bounded wait is kept unchanged.
     await_state_eq(
         "fresh probe releases its critical admission key",
         Duration::from_secs(1),
@@ -128,7 +128,7 @@ async fn assert_fresh_probe_releases_key(
     assert!(!coordinator.critical_key_registered_for_test(session_id, kind));
 }
 
-// #1580 deterministic ordering detector. The worker needs `critical_keys` to free
+// Deterministic ordering detector. The worker needs `critical_keys` to free
 // the key; the test holds it. "All admission permits returned" happens after the
 // send before the fix, and before the (blocked) send after it.
 async fn assert_critical_completion_observed_after_release(shutdown_first: bool) {
@@ -205,14 +205,10 @@ async fn assert_critical_completion_observed_after_release(shutdown_first: bool)
             kind,
         }));
         barrier.finish();
-        let anchor = Instant::now();
-        while coordinator.inner.admission.available_permits() != COORDINATOR_ADMISSION_CAPACITY {
-            assert!(
-                anchor.elapsed() < Duration::from_secs(10),
-                "#1580: worker did not return admission before releasing the critical key"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        wait_for_returned_admission(
+            &coordinator.inner.admission,
+            "#1580: worker did not return admission before releasing the critical key",
+        );
         assert!(
             probe.as_mut().poll(&mut cx).is_pending(),
             "#1580: completion was observable while the critical key was still registered"
@@ -272,14 +268,10 @@ async fn disposed_envelope_releases_admission_and_critical_key_before_closing_re
     let disposer = {
         let keys = coordinator.inner.critical_keys.lock().unwrap();
         let disposer = std::thread::spawn(move || drop(envelope));
-        let anchor = Instant::now();
-        while coordinator.inner.admission.available_permits() != COORDINATOR_ADMISSION_CAPACITY {
-            assert!(
-                anchor.elapsed() < Duration::from_secs(10),
-                "#1580: disposed envelope did not return admission first"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        wait_for_returned_admission(
+            &coordinator.inner.admission,
+            "#1580: disposed envelope did not return admission first",
+        );
         assert!(
             matches!(
                 receiver.try_recv(),
@@ -331,4 +323,13 @@ async fn restore_barrier_start_acknowledgement_keeps_admission_until_release() {
     .await
     .expect("restore barrier returns admission after release");
     coordinator.close_and_join().await;
+}
+
+/// Synchronous by design: callers hold a std mutex guard, so this must not await.
+fn wait_for_returned_admission(admission: &Semaphore, message: &str) {
+    let anchor = Instant::now();
+    while admission.available_permits() != COORDINATOR_ADMISSION_CAPACITY {
+        assert!(anchor.elapsed() < Duration::from_secs(10), "{message}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }

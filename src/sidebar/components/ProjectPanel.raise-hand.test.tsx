@@ -88,7 +88,7 @@ async function mountProject(workgroups: AcWorkgroup[], sessions: Session[]) {
   return rendered;
 }
 
-describe("ProjectPanel raise-hand communication slot (#676)", () => {
+describe("ProjectPanel raise-hand communication slot", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -130,7 +130,7 @@ describe("ProjectPanel raise-hand communication slot (#676)", () => {
       const slot = rendered.root.querySelector(
         `[data-ac-testid="${rowSlotTestId("wg-2-dev-team", "dev-webpage-ui")}"]`
       );
-      // #775: the raise-hand slot now renders the shared SVG hand, not "!".
+      // The raise-hand slot now renders the shared SVG hand, not "!".
       expect(slot?.querySelector("svg")).not.toBeNull();
       expect(slot?.textContent ?? "").not.toContain("!");
       const line = slot?.closest(".coord-task-line");
@@ -199,7 +199,7 @@ describe("ProjectPanel raise-hand communication slot (#676)", () => {
     }
   });
 
-  it("renders for a dormant (exited) coordinator session with restored raise-hand communication (#747)", async () => {
+  it("renders for a dormant (exited) coordinator session with restored raise-hand communication", async () => {
     const exited = await mountProject(
       [workgroup("wg-4-dev-team", "dev-webpage-ui", "Exited task")],
       [

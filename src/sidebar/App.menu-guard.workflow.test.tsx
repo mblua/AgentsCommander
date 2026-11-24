@@ -96,9 +96,9 @@ function setupMenuGuardTransport(fake: FakeTransport, sessions: Session[]): void
   fake.resolve("switch_session", undefined);
 }
 
-// #1857: ALWAYS a fresh object. `sessionsStore.setCommunication` writes through
+// ALWAYS a fresh object. `sessionsStore.setCommunication` writes through
 // a Solid store, which merges key by key when both the old and the new value are
-// objects, so a reused fixture can leave a stale key behind (issue 1863).
+// objects, so a reused fixture can leave a stale key behind.
 function blockedMenu(message = menuMessage, at = updatedAt): SessionCommunication {
   return {
     kind: "blockedMenu",
@@ -108,7 +108,7 @@ function blockedMenu(message = menuMessage, at = updatedAt): SessionCommunicatio
   };
 }
 
-describe("SidebarApp menu-guard workflow (#1649)", () => {
+describe("SidebarApp menu-guard workflow", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
@@ -137,7 +137,7 @@ describe("SidebarApp menu-guard workflow (#1649)", () => {
     return next;
   }
 
-  // #1857: N blocked sessions, ONE derived toast. These helpers mount an
+  // N blocked sessions, ONE derived toast. These helpers mount an
   // arbitrary session list so the aggregate can be exercised past one session.
   function blockedRow(index: number, communication: SessionCommunication | null): Session {
     return session({
@@ -279,7 +279,7 @@ describe("SidebarApp menu-guard workflow (#1649)", () => {
     expect(item).not.toBeNull();
     expect(item?.classList.contains("toast-item--exiting")).toBe(false);
   });
-  // ---- #1857: the aggregated notice ----------------------------------------
+  // ---- The aggregated notice ----------------------------------------------
 
   it("12. one blocked session: the toast carries that session's verbatim text, no suffix", async () => {
     const { fake } = await mountSidebar();
@@ -383,7 +383,7 @@ describe("SidebarApp menu-guard workflow (#1649)", () => {
     });
     await waitFor(() => expect(flashMock).toHaveBeenCalledTimes(1));
 
-    // The #1856 poll re-applying an IDENTICAL communication must not re-flash.
+    // The poll re-applying an IDENTICAL communication must not re-flash.
     // A fresh object with the same content: the store merges key by key and
     // notifies nothing, so the effect does not even run.
     fake.emitFromBackend("session_communication_changed", {

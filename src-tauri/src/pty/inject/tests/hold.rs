@@ -192,7 +192,7 @@ async fn supported_agent_typing_hold_app(
     (app, id, backend)
 }
 
-/// #2336 - a peer wake is deferred with zero bytes written while the typing
+/// A peer wake is deferred with zero bytes written while the typing
 /// hold is active; a repeated poll does not grow the unique count; a manual
 /// release lets the very next attempt deliver and clears the id.
 #[tokio::test]
@@ -589,7 +589,7 @@ async fn internal_notice_queued_behind_writer_rechecks_hold() {
     assert!(recorded_writes(&backend, id).is_empty());
 }
 
-/// #2336 - the serialized-write-boundary race: a peer wake queued behind the
+/// The serialized-write-boundary race: a peer wake queued behind the
 /// held per-session writer permit re-checks the hold when it finally acquires
 /// the permit, so a qualifying desktop key recorded while the permit was held
 /// defers it with the typed marker and zero payload/Enter bytes. After
@@ -647,7 +647,7 @@ async fn typing_hold_peer_wake_queued_behind_writer_permit_rechecks_and_defers()
     assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
 }
 
-/// #2336 - natural expiry with no manual action: once the configured window
+/// Natural expiry with no manual action: once the configured window
 /// has passed since the last qualifying key, the next attempt delivers.
 #[tokio::test]
 async fn typing_hold_peer_wake_delivers_after_natural_window_expiry() {

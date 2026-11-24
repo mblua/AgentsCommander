@@ -9,30 +9,40 @@ mod capture;
 mod delivery;
 mod markers;
 mod screen;
+mod target;
 
 #[cfg(test)]
 use crate::pty::backend::SessionBackendKind;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::output_senders::OutputSenderMap;
 use crate::session::profile::IdleTuning;
+use attachments::Accumulated;
 pub(crate) use attachments::TerminalOutputAttachments;
-use attachments::{Accumulated, WindowLabel};
 pub(crate) use capture::CapturedVtScreen;
 use capture::{CaptureFailure, ScreenReplayState};
 use markers::screen_shows_visible_content;
 pub(crate) use markers::{output_has_printable_activity, scan_response_markers};
 pub use markers::{ResponseWatcher, ResponseWatcherMap};
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use std::time::Duration;
 #[cfg(any(windows, test))]
 use std::time::Instant;
+#[cfg(test)]
+use target::UI_BATCH_LIMIT_BYTES;
+use target::{
+    ParserAvailability, ReaderOperationGate, ReaderOperationLease, RegisteredPtyOutputTarget,
+    RegistrationIdentity,
+};
+pub(crate) use target::{
+    PtyOutputEmitError, PtyOutputRegistrationToken, PtyOutputTarget, PtyOutputTask,
+};
+#[cfg(test)]
+pub(crate) use target::{PtyOutputPayload, PtyOutputTestEvent, PtyOutputTestSink};
 #[cfg(test)]
 use terminal_snapshot_renderer::{TerminalActiveBuffer, TerminalCellWidth, TerminalColor};
 use uuid::Uuid;
@@ -68,11 +78,6 @@ pub struct PtyScreenSnapshot {
 /// synchronously there, by every test but the timer's own.
 const UI_BATCH_INTERVAL_MS: u64 = 16;
 
-/// Ingest-thread flush threshold for the per-session coalescing accumulator. Reaching it
-/// inside one 16 ms window flushes on the reader thread, and that is the only backpressure
-/// left on this path: a slow emit there blocks that session's reader, never the parser mutex
-/// the whole backend shares.
-const UI_BATCH_LIMIT_BYTES: usize = 65_536;
 /// Raw output bytes retained per session so a freshly created terminal can be rehydrated
 /// with history instead of a single viewport. Sized to keep the frontend replay peak close
 /// to its current value rather than to double the admission ceiling.
@@ -89,7 +94,7 @@ const UI_HISTORY_REPLAY_PROLOGUE: &[u8] = b"\x1b[?1049l\x1b[r\x1b[?7h\x1b(B\x1b[
 /// Appends a chunk to the bounded history ring. The order is mandatory: trim for space,
 /// trim to a line boundary, then append. Only the length bound is guaranteed; the line
 /// alignment is best effort, because the boundary scan is capped and can find nothing. Its
-/// outcome is recorded in `aligned` and enforced at the attach seed instead (#1458).
+/// outcome is recorded in `aligned` and enforced at the attach seed instead.
 ///
 /// Every index is saturating on purpose. `VecDeque::drain(..k)` panics when `k > len`, and
 /// here a panic is permanent rather than local: the caller flips the parser to `Unavailable`,
@@ -117,7 +122,7 @@ fn append_history(history: &mut std::collections::VecDeque<u8>, aligned: &mut bo
             None => *aligned = false,
         }
     }
-    // #1458: the one path on which the front changes without `over` ever being positive.
+    // The one path on which the front changes without `over` ever being positive.
     // When `tail` becomes the WHOLE ring the front is `tail[0]`, and a chunk larger than the
     // ring was truncated at an arbitrary byte, so that front is not a line start and nothing
     // above recorded it. The `<` is load bearing: `tail.len() == data.len()` means the chunk
@@ -134,7 +139,7 @@ fn append_history(history: &mut std::collections::VecDeque<u8>, aligned: &mut bo
 /// Only the cold attach path calls this, so the scan is unbounded on purpose. `\n` is the one
 /// resync point a replay can trust: a parser reading the ring from an arbitrary byte offset
 /// renders the tail of whatever escape sequence that offset falls inside as literal text
-/// (#1458), and no in-band cancel undoes it, because that parser is already in ground state.
+///, and no in-band cancel undoes it, because that parser is already in ground state.
 fn history_from_first_line<'a>(front: &'a [u8], back: &'a [u8]) -> Option<(&'a [u8], &'a [u8])> {
     if let Some(newline) = front.iter().position(|byte| *byte == b'\n') {
         let aligned_front = &front[newline + 1..];
@@ -149,31 +154,6 @@ fn history_from_first_line<'a>(front: &'a [u8], back: &'a [u8]) -> Option<(&'a [
         return None;
     }
     Some((&[], aligned_back))
-}
-
-/// Output emission failure without transport details or sensitive output bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PtyOutputEmitError {
-    Emit,
-}
-
-/// The `pty_output` wire payload.
-///
-/// `sequence` is a number, not a canonical decimal string: the client reconciles a live event
-/// against its seed with `sequence <= snapshot.sequence`, and on strings that comparison is
-/// lexicographic, so `"9" <= "10"` is false and the terminal corrupts silently past sequence
-/// 9. u64 precision is not a concern below 2^53 output events.
-///
-/// The field is absent when the parser is unavailable, and the client then writes those bytes
-/// live with no reconcile: live PTY bytes are never gated (PR #961). Emitting nothing for a
-/// faulted parser is what made the terminal permanently black in #955.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PtyOutputPayload {
-    pub(crate) session_id: String,
-    pub(crate) data: Vec<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) sequence: Option<u64>,
 }
 
 /// The only two conditions that fail an attach: there is nothing to attach to.
@@ -198,207 +178,10 @@ impl TerminalOutputAttachError {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct PtyOutputRegistrationToken {
-    identity: Arc<RegistrationIdentity>,
-}
-
-struct RegistrationIdentity {
-    session_id: Uuid,
-    fanout_identity: Arc<()>,
-}
-
-struct RegisteredPtyOutputTarget {
-    session_id: Uuid,
-    fanout_identity: Arc<()>,
-    identity: Arc<RegistrationIdentity>,
-    target: PtyOutputTarget,
-}
-
-impl RegisteredPtyOutputTarget {
-    fn matches_token(&self, token: &PtyOutputRegistrationToken, fanout_identity: &Arc<()>) -> bool {
-        Arc::ptr_eq(&self.identity, &token.identity)
-            && Arc::ptr_eq(&self.fanout_identity, fanout_identity)
-    }
-}
-
-/// One emit per attached window label, fallible as a whole.
-type PtyOutputEmitFn =
-    dyn Fn(&[String], PtyOutputPayload) -> Result<(), PtyOutputEmitError> + Send + Sync;
-
-pub(crate) type PtyOutputTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-
-#[derive(Clone)]
-pub(crate) struct PtyOutputTarget {
-    emit_pty_output: Arc<PtyOutputEmitFn>,
-    spawn_task: Arc<dyn Fn(PtyOutputTask) + Send + Sync + 'static>,
-}
-
-#[cfg(test)]
-pub(crate) type PtyOutputTestEvent = (String, Vec<u8>, Option<u64>);
-
-#[cfg(test)]
-pub(crate) type PtyOutputTestSink = Arc<Mutex<Vec<PtyOutputTestEvent>>>;
-
-impl PtyOutputTarget {
-    pub(crate) fn new<E, S>(emit: E, spawn: S) -> Self
-    where
-        E: Fn(&[String], PtyOutputPayload) -> Result<(), PtyOutputEmitError>
-            + Send
-            + Sync
-            + 'static,
-        S: Fn(PtyOutputTask) + Send + Sync + 'static,
-    {
-        Self {
-            emit_pty_output: Arc::new(emit),
-            spawn_task: Arc::new(spawn),
-        }
-    }
-
-    fn spawn_flush(&self, task: PtyOutputTask) {
-        (self.spawn_task)(task);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn noop() -> Self {
-        Self::new(|_, _| Ok(()), drop)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_test_sink(sink: PtyOutputTestSink) -> Self {
-        Self::new(
-            move |_labels, payload| {
-                sink.lock()
-                    .unwrap()
-                    .push((payload.session_id, payload.data, payload.sequence));
-                Ok(())
-            },
-            drop,
-        )
-    }
-
-    #[cfg(test)]
-    fn failing_test_sink(sink: PtyOutputTestSink) -> Self {
-        let target = Self::from_test_sink(sink);
-        Self::new(
-            move |labels, payload| {
-                let _ = target.emit_pty_output(labels, payload);
-                Err(PtyOutputEmitError::Emit)
-            },
-            drop,
-        )
-    }
-
-    fn emit_pty_output(
-        &self,
-        labels: &[WindowLabel],
-        payload: PtyOutputPayload,
-    ) -> Result<(), PtyOutputEmitError> {
-        (self.emit_pty_output)(labels, payload)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ParserAvailability {
-    Available,
-    Unavailable,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SessionRegistrationFailure {
     ParserStatePoisoned,
     SessionAlreadyRegisteredOrClosing,
-}
-
-#[derive(Default)]
-struct ReaderOperationGateState {
-    lifecycle_closing: bool,
-    admitted_count: usize,
-}
-
-struct ReaderOperationGate {
-    state: Mutex<ReaderOperationGateState>,
-    drained: Condvar,
-}
-
-impl ReaderOperationGate {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            state: Mutex::new(ReaderOperationGateState::default()),
-            drained: Condvar::new(),
-        })
-    }
-
-    fn acquire(self: &Arc<Self>) -> Option<ReaderOperationLease> {
-        let mut state = self.state.lock().ok()?;
-        if state.lifecycle_closing {
-            return None;
-        }
-        state.admitted_count = state.admitted_count.checked_add(1)?;
-        Some(ReaderOperationLease {
-            gate: Arc::clone(self),
-            completed: false,
-        })
-    }
-
-    fn close(&self) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.lifecycle_closing = true;
-        if state.admitted_count == 0 {
-            self.drained.notify_all();
-        }
-    }
-
-    fn is_open(&self) -> bool {
-        self.state
-            .lock()
-            .is_ok_and(|state| !state.lifecycle_closing)
-    }
-
-    fn wait_for_drain(&self) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        while state.admitted_count != 0 {
-            state = self
-                .drained
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-    }
-
-    fn complete(&self) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.admitted_count == 0 {
-            log::error!("[terminal-output] reader lease underflow");
-            return;
-        }
-        state.admitted_count -= 1;
-        if state.admitted_count == 0 {
-            self.drained.notify_all();
-        }
-    }
-}
-
-struct ReaderOperationLease {
-    gate: Arc<ReaderOperationGate>,
-    completed: bool,
-}
-
-impl ReaderOperationLease {
-    fn complete(mut self) {
-        if !self.completed {
-            self.gate.complete();
-            self.completed = true;
-        }
-    }
-}
-
-impl Drop for ReaderOperationLease {
-    fn drop(&mut self) {
-        if !self.completed {
-            self.gate.complete();
-            self.completed = true;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -528,7 +311,7 @@ impl SessionIoFanout {
         true
     }
 
-    /// #3029: the reader's own parser is the only cursor authority. No locks escape.
+    /// The reader's own parser is the only cursor authority. No locks escape.
     #[cfg(any(windows, test))]
     pub(crate) fn cursor_position_for_reader(
         &self,

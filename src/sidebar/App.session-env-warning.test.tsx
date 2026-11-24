@@ -12,7 +12,9 @@ import {
   session,
   waitFor,
 } from "../shared/testing/ui-harness";
-import { liveSelection, SESSION_A } from "../shared/testing/session-selection";
+import { liveSelection, SESSION_A, SESSION_B } from "../shared/testing/session-selection";
+import { sessionsStore } from "./stores/sessions";
+import { resetSessionWarningToastForTests } from "./session-warning-toast";
 
 const projectPath = "C:\\Project";
 const agentPath = `${projectPath}\\.ac\\_agent_General`;
@@ -60,6 +62,7 @@ describe("SidebarApp session environment warnings", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
+    resetSessionWarningToastForTests();
   });
 
   afterEach(() => {
@@ -89,7 +92,7 @@ describe("SidebarApp session environment warnings", () => {
         expect(toastStore.items).toHaveLength(1);
         expect(toastStore.items[0]).toMatchObject({
           kind: "error",
-          message,
+          message: `General: ${message}`,
           exiting: false,
         });
       });
@@ -121,7 +124,7 @@ describe("SidebarApp session environment warnings", () => {
         expect(toastStore.items).toHaveLength(1);
         expect(toastStore.items[0]).toMatchObject({
           kind: "error",
-          message,
+          message: `General: ${message}`,
           exiting: false,
         });
       });
@@ -150,7 +153,7 @@ describe("SidebarApp session environment warnings", () => {
         expect(toastStore.items).toHaveLength(1);
         expect(toastStore.items[0]).toMatchObject({
           kind: "error",
-          message: warning.message,
+          message: `General: ${warning.message}`,
           exiting: false,
         });
       });
@@ -173,6 +176,9 @@ describe("SidebarApp session environment warnings", () => {
     const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
     try {
       await waitFor(() => expect(rendered.root.textContent).toContain("General"));
+      await waitFor(() =>
+        expect(sessionsStore.sessions.some((s) => s.id === SESSION_A)).toBe(true)
+      );
       vi.useFakeTimers();
       fake.emitFromBackend("session_env_warning", warning);
       await Promise.resolve();
@@ -254,5 +260,159 @@ describe("SidebarApp session environment warnings", () => {
     } finally {
       rendered.cleanup();
     }
+  });
+
+  describe("agent name and terminal action (#5146)", () => {
+    const failure = (id: string, tag: string) => ({
+      sessionId: id,
+      key: "self-handoff",
+      kind: "self-handoff-failed" as const,
+      message: `self-switch attempt ${tag} failed: session locked.`,
+    });
+
+    const waitForStoreRow = (id: string) =>
+      waitFor(() => expect(sessionsStore.sessions.some((s) => s.id === id)).toBe(true));
+
+    it("names a live session and offers See terminal that keeps the toast", async () => {
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      fake.resolve("switch_session", undefined);
+      const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+      try {
+        await waitForStoreRow(SESSION_A);
+        const warning = failure(SESSION_A, "live");
+        fake.emitFromBackend("session_env_warning", warning);
+        await waitFor(() => expect(toastStore.items).toHaveLength(1));
+        const toast = toastStore.items[0];
+        expect(toast.message).toBe(`General: ${warning.message}`);
+        expect(toast.secondaryAction?.label).toBe("See terminal");
+        toast.secondaryAction!.onClick();
+        await waitFor(() =>
+          expect(fake.lastCall("switch_session")?.args).toEqual({ id: SESSION_A })
+        );
+        expect(toastStore.items).toHaveLength(1);
+        expect(toastStore.items[0].exiting).toBe(false);
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("names a drained warning through the session list fallback", async () => {
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      const warning = failure(SESSION_A, "drained");
+      let storeEmptyAtDrain: boolean | null = null;
+      fake.onInvoke("drain_session_warnings", () => {
+        storeEmptyAtDrain = sessionsStore.sessions.length === 0;
+        return [warning];
+      });
+      const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+      try {
+        await waitFor(() => expect(toastStore.items).toHaveLength(1));
+        expect(storeEmptyAtDrain).toBe(true);
+        expect(fake.callsFor("list_sessions").length).toBeGreaterThan(0);
+        expect(toastStore.items[0].message).toBe(`General: ${warning.message}`);
+        expect(toastStore.items[0].secondaryAction?.label).toBe("See terminal");
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("labels a never-seen session as unknown without an action", async () => {
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+      try {
+        await waitForStoreRow(SESSION_A);
+        const warning = failure(SESSION_B, "unknown");
+        fake.emitFromBackend("session_env_warning", warning);
+        await waitFor(() => expect(toastStore.items).toHaveLength(1));
+        expect(toastStore.items[0].message).toBe(
+          `Unknown agent (${SESSION_B.slice(0, 8)}): ${warning.message}`
+        );
+        expect(toastStore.items[0].secondaryAction).toBeUndefined();
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it.each([
+      ["a generic error", "boom", "General: could not open the terminal"],
+      ["a busy coordinator", "selectionCoordinatorBusy", "General: busy, try again"],
+    ])("reports a switch failure from %s", async (_label, reason, expected) => {
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      fake.reject("switch_session", reason);
+      const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+      try {
+        await waitForStoreRow(SESSION_A);
+        fake.emitFromBackend("session_env_warning", failure(SESSION_A, "reject"));
+        await waitFor(() => expect(toastStore.items).toHaveLength(1));
+        toastStore.items[0].secondaryAction!.onClick();
+        await waitFor(() => {
+          const info = toastStore.items.find((t) => t.kind === "info");
+          expect(info?.message).toBe(expected);
+        });
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("names a destroyed session and targets its restarted terminal", async () => {
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      fake.resolve("switch_session", undefined);
+      const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+      try {
+        await waitForStoreRow(SESSION_A);
+        // Like the backend: once destroyed, the session is no longer listed.
+        fake.resolve("list_sessions", []);
+        fake.emitFromBackend("session_destroyed", { id: SESSION_A });
+        await waitFor(() =>
+          expect(sessionsStore.sessions.some((s) => s.id === SESSION_A)).toBe(false)
+        );
+
+        const gone = failure(SESSION_A, "gone");
+        fake.emitFromBackend("session_env_warning", gone);
+        await waitFor(() => expect(toastStore.items).toHaveLength(1));
+        expect(toastStore.items[0].message).toBe(`General: ${gone.message}`);
+        expect(toastStore.items[0].secondaryAction).toBeUndefined();
+
+        fake.emitFromBackend(
+          "session_created",
+          session({ id: SESSION_B, name: "General", workingDirectory: agentPath })
+        );
+        await waitForStoreRow(SESSION_B);
+        const restarted = failure(SESSION_A, "restarted");
+        fake.emitFromBackend("session_env_warning", restarted);
+        await waitFor(() => expect(toastStore.items).toHaveLength(2));
+        const toast = toastStore.items.find((t) => t.message.includes("restarted"))!;
+        expect(toast.message).toBe(`General: ${restarted.message}`);
+        expect(toast.secondaryAction?.label).toBe("See terminal");
+        toast.secondaryAction!.onClick();
+        await waitFor(() =>
+          expect(fake.lastCall("switch_session")?.args).toEqual({ id: SESSION_B })
+        );
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("pushes no toast when unmounted during the list fallback", async () => {
+      const fake = new FakeTransport();
+      setupTransport(fake);
+      const pending: Array<(rows: unknown[]) => void> = [];
+      fake.onInvoke("list_sessions", () => new Promise((resolve) => pending.push(resolve)));
+      fake.resolve("drain_session_warnings", [failure(SESSION_A, "unmount")]);
+      const rendered = renderWithFakeTransport(() => <SidebarApp embedded />, fake);
+      await waitFor(() => expect(fake.callsFor("drain_session_warnings")).toHaveLength(1));
+      await waitFor(() => expect(pending.length).toBeGreaterThan(0));
+      rendered.cleanup();
+      const row = session({ id: SESSION_A, name: "General", workingDirectory: agentPath });
+      for (const resolve of pending) resolve([row]);
+      await new Promise((r) => setTimeout(r, 0));
+      await Promise.resolve();
+      expect(toastStore.items).toHaveLength(0);
+    });
   });
 });

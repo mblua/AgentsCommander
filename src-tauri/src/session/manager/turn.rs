@@ -1,11 +1,16 @@
+//! Session manager turn state: idle and busy marks and armed agent turns.
+//! It does not read PTY output.
+
+#[cfg(test)]
 use super::super::session::Session;
 use super::carrier::{acquire_carrier_mutation_permit, CarrierMutationPermit};
 use super::SessionManager;
+#[cfg(test)]
 use crate::pty::backend::SessionBackendKind;
 use uuid::Uuid;
 
 impl SessionManager {
-    /// #1149 - the guard added here is emit-only. Every mutation below runs
+    /// The guard added here is emit-only. Every mutation below runs
     /// exactly as it did before, on every call, in every state; only the
     /// `log::info!` and the activity record are conditional. That is what turns
     /// 55,816 `[session-state]` lines into the roughly 8,054 real transitions
@@ -23,7 +28,7 @@ impl SessionManager {
             .await;
     }
 
-    /// #1682 - record that a message write reached an arming site for `id`, NOT that a
+    /// Record that a message write reached an arming site for `id`, NOT that a
     /// message was delivered and submitted: R7 and R8 both arm with nothing submitted.
     /// Idempotent, and never undone: see this phase's D2. Deliberately NOT called from
     /// `mark_busy`, whose output-driven caller would arm a startup repaint.
@@ -48,7 +53,7 @@ impl SessionManager {
         s.agent_turn_armed = true;
     }
 
-    /// #1682 - where to persist the stamp for `id` on a busy->idle edge, or
+    /// Where to persist the stamp for `id` on a busy->idle edge, or
     /// `None` when no message ever armed this session or it has no coding
     /// agent. Read-only: the latch is not consumed, so it never blocks a later
     /// edge; the value converges on the last edge the stamp gates let through.
@@ -65,7 +70,7 @@ impl SessionManager {
         Some((s.working_directory.clone(), agent_id))
     }
 
-    /// #1149 - the working-session set, sampled without an await.
+    /// The working-session set, sampled without an await.
     ///
     /// `RunEvent::Exit` runs on the main thread and needs this set while the
     /// session map is still populated, but the only public read path,
@@ -108,13 +113,7 @@ impl SessionManager {
         clippy::too_many_arguments,
         reason = "PTY boundary checks target, sender, route, permit and both recipes"
     )]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn prepare_pty_input_boundary<'a, F, G>(
         &self,
         id: Uuid,

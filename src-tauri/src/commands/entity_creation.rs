@@ -64,7 +64,7 @@ pub use team_update::{
     __tauri_command_name_update_team, get_team_config, update_team,
 };
 // Preserve the standalone on-disk entry point for internal consumers.
-#[allow(unused_imports)]
+#[allow(unused_imports, reason = "keeps standalone path for internal callers")]
 pub(crate) use workgroup::create_workgroup_on_disk;
 pub(crate) use workgroup::{
     acquire_lifecycle_project_gate, agent_ref_bare_name, clone_missing_repos_for_workgroup,
@@ -153,13 +153,13 @@ pub(crate) struct ReplicaDiskCreateArgs {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Agent Matrix / replica directory contract (issue #209)
+// Agent Matrix / replica directory contract
 // ---------------------------------------------------------------------------
 //
 // Agent Matrices own canonical state (`memory/`, `plans/`, `skills/`) plus
 // mailboxes. Workgroup replicas own only mailboxes; their config points back
 // to the origin matrix for canonical state.
-#[allow(unused_imports)]
+#[allow(unused_imports, reason = "keeps legacy re-export path for callers")]
 pub(crate) use crate::config::entity_creation::matrices::{AGENT_MATRIX_DIRS, AGENT_REPLICA_DIRS};
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-//! (#1399) Per-target lane reservation for detached wake delivery: per-target
+//! Per-target lane reservation for detached wake delivery: per-target
 //! exclusivity and a global active-operation cap, with RAII release.
 
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 ///
 /// Rule that picks the value: it matches `api::dispatcher::PTY_WORKER_LIMIT`,
 /// which the daemon already tolerates for concurrent per-target PTY work, and 8
-/// covers the largest batch actually observed (7 messages inside 61 ms, #1394)
+/// covers the largest batch actually observed (7 messages inside 61 ms)
 /// in one slot width. Uncapped, a coordinator fan-out over the 115 replicas
 /// discovered in one live instance would attempt 115 simultaneous cold spawns.
 ///

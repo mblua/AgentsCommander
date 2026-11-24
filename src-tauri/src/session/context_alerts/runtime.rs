@@ -8,14 +8,14 @@
 
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
-use super::AttemptPreparation;
-use super::AttemptSnapshot;
-use super::ContextAlertRuntime;
-use super::ContextAlertServices;
-use super::MemberIdentityFingerprint;
-use super::MemberPolicyResolution;
-use super::ReadyAttempt;
-use super::ResolvedPolicy;
+use super::model::AttemptPreparation;
+use super::model::AttemptSnapshot;
+use super::model::ContextAlertRuntime;
+use super::model::ContextAlertServices;
+use super::model::MemberIdentityFingerprint;
+use super::model::MemberPolicyResolution;
+use super::model::ReadyAttempt;
+use super::model::ResolvedPolicy;
 use crate::commands::entity_creation::metadata_is_link_or_reparse;
 use crate::commands::entity_creation::parse_team_from_workgroup_name;
 use crate::commands::entity_creation::read_team_config_classified;

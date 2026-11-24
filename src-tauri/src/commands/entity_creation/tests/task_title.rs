@@ -251,7 +251,7 @@ fn issue_3294_initial_task_positive_control() {
     }
 }
 
-// ── #738: build_task_content marks creation titles as user-owned ──
+// ── build_task_content marks creation titles as user-owned ──
 
 #[test]
 fn build_task_content_prefixes_user_title() {
@@ -394,4 +394,4 @@ fn parse_task_title_returns_none_for_bom_without_frontmatter() {
     assert_eq!(parse_task_title("\u{FEFF}# Heading\n\nbody\n"), None);
 }
 
-// ── #177 — determine_next_wg_number lowest-free reuse ──
+// ── determine_next_wg_number lowest-free reuse ──

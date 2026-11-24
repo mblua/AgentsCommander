@@ -187,7 +187,7 @@ describe("ActionBar selected workgroup visibility toggle", () => {
     dispose();
   });
 
-  // #587 — the ▦ Resource Monitor button reflects whether RM occupies the
+  // The ▦ Resource Monitor button reflects whether RM occupies the
   // central pane (mirrors the 🏠 Home toggle's active state).
   it("marks the Resource Monitor button active when RM is the central view", () => {
     centralViewStore.setInitialView("resourceMonitor");
@@ -217,7 +217,7 @@ describe("ActionBar selected workgroup visibility toggle", () => {
     dispose();
   });
 
-  // #289 / dark-default — before settings load, settingsStore.current is null,
+  // Dark-default — before settings load, settingsStore.current is null,
   // so the theme glyph falls back to AppSettings::default. That default is now
   // dark (themeLight: false), so the pre-load glyph must be the moon, not the
   // legacy sun.
@@ -308,7 +308,7 @@ describe("ActionBar selected workgroup visibility toggle", () => {
 
     dispose();
   });
-  // #2611 — byte-equal class / data-ac-state strings for the toolbar buttons
+  // Byte-equal class / data-ac-state strings for the toolbar buttons
   // whose ternaries moved into triState/activeClass.
   function buttonAttrs(testId: string): [string | null, string | null] {
     const el = document.body.querySelector<HTMLElement>(`[data-ac-testid="${testId}"]`);
@@ -380,7 +380,7 @@ describe("ActionBar selected workgroup visibility toggle", () => {
   });
 });
 
-describe("ActionBar helpers (#2611)", () => {
+describe("ActionBar helpers", () => {
   type Monitor = Parameters<typeof computeResourceBadgeState>[1];
   function snap(overrides: Record<string, unknown> = {}): Monitor {
     return {
@@ -427,7 +427,7 @@ describe("ActionBar helpers (#2611)", () => {
 });
 
 
-describe("ActionBar pending mount cleanup (#4441)", () => {
+describe("ActionBar pending mount cleanup", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -470,7 +470,7 @@ describe("ActionBar pending mount cleanup (#4441)", () => {
   });
 });
 
-describe("ActionBar theme toggle document class (#4499)", () => {
+describe("ActionBar theme toggle document class", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     document.documentElement.classList.remove("light-theme");
@@ -521,7 +521,7 @@ describe("ActionBar theme toggle document class (#4499)", () => {
   });
 });
 
-describe("ActionBar toggle button labels (#4693)", () => {
+describe("ActionBar toggle button labels", () => {
   afterEach(async () => {
     const { homeStore } = await import("../../main/stores/home");
     (homeStore as { visible: boolean }).visible = false;
@@ -559,7 +559,7 @@ describe("ActionBar toggle button labels (#4693)", () => {
     dispose();
   });
 
-  // #4751 — WWW is opt-in through webBrowserEnabled; missing or false hides it.
+  // WWW is opt-in through webBrowserEnabled; missing or false hides it.
   it.each([
     [undefined, false],
     [false, false],
@@ -583,7 +583,7 @@ describe("ActionBar toggle button labels (#4693)", () => {
   });
 });
 
-describe("ActionBar sound sink alert (#4843)", () => {
+describe("ActionBar sound sink alert", () => {
   const ALERT_LABEL = "Sound alerts cannot play. Click for details and to mute.";
   const MESSAGE =
     "Sound alerts cannot play: the GStreamer element autoaudiosink is missing. Install GStreamer good plugins, then restart AgentsCommander:\n" +

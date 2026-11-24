@@ -23,7 +23,7 @@ import {
 } from "../agent-update";
 import { deriveTimelineHeader, deriveTimelineNodes } from "../agent-update-status";
 
-/** #1551 - inline glyphs of the timeline markers and the summary ring (no external asset). */
+/** Inline glyphs of the timeline markers and the summary ring (no external asset). */
 const CheckIcon: Component = () => (
   <svg
     viewBox="0 0 16 16"
@@ -45,7 +45,7 @@ const CrossIcon: Component = () => (
 );
 
 /**
- * #1691 - a row/batch cancellation control is marked with `data-ac-cancel` so the document
+ * A row/batch cancellation control is marked with `data-ac-cancel` so the document
  * capture handler can recognise it in `composedPath()` and step aside for the native button
  * activation instead of answering the prompt.
  */
@@ -54,13 +54,13 @@ function isCancelControl(target: EventTarget): boolean {
 }
 
 /**
- * #1327 - startup coding-agent update overlay.
+ * Startup coding-agent update overlay.
  *
  * While the backend runs the per-command update sequence: a full-backdrop splash
  * that blocks interaction. While a first-time question is pending: a Yes/No prompt
  * on the same card. Default = No: Enter/Esc answer No, and No is auto-focused.
  *
- * #1551 round 5 - the splash is the Option 2 staged-progress card (plan 5.13): a
+ * The splash is the Option 2 staged-progress card (plan 5.13): a
  * header with a small spinner, the title, the `<n> of <N> completed` counter and a
  * progress bar; below it a timeline with one node per agent of the pass in pass
  * order. When the pass ends with at least one result the card becomes the final
@@ -68,7 +68,7 @@ function isCancelControl(target: EventTarget): boolean {
  * user closes it with `Close`, Enter or Escape on this surface; the failure toasts
  * appear after the close.
  *
- * #1691 - the card no longer chooses prompt OR timeline: a pending prompt renders the
+ * The card no longer chooses prompt OR timeline: a pending prompt renders the
  * callout BETWEEN the header/progress and the full timeline, so the row and batch
  * cancellation controls stay reachable while the question is up. Enter on a focused
  * cancellation control is NOT captured (the native activation cancels, and no
@@ -78,19 +78,19 @@ function isCancelControl(target: EventTarget): boolean {
  * ONE in-flight flag (`answering`) gates BOTH the buttons AND the Enter/Esc
  * handlers: a keypress during the answer IPC must not fire a second
  * `agent_update_answer` that flips a just-made Yes to No. `applied === false` means
- * the answer was late (timeout) or superseded by another surface (#1551 R3-M1):
+ * the answer was late (timeout) or superseded by another surface:
  * the toast then states the policy the backend recorded, read from the snapshot.
  */
 const AgentUpdateOverlay: Component = () => {
   const [state, setState] = agentUpdateStore;
   const [answering, setAnswering] = createSignal(false);
-  // #1691 - LOCAL invoke-pending only. The disable that must survive a missing event, a
+  // LOCAL invoke-pending only. The disable that must survive a missing event, a
   // failed refresh and a remount lives in the store (`cancelResponses`/`cancelAllRequested`).
   const [rowPending, setRowPending] = createSignal<readonly string[]>([]);
   const [batchPending, setBatchPending] = createSignal(false);
   let closeButton: HTMLButtonElement | undefined;
 
-  /** #1691 - authoritative requests, the store's row response latch, and the local pending set. */
+  /** Authoritative requests, the store's row response latch, and the local pending set. */
   const cancellingCommands = createMemo(() => {
     const commands = new Set<string>();
     for (const ref of state.cancelRequested) commands.add(ref.command);
@@ -109,7 +109,7 @@ const AgentUpdateOverlay: Component = () => {
     )
   );
   const header = createMemo(() => deriveTimelineHeader(nodeViews()));
-  /** #1691 - a verifying-only remainder is still unfinished: the batch control stays actionable. */
+  /** A verifying-only remainder is still unfinished: the batch control stays actionable. */
   const anyUnfinished = createMemo(() => nodeViews().some((view) => !view.terminal));
   const title = () =>
     state.summary === "shown" ? "Coding agent updates complete" : "Updating coding agents...";
@@ -121,7 +121,7 @@ const AgentUpdateOverlay: Component = () => {
   const answer = async (enabled: boolean) => {
     const prompt = state.prompt;
     if (!prompt || answering()) return;
-    // #1551 P7 - captured now: `prompt` is a store proxy whose fields a prompt B that
+    // Captured now: `prompt` is a store proxy whose fields a prompt B that
     // arrives during the await overwrites in place (a Solid path write merges into the
     // held object), and the answered command must stay A for the clear and the mark.
     const command = prompt.command;
@@ -162,7 +162,7 @@ const AgentUpdateOverlay: Component = () => {
     }
   };
 
-  /** #1691 - one in-flight cancel per row; the store latch keeps the row disabled afterwards. */
+  /** One in-flight cancel per row; the store latch keeps the row disabled afterwards. */
   const cancelRow = async (command: string) => {
     if (rowPending().includes(command)) return;
     setRowPending((list) => [...list, command]);
@@ -187,7 +187,7 @@ const AgentUpdateOverlay: Component = () => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Enter" && event.key !== "Escape") return;
       if (state.prompt) {
-        // #1691 - Enter on a focused cancellation control belongs to that control: step
+        // Enter on a focused cancellation control belongs to that control: step
         // aside so the native activation cancels once and NOTHING answers the prompt.
         // Escape always answers No, even from a cancellation control. Space is never
         // captured here, so it activates a focused button natively.
@@ -198,7 +198,7 @@ const AgentUpdateOverlay: Component = () => {
         void answer(false); // default = No (Enter and Esc both)
         return;
       }
-      // #1551 - the summary closes on Enter/Escape; the capturing handler sees the
+      // The summary closes on Enter/Escape; the capturing handler sees the
       // keydown first, so Enter never activates the button natively (one close, one
       // set of toasts: `dismissAgentUpdateSummary` is inert once dismissed).
       if (state.summary === "shown") {
@@ -211,7 +211,7 @@ const AgentUpdateOverlay: Component = () => {
     onCleanup(() => document.removeEventListener("keydown", onKeyDown, true));
   });
 
-  // #1551 - the summary moves focus to `Close`.
+  // The summary moves focus to `Close`.
   createEffect(() => {
     if (state.summary === "shown") closeButton?.focus();
   });
@@ -339,7 +339,7 @@ const AgentUpdateOverlay: Component = () => {
                       </span>
                       <div class="agent-update-node-body">
                         <div class="agent-update-node-label">{node().label}</div>
-                        {/* #1691 - ONE string per row: the nonterminal word, or the terminal
+                        {/* ONE string per row: the nonterminal word, or the terminal
                             outcome. Never both, so no separator can reappear. */}
                         <div class="agent-update-node-line">
                           <Show when={node().stateText}>
@@ -369,7 +369,7 @@ const AgentUpdateOverlay: Component = () => {
                           <div class="agent-update-node-bar" aria-hidden="true" />
                         </Show>
                       </div>
-                      {/* #1691 - one action per NONTERMINAL row, `Verifying` included. It is
+                      {/* One action per NONTERMINAL row, `Verifying` included. It is
                           visible-disabled once requested and only disappears at the terminal result. */}
                       <Show when={!node().terminal}>
                         <button

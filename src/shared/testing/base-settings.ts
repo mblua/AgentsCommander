@@ -114,7 +114,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
   };
 }
 
-// Shared deviation set of the onboarding-pending fixtures (#2412): measured by
+// Shared deviation set of the onboarding-pending fixtures: measured by
 // `npm run dup:changed` as the one clone left after the per-file collapse.
 export function onboardingPendingSettings(overrides: Partial<AppSettings> = {}): AppSettings {
   return baseSettings({

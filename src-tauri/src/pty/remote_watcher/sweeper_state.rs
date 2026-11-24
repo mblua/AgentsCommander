@@ -41,7 +41,7 @@ pub(crate) struct CiAxis {
     pub(crate) last_confirmed_at: Option<DateTime<Local>>,
     pub(crate) next_due: Option<Instant>,
     pub(crate) failure_interval: Option<Duration>,
-    /// #2473: the published answer's in-progress run ids / PR numbers (kept
+    /// The published answer's in-progress run ids / PR numbers (kept
     /// only while `chip` is `Running`) and the failure behind an `Unknown`
     /// chip. A round that is not due leaves them untouched, like `chip`.
     pub(crate) run_ids: Vec<u64>,
@@ -66,7 +66,7 @@ impl Default for CiAxis {
     }
 }
 
-/// What #2141 carries from a retired key to a live key on the same
+/// What the suppression carries from a retired key to a live key on the same
 /// `(nwo, branch)`. Deliberately just these two fields: see the seeding step.
 #[derive(Clone, Copy)]
 pub(crate) struct StalenessCarry {
@@ -206,14 +206,14 @@ pub(crate) struct KeyPlan {
 pub(crate) struct KeyOutcome {
     pub(crate) ci: Option<Result<CiState, FailureKind>>,
     /// Set when the CI answer was suppressed: the branch is the resolved default
-    /// branch, or it is identical to the default branch (#2126). Carried beside
+    /// branch, or it is identical to the default branch. Carried beside
     /// `ci` because `CiState` has no `Suppressed` value.
     pub(crate) ci_suppressed: bool,
     /// Set only when the identity compare was issued as an EXTRA `gh` call, so
     /// the reservation made for it is refunded when it was never made.
     pub(crate) ci_identity_call: bool,
     pub(crate) staleness: Option<CompareAnswer>,
-    /// #2473: `(run_ids, pull_requests)` of a non-suppressed `Ok` answer; empty
+    /// `(run_ids, pull_requests)` of a non-suppressed `Ok` answer; empty
     /// otherwise.
     pub(crate) ci_runs: (Vec<u64>, Vec<u64>),
     pub(crate) ci_completion: Option<CiCompletionState>,

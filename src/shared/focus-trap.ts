@@ -7,7 +7,7 @@
 export function trapTabFocus(e: KeyboardEvent, focusables: readonly HTMLElement[]): void {
   if (focusables.length < 2) return;
   const first = focusables[0];
-  const last = focusables[focusables.length - 1];
+  const last = focusables.at(-1);
   if (first === undefined || last === undefined) return;
   const idx = focusables.indexOf(document.activeElement as HTMLElement);
   if (idx === -1) {

@@ -111,7 +111,7 @@ pub(super) fn make_mailbox_fixture() -> MailboxFixture {
 }
 
 pub(super) fn make_mailbox_fixture_in(temp: tempfile::TempDir) -> MailboxFixture {
-    // (#1399 CI regression) Build every fixture path from the canonical
+    // (CI regression) Build every fixture path from the canonical
     // spelling. `dedup_outbox_dirs_by_object_id` rewrites each scanned
     // outbox dir to `verify_directory(...).canonical_path`, so the retry
     // ledger is keyed by the canonical form; on hosts whose `%TEMP%`

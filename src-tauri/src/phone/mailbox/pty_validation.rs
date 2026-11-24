@@ -80,8 +80,7 @@ impl MailboxPoller {
         }
         let in_memory_project_paths = {
             let settings = app.pty_settings();
-            let paths = settings.read().await.project_paths.clone();
-            paths
+            settings.read().await.project_paths.clone()
         };
         let mut project_paths =
             crate::config::settings::read_pty_input_project_paths_strict_offloaded()
@@ -164,8 +163,7 @@ impl MailboxPoller {
         }
         let in_memory_paths = {
             let settings = app.pty_settings();
-            let paths = settings.read().await.project_paths.clone();
-            paths
+            settings.read().await.project_paths.clone()
         };
         let mut paths =
             match crate::config::settings::read_pty_input_project_paths_strict_offloaded().await {

@@ -1,3 +1,7 @@
+//! Parsing and validation of PTY injection results returned by the host API.
+//! Owns the `PtyResult` wire shape and its canonical-format checks. Does not
+//! send requests or inject PTY input.
+
 use crate::config::HelperResult;
 pub(crate) const PTY_RESPONSE_MAX_BYTES: usize = 16 * 1024;
 use serde::{Deserialize, Serialize};
@@ -192,8 +196,8 @@ pub(crate) fn canonical_timestamp(value: &str) -> bool {
 }
 
 /// Canonical agent FQN (`<project>:room-<n>-<team>/<agent>`; the legacy `wg-` form is still
-/// accepted until phase 2 (#1615) retires it). Delegates to the shared room-aware validator so
-/// the helper cannot drift from the canonical identity grammar again (#2361).
+/// accepted until it is retired). Delegates to the shared room-aware validator so
+/// the helper cannot drift from the canonical identity grammar.
 pub(crate) fn canonical_agent_fqn(value: &str) -> bool {
     terminal_snapshot_renderer::validate_wg_fqn(value).is_ok()
 }

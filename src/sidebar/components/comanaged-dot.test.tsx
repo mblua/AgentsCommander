@@ -23,9 +23,9 @@ import { defaultGroupsConfig } from "../stores/workgroup-groups";
 import { sessionsStore } from "../stores/sessions";
 import type { Session } from "../../shared/types";
 
-// #2271 phase 8 - the three components that paint the circle today must carry
+// The three components that paint the circle today must carry
 // the new state: SessionItem, RootAgentBanner and the ProjectPanel replica row.
-// #2408 - Co-managed is an additive `comanaged` ring class: the dot keeps its
+// Co-managed is an additive `comanaged` ring class: the dot keeps its
 // real activity class, and clearing the flag removes only `comanaged`.
 // The Co-managed flag lives in the store's sidecar map, keyed by session id, so
 // every leg drives the map through the public setter instead of a Session field.
@@ -145,7 +145,7 @@ function railProject(): ProjectState {
   };
 }
 
-describe("Co-managed dot across the three render sites (#2271)", () => {
+describe("Co-managed dot across the three render sites", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -254,7 +254,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  // #2408 - each site's dot classes are exactly `session-item-status <activity>`
+  // Each site's dot classes are exactly `session-item-status <activity>`
   // plus `comanaged`; clearing the flag removes only the ring class.
   // `active` is SessionItem-only: the store the other two sites read from
   // settles a live session's status to `running`.
@@ -274,7 +274,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     expect([...dot.classList].sort()).toEqual([expected, "session-item-status"].sort());
   }
 
-  it("SessionItem keeps every real activity class under the ring (#2408)", async () => {
+  it("SessionItem keeps every real activity class under the ring", async () => {
     const cases = [
       { expected: "active", overrides: { status: "active" } as Partial<Session>, id: "cm-active" },
       ...ACTIVITY_CASES.map((c, i) => ({ ...c, id: `cm-activity-${i}` })),
@@ -296,7 +296,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  it("RootAgentBanner keeps every real activity class under the ring (#2408)", async () => {
+  it("RootAgentBanner keeps every real activity class under the ring", async () => {
     for (const c of ACTIVITY_CASES) {
       sessionsStore.setSessions([
         session({ id: "root-1", name: "Agent's Commander", isRootAgent: true, ...c.overrides }),
@@ -313,7 +313,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  it("the ProjectPanel replica dot keeps every real activity class under the ring (#2408)", async () => {
+  it("the ProjectPanel replica dot keeps every real activity class under the ring", async () => {
     for (const c of ACTIVITY_CASES) {
       sessionsStore.setSessions([replicaSession({ waitingForInput: false, ...c.overrides })]);
       sessionsStore.setSessionComanaged(REPLICA_SESSION_ID, true);
@@ -327,7 +327,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  // #2408 round 4 - a reactive `class` rewrite must not drop the ring. Solid's
+  // A reactive `class` rewrite must not drop the ring. Solid's
   // `class` wipes classList-owned names and an unchanged classList value does
   // not restore them, so each site is driven through an activity change with
   // capture held, then through a capture toggle with activity held.
@@ -354,7 +354,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     await waitFor(() => expect(exactDot(dot())).toEqual(ringed(after)));
   }
 
-  it("SessionItem keeps the ring across activity changes and toggles (#2408 round 4)", async () => {
+  it("SessionItem keeps the ring across activity changes and toggles (round 4)", async () => {
     const id = "cm-transition";
     const running = session({ id, name: "wg-1-dev-team/transition", status: "running" });
     sessionsStore.setSessions([running]);
@@ -377,7 +377,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  it("RootAgentBanner keeps the ring across activity changes and toggles (#2408 round 4)", async () => {
+  it("RootAgentBanner keeps the ring across activity changes and toggles (round 4)", async () => {
     // Grinch reproduction: capture held, the root session goes running -> idle.
     const root = session({ id: "root-1", name: "Agent's Commander", isRootAgent: true, status: "running" });
     sessionsStore.setSessions([root]);
@@ -394,7 +394,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     }
   });
 
-  it("the ProjectPanel replica dot keeps the ring across activity changes and toggles (#2408 round 4)", async () => {
+  it("the ProjectPanel replica dot keeps the ring across activity changes and toggles (round 4)", async () => {
     sessionsStore.setSessions([replicaSession()]);
     sessionsStore.setSessionComanaged(REPLICA_SESSION_ID, true);
     const rendered = await renderPanel();
@@ -445,7 +445,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
       const pendingDot = dotOf(itemRow(rendered.root, pending.id));
       expect(waitingDot.classList.contains("comanaged")).toBe(true);
       expect(pendingDot.classList.contains("comanaged")).toBe(true);
-      // #2408 - the ring never hides the real activity colour.
+      // The ring never hides the real activity colour.
       expect(waitingDot.classList.contains("waiting")).toBe(true);
       expect(pendingDot.classList.contains("pending")).toBe(true);
 

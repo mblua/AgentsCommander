@@ -121,7 +121,10 @@ impl ManifestPathIdentity {
             return Self::parse(ManifestPathEncoding::WindowsUtf16Hex, serialized);
         }
 
-        #[allow(unreachable_code)]
+        #[allow(
+            unreachable_code,
+            reason = "fallback for non-unix, non-windows targets"
+        )]
         Err(SeedManifestError::Validation(
             "native path encoding is unsupported on this platform".to_string(),
         ))

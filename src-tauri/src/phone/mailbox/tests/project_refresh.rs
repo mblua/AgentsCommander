@@ -1,21 +1,6 @@
 use super::*;
 
-/// §G9#8 / AR2-tests #21 — a session spawned by `deliver_wake` from an
-/// FQN `msg.to` has a sidebar `Session.name` WITHOUT the `:` prefix.
-/// §AR2-session-name handles this at mailbox.rs (spawn path) via
-/// `split_project_prefix(&msg.to).1`. The logic is one line; a full
-/// integration test needs a Tauri runtime.
-#[test]
-#[ignore = "integration: needs Tauri runtime + session manager fixture"]
-fn deliver_wake_spawned_session_name_has_no_colon() {}
-
-/// §G9#9 / AR2-tests #24 — full round-trip CLI send → mailbox route →
-/// reply. Intentionally integration-level; no unit scaffolding.
-#[test]
-#[ignore = "integration: full CLI + mailbox + two-project fixture"]
-fn resolve_to_target_round_trip_integration() {}
-
-// ── #228 D1-a — derive_project_from_outbox_path tests ──
+// ── D1-a — derive_project_from_outbox_path tests ──
 
 #[test]
 fn derive_project_from_outbox_path_walks_up_wg_replica_layout() {
@@ -353,7 +338,7 @@ fn project_refresh_request_reader_prioritizes_registration_for_same_project() {
     assert_eq!(batch.payloads[0].changed_name, None);
 }
 
-// ── Issue #481 mailbox wake-routing integration tests ──
+// ── mailbox wake-routing integration tests ──
 
 #[tokio::test]
 async fn deliver_wake_routes_to_live_when_phantom_present() {
@@ -506,7 +491,7 @@ async fn remote_pi_clear_command_branch_writes_new_emits_logical_event_and_stamp
     assert_eq!(payload["id"], message.id);
 }
 
-/// #2336 - the post-clear follow-up body is exempt from the typing hold. The
+/// The post-clear follow-up body is exempt from the typing hold. The
 /// logical command half is delivered and receipted FIRST; a hold then arms
 /// during the detached idle wait (and stays armed), and the plain injector
 /// must still write the body exactly once. The follow-up is not counted as a
@@ -567,7 +552,7 @@ async fn typing_hold_armed_during_post_clear_wait_does_not_drop_followup_body() 
         manager.mark_idle(session_id).await;
     }
 
-    // #2586 D1 - a `send_enter` shell is written the wrap without its final `\n\r`.
+    // D1 - a `send_enter` shell is written the wrap without its final `\n\r`.
     let wrapped = crate::phone::messaging::format_pty_wrap(&message.from, "follow-up body");
     let expected_body = wrapped.strip_suffix("\n\r").unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

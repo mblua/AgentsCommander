@@ -388,7 +388,7 @@ pub(super) async fn retained_fixture_ordinary_wake(
             crate::session::selection::ReplacementFixtureCut::SourceRetainedReturn) => None,
     }
     // None means only that the real core returned Retained and its public
-    // waiter ended (#3263) or was dropped. It also covers the two Admitted-stage
+    // waiter ended or was dropped. It also covers the two Admitted-stage
     // rollback exits, which return Err and so never record SourceRetainedReturn.
     // It is never a product result or success.
 }

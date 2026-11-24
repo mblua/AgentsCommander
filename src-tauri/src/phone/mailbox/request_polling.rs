@@ -49,7 +49,7 @@ fn archive_id_is_plain(id: &str) -> bool {
 }
 
 fn sweep_stale_session_results(requests_dir: &Path) {
-    // #1163: sweep stale result sidecars. The CLI consumes the result it
+    // Sweep stale result sidecars. The CLI consumes the result it
     // reads and waits at most `SESSION_REQUEST_RESULT_TIMEOUT` (30 s); a
     // result older than 5 minutes is litter from a timed-out or crashed
     // CLI and is removed here (worst case a few KB in an already-ephemeral,
@@ -71,7 +71,7 @@ fn sweep_stale_session_results(requests_dir: &Path) {
     }
 }
 
-// #1163: answer each request with a result sidecar on every terminal
+// Answer each request with a result sidecar on every terminal
 // path (malformed, spawn-rebuild failure, create Ok/Err). Write the
 // result BEFORE deleting the request: a crash in between leaves a
 // re-processable request on disk (the pre-existing hazard), never a
@@ -99,7 +99,7 @@ fn read_session_request(path: &Path) -> Option<crate::cli::create_agent::Session
         Ok(r) => r,
         Err(e) => {
             log::warn!("[session-requests] Failed to parse {path:?}: {e}");
-            // #1163: answer with a rejected result so the CLI can
+            // Answer with a rejected result so the CLI can
             // distinguish rejection from a missing app. The request
             // filename IS `<id>.json`, so the id comes from the stem.
             write_session_result(crate::cli::create_agent::SessionRequestResult {
@@ -142,7 +142,7 @@ fn complete_session_request(
         }
     }
 
-    // #1163: answer the request with the terminal outcome, then delete.
+    // Answer the request with the terminal outcome, then delete.
     let result = match create_result {
         Ok(info) => crate::cli::create_agent::SessionRequestResult {
             id: request.id.clone(),
@@ -330,7 +330,7 @@ impl MailboxPoller {
             Ok(rd) => rd
                 .filter_map(std::result::Result::ok)
                 .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
-                // #1163: result sidecars (`<id>.result.json`) are ANSWERS, not
+                // Result sidecars (`<id>.result.json`) are ANSWERS, not
                 // requests; without this exclusion a leftover result file would
                 // be parsed as a `SessionRequest` (parse fails -> spurious
                 // rejected result written for it).
@@ -365,7 +365,7 @@ impl MailboxPoller {
                 ) {
                     Ok(Some(spawn)) => (
                         Some(spawn),
-                        // #1271 - same-guard host shell: copied from the same
+                        // Same-guard host shell: copied from the same
                         // config snapshot that built the spawn, before any await.
                         Some(crate::pty::backend::ResolvedAgentHostShell {
                             program: cfg.default_shell.clone(),
@@ -416,7 +416,7 @@ impl MailboxPoller {
                     skip_auto_resume: true, // CLI session-request is a fresh create
                     resolved_spawn,
                     resolved_agent_host_shell,
-                    // #973 - headless caller: no terminal to measure, keep 120x30.
+                    // Headless caller: no terminal to measure, keep 120x30.
                     viewport: None,
                     selection_intent: CreateSelectionIntent::Background,
                 })
@@ -425,7 +425,7 @@ impl MailboxPoller {
         }
     }
 
-    /// #786: poll `<config_dir>/coding-agent-requests/` for CLI mutation requests
+    /// Poll `<config_dir>/coding-agent-requests/` for CLI mutation requests
     /// while the GUI runs. Scans bare `.json` files only (so `.processing`,
     /// `.tmp`, and the `results/` subdir are excluded). For each request, R8:
     /// write-lock `SettingsState`, clone a candidate, run the pure per-request

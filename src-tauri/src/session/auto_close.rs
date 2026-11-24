@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -18,11 +18,11 @@ use crate::session::manager::SessionManager;
 use crate::session::selection::{SelectionCoordinator, SelectionCoordinatorError};
 
 const TICK: Duration = Duration::from_secs(60);
-/// (#580) A just-woken session replays scrollback for ~1-2s; exclude its first
-/// `REPAINT_GRACE` of life from the idle-anchor advance so reopening an abandoned
-/// team cannot reset its persisted idle. Feeds `member_post_repaint_silence`.
+/// A just-woken session replays scrollback for ~1-2s. The anchor advance now
+/// excludes repaint in `IdleDetector::team_silence_age_at`; this window keeps the final
+/// pre-close veto for a member that emitted recently.
 const REPAINT_GRACE: Duration = Duration::from_secs(10);
-/// (#580) A session is not kill-eligible until alive past `WAKE_GRACE`, so a
+/// A session is not kill-eligible until alive past `WAKE_GRACE`, so a
 /// just-woken (or wake-on-restore) team is visible >=30s before any auto-close.
 /// MUST be > `REPAINT_GRACE` (a member protects its team via the anchor before it
 /// can be killed) and is also the spawn-race guard (untracked -> not established).
@@ -46,7 +46,7 @@ impl AutoClose {
         services: S,
         shutdown: crate::shutdown::ShutdownSignal,
     ) {
-        // (#580) per-team last-emitted anchor (seconds) for the badge dedup;
+        // Per-team last-emitted anchor (seconds) for the badge dedup;
         // task-local, self-bounded via `retain` in `tick`.
         let mut last_emitted: HashMap<String, i64> = HashMap::new();
         loop {
@@ -62,29 +62,7 @@ impl AutoClose {
     }
 }
 
-/// (#580) Effective "post-repaint" silence for ONE live member, or None if the
-/// member must NOT advance the idle anchor this tick. None when:
-///   - untracked (`alive_age` or `silence_age` missing) -> spawn race, ignore;
-///   - alive <= `REPAINT_GRACE` (still inside the wake-repaint window);
-///   - the member's LAST output landed inside its repaint window
-///     (`silence_age` >= `alive_age` - `REPAINT_GRACE`) -> that output was scrollback
-///     replay (or nothing genuine has happened since), so it must not reset the
-///     persisted idle of an abandoned-then-reopened team.
-///
-/// `Some(silence_age)` ONLY when the last output is genuine post-repaint activity.
-/// Pure; this is the E1 fix and gets its own boundary-tested unit (§8.1).
-fn member_post_repaint_silence(
-    alive_age: Option<Duration>,
-    silence_age: Option<Duration>,
-    repaint_grace: Duration,
-) -> Option<Duration> {
-    let alive = alive_age?;
-    let silence = silence_age?;
-    let window = alive.checked_sub(repaint_grace)?; // None if alive <= grace
-    (silence < window).then_some(silence)
-}
-
-/// (#580) Per-team MIN post-repaint silence across the members, folding the
+/// Per-team MIN post-repaint silence across the members, folding the
 /// per-member filter above. A member that does not contribute (untracked, inside
 /// its repaint window, or last output was scrollback replay) is SKIPPED; a team
 /// with NO contributing member is ABSENT from the map, so the caller leaves its
@@ -109,7 +87,7 @@ fn team_min_silence(
     out
 }
 
-/// (#580) Unified idle anchor as whole UNIX seconds: max(user-message, activity).
+/// Unified idle anchor as whole UNIX seconds: max(user-message, activity).
 /// `i64::MIN` for an absent component so the present one wins; both absent -> MIN
 /// (caller treats as "no badge"). Pure.
 fn team_idle_since_secs(
@@ -121,7 +99,7 @@ fn team_idle_since_secs(
     u.max(a)
 }
 
-/// (#582) Idle anchor for a GENUINELY ORPHANED member: a live agent member whose
+/// Idle anchor for a GENUINELY ORPHANED member: a live agent member whose
 /// team has NO live coordinator record (its coordinator was destroyed, so there is
 /// no persisted clock to key by the coordinator FQN). Falls back to the member's
 /// own in-memory silence (`now - silence_age`) so the orphan stays
@@ -136,10 +114,10 @@ fn orphan_anchor_secs(silence_age: Option<Duration>, now_secs: i64) -> i64 {
     }
 }
 
-/// (#582) Resolve the idle anchor for ONE live member, keeping the orphan and
-/// normal cases DISTINCT (the #582 HIGH fix). If the team has a LIVE coordinator
+/// Resolve the idle anchor for ONE live member, keeping the orphan and
+/// normal cases DISTINCT. If the team has a LIVE coordinator
 /// record, use the normal persisted team anchor from the snapshot; an absent
-/// snapshot entry yields `i64::MIN` (not closeable), exactly as before #582 -- the
+/// snapshot entry yields `i64::MIN` (not closeable), unchanged -- the
 /// normal path is unchanged, so an unclocked-but-live coordinator (e.g. a team
 /// restored after restart whose FQN is not yet in the clock file) is NEVER closed
 /// from raw member silence. ONLY a member whose team has NO coordinator record (a
@@ -164,7 +142,7 @@ fn resolve_member_anchor(
     }
 }
 
-/// (#580) KILL predicate for ONE team: closeable iff it has an ESTABLISHED
+/// KILL predicate for ONE team: closeable iff it has an ESTABLISHED
 /// member (alive past `WAKE_GRACE`, the visible-window + spawn-race gate) AND its
 /// unified anchor is idle past the timeout. `anchor_secs` is the output of
 /// `team_idle_since_secs`; `i64::MIN` (no anchor) is never closeable. Pure, so the
@@ -192,13 +170,13 @@ fn should_close_member(
     !telegram_protected && team_is_closeable(established, anchor_secs, now_secs, timeout_secs)
 }
 
-/// (#589) Should a successful destroy stamp its team's coordinator row
+/// Should a successful destroy stamp its team's coordinator row
 /// AUTO-CLOSED? True IFF the destroyed session IS that team's coordinator
 /// (`coord_id_of_team == Some(destroyed_id)`). A reaped sibling member while the
 /// coordinator survives (spared by the TOCTOU/repaint guards) returns false, so
 /// the LIVE coordinator keeps its idle counter instead of a stale pill. `None`
 /// (no coordinator record for the team) is never a coordinator close. Pure; this
-/// is the #589 gate and gets its own unit test.
+/// is the coordinator-close gate and gets its own unit test.
 fn destroyed_is_team_coordinator(destroyed_id: Uuid, coord_id_of_team: Option<Uuid>) -> bool {
     coord_id_of_team == Some(destroyed_id)
 }
@@ -230,13 +208,13 @@ async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<Stri
     // KILL filter: teams with any member alive past WAKE_GRACE (kill-eligible).
     let established_teams = established_teams(&members, &idle);
 
-    // #552 auto-closed badge: map each member id -> its team key, and snapshot
+    // Auto-closed badge: map each member id -> its team key, and snapshot
     // the live coordinator (fqn, cwd) per team BEFORE destroying (destroy removes
     // the coordinator session record). Used to set the marker on the right row.
     let id_to_team: HashMap<Uuid, String> =
         members.iter().map(|(id, k)| (*id, k.clone())).collect();
     let coord_refs = session_mgr.read().await.coordinator_refs_by_team().await;
-    // (#589) team -> coordinator session id, over the same coordinator records as
+    // Team -> coordinator session id, over the same coordinator records as
     // coord_refs. Gates the AUTO-CLOSED mark on the coordinator's OWN destruction
     // (not "any member destroyed"): a surviving coordinator whose sibling was
     // reaped keeps its idle counter instead of getting a stale pill. A separate
@@ -244,13 +222,16 @@ async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<Stri
     // one map but not the other simply yields no spurious mark).
     let coord_ids = session_mgr.read().await.coordinator_ids_by_team().await;
 
-    let now_secs = Utc::now().timestamp();
+    // One monotonic/UTC pair per tick; `now_secs` derives from the UTC half.
+    let tick_at = Instant::now();
+    let tick_utc = Utc::now();
+    let now_secs = tick_utc.timestamp();
     let Some(clocks) = services.coordinator_clocks() else {
         return;
     };
 
-    // (1) ADVANCE last_activity_at from POST-REPAINT members (REPAINT_GRACE filter).
-    advance_team_activity(&clocks, &members, &idle, &coord_refs, now_secs);
+    // (1) ADVANCE last_activity_at from each member's eligible team-clock stamp.
+    advance_team_activity(&clocks, &members, &idle, &coord_refs, tick_at, tick_utc);
 
     // (2) BADGE: snapshot, RELEASE, then emit the unified anchor per team (deduped).
     let snap = {
@@ -301,7 +282,7 @@ async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<Stri
         return;
     };
 
-    // #552 mark each genuinely-closed team's coordinator row "auto-closed" and
+    // Mark each genuinely-closed team's coordinator row "auto-closed" and
     // emit so the sidebar shows the pill live (discovery reload self-heals from
     // the persisted marker). mark_auto_closed is idempotent (emits once). The
     // dirty flag set here is persisted by flush_clocks at the end of this tick.
@@ -387,9 +368,18 @@ fn live_members(
 }
 
 fn established_teams(members: &[(Uuid, String)], idle: &IdleDetector) -> HashSet<String> {
+    established_teams_at(members, idle, Instant::now())
+}
+
+/// `established_teams` against an injected instant.
+fn established_teams_at(
+    members: &[(Uuid, String)],
+    idle: &IdleDetector,
+    now: Instant,
+) -> HashSet<String> {
     members
         .iter()
-        .filter(|(id, _)| idle.alive_age(*id).is_some_and(|a| a >= WAKE_GRACE))
+        .filter(|(id, _)| idle.alive_age_at(*id, now).is_some_and(|a| a >= WAKE_GRACE))
         .map(|(_, k)| k.clone())
         .collect()
 }
@@ -435,7 +425,7 @@ async fn close_idle_batch(
         }
     };
 
-    // (#589) Teams whose COORDINATOR'S OWN session was auto-closed this tick. A
+    // Teams whose COORDINATOR'S OWN session was auto-closed this tick. A
     // team where only a non-coordinator member was reaped is deliberately absent,
     // so the surviving coordinator row is never stamped AUTO-CLOSED.
     let confirmed = confirm_closeable_members(
@@ -520,24 +510,30 @@ fn advance_team_activity(
     members: &[(Uuid, String)],
     idle: &IdleDetector,
     coord_refs: &HashMap<String, (String, String)>,
-    now_secs: i64,
+    now: Instant,
+    now_utc: DateTime<Utc>,
 ) {
-    let team_sil = team_min_silence(members, &|id| {
-        member_post_repaint_silence(idle.alive_age(id), idle.silence_age(id), REPAINT_GRACE)
-    });
+    let team_sil = team_min_silence(members, &|id| idle.team_silence_age_at(id, now));
     {
         let mut g = clocks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (team, (fqn, _)) in coord_refs {
-            if let Some(sil) = team_sil.get(team) {
-                if let Some(c) = DateTime::<Utc>::from_timestamp(now_secs - sil.as_secs() as i64, 0)
-                {
-                    g.note_activity(fqn, c); // monotonic; dirties only on a real move
-                }
+            if let Some(c) = team_sil
+                .get(team)
+                .and_then(|sil| activity_second(now_utc, *sil))
+            {
+                g.note_activity(fqn, c); // monotonic; dirties only on a real move
             }
         }
     } // guard dropped before any emit
+}
+
+/// The whole UTC second `age` before `now_utc`, rounded once after the full-precision
+/// subtraction. `None` when out of range.
+fn activity_second(now_utc: DateTime<Utc>, age: Duration) -> Option<DateTime<Utc>> {
+    let at = now_utc.checked_sub_signed(chrono::TimeDelta::from_std(age).ok()?)?;
+    DateTime::<Utc>::from_timestamp(at.timestamp(), 0)
 }
 
 fn closed_coordinator_teams(
@@ -551,7 +547,7 @@ fn closed_coordinator_teams(
             "[auto-close] terminated idle session {}",
             &id.to_string()[..8]
         );
-        // (#589) Record the team for the AUTO-CLOSED mark ONLY when the
+        // Record the team for the AUTO-CLOSED mark ONLY when the
         // destroyed session IS this team's coordinator. A sibling member
         // reaped while the coordinator survives must NOT stamp the live
         // coordinator row; it keeps its idle counter.

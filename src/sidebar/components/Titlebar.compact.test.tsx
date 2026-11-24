@@ -15,7 +15,7 @@ import {
 import { setSidebarCompactMode, sidebarCompact } from "../../shared/sidebar-compact";
 import { MAIN_SIDEBAR_MIN_WIDTH } from "../../shared/sidebar-layout";
 
-// #2236 phase 6 — width presets are inert while compact. Two independent
+// Width presets are inert while compact. Two independent
 // layers are proved apart: the early return is reached directly (test 2a) and
 // the `disabled` attribute is asserted on its own (test 2b), so deleting
 // either one turns exactly one test red. A click on a `disabled` button never
@@ -72,7 +72,7 @@ async function flushMicrotasks(): Promise<void> {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
 }
 
-describe("Titlebar width presets vs compact (#2236)", () => {
+describe("Titlebar width presets vs compact", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

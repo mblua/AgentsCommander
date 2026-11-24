@@ -64,7 +64,7 @@ impl std::fmt::Debug for TerminalScreenRead {
     }
 }
 
-/// #973 - the terminal size a session's PTY is opened at.
+/// The terminal size a session's PTY is opened at.
 ///
 /// AC used to open every `ConPTY` at a hardcoded 120x30 and let the frontend correct it a few
 /// hundred milliseconds later. That correction lands in the middle of a coding agent's TUI
@@ -112,7 +112,7 @@ impl PtyViewport {
     ///
     /// **Spawn only.** There is deliberately NO floor on the resize path. A user really can drag
     /// a window down to a handful of columns, and refusing to follow them there would strand the
-    /// PTY at a size the terminal is not - which is the exact bug class #973 exists to close. The
+    /// PTY at a size the terminal is not - which is the exact bug class this type closes. The
     /// resize path refuses a degenerate size and nothing else.
     pub fn from_fit(cols: u16, rows: u16) -> Self {
         if cols < Self::PLAUSIBLE_MIN.cols || rows < Self::PLAUSIBLE_MIN.rows {
@@ -130,7 +130,7 @@ impl PtyViewport {
     }
 }
 
-/// #1271 - one immutable snapshot of the configured default host shell paired
+/// One immutable snapshot of the configured default host shell paired
 /// with a resolved agent command. Internal plumbing only: never serialized,
 /// never an IPC field, never part of the frontend contract. `Some` only for a
 /// resolved agent; the local backend uses it to launch a non-direct Windows
@@ -144,7 +144,7 @@ pub struct ResolvedAgentHostShell {
     pub args: Vec<String>,
 }
 
-/// #3516 - one stage argv plus the CLI env inputs, turned into a preflight launch.
+/// One stage argv plus the CLI env inputs, turned into a preflight launch.
 #[derive(Debug, Clone)]
 pub struct PreflightLaunchRequest {
     pub program: String,
@@ -156,7 +156,7 @@ pub struct PreflightLaunchRequest {
     pub resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
 }
 
-/// #3516 - the exact program, args, Windows command line, cwd and full env the CLI gets.
+/// The exact program, args, Windows command line, cwd and full env the CLI gets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreflightLaunch {
     pub program: String,
@@ -168,18 +168,18 @@ pub struct PreflightLaunch {
 
 pub(crate) struct BackendSpawnSpec {
     pub id: Uuid,
-    /// #942 - the configured coding-agent PROFILE id (`settings.agents[].id`, an
+    /// The configured coding-agent PROFILE id (`settings.agents[].id`, an
     /// opaque string like `agent_1782513272568_0`), or None. It is NOT the CLI:
     /// several profiles can run the same `codex` binary, and a coding agent can be
     /// launched with no profile id at all. Diagnostics log it, and never key on it.
     pub agent_id: Option<String>,
-    /// #942 - the CLI actually being launched, from the canonical detector
+    /// The CLI actually being launched, from the canonical detector
     /// (`CodingAgentKind::detect`). This is the identity the diagnostics key on: the
     /// stall predicate and the "concurrent startups on the shared ~/.codex" counter.
     pub coding_agent: Option<CodingAgentKind>,
     pub cmd: String,
     pub args: Vec<String>,
-    /// #1271 - the configured host shell paired with a resolved agent command.
+    /// The configured host shell paired with a resolved agent command.
     /// `Some` only for a resolved agent; `None` for ordinary shell sessions and
     /// direct `.exe` agents. Backend-facing plumbing only, never an IPC field.
     pub resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
@@ -196,18 +196,18 @@ pub(crate) struct BackendSpawnSpec {
     pub output_target: PtyOutputTarget,
     pub resource_registration: Option<ResourceLaunchRegistration>,
     pub logical_resource_slot: Option<ResourceLogicalAgentSlot>,
-    /// #930 - resolved host-credential copy-in for container sessions. None for
+    /// Resolved host-credential copy-in for container sessions. None for
     /// local-process sessions and when copy-in is disabled/not applicable.
     pub container_credential: Option<crate::pty::container_credentials::ContainerCredentialPlan>,
-    /// #935 - read-write repo bind mounts for container sessions. Empty for
+    /// Read-write repo bind mounts for container sessions. Empty for
     /// local-process sessions and when the replica has no admissible repos.
     pub container_repo_mounts: Vec<crate::pty::container_repos::ContainerRepoMount>,
-    /// #2413 - set by the backend BEFORE any process or runtime for this spec can
+    /// Set by the backend BEFORE any process or runtime for this spec can
     /// exist; never cleared.
     pub launch_witness: LaunchWitness,
 }
 
-/// #2413 - shared flag a backend marks right before it can launch a process or
+/// Shared flag a backend marks right before it can launch a process or
 /// runtime. Unset after a spawn `Err` proves nothing was launched.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct LaunchWitness(Arc<AtomicBool>);
@@ -222,7 +222,7 @@ impl LaunchWitness {
     }
 }
 
-/// #3317 - what one `kill_observed` call proves about the native child.
+/// What one `kill_observed` call proves about the native child.
 pub(crate) enum NativeExit {
     /// The child exit was observed during this kill.
     Observed,
@@ -248,7 +248,7 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
 
     fn kill(&self, id: Uuid) -> Result<(), AppError>;
 
-    /// #3317 - `kill` plus the evidence of this exact call. Default: no evidence.
+    /// `kill` plus the evidence of this exact call. Default: no evidence.
     fn kill_observed(&self, id: Uuid) -> Result<NativeExit, AppError> {
         self.kill(id).map(|()| NativeExit::Unobserved)
     }
@@ -268,7 +268,7 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
 
     fn get_screen_snapshot(&self, id: Uuid) -> Option<PtyScreenSnapshot>;
 
-    /// #1388 - does this session's screen currently show a cell a human would see?
+    /// Does this session's screen currently show a cell a human would see?
     ///
     /// **Defaulted**, following `screen_rows_since` below: `true` reads as "no claim,
     /// do not gate", so the ~20 in-tree `PtyBackend` fakes and any out-of-tree
@@ -281,14 +281,14 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
 
     /// Read-only fixed-cell viewport copy. Backends unrelated to the two live
     /// production fanouts remain source-compatible and report unavailable.
-    #[allow(private_interfaces)]
+    #[allow(private_interfaces, reason = "crate-private return type on pub trait")]
     fn copy_terminal_screen(&self, _id: Uuid) -> TerminalScreenCopyRead {
         TerminalScreenCopyRead::Unavailable
     }
 
     fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)>;
 
-    /// #1032 - the session's screen rows for the context scrape, plus what this backend
+    /// The session's screen rows for the context scrape, plus what this backend
     /// knows about whether there is still a session behind the id.
     ///
     /// - `Rows`: the live grid.
@@ -299,7 +299,7 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
     ///   stop sampling it.
     fn get_screen_rows(&self, id: Uuid) -> ScreenRowsRead;
 
-    /// #1171 - the session's screen, but only when it CHANGED since `seen`, plus the wrap
+    /// The session's screen, but only when it CHANGED since `seen`, plus the wrap
     /// flags and cursor row the watcher engine's frame diff needs.
     ///
     /// **Defaulted**, following `context_session_liveness` above, so the two `PtyBackend` test
@@ -328,7 +328,7 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
 
     fn terminate_job_for_session(&self, id: Uuid) -> bool;
 
-    /// #942 - tag an imminent AC stop with the liveness of the child BEFORE any process
+    /// Tag an imminent AC stop with the liveness of the child BEFORE any process
     /// is touched, for callers that are about to kill outside the PTY layer (the resource
     /// monitor kills a process tree by pid). Diagnostics only; the default no-op covers
     /// backends with no local child (container transport).
@@ -358,7 +358,7 @@ pub(crate) trait PtyBackend: Any + Send + Sync {
 
     fn kill_all_jobs(&self) -> (usize, usize);
 
-    /// #3516 - preflights run only on the local backend; every other backend refuses.
+    /// Preflights run only on the local backend; every other backend refuses.
     fn prepare_preflight_launch(
         &self,
         _request: PreflightLaunchRequest,

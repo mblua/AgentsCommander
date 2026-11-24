@@ -681,7 +681,7 @@ fn known_messages_has_five_entries_with_unique_ids() {
     }
 }
 
-/// #2141 replaced the older "exactly one digest" rule. That rule encoded "no
+/// This replaced the older "exactly one digest" rule. That rule encoded "no
 /// shipped default has moved yet", which stopped being true when the
 /// branch-stale wording changed; the rule worth keeping is that the list ENDS
 /// at what ships today, so reconciliation still recognizes every default ever

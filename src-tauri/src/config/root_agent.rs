@@ -88,7 +88,7 @@ const ROOT_AGENT_PRE_979_DEFAULT_CONTEXT: &[&str] = &[
 /// gain the Root supplement) rather than degrade to a bare `["Role.md"]`.
 const ROOT_AGENT_OLD_DEFAULT_CONTEXT: &[&str] = &[CONTEXT_TOKEN_GLOBAL, roles::ROLE_FILE_NAME];
 const ROOT_AGENT_SKILLS_DIR: &str = "skills";
-/// #909: slack added to the cap in `max_migratable_len`, covering the leading and trailing
+/// Slack added to the cap in `max_migratable_len`, covering the leading and trailing
 /// whitespace that `normalize_role_text` trims away.
 const MAX_DEFAULT_SKILL_TRIM_SLACK_BYTES: u64 = 4096;
 #[cfg(test)]
@@ -101,7 +101,7 @@ struct DefaultRootSkill {
     dir_name: &'static str,
     file_name: &'static str,
     content: &'static str,
-    /// #909: frozen, full-text snapshots of versions of this file that we previously shipped and
+    /// Frozen, full-text snapshots of versions of this file that we previously shipped and
     /// now consider defective. An on-disk file whose normalized text equals one of these is a
     /// pristine stale default, safe to rewrite. Anything else is a user edit and is never touched.
     ///

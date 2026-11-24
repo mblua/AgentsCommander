@@ -1,3 +1,6 @@
+//! Path normalization and project-scope checks used to filter saved
+//! sessions by project. It does not read or write the sessions file.
+
 use super::record::PersistedSession;
 use std::path::Path;
 
@@ -68,7 +71,7 @@ pub(crate) fn working_directory_under_any_project_path(
     working_directory_under_any_normalized_root(&cwd, &roots)
 }
 
-/// #881: canonicalize a project-root list once. Blocking
+/// Canonicalize a project-root list once. Blocking
 /// (`std::fs::canonicalize` per root). Hoist the call out of per-session or
 /// per-dir loops, and off the async runtime when the caller is on a poll
 /// interval. Empty input yields empty output with zero syscalls.
@@ -87,7 +90,7 @@ pub(super) fn working_directory_under_any_normalized_root(cwd: &str, roots: &[St
         .any(|project| path_is_under_or_equal(cwd, project))
 }
 
-/// #881: paths that may retain persisted sessions. Active projects plus archived
+/// Paths that may retain persisted sessions. Active projects plus archived
 /// projects are both registered from the session store's point of view; only
 /// active projects should be used for discovery and background project work.
 pub(crate) fn session_retention_project_paths(
@@ -101,7 +104,7 @@ pub(crate) fn session_retention_project_paths(
     Ok(paths)
 }
 
-/// #881: true when `path` lives under one of `normalized_archived_roots`,
+/// True when `path` lives under one of `normalized_archived_roots`,
 /// which the caller produced with `normalize_project_roots` once per poll tick,
 /// restore loop, or resolution.
 ///
@@ -123,7 +126,7 @@ pub(crate) fn is_under_normalized_archived_roots(
     )
 }
 
-/// #881: return the stored raw root containing `path`, while matching on the
+/// Return the stored raw root containing `path`, while matching on the
 /// same normalized form used by `normalize_project_roots`.
 pub(crate) fn raw_project_path_containing(path: &str, project_paths: &[String]) -> Option<String> {
     if project_paths.is_empty() {
@@ -306,7 +309,7 @@ pub(crate) fn validate_session_creation_cwd(
     if crate::config::root_agent::is_root_agent_path(cwd) {
         return Ok(());
     }
-    // 1b. Temp room (#4779): exempt from project membership, but it must exist.
+    // 1b. Temp room: exempt from project membership, but it must exist.
     if crate::config::temp_rooms::is_temp_room_path(cwd) {
         if crate::filesystem::directories::persisted_session_cwd_exists(Path::new(cwd)) {
             return Ok(());

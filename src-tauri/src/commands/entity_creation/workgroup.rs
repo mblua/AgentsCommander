@@ -1,3 +1,6 @@
+//! On-disk room (workgroup) layout: allocation, replicas, repo clones and
+//! scope pruning. Owns no long-lived state. Does not expose Tauri commands.
+
 use super::creation_trace::{CreationTrace, Origin, Outcome, Reason, Stage, StageGuard};
 use super::matrix_layout::{
     agent_matches, create_agent_replica_layout, repo_dir_name_from_url, sanitize_name,
@@ -49,7 +52,7 @@ pub(super) fn allocate_disk_room(
         &wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME),
     )
     .map_err(|e| format!("Failed to create messaging directory: {e}"))?;
-    // #1795: `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
+    // `room-shared/` is a sibling of `messaging/` and `TASK.md`, and it is
     // created with the same hard `?` they use. A half-created room must not be
     // reported as created.
     crate::config::shared_locations::create_room_shared_dir(&wg_dir)
@@ -228,10 +231,10 @@ pub(crate) fn create_or_update_replica_on_disk(
     Ok(replica_dir)
 }
 
-/// #1939 - guarded, lossless initialization of one Room replica config.
+/// Guarded, lossless initialization of one Room replica config.
 ///
 /// Shared by `create_or_update_replica_on_disk` and the GUI workgroup loop so
-/// both publish through the #1938 sidecar with one merge: repair identity and
+/// both publish through the sidecar with one merge: repair identity and
 /// context, refresh `repos`, and preserve tooling, custom context and unknown
 /// keys. A missing config file inside the guard is the first-creation boundary
 /// (`try_exists`, so an inspection error is an error, never absence); only then
@@ -295,7 +298,7 @@ pub(super) fn initialize_replica_config_on_disk(
     Ok(())
 }
 
-/// #1939 - the GUI workgroup replica loop. Kept as one function so the GUI path
+/// The GUI workgroup replica loop. Kept as one function so the GUI path
 /// and the on-disk path provably share the same guarded initializer instead of
 /// a second destructive writer.
 // Compatibility entry point for callers without creation diagnostics.
@@ -369,14 +372,14 @@ pub(crate) fn remove_replica_dir(replica_dir: &Path) -> ReplicaRemovalOutcome {
         outcome,
         ReplicaRemovalOutcome::Removed | ReplicaRemovalOutcome::AlreadyAbsent
     ) {
-        // #4752: a replica that is gone keeps no Unleash flag.
+        // A replica that is gone keeps no Unleash flag.
         crate::config::unleashed_replicas::forget_under(replica_dir);
     }
     outcome
 }
 
 // ===========================================================================
-// #1063 lifecycle-removal seam (#1065 Stage F: activated recorder).
+// Lifecycle-removal seam (Stage F: activated recorder).
 //
 // Lifecycle deletion acquires the project seed-manifest gate so it serializes
 // against config-seed publication (plan sections 5.4/6.3): the lock ordering is
@@ -437,7 +440,7 @@ pub(crate) fn acquire_lifecycle_project_gate(
     }
 }
 
-/// Lifecycle prune (#1063, #1065 Stage F activated). The recorder call is compiled
+/// Lifecycle prune (Stage F activated). The recorder call is compiled
 /// in production; it runs only when a gate is held and an activation token was
 /// threaded, so a pre-contention gate degradation or an unactivated caller stays a
 /// no-op.
@@ -466,7 +469,7 @@ pub(super) fn prune_lifecycle_scope_if_activated(
 }
 
 /// Activation-gated prune of the config scope of a single replica `.ac/<workgroup>/__agent_<name>`
-/// (#1063, plan section 5.4 "AC removes one replica"). Used by CLI team-member removal.
+/// (plan section 5.4 "AC removes one replica"). Used by CLI team-member removal.
 pub(crate) fn prune_replica_config_scope(
     gate: Option<&mut ProjectSeedManifestGuard>,
     activation: Option<&ManifestActivationToken>,
@@ -484,7 +487,7 @@ pub(crate) fn prune_replica_config_scope(
 }
 
 /// Activation-gated prune of every replica config scope under one workgroup `.ac/<workgroup>`
-/// (#1063, plan section 5.4 "AC removes a workgroup"). Used by GUI/CLI workgroup deletion.
+/// (plan section 5.4 "AC removes a workgroup"). Used by GUI/CLI workgroup deletion.
 pub(crate) fn prune_workgroup_config_scope(
     gate: Option<&mut ProjectSeedManifestGuard>,
     activation: Option<&ManifestActivationToken>,
@@ -498,7 +501,7 @@ pub(crate) fn prune_workgroup_config_scope(
     });
 }
 
-/// Activation-gated prune of every replica config scope for a set of workgroups (#1063, plan
+/// Activation-gated prune of every replica config scope for a set of workgroups (plan
 /// section 5.4 "AC deletes a team"). Used by GUI team deletion for the committed
 /// intent: successfully removed workgroups plus valid matching team workgroup
 /// identities that were already absent at the explicit delete event.
@@ -516,7 +519,7 @@ pub(crate) fn prune_team_workgroups_scope(
 }
 
 /// Activation-gated prune of every replica config scope for one exact agent component
-/// `__agent_<name>` across all workgroups (#1063, plan section 5.4 "AC deletes an
+/// `__agent_<name>` across all workgroups (plan section 5.4 "AC deletes an
 /// Agent Matrix and cascaded replicas"). Used by Agent Matrix deletion.
 pub(crate) fn prune_agent_component_scope(
     gate: Option<&mut ProjectSeedManifestGuard>,

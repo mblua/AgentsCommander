@@ -1,4 +1,4 @@
-//! Per-room Co-managed configuration and effective state (#2265, epic #2232).
+//! Per-room Co-managed configuration and effective state.
 //!
 //! This module is a deliberate **leaf**: it must stay outside the 88-member
 //! module cycle recorded in `src-tauri/module-arcs.txt`. It therefore depends
@@ -195,7 +195,7 @@ fn read_config_object(path: &Path) -> Map<String, Value> {
     }
 }
 
-/// #2525 whether Co-managed is available globally: the conjunction of the
+/// Whether Co-managed is available globally: the conjunction of the
 /// negations of `effective_state`'s `GlobalSwitchOff` and `NoApiKey` legs,
 /// with the same `trim()` rule. `Ready` implies it; the converse is not
 /// claimed, since a room can still be Off for a per-room reason.
@@ -204,14 +204,14 @@ pub fn globally_available(globally_enabled: bool, api_key: &str) -> bool {
     globally_enabled && !api_key.trim().is_empty()
 }
 
-/// #2756 U2a: whether Co-managed can run a reader globally. Only the switch;
+/// U2a: whether Co-managed can run a reader globally. Only the switch;
 /// the key is a `Ready` input, not a capture input. `globally_available`
 /// keeps serving routing unchanged.
 pub fn globally_capturable(globally_enabled: bool) -> bool {
     globally_enabled
 }
 
-/// #2756 U2a: whether this session may hold a reader and keep a candidate.
+/// U2a: whether this session may hold a reader and keep a candidate.
 /// Exactly the first four checks of `effective_state`, from the same source;
 /// it never reads the key or the catalog.
 pub fn capturable(

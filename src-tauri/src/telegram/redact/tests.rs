@@ -131,7 +131,7 @@ fn does_not_match_key_eq_alone() {
     assert_eq!(redact(s), s);
 }
 
-/// #280 /feature-dev review G-HIGH — the byte-walking fallback used
+/// /feature-dev review G-HIGH — the byte-walking fallback used
 /// `out.push(bytes[i] as char)` which corrupts UTF-8 continuation
 /// bytes whenever the scanner runs (i.e., when `/bot` or `key=` is
 /// present somewhere in the input). `DiagLogger` pipes raw agent PTY
@@ -146,7 +146,7 @@ fn preserves_non_ascii_chars_when_scanner_runs() {
     assert_eq!(redact(s), s);
 }
 
-/// #280 LOW-2 — the implementation deliberately deviates from the
+/// LOW-2 — the implementation deliberately deviates from the
 /// plan's 20-char floor for Gemini `?key=<value>` matches: any
 /// non-empty value is masked. This is safer than the spec (real keys
 /// are still scrubbed), at the cost of masking unrelated short query
@@ -181,12 +181,12 @@ fn redacts_telegram_token_surrounded_by_non_ascii() {
     assert!(got.contains("ñ"), "lost ñ: {got}");
 }
 
-// #4319 — AgentsCommander credentials. `logging.rs` passes every log line
+// AgentsCommander credentials. `logging.rs` passes every log line
 // and every error-modal message through `redact()`, so testing `redact()`
 // covers both sinks.
 const FAKE_UUID: &str = "1b4e28ba-2fa1-41d2-883f-0016d3cca427";
 
-/// #4319 — container API tokens are masked wherever they appear.
+/// Container API tokens are masked wherever they appear.
 #[test]
 fn redacts_container_api_token() {
     let msg = redact(&format!(
@@ -195,7 +195,7 @@ fn redacts_container_api_token() {
     assert_eq!(msg, "auth failed for ac-container-*** (expired)");
 }
 
-/// #4319 — a UUID right after each secret context is masked; the context
+/// A UUID right after each secret context is masked; the context
 /// itself stays so the operator can see which credential was involved.
 #[test]
 fn redacts_uuid_after_secret_contexts() {
@@ -227,7 +227,7 @@ fn redacts_uuid_after_secret_contexts() {
     }
 }
 
-/// #4319 — bare ids (session/message/client/op) are UUIDs too and must
+/// Bare ids (session/message/client/op) are UUIDs too and must
 /// stay visible: only a secret context marks a UUID as a secret.
 #[test]
 fn keeps_bare_uuid_without_secret_context() {
@@ -242,7 +242,7 @@ fn keeps_bare_uuid_without_secret_context() {
     }
 }
 
-/// #4319 — `{:?}` of a Telegram bot config never shows the token, while
+/// `{:?}` of a Telegram bot config never shows the token, while
 /// serialization still writes it.
 #[test]
 fn telegram_bot_config_debug_redacts_token() {
@@ -264,7 +264,7 @@ fn telegram_bot_config_debug_redacts_token() {
     );
 }
 
-/// #4475 — secret contexts match in any ASCII case; the context text is
+/// Secret contexts match in any ASCII case; the context text is
 /// kept as written and only the UUID is masked.
 #[test]
 fn redacts_uuid_after_secret_contexts_in_any_case() {
@@ -293,7 +293,7 @@ fn redacts_uuid_after_secret_contexts_in_any_case() {
     }
 }
 
-/// #4475 — both watcher `BotTarget`s and the bridge's `ReaderDestSender`
+/// Both watcher `BotTarget`s and the bridge's `ReaderDestSender`
 /// (which holds them) must not print the bot token through `Debug`.
 #[test]
 fn watcher_bot_targets_debug_redacts_token() {

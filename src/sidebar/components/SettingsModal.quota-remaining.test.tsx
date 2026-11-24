@@ -12,7 +12,7 @@ import {
 import { sessionsStore } from "../stores/sessions";
 import type { AgentConfig } from "../../shared/types";
 
-// #2681 - Settings > Coding Agents rows show the weekly quota remaining next
+// Settings > Coding Agents rows show the weekly quota remaining next
 // to the agent name, only with a valid reading, updated live.
 
 function agent(id: string, label: string, command: string): AgentConfig {
@@ -34,7 +34,7 @@ function row(root: HTMLElement, i: number): HTMLElement {
   return el;
 }
 
-describe("SettingsModal weekly quota remaining (#2681)", () => {
+describe("SettingsModal weekly quota remaining", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

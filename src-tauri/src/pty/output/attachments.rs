@@ -4,22 +4,19 @@
 //! It does NOT parse output or keep screen state; that is `capture` and `screen`. Window labels
 //! come from Tauri, never from the frontend.
 
-use super::{
+use super::target::WindowLabel;
+use super::target::{
     PtyOutputEmitError, PtyOutputPayload, RegisteredPtyOutputTarget, UI_BATCH_LIMIT_BYTES,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use uuid::Uuid;
 
-/// A window label, exactly as Tauri reports it for the calling webview. It is never a value
-/// JavaScript chooses, so a frontend cannot forge one or attach on another window's behalf.
-pub(super) type WindowLabel = String;
-
 /// The emission gate: a map from session id to the set of window labels watching it, where a
 /// session's attach count is `set.len()`.
 ///
 /// The count is what stops a second window from stealing or releasing the first window's
-/// delivery, which is the whole of #1363. The label is what makes the count count OWNERS
+/// delivery, which is the whole point. The label is what makes the count count OWNERS
 /// rather than CALLS: a bare counter cannot tell a decrement owed by window 1 from one issued
 /// by window 2, so a single over-detach out of the frontend's several disposal paths would
 /// silently mute a session another window is still watching. With labels every one of those

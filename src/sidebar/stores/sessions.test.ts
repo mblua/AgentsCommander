@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sessionsStore } from "./sessions";
 import { session } from "../../shared/testing/ui-harness";
 
-describe("sessionsStore.setProfileOutdated (#592)", () => {
+describe("sessionsStore.setProfileOutdated", () => {
   beforeEach(() => {
     sessionsStore.setSessions([]);
   });
@@ -37,7 +37,7 @@ describe("sessionsStore.setProfileOutdated (#592)", () => {
   });
 });
 
-describe("sessionsStore.setCommunication (#676)", () => {
+describe("sessionsStore.setCommunication", () => {
   beforeEach(() => {
     sessionsStore.setSessions([]);
   });
@@ -108,7 +108,7 @@ describe("sessionsStore.setCommunication (#676)", () => {
   });
 });
 
-describe("sessionsStore context readings (#1033)", () => {
+describe("sessionsStore context readings", () => {
   beforeEach(() => {
     sessionsStore.setSessions([]);
   });
@@ -184,7 +184,7 @@ describe("sessionsStore context readings (#1033)", () => {
   });
 });
 
-describe("sessionsStore weekly quota readings (#2482)", () => {
+describe("sessionsStore weekly quota readings", () => {
   beforeEach(() => {
     sessionsStore.setSessions([]);
     sessionsStore.resetQuotaReadingsForTests();

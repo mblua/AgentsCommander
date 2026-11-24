@@ -1,4 +1,4 @@
-// #2744 phase C - dark non-regression guard for the tokens defined in
+// Dark non-regression guard for the tokens defined in
 // variables.css. Each of DEFINED used to be read as var(--x, <dark literal>)
 // with no definition anywhere; its :root value is that same literal, which is
 // only safe while every consumer passes it. A new consumer with a different or
@@ -76,7 +76,7 @@ function loadSheets(): Sheet[] {
   return CSS_PATHS.map((path) => ({ path, text: readFileSync(new URL(path, ROOT), "utf8") }));
 }
 
-describe("token fallback parity (#2744 phase C)", () => {
+describe("token fallback parity (phase C)", () => {
   const sheets = loadSheets();
   const variablesCss = sheets.find((s) => s.path === VARIABLES_PATH)?.text ?? "";
 

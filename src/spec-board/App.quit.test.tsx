@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #2297 phase 3 - Spec Board quit gate, consent modal and registration lock.
+// Spec Board quit gate, consent modal and registration lock.
 //
 // The board is mounted for real; only the Tauri window API and the heavy
 // mermaid renderer are stubbed. jsdom does not implement `inert`, so this file
@@ -166,7 +166,7 @@ function requestQuit(epoch: number, label = "spec-board"): void {
   fake.emitFromBackend("app_quit_requested", { epoch, label });
 }
 
-describe("SpecBoardApp quit gate (#2297)", () => {
+describe("SpecBoardApp quit gate", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     resetSpecBoardStore();
@@ -620,7 +620,7 @@ describe("SpecBoardApp quit gate (#2297)", () => {
     expect(fake.callsFor("quit_gate_unregister")).toHaveLength(1);
   });
 
-  it("keeps guard, gate and inert controls through a toolbar error (#4461)", async () => {
+  it("keeps guard, gate and inert controls through a toolbar error", async () => {
     toolbar.broken = true;
     const gate = deferred<unknown>();
     fake.onInvoke("quit_gate_register", () => gate.promise);

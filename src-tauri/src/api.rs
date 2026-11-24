@@ -1,4 +1,4 @@
-//! In-daemon control-plane API (#791). A sibling of `web/`: same axum stack and
+//! In-daemon control-plane API. A sibling of `web/`: same axum stack and
 //! lifecycle, but a distinct trust model (per-client scoped tokens, not the
 //! single web token) and its own router. It exposes locally-bound send,
 //! list-peers, and container session-transport endpoints, funnelling sends
@@ -196,7 +196,10 @@ pub(crate) trait ApiRequestResources:
 /// Shared state injected into every handler.
 #[derive(Clone)]
 pub struct ApiState {
-    #[allow(private_interfaces)]
+    #[allow(
+        private_interfaces,
+        reason = "pub field of pub ApiState holds the crate-private WindowScreenshotLimiter"
+    )]
     #[cfg(any(target_os = "windows", test))]
     pub window_screenshot_limiter: std::sync::Arc<WindowScreenshotLimiter>,
     /// Read-through client-token registry (mtime-gated).
@@ -261,7 +264,7 @@ enum ApiBindSource {
     Address { bind: String, port: u16 },
     /// Adopt a socket the caller already bound and still holds. Test-only: it exists so the
     /// terminal-snapshot acceptance tests can hand over a reserved loopback socket with no
-    /// window in which another process can take the port (#1768).
+    /// window in which another process can take the port.
     #[cfg(test)]
     Prebound(std::net::TcpListener),
 }
@@ -305,7 +308,7 @@ where
 
 /// Start the API server on a socket the caller already bound. The caller owns the port from the
 /// moment it binds until the server owns the same socket, so there is no reserve-then-rebind
-/// window (#1768). Test-only; production always goes through `start_server`.
+/// window. Test-only; production always goes through `start_server`.
 #[cfg(test)]
 pub(crate) fn start_server_on_listener<H>(
     listener: std::net::TcpListener,
@@ -482,7 +485,7 @@ async fn serve_api<J: ApiJoinTask>(
     dispatcher_handle: J,
 ) {
     log::info!("[api-server] listening on http://{addr}");
-    println!("[api-server] listening on http://{addr}");
+    log::info!("[api-server] listening on http://{addr}");
 
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let server_shutdown = shutdown.clone();
@@ -507,12 +510,11 @@ fn warn_on_non_loopback(addr: SocketAddr) {
 restricts this port to the Docker/WSL subnet."
         );
         log::warn!("{warning}");
-        println!("{warning}");
     }
 }
 
 /// Turn a caller-owned blocking listener into the tokio listener the server serves on, without
-/// ever releasing the port (#1768).
+/// ever releasing the port.
 #[cfg(test)]
 fn adopt_prebound_listener(
     prebound: std::net::TcpListener,

@@ -94,8 +94,8 @@ impl MailboxPoller {
     /// Find ALL viable CWD-matched candidates for wake delivery, sorted by
     /// preference (Active/Running first, then Idle, then Exited; non-temp before
     /// temp). Filters out records whose `SessionStatus` is non-`Exited` but
-    /// whose `PtyManager` entry is missing — those are desync phantoms (issue
-    /// #223). `Exited(_)` candidates are RETAINED for the respawn path.
+    /// whose `PtyManager` entry is missing — those are desync phantoms (a
+    /// known case). `Exited(_)` candidates are RETAINED for the respawn path.
     ///
     /// Returns `(viable, had_any_match)`:
     /// - `viable`: viable candidates with captured `SessionStatus` so the caller
@@ -126,7 +126,7 @@ impl MailboxPoller {
         }
 
         // Same sort key as the legacy `find_active_session`.
-        // TODO(#223-fu1): once AC3's PTY-exit hook lands and starts emitting
+        // TODO: once AC3's PTY-exit hook lands and starts emitting
         // non-zero exit codes, add a tertiary tie-break (e.g. created_at) so
         // Exited-within-bucket ordering is deterministic. (grinch G.L2.)
         matches.sort_by_key(|s| {
@@ -244,7 +244,7 @@ impl MailboxPoller {
         Some((id, candidate.status.clone()))
     }
 
-    /// #4780: live session of the temp room at `address`. Same viability rule as
+    /// Live session of the temp room at `address`. Same viability rule as
     /// the Root Agent: a temp room is user-launched and never spawned.
     pub(crate) async fn find_temp_room_session_candidate<S: PtyAuthorityState + ?Sized>(
         &self,
@@ -584,9 +584,16 @@ struct CloseSessionOutcome<'a> {
     session_ids: &'a [Uuid],
     closed_ids: Vec<String>,
     failure: Option<String>,
-    outcome_unknown: bool,
+    certainty: CloseOutcomeCertainty,
     actively_closed: bool,
-    may_complete_later: bool,
+}
+
+/// Whether the close result is known; `MayCompleteLater` also means unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloseOutcomeCertainty {
+    Known,
+    Unknown,
+    MayCompleteLater,
 }
 
 impl<'a> CloseSessionOutcome<'a> {
@@ -597,9 +604,8 @@ impl<'a> CloseSessionOutcome<'a> {
             session_ids,
             closed_ids: Vec::new(),
             failure: None,
-            outcome_unknown: false,
+            certainty: CloseOutcomeCertainty::Known,
             actively_closed: false,
-            may_complete_later: false,
         }
     }
 
@@ -614,8 +620,11 @@ impl<'a> CloseSessionOutcome<'a> {
                 ..
             } = outcome
             {
-                self.may_complete_later = pending;
-                self.outcome_unknown = true;
+                self.certainty = if pending {
+                    CloseOutcomeCertainty::MayCompleteLater
+                } else {
+                    CloseOutcomeCertainty::Unknown
+                };
             }
             return false;
         }
@@ -638,9 +647,8 @@ async fn write_close_session_response(
         session_ids,
         closed_ids,
         failure,
-        outcome_unknown,
+        certainty,
         actively_closed,
-        may_complete_later,
     } = outcome;
     // Write response with details.
     //
@@ -669,8 +677,8 @@ async fn write_close_session_response(
             "status": status,
             "sessions_closed": closed_ids.len(),
             "reason": failure,
-            "outcome_unknown": outcome_unknown,
-            "may_complete_later": may_complete_later,
+            "outcome_unknown": certainty != CloseOutcomeCertainty::Known,
+            "may_complete_later": certainty == CloseOutcomeCertainty::MayCompleteLater,
             "session_ids": closed_ids,
             "requested_by": msg.from,
         });

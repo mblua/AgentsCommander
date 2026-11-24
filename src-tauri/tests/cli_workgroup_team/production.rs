@@ -133,7 +133,7 @@ fn entity_creation_rs_threads_production_tokens_through_the_delete_commands() {
 }
 
 // ===========================================================================
-// #1614 section 9.1 "Rust integration tests" / section 15.4.
+// Section 9.1 "Rust integration tests" / section 15.4.
 //
 // Round 5 measured ZERO new test functions in src-tauri/tests/ across the whole
 // 12-commit range, so AC3, AC4 and AC6 rested on unrecorded manual checks. The

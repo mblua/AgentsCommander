@@ -21,7 +21,7 @@ import {
   workgroupGroupsStore,
 } from "../stores/workgroup-groups";
 
-// #1624 - the coordinator tile order stays frozen while a sidebar context menu
+// The coordinator tile order stays frozen while a sidebar context menu
 // (or its flyout) is open, even with the pointer OUTSIDE the sidebar. The menu
 // renders through a Solid <Portal> under document.body, so the store's
 // DOM-derived `sidebarMenuOpen` lock (fed by a MutationObserver) is what holds
@@ -114,7 +114,7 @@ function mouse(el: Element, type: "mouseenter" | "mouseleave"): void {
  *  without flushing first would hit a menu that is not yet listening. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("ProjectPanel sidebar order lock (#1624)", () => {
+describe("ProjectPanel sidebar order lock", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

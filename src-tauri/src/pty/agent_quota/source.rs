@@ -1,4 +1,4 @@
-//! #2482 - the pure half of the quota reading: compile one configured source and
+//! The pure half of the quota reading: compile one configured source and
 //! turn a session's screen rows into a USED percentage of the 7-day window.
 //!
 //! Pure by construction: no locks, no vt100, no Tauri, no settings type. Everything
@@ -26,7 +26,7 @@ pub enum ResolvedSource {
     ScreenRegexRemaining(Arc<ContextPattern>),
 }
 
-/// Compile a spec, or say why it cannot be one. For `ScreenRegex` this is #1032's
+/// Compile a spec, or say why it cannot be one. For `ScreenRegex` this is the context badge's
 /// compiler, which already enforces the size limit and requires capture group 1.
 pub fn resolve(spec: &SourceSpec) -> Result<ResolvedSource, String> {
     match spec {

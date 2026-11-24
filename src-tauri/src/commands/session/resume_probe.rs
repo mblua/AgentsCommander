@@ -1,3 +1,7 @@
+//! Decides how a coding agent session resumes: transcript locations, config
+//! dir overrides and injected resume flags. Owns no state. Does not spawn
+//! sessions.
+
 use super::agent_command::executable_basename;
 use super::resume_args::{
     antigravity_tokens_have_resume, codex_has_explicit_subcommand, codex_tokens_have_resume,
@@ -33,7 +37,7 @@ use uuid::Uuid;
 /// Returns `Some(<base>/projects/<mangled-cwd>)` when a Claude-family token
 /// exists in the launch command, else `None`. Falls back to `~/.claude/...`
 /// whenever the wrapper cannot be resolved or parsed; this preserves the
-/// pre-#186 default-install behavior exactly.
+/// original default-install behavior exactly.
 ///
 /// Visibility: `pub(crate)` so the Telegram JSONL watcher follow-up can reuse
 /// the same resolver without a private→pub(crate) refactor (see plan §6.3).
@@ -126,7 +130,7 @@ fn parse_config_dir_from_wrapper(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// #2589 - `resolve_claude_projects_dir` resolving a bare wrapper token through
+/// `resolve_claude_projects_dir` resolving a bare wrapper token through
 /// an explicit search path.
 pub(crate) fn resolve_claude_projects_dir_in(
     shell: &str,
@@ -190,7 +194,7 @@ pub(crate) fn resolve_claude_projects_dir_in(
     default_base().map(|base| base.join("projects").join(&mangled))
 }
 
-/// (#599 R2) Claude `projects/<mangled-cwd>` dir for an explicit
+/// Claude `projects/<mangled-cwd>` dir for an explicit
 /// `CLAUDE_CONFIG_DIR` taken from the profile/agent env layer. That layer is
 /// what the spawned Claude actually sees: the env approach launches a plain
 /// `claude`, so `resolve_claude_projects_dir` short-circuits to `~/.claude`
@@ -284,7 +288,7 @@ pub(crate) fn resume_probe_target(
     shell_args: &[String],
     cwd: &str,
 ) -> ResumeProbeTarget {
-    // #930 - an injected copy-in default (host path under the replica mount) wins
+    // An injected copy-in default (host path under the replica mount) wins
     // only when the user set no CLAUDE_CONFIG_DIR; the caller enforces that
     // precondition, so fall back to the user's effective value otherwise.
     let claude_config_dir_override = injected_claude_config_dir
@@ -327,7 +331,7 @@ pub(crate) fn claude_resume_probe_target_for_kind(
     ))
 }
 
-/// #930 - the `CLAUDE_CONFIG_DIR` value to inject for a container coding agent whose
+/// The `CLAUDE_CONFIG_DIR` value to inject for a container coding agent whose
 /// host credentials we will copy. Returns the copy directory (a host path under
 /// the replica mount, which the container env translation later maps to
 /// `/workspace/.claude`) ONLY when a copy plan exists AND the user configured no
@@ -408,7 +412,7 @@ pub(crate) fn resume_probe_target_for_config_dir(
 /// `claude_project_exists` (typically `~/.claude/projects/<mangled-cwd>/.is_dir()`).
 ///
 /// Callers should compute `claude_project_exists` via `resolve_claude_projects_dir`
-/// to honor wrapper-set `CLAUDE_CONFIG_DIR`. (#599 R2) The caller additionally
+/// to honor wrapper-set `CLAUDE_CONFIG_DIR`. The caller additionally
 /// honors the profile/agent env-layer `CLAUDE_CONFIG_DIR` first via
 /// `claude_projects_dir_for_config_dir`; this function itself is unchanged.
 /// Note: a wrapper named exactly
@@ -485,13 +489,13 @@ pub(crate) fn configured_prompt_identity(
     }
 }
 
-/// (#756) Decide whether to pass a launcher-minted `--session-id <uuid>` to a
+/// Decide whether to pass a launcher-minted `--session-id <uuid>` to a
 /// Claude spawn. Pure function; mirrors `should_inject_continue`'s token scan.
 ///
 /// Returns true only when BOTH:
 ///   - the session is a Claude variant, and
 ///   - AC is deliberately NOT resuming (`skip_auto_resume` true: fresh create
-///     default, restart-fresh, or the #756 mirror guard),
+///     default, restart-fresh, or the mirror guard),
 ///
 /// and the configured argv does not already steer session identity:
 /// `--session-id[=]`, `--resume[=]`/`-r`, `--continue[=]`/`-c`,
@@ -528,7 +532,7 @@ pub(crate) fn should_inject_fresh_session_id(
     !has_identity_flag
 }
 
-/// #2454: the transcript id an argv names, so the Claude reader can pin its
+/// The transcript id an argv names, so the Claude reader can pin its
 /// first attach to `<id>.jsonl` instead of the newest file by mtime.
 ///
 /// Rules, in order: the value of `--session-id` (or `--session-id=<v>`), then
@@ -562,11 +566,11 @@ pub(crate) fn identity_flag_value(tokens: &[&str], flag: &str) -> Option<String>
     None
 }
 
-/// Issue #107 round 5 — build the optional title prompt, or `Ok(None)` if the
+/// Build the optional title prompt, or `Ok(None)` if the
 /// auto-title preconditions do not hold.
 ///
 /// Synchronous: filesystem reads only, no PTY, no await, no snapshot.
-/// (#137 introduced `task-set-title` which creates its own atomic backup;
+/// (`task-set-title` creates its own atomic backup;
 /// the backend no longer snapshots before injection.)
 ///
 /// The caller is the post-spawn task in `create_session_inner`; it injects this

@@ -5,12 +5,7 @@ import {
   rememberSpawnViewport,
   resetUiTerminalControllerForTests,
 } from "./terminal-viewport";
-import type {
-  ListenOptions,
-  Transport,
-  TransportConnectionState,
-  UnlistenFn,
-} from "./transport";
+import type { ListenOptions, Transport, TransportConnectionState, UnlistenFn } from "./transport";
 import { TauriTransport } from "./transport-tauri";
 import { WsTransport } from "./transport-ws";
 import type {
@@ -155,6 +150,7 @@ import type {
 import { createPreflightTestAPI } from "./preflightTestApi";
 import { createTempRoomAPI } from "./temp-rooms";
 import { createAudioSinkAPI } from "./audio-sink";
+import { createCodingAgentsTransferAPI } from "./coding-agents-transfer";
 import { decodeSessionSelection } from "./session-selection";
 export type { UiTerminalOperation } from "./terminal-viewport";
 export interface SessionRepoInput {
@@ -223,7 +219,7 @@ export interface CreateRootAgentOptions {
   requestedProfile?: string | null;
 }
 
-/** @deprecated Issue #384 v1 compatibility: the legacy per-agent default/instance
+/** @deprecated v1 compatibility: the legacy per-agent default/instance
  *  scope. Superseded by {@link ProfileAssignmentScope}. */
 export type ProfileSelectionScope = "default" | "instance";
 
@@ -236,18 +232,18 @@ export interface CodingAgentProfileSelectionUpdatedPayload {
   restartedCount?: number;
   targetFingerprint?: string;
   errors?: ProfileAssignmentError[];
-  /** #1942 - which operation produced this event; absent on legacy payloads. */
+  /** Which operation produced this event; absent on legacy payloads. */
   operation?: "assign" | "assignAndLock" | "unlock" | "default";
   affectedPaths?: string[];
   removedCount?: number;
   newlyProtectedCount?: number;
   skippedLockedCount?: number;
-  /** #1942 - the published Matrix default on an `operation: "default"` event. */
+  /** The published Matrix default on an `operation: "default"` event. */
   default?: SelectionDefault | null;
 }
 
 export const SessionAPI = {
-  /** #1682 - the stored last-agent-message instant for a session, for a terminal
+  /** The stored last-agent-message instant for a session, for a terminal
    *  that just mounted and missed the `session_agent_message` event. `null`
    *  covers every unavailable case and never means "now". Rejects in browser
    *  mode, where the command has no dispatcher entry; callers must catch. */
@@ -342,7 +338,7 @@ export const PtyAPI = {
   getAgentQuotaReadings: () =>
     transport.invoke<Record<string, number | null>>("get_agent_quota_readings"),
 
-  /** #1171 - the session's watcher activity ring plus its loss and warm-up signals.
+  /** The session's watcher activity ring plus its loss and warm-up signals.
    *  A session with no buffer answers with an empty snapshot, never null and never an
    *  error, so the window's states are read from values and not from nullability. */
   getWatcherActivity: (sessionId: string, limit?: number) =>
@@ -351,18 +347,18 @@ export const PtyAPI = {
       limit: limit ?? null,
     }),
 
-  /** #2337 - the active session's typing-hold padlock snapshot. The backend is
+  /** The active session's typing-hold padlock snapshot. The backend is
    *  authoritative: `closed` is the effective hold and `heldCount` the unique
    *  deferred peer-wake count. The status bar polls this; it never infers either. */
   getTypingHold: (sessionId: string) =>
     transport.invoke<TypingHoldSnapshot>("get_typing_hold", { sessionId }),
 
-  /** #2337 - flip one session's manual padlock and answer with the post-toggle
+  /** Flip one session's manual padlock and answer with the post-toggle
    *  snapshot, taken under the same lock, so a click never observes a half flip. */
   toggleTypingHold: (sessionId: string) =>
     transport.invoke<TypingHoldSnapshot>("toggle_typing_hold", { sessionId }),
 
-  /** #1171 - compile a candidate pattern and, with a session, run it against its live rows.
+  /** Compile a candidate pattern and, with a session, run it against its live rows.
    *  Omitting `sessionId` compiles only, which is the common case: writing a regex in
    *  Settings with no agent session running. A pattern that does not compile comes back as
    *  `compiles: false` with the message, not as a rejected call. */
@@ -373,7 +369,7 @@ export const PtyAPI = {
     }),
 
   /**
-   * #1171 - resolve the WHOLE Settings draft, watchers and agents, and answer per row which
+   * Resolve the WHOLE Settings draft, watchers and agents, and answer per row which
    * agents its selector reaches and which of those it holds a slot on.
    *
    * Both halves travel because both are properties of the set, not of one row. Whether a
@@ -412,8 +408,8 @@ function selectConfigurationText(
   input: { command?: unknown; baseCommand?: unknown; additionalArguments?: unknown },
   key: "baseCommand" | "additionalArguments",
 ): string | undefined {
-  const hasNew = Object.prototype.hasOwnProperty.call(input, key);
-  const hasOld = Object.prototype.hasOwnProperty.call(input, "command");
+  const hasNew = Object.hasOwn(input, key);
+  const hasOld = Object.hasOwn(input, "command");
   const current = input[key];
   const legacy = input.command;
   if ((hasNew && typeof current !== "string") || (hasOld && typeof legacy !== "string")) {
@@ -430,7 +426,7 @@ function decodeBaseCommand<T extends AgentConfigWireInput | CodingAgentDefinitio
   input: T,
 ): Omit<T, "baseCommand" | "command"> & { command?: string } {
   const command = selectConfigurationText(input, "baseCommand");
-  if (!Object.prototype.hasOwnProperty.call(input, "baseCommand")) {
+  if (!Object.hasOwn(input, "baseCommand")) {
     return input as Omit<T, "baseCommand" | "command"> & { command?: string };
   }
   const { baseCommand: _baseCommand, command: _command, ...rest } = input;
@@ -439,7 +435,7 @@ function decodeBaseCommand<T extends AgentConfigWireInput | CodingAgentDefinitio
 
 function decodeProfileCell(input: ProfileCellConfigWireInput): ProfileCellConfigProjection {
   const command = selectConfigurationText(input, "additionalArguments");
-  if (!Object.prototype.hasOwnProperty.call(input, "additionalArguments")) {
+  if (!Object.hasOwn(input, "additionalArguments")) {
     return input as ProfileCellConfigProjection;
   }
   const { additionalArguments: _additionalArguments, command: _command, ...rest } = input;
@@ -543,7 +539,7 @@ export const CodingAgentsAPI = {
     transport.invoke<ReseedResult>("reseed_coding_agent_default", { command }),
 };
 
-/** #2306 P3 - the exact id order a successful adjacent move must produce:
+/** The exact id order a successful adjacent move must produce:
  *  `id` swapped with its immediate neighbor in `direction`. Both reorder surfaces
  *  derive the expectation from the vector they display. */
 export function expectedCodingAgentMoveOrder(
@@ -559,7 +555,7 @@ export function expectedCodingAgentMoveOrder(
   return next;
 }
 
-/** #2306 P3 - the move's consistency check: the backend's authoritative order
+/** The move's consistency check: the backend's authoritative order
  *  must be EXACTLY the requested swap, never merely a permutation of the same ids. */
 export function assertCodingAgentMoveOrder(
   returned: readonly string[],
@@ -573,13 +569,14 @@ export function assertCodingAgentMoveOrder(
   }
 }
 
-/** #3516 - the saved preflight chain test; the same transport serves Tauri and WS. */
+/** The saved preflight chain test; the same transport serves Tauri and WS. */
 export const PreflightTestAPI = createPreflightTestAPI(transport);
 export const TempRoomAPI = createTempRoomAPI(transport);
 export const AudioSinkAPI = createAudioSinkAPI(transport);
+export const CodingAgentsTransferAPI = createCodingAgentsTransferAPI(transport);
 
 export const SettingsAPI = {
-  // #1077: get_settings returns the flattened SettingsSnapshot (AppSettings +
+  // get_settings returns the flattened SettingsSnapshot (AppSettings +
   // projectPathResolution). update/save-draft still take a plain AppSettings;
   // the extra report field riding along on a round-tripped object is ignored by
   // the backend (non-deny_unknown_fields) and cannot re-pair persisted state.
@@ -588,7 +585,7 @@ export const SettingsAPI = {
   get: (): Promise<SettingsSnapshot> =>
     transport.invoke<SettingsSnapshotWireInput>("get_settings")
       .then(input => decodeSettings(input) as SettingsSnapshot),
-  /** #2306 P3 - the narrow move command: only the requested adjacent swap is
+  /** The narrow move command: only the requested adjacent swap is
    *  persisted; the resolved value is the backend's authoritative ordered ids. */
   moveCodingAgent: (request: MoveCodingAgentRequest) =>
     transport.invoke<string[]>("move_coding_agent", {
@@ -596,7 +593,7 @@ export const SettingsAPI = {
       neighborId: request.neighborId,
       direction: request.direction,
     }),
-  /** #2543 - reorder to an absolute index; resolves the backend's ordered ids
+  /** Reorder to an absolute index; resolves the backend's ordered ids
    *  unchecked, the caller asserts them. */
   reorderCodingAgent: (request: ReorderCodingAgentRequest) =>
     transport.invoke<string[]>("reorder_coding_agent", {
@@ -710,7 +707,7 @@ export const SettingsAPI = {
     transport.invoke<UpdateInfo | null>("get_update_status"),
 };
 
-/** #2232 phase 9 - the three phase-2 Co-managed commands, typed to the serde
+/** The three phase-2 Co-managed commands, typed to the serde
  *  shapes in `config::co_managed` (see `types.ts`). `roomRoot` is the Room root
  *  (`wg.path`), and the backend rejects a path that is not a registered project's
  *  Room; the frontend never re-derives it. */
@@ -728,13 +725,13 @@ export const AgentUpdateAPI = {
     transport.invoke<AgentUpdateStatus | null>("get_agent_update_status"),
   answer: (command: string, enabled: boolean) =>
     transport.invoke<boolean>("agent_update_answer", { command, enabled }),
-  /** #1551 - instant: the backend schedules the install probes in the background, only once the startup pass is finished. */
+  /** Instant: the backend schedules the install probes in the background, only once the startup pass is finished. */
   getOverview: () =>
     transport.invoke<AgentUpdateOverviewRow[]>("get_agent_update_overview"),
-  /** #1691 - ask the backend to cancel one command's update sequence; the disposition says what it did. */
+  /** Ask the backend to cancel one command's update sequence; the disposition says what it did. */
   cancel: (command: string) =>
     transport.invoke<AgentUpdateCancelResponse>("agent_update_cancel", { command }),
-  /** #1691 - ask the backend to cancel the whole pass; the response partitions the pass. */
+  /** Ask the backend to cancel the whole pass; the response partitions the pass. */
   cancelAll: () =>
     transport.invoke<AgentUpdateCancelAllResponse>("agent_updates_cancel_all"),
 };
@@ -748,7 +745,7 @@ export const ReposAPI = {
 };
 
 /**
- * #1363 - this listener MUST be scoped to the window it runs in.
+ * This listener MUST be scoped to the window it runs in.
  *
  * The backend emits with `emit_to(label, ...)` once per attached window, but
  * Tauri short-circuits that label filter for any listener registered as
@@ -773,7 +770,7 @@ export function onPtyOutput(
 }
 
 /**
- * #1363 - the two terminal-output attachment wrappers.
+ * The two terminal-output attachment wrappers.
  *
  * Named `attachOutput` / `detachOutput` rather than `attach` / `detach`
  * because `WindowAPI.attach` / `detach` in this same file is a different
@@ -942,10 +939,10 @@ export const DebugAPI = {
     transport.invoke<void>("save_debug_logs", { content }),
   drainErrorLogs: () =>
     transport.invoke<ErrorLogEntry[]>("drain_error_logs"),
-  /** #3037 - sorted muted error type IDs for this process. */
+  /** Sorted muted error type IDs for this process. */
   getErrorPopupMutes: () =>
     transport.invoke<string[]>("get_error_popup_mutes"),
-  /** #3037 - mute/unmute future popups of one type; resolves to sorted muted IDs. */
+  /** mute/unmute future popups of one type; resolves to sorted muted IDs. */
   setErrorPopupMuted: (typeId: string, muted: boolean) =>
     transport.invoke<string[]>("set_error_popup_muted", { typeId, muted }),
 };
@@ -999,7 +996,7 @@ export const WindowAPI = {
   setDetachedGeometry: (sessionId: string, geometry: WindowGeometry) =>
     transport.invoke<void>("set_detached_geometry", { sessionId, geometry }),
 
-  /** #2349 - the narrow owner of the main window's placement pair (`mainGeometry`
+  /** The narrow owner of the main window's placement pair (`mainGeometry`
    *  + `mainWindowDisplayState`). Never write placement through a whole-settings
    *  `SettingsAPI.update`: a stale whole-object caller must not clobber the disk
    *  truth, and the narrow command returns the stable overlay-pin rejection. */
@@ -1026,14 +1023,14 @@ export const WindowAPI = {
   dockResourceMonitor: () =>
     transport.invoke<void>("dock_resource_monitor_window"),
 
-  /** #1171 - open the watcher activity window, or focus it and re-scope it to this session.
+  /** Open the watcher activity window, or focus it and re-scope it to this session.
    *  Tauri-only: the web client has no such window and this command has no no-op arm there,
    *  so callers gate on `isTauri`. */
   openWatchers: (sessionId: string) =>
     transport.invoke<void>("open_watchers_window", { sessionId }),
 
   /**
-   * #1171 - the durable half of the scope handover: what `open_watchers_window` last asked
+   * The durable half of the scope handover: what `open_watchers_window` last asked
    * for, whether or not a listener existed at the time.
    *
    * The window label exists the moment the builder returns, while the JavaScript listener
@@ -1046,7 +1043,7 @@ export const WindowAPI = {
   getWatchersScope: () =>
     transport.invoke<string | null>("get_watchers_scope"),
 
-  /** #1171 - persist the watcher window's geometry through a dedicated one-field command
+  /** Persist the watcher window's geometry through a dedicated one-field command
    *  rather than `initWindowGeometry`, whose read-modify-write of the whole AppSettings
    *  races the Settings save that edits the watcher map. */
   setWatchersGeometry: (geometry: WindowGeometry) =>
@@ -1078,7 +1075,7 @@ export const ResourceMonitorAPI = {
     transport.invoke<ResourceKillResult>("kill_resource_group", { request }),
 };
 
-/** #3532 - desktop context history; every request travels as the `request` arg. */
+/** Desktop context history; every request travels as the `request` arg. */
 export const ContextHistoryAPI = {
   report: (request: ReportQuery) =>
     transport.invoke<ReportResponse>("get_context_history_report", { request }),
@@ -1191,7 +1188,7 @@ export function onDiscoveryBranchUpdated(
   );
 }
 
-/** #2064 — the repo-keyed remote-activity sweep (CI state and base staleness): the
+/** The repo-keyed remote-activity sweep (CI state and base staleness): the
  *  repo-level sibling of the discovery branch event above, emitted by the Rust
  *  remote sweeper for the complete live set of repos on every round. */
 export function onRemoteActivityUpdated(
@@ -1254,7 +1251,7 @@ export function onLoopEvent(
 export function onSessionIdle(
   callback: (data: { id: string; comanaged?: boolean }) => void
 ): Promise<UnlistenFn> {
-  // #2271 - `comanaged` is additive: an older payload that carries only `{ id }`
+  // `comanaged` is additive: an older payload that carries only `{ id }`
   // is still valid and is treated as false by the consumer.
   return transport.listen<{ id: string; comanaged?: boolean }>("session_idle", callback);
 }
@@ -1266,7 +1263,7 @@ export function onSessionBusy(
 }
 
 /**
- * #2271 - the Co-managed transitions that do NOT coincide with the idle edge:
+ * The Co-managed transitions that do NOT coincide with the idle edge:
  * trigger (b) (a record arriving while already idle), cycle end, and exit or
  * disable mid-cycle. Emitted with `emit` to every window, like `session_idle`,
  * so a detached terminal receives it too. `reason` is null when `active` is true.
@@ -1295,7 +1292,7 @@ export function onAgentQuota(
 }
 
 /**
- * #1682 - the busy->idle edge the backend judged an agent turn, after the write
+ * The busy->idle edge the backend judged an agent turn, after the write
  * to disk landed. Registered UNSCOPED, exactly like `onSessionContext` and
  * `onSessionIdle`: the backend emits it to every window and a detached terminal
  * window must receive it too.
@@ -1307,7 +1304,7 @@ export function onSessionAgentMessage(
 }
 
 /**
- * #1171 - one tick's watcher matches for one session.
+ * One tick's watcher matches for one session.
  *
  * Delivery is directed at the `watchers` window label and coalesced into one batch per
  * `(session, tick)`, and nothing is emitted at all while that window does not exist. The
@@ -1320,7 +1317,7 @@ export function onWatcherMatches(
 }
 
 /**
- * #1171 - re-scope an already-open watcher window.
+ * Re-scope an already-open watcher window.
  *
  * The window is a singleton, so its `?sessionId=` query parameter is only read on first
  * creation; every later open focuses the existing window and arrives through here instead.
@@ -1654,7 +1651,7 @@ export const InstanceAPI = {
 };
 
 export const BlackBoxAPI = {
-  /** #1652 - hands the previous run's renderer black boxes to the backend and
+  /** Hands the previous run's renderer black boxes to the backend and
    *  returns the storage keys it wants deleted. */
   report: (records: { key: string; json: string }[]) =>
     transport.invoke<string[]>("ipc_blackbox_report", { records }),
@@ -1680,7 +1677,7 @@ export function onResourceMonitorAttach(
   return transport.listen<unknown>("resource_monitor_attach", () => callback());
 }
 
-// #3367 — embedded web browser over the central pane. Bounds are physical
+// Embedded web browser over the central pane. Bounds are physical
 // pixels relative to the main window client area.
 export interface WebBrowserBounds {
   x: number;
@@ -1742,7 +1739,7 @@ export function onNpmUpdateAvailable(
   );
 }
 
-/** #1551 round 5 - the pass started; the payload carries its nodes in pass order (`null` from an older backend's unit payload). */
+/** Round 5 - the pass started; the payload carries its nodes in pass order (`null` from an older backend's unit payload). */
 export function onAgentUpdatesStarted(
   callback: (payload: { nodes: AgentUpdateNode[] } | null) => void
 ): Promise<UnlistenFn> {
@@ -1761,7 +1758,7 @@ export function onAgentUpdatePrompt(
 }
 
 /** A prompt stopped being pending (answered on any surface, or timed out after 60s).
- * #1551 - the payload names the closed prompt so a client clears only that one
+ * The payload names the closed prompt so a client clears only that one
  * (`null` when an older backend still sends its unit payload). */
 export function onAgentUpdatePromptClosed(
   callback: (closed: AgentUpdateCommandRef | null) => void
@@ -1781,7 +1778,7 @@ export function onAgentUpdatesFinished(
   );
 }
 
-/** #2736 - one silent Coding Agent install finished (ok or failed). */
+/** One silent Coding Agent install finished (ok or failed). */
 export function onCodingAgentInstallFinished(
   callback: (payload: CodingAgentInstallFinished) => void
 ): Promise<UnlistenFn> {
@@ -1791,7 +1788,7 @@ export function onCodingAgentInstallFinished(
   );
 }
 
-/** #1551 round 5 - a command's update sequence started; the payload is its pass node with `installBefore` filled. */
+/** Round 5 - a command's update sequence started; the payload is its pass node with `installBefore` filled. */
 export function onAgentUpdateCommandStarted(
   callback: (node: AgentUpdateNode) => void
 ): Promise<UnlistenFn> {
@@ -1800,7 +1797,7 @@ export function onAgentUpdateCommandStarted(
   );
 }
 
-/** #1551 round 5 - a prompted target left the pass (its prompt was answered No, or expired). */
+/** Round 5 - a prompted target left the pass (its prompt was answered No, or expired). */
 export function onAgentUpdateCommandSkipped(
   callback: (ref: AgentUpdateCommandRef) => void
 ): Promise<UnlistenFn> {
@@ -1809,7 +1806,7 @@ export function onAgentUpdateCommandSkipped(
   );
 }
 
-/** #1551 - a command's update sequence ended (ok, failed, or panicked). */
+/** A command's update sequence ended (ok, failed, or panicked). */
 export function onAgentUpdateCommandFinished(
   callback: (result: AgentUpdateResult) => void
 ): Promise<UnlistenFn> {
@@ -1818,7 +1815,7 @@ export function onAgentUpdateCommandFinished(
   );
 }
 
-/** #1691 - a command's update sequence ended and its post-update probe is running; the payload is
+/** A command's update sequence ended and its post-update probe is running; the payload is
  *  that one command's ref. The row is no longer running, is not yet terminal, and stays cancellable. */
 export function onAgentUpdateCommandVerifying(
   callback: (ref: AgentUpdateCommandRef) => void
@@ -1828,7 +1825,7 @@ export function onAgentUpdateCommandVerifying(
   );
 }
 
-/** #1691 - the pass's cancellation state changed; the payload is the FULL snapshot, not a delta. */
+/** The pass's cancellation state changed; the payload is the FULL snapshot, not a delta. */
 export function onAgentUpdateCancellationChanged(
   callback: (payload: AgentUpdateCancellationChanged) => void
 ): Promise<UnlistenFn> {
@@ -1838,7 +1835,7 @@ export function onAgentUpdateCancellationChanged(
   );
 }
 
-/** #1551 - a probe result was committed to the backend's install cache; carries that state's `seq`. */
+/** A probe result was committed to the backend's install cache; carries that state's `seq`. */
 export function onAgentInstallStateChanged(
   callback: (payload: AgentInstallStateChanged) => void
 ): Promise<UnlistenFn> {
@@ -1887,7 +1884,7 @@ export function onScreenshotCaptureFailed(
   );
 }
 
-/** #2774 Final Wayland hotkey status (after startup and after each Settings save). */
+/** Final Wayland hotkey status (after startup and after each Settings save). */
 export function onScreenshotHotkeyStatusChanged(
   callback: (status: ScreenshotHotkeyStatus) => void
 ): Promise<UnlistenFn> {
@@ -1981,7 +1978,7 @@ export function onSpecBoardFileMissing(callback: (payload: { docId: string; path
   return transport.listen<{ docId: string; path: string }>("spec_board_file_missing", callback);
 }
 
-// --- #2297 phase 3: quit gate -------------------------------------------------
+// --- quit gate --------------------------------------------------------------
 //
 // Typed wrappers over phase 1's `quit_*` commands and events. They go through
 // the same `transport` funnel as every other command, so the Tauri path keeps

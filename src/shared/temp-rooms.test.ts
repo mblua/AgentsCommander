@@ -1,4 +1,4 @@
-// #4786 - which AC placeholders a temp-room agent uses that temp rooms lack.
+// Which AC placeholders a temp-room agent uses that temp rooms lack.
 import { describe, expect, it } from "vitest";
 import { FakeTransport } from "./testing/fake-transport";
 import { settingsSnapshot } from "./testing/ui-harness";
@@ -45,7 +45,7 @@ function scan(a: AgentConfig, c?: ProfileCellConfig) {
   return tempRoomUnavailablePlaceholders(s, CHOICE);
 }
 
-describe("#4786 tempRoomUnavailablePlaceholders", () => {
+describe("tempRoomUnavailablePlaceholders", () => {
   it("no choice or a clean agent gives []", () => {
     expect(tempRoomUnavailablePlaceholders(settingsSnapshot({ agents: [agent()] }), undefined))
       .toEqual([]);
@@ -88,7 +88,7 @@ describe("#4786 tempRoomUnavailablePlaceholders", () => {
   });
 });
 
-describe("#4805 TempRoomAPI groups", () => {
+describe("TempRoomAPI groups", () => {
   it("getGroups and updateGroups invoke the temp-room group commands", async () => {
     const fake = new FakeTransport();
     const cfg = { groups: [], nonStop: null } as unknown as WorkgroupGroupsConfig;

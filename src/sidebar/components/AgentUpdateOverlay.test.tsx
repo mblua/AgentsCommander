@@ -59,7 +59,7 @@ function node(command: string, label: string, installBefore?: InstallState, upda
   return installBefore ? { ...base, installBefore } : base;
 }
 
-/** #1691 - the canonical succeeded result: both probe keys present, no version claim. */
+/** The canonical succeeded result: both probe keys present, no version claim. */
 function ok(command: string, label: string): AgentUpdateResult {
   return {
     command,
@@ -76,7 +76,7 @@ function failed(command: string, label: string, error: string): AgentUpdateResul
   return { ...ok(command, label), ok: false, outcome: "failed", error };
 }
 
-/** #1691 - `ok=false` and never a failure. */
+/** `ok=false` and never a failure. */
 function cancelled(command: string, label: string): AgentUpdateResult {
   return { ...ok(command, label), ok: false, outcome: "cancelled" };
 }
@@ -132,7 +132,7 @@ function nodeItems(): HTMLElement[] {
   );
 }
 
-describe("AgentUpdateOverlay (#1327, #1551)", () => {
+describe("AgentUpdateOverlay", () => {
   let fake: FakeTransport;
   let restore: () => void;
   let dispose: (() => void) | null = null;
@@ -293,7 +293,7 @@ describe("AgentUpdateOverlay (#1327, #1551)", () => {
     ]);
     expect(items.map((li) => li.getAttribute("data-ac-state"))).toEqual(["ok", "updating", "pending"]);
     expect(items.map((li) => li.getAttribute("data-ac-command"))).toEqual(["a", "b", "c"]);
-    // #1691 - a terminal row carries NO state word: only the nonterminal rows have one
+    // A terminal row carries NO state word: only the nonterminal rows have one
     expect(query("agent-update.node.a.state")).toBeNull();
     expect(["b", "c"].map((command) => byTestId(`agent-update.node.${command}.state`).textContent)).toEqual([
       "Updating...",
@@ -332,7 +332,7 @@ describe("AgentUpdateOverlay (#1327, #1551)", () => {
     expect(byTestId("agent-update.node.c").getAttribute("title")).toBe("c update");
   });
 
-  it("#1691 - every terminal row is ONE string with no separator, from the result's own fields", () => {
+  it("every terminal row is ONE string with no separator, from the result's own fields", () => {
     setAgentUpdateStore({
       inProgress: true,
       nodes: [
@@ -413,7 +413,7 @@ describe("AgentUpdateOverlay (#1327, #1551)", () => {
     expect(bar.querySelector<HTMLElement>(".agent-update-progress-fill")!.style.width).toBe("67%");
   });
 
-  it("#1691 - the prompt callout, the timeline and both controls coexist in the required DOM order", () => {
+  it("the prompt callout, the timeline and both controls coexist in the required DOM order", () => {
     setAgentUpdateStore({
       inProgress: true,
       prompt: PROMPT,
@@ -571,7 +571,7 @@ describe("AgentUpdateOverlay (#1327, #1551)", () => {
     expect(toastStore.items[0].message).toBe("Auto-update failed for Bad (bad-stub): exit code 1");
   });
 
-  it("#1691 - install_state_changed after finished never rewrites a terminal row's outcome", async () => {
+  it("install_state_changed after finished never rewrites a terminal row's outcome", async () => {
     await wire();
     fake.emitFromBackend("agent_updates_started", { nodes: [node("a", "A", installed("1.0", 0))] });
     fake.emitFromBackend("agent_updates_finished", { results: [unchanged("a", "A", "1.0")] });
@@ -706,7 +706,7 @@ describe("AgentUpdateOverlay (#1327, #1551)", () => {
   });
 });
 
-describe("AgentUpdateOverlay cancellation controls (#1691)", () => {
+describe("AgentUpdateOverlay cancellation controls", () => {
   let fake: FakeTransport;
   let restore: () => void;
   let dispose: (() => void) | null = null;

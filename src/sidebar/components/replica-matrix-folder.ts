@@ -18,7 +18,7 @@ function isAbsolutePath(path: string): boolean {
 function pushPathSegment(segments: string[], segment: string, hasRoot: boolean): void {
   if (!segment || segment === ".") return;
   if (segment === "..") {
-    if (segments.length > 0 && segments[segments.length - 1] !== "..") {
+    if (segments.length > 0 && segments.at(-1) !== "..") {
       segments.pop();
     } else if (!hasRoot) {
       segments.push(segment);

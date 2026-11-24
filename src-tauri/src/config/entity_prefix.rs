@@ -1,11 +1,11 @@
 //! On-disk prefix of a Room directory, and of the legacy Workgroup directory
-//! it replaces (#1614). Phase 2 (#1615) retires the legacy prefix; until then
+//! it replaces. Phase 2 retires the legacy prefix; until then
 //! every discovery, identity and authorization gate accepts both.
 
 /// Prefix of every Room directory `AgentsCommander` creates.
 pub const ROOM_DIR_PREFIX: &str = "room-";
 
-/// Prefix of a legacy Workgroup directory. Never produced again (#1614); still
+/// Prefix of a legacy Workgroup directory. Never produced again; still
 /// discovered, addressed and operated exactly like a Room.
 pub const LEGACY_WORKGROUP_DIR_PREFIX: &str = "wg-";
 

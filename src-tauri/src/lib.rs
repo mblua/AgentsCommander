@@ -44,6 +44,7 @@ pub mod voice;
 pub mod web;
 
 mod app_run;
+type AppBuilder = tauri::Builder<tauri::Wry>;
 mod app_state;
 mod co_managed;
 mod history_runtime;
@@ -416,10 +417,8 @@ fn invoke_handler(
         commands::session::get_last_agent_message,
         commands::session_warnings::drain_session_warnings,
         quit_gate_register, quit_gate_unregister,
-        quit_gate_resolve,
-        quit_gate_progress,
-        quit_application,
-        commands::session::create_root_agent_session,
+        quit_gate_resolve, quit_gate_progress,
+        quit_application, commands::session::create_root_agent_session,
         commands::task::task_get_title,
         commands::task::task_set_title,
         commands::task::task_clean,
@@ -527,6 +526,8 @@ fn invoke_handler(
         commands::spec_board::spec_board_apply_external,
         commands::spec_board::spec_board_keep_mine,
         commands::spec_board::spec_board_close,
+        commands::coding_agents_transfer::coding_agents_export_pick_save,
+        commands::coding_agents_transfer::coding_agents_import_pick_open,
         commands::voice::voice_transcribe,
         commands::voice::voice_mark_recording,
         commands::voice::voice_had_typing,

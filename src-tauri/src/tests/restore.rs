@@ -176,7 +176,7 @@ fn restore_session_should_wake_never_wakes_an_idle_replica() {
 
 #[test]
 fn restore_session_should_wake_arms_are_disjoint_on_is_coord() {
-    // Coordinator: wakes through the #248 arm, and the replica arm is false
+    // Coordinator: wakes through the arm, and the replica arm is false
     // for it.
     assert!(restore_session_should_wake(
         RestoreWakeOptions {
@@ -192,7 +192,7 @@ fn restore_session_should_wake_arms_are_disjoint_on_is_coord() {
     ));
     assert!(!should_wake_working_agent_on_restore(true, true, true));
 
-    // Non-coordinator: wakes through the new arm, and the #248 arm is false
+    // Non-coordinator: wakes through the new arm, and the arm is false
     // for it.
     assert!(restore_session_should_wake(
         RestoreWakeOptions {
@@ -279,7 +279,7 @@ fn first_restore_does_not_auto_create_root_agent_without_agents() {
     ));
 }
 
-// (#630) Backstop truth table: a real coordinator survives a transient empty
+// Backstop truth table: a real coordinator survives a transient empty
 // discover_teams(); a healthy non-empty discovery is trusted as-is.
 #[test]
 fn resolve_is_coord_for_restore_truth_table() {
@@ -294,7 +294,7 @@ fn resolve_is_coord_for_restore_truth_table() {
     assert!(!resolve_is_coord_for_restore(false, true, false));
 }
 
-// (#630/#631) The wake path passes the persisted fresh intent straight through
+// The wake path passes the persisted fresh intent straight through
 // as create_session_inner's skip_auto_resume. Guards the lib.rs read seam: if
 // this identity is ever broken, restore stops honoring "Restart Session".
 #[test]

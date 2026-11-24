@@ -1,5 +1,5 @@
-//! (#871) Substantive-submission classifier for raw PTY keystroke input, and
-//! (#2336) the per-session typing-hold state that defers peer wakes while the
+//! Substantive-submission classifier for raw PTY keystroke input, and
+//! the per-session typing-hold state that defers peer wakes while the
 //! user is typing.
 //!
 //! Restart Session stamps a durable "start fresh on restore" intent. That intent
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-/// #1682 - how recent a user-driven PTY write must be for a busy->idle edge to
+/// How recent a user-driven PTY write must be for a busy->idle edge to
 /// still be attributable to it rather than to agent work. Read by BOTH stamp
 /// gates: the aged typing gate over `pending_within` below, and the
 /// control-write gate over `IdleDetector::control_write_age`.
@@ -40,13 +40,13 @@ pub const USER_WRITE_STAMP_WINDOW: Duration = Duration::from_millis(6000);
 #[derive(Default)]
 pub struct SubstantiveInputTracker {
     pending_nonspace: HashMap<Uuid, bool>,
-    /// #1682 - when the most recent chunk that CONTRIBUTED non-whitespace
+    /// When the most recent chunk that CONTRIBUTED non-whitespace
     /// printable content for this id arrived. Not "the last chunk that left the
     /// flag set": a chunk that leaves the flag alone (an ESC-introduced
     /// sequence, a device reply, a bare control byte) must not refresh it, or
     /// nothing ever ages out in a terminal that is receiving anything.
     /// Maintained by `feed` and `reset`, back-dated in tests by
-    /// `backdate_pending_for_test`, read only by `pending_within`; #871 never reads it.
+    /// `backdate_pending_for_test`, read only by `pending_within`; the classifier never reads it.
     pending_since: HashMap<Uuid, Instant>,
 }
 
@@ -65,7 +65,7 @@ impl SubstantiveInputTracker {
     pub fn feed(&mut self, id: Uuid, data: &[u8]) -> bool {
         let pending = self.pending_nonspace.entry(id).or_insert(false);
         let effect = classify_chunk(pending, data);
-        // #1682 - the age half of the typing gate. `classify_chunk`'s effect on
+        // The age half of the typing gate. `classify_chunk`'s effect on
         // `*pending` and the returned `submitted` are untouched; this records
         // only WHEN content was last contributed, so a stale half-typed line
         // cannot suppress the stamp for the rest of the session.
@@ -90,10 +90,10 @@ impl SubstantiveInputTracker {
         self.pending_since.remove(&id);
     }
 
-    /// #1682 - does `id` have non-whitespace printable input pending since the
+    /// Does `id` have non-whitespace printable input pending since the
     /// last submit or fresh boundary, AND did the chunk that last contributed
     /// that content arrive within `max_age`? Read-only: it consumes nothing, so
-    /// the stamp path never mutates #871's state.
+    /// the stamp path never mutates the substantive-input state.
     ///
     /// The age half is required, not defensive: `classify_chunk` clears `pending_nonspace` only
     /// on CR/LF-with-content and on Ctrl-C / Ctrl-U, and outside this module only `reset` clears
@@ -129,13 +129,13 @@ impl SubstantiveInputTracker {
 
 /// What one chunk did, as observed by the single scan in `classify_chunk`.
 struct ChunkEffect {
-    /// #871 - a CR/LF arrived while non-whitespace printable content was
-    /// pending: a real prompt submission. Unchanged by #1682.
+    /// A CR/LF arrived while non-whitespace printable content was
+    /// pending: a real prompt submission. Unchanged since.
     submitted: bool,
-    /// #1682 - this chunk itself contributed non-whitespace printable content,
+    /// This chunk itself contributed non-whitespace printable content,
     /// i.e. it took the `*pending = true` arm at least once. Derived from the
     /// same scan and the same arm as `pending`, never from a second scan
-    /// beside it, so it cannot drift from #871's rules.
+    /// beside it, so it cannot drift from the tracker's rules.
     contributed: bool,
 }
 
@@ -214,10 +214,10 @@ fn classify_chunk(pending: &mut bool, data: &[u8]) -> ChunkEffect {
     }
 }
 
-/// #4778 - does this chunk submit a line? True iff a CR or LF byte appears outside
+/// Does this chunk submit a line? True iff a CR or LF byte appears outside
 /// an ESC-introduced sequence. Same ESC rules as `classify_chunk`, so Alt+Enter,
 /// mouse reports and focus reports are not Enter. Pending text is not required:
-/// a bare Enter submits too. Stateless; never touches the #871 tracker.
+/// a bare Enter submits too. Stateless; never touches the tracker.
 pub fn chunk_submits_line(data: &[u8]) -> bool {
     let mut i = 0;
     while i < data.len() {
@@ -234,7 +234,7 @@ pub fn chunk_submits_line(data: &[u8]) -> bool {
     false
 }
 
-/// #2336 - the typing-hold snapshot returned to the frontend padlock. `closed`
+/// The typing-hold snapshot returned to the frontend padlock. `closed`
 /// is the EFFECTIVE hold (manual OR the natural window, suppression included),
 /// which is exactly the state the click toggles. `held_count` is the number of
 /// unique peer wake message IDs currently recorded as deferred for the session.
@@ -245,14 +245,14 @@ pub struct TypingHoldSnapshot {
     pub held_count: u32,
 }
 
-/// #2336 - per-session typing-hold state: the automatic window and the manual
+/// Per-session typing-hold state: the automatic window and the manual
 /// padlock. Runtime-only; never persisted and never reconciled from disk.
 ///
 /// Deliberately separate from [`SubstantiveInputTracker`]. That tracker's
 /// `pending_within` clears on Enter, Ctrl-C and Ctrl-U, so it stops being true
 /// exactly when a person submits a line. This hold must survive a submission (a
 /// later key refreshes it), so it owns its own clock. Nothing here is read by
-/// #871/#1682 and nothing there is read here.
+/// the trackers and nothing there is read here.
 #[derive(Default)]
 pub struct TypingHoldTracker {
     sessions: HashMap<Uuid, TypingHoldSession>,
@@ -264,7 +264,7 @@ struct TypingHoldSession {
     /// `note_qualifying_key`, which every desktop `pty_write` chunk that passes
     /// [`chunk_qualifies_typing_hold`] reaches. `None` until the first one.
     last_qualifying_key: Option<Instant>,
-    /// #2379 - when the manual padlock was closed; `None` when no manual hold
+    /// When the manual padlock was closed; `None` when no manual hold
     /// is set. The manual hold has its own clock: it stays closed for twice the
     /// `typing_hold_seconds` window in force at read time, so a forgotten close
     /// cannot defer delivery forever. Only the instant is stored; the deadline
@@ -294,7 +294,7 @@ impl TypingHoldSession {
             .is_some_and(|last| last.elapsed() <= window)
     }
 
-    /// #2379 - the manual padlock window: twice the live `window` since the
+    /// The manual padlock window: twice the live `window` since the
     /// close. Evaluated against the `window` passed at read time, never against
     /// a captured or hardcoded duration, so a settings change moves the
     /// deadline of an existing close.
@@ -425,7 +425,7 @@ pub fn new_typing_hold_state() -> TypingHoldState {
     Arc::new(Mutex::new(TypingHoldTracker::default()))
 }
 
-/// #2336 - does one raw `pty_write` chunk contain a keystroke the typing hold
+/// Does one raw `pty_write` chunk contain a keystroke the typing hold
 /// counts? Qualifying: printable text, whitespace, Enter, Backspace, Delete,
 /// and the human edit controls Ctrl-C / Ctrl-U. Not qualifying: an empty write,
 /// anything introduced by ESC (arrows, focus reports, device replies, mouse

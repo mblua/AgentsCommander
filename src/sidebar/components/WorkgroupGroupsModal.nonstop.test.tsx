@@ -9,12 +9,12 @@ import { baseSettings, click, resetUiStoresForTests, waitFor } from "../../share
 import { defaultGroupsConfig, defaultNonStop, workgroupGroupsStore } from "../stores/workgroup-groups";
 import WorkgroupGroupsModal from "./WorkgroupGroupsModal";
 
-// #777 modal Non-stop section: the modal-local cloneConfig BLOCKER (dev-webpage-ui
+// Modal Non-stop section: the modal-local cloneConfig BLOCKER (dev-webpage-ui
 // #1) and the no-bots inline warning (Grinch G4).
 
-// #2182 Phase 4: the Non-stop Sound Alert is platform-independent now, so the modal
+// The Non-stop Sound Alert is platform-independent now, so the modal
 // must not gate its sound controls on isWindows. The whole file runs with
-// `isWindows: false`, i.e. as a non-Windows host; the #777 cases above never read
+// `isWindows: false`, i.e. as a non-Windows host; the cases above never read
 // isWindows, so pinning it false here cannot mask a regression in them.
 vi.mock("../../shared/platform", async (orig) => ({
   ...(await orig<typeof import("../../shared/platform")>()),
@@ -40,7 +40,7 @@ function mountModal() {
   };
 }
 
-describe("#777 WorkgroupGroupsModal Non-stop section", () => {
+describe("WorkgroupGroupsModal Non-stop section", () => {
   let restoreTransport: (() => void) | null = null;
 
   beforeEach(() => {
@@ -113,7 +113,7 @@ describe("#777 WorkgroupGroupsModal Non-stop section", () => {
   });
 });
 
-describe("#2182 WorkgroupGroupsModal Non-stop sound is platform-independent", () => {
+describe("WorkgroupGroupsModal Non-stop sound is platform-independent", () => {
   let restoreTransport: (() => void) | null = null;
 
   beforeEach(() => {
@@ -177,7 +177,7 @@ describe("#2182 WorkgroupGroupsModal Non-stop sound is platform-independent", ()
   });
 });
 
-describe("#4580 WorkgroupGroupsModal reads Telegram bots from settingsStore", () => {
+describe("WorkgroupGroupsModal reads Telegram bots from settingsStore", () => {
   let restoreTransport: (() => void) | null = null;
 
   beforeEach(() => {

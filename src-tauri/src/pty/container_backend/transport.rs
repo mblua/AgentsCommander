@@ -214,29 +214,50 @@ impl ContainerTransportBackend {
         session_id: Uuid,
         frame: HostToBridgeFrame,
     ) -> Result<(), AppError> {
-        let sender = {
-            let sessions = self
-                .sessions
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match sessions.get(&session_id) {
-                Some(ContainerSessionState::Active(active)) => active.sender.clone(),
-                _ => return Err(AppError::SessionNotFound(session_id.to_string())),
-            }
-        };
+        let sender = self.active_sender(session_id)?;
+        sender
+            .try_send(frame)
+            .map_err(|error| self.queue_failure(session_id, QueueFailure::of(&error)))
+    }
 
-        match sender.try_send(frame) {
-            Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                self.close_transport_from_sync(session_id, TRANSPORT_LOST_EXIT_CODE);
-                Err(AppError::PtyError(
-                    "container transport outbound queue full".to_string(),
-                ))
+    /// Publish a Resize under a reserved queue slot, running `mark` after the
+    /// reservation and before the publication, with no await and no sessions lock. A failed
+    /// reservation runs neither and keeps the queue's cleanup and errors.
+    pub(super) fn send_marked_text_frame(
+        &self,
+        session_id: Uuid,
+        frame: HostToBridgeTextFrame,
+        mark: impl FnOnce(),
+    ) -> Result<(), AppError> {
+        let sender = self.active_sender(session_id)?;
+        let permit = sender
+            .try_reserve()
+            .map_err(|error| self.queue_failure(session_id, QueueFailure::of(&error)))?;
+        mark();
+        permit.send(HostToBridgeFrame::Text(frame));
+        #[cfg(test)]
+        self.run_resize_published_hook();
+        Ok(())
+    }
+
+    fn active_sender(&self, session_id: Uuid) -> Result<mpsc::Sender<HostToBridgeFrame>, AppError> {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match sessions.get(&session_id) {
+            Some(ContainerSessionState::Active(active)) => Ok(active.sender.clone()),
+            _ => Err(AppError::SessionNotFound(session_id.to_string())),
+        }
+    }
+
+    fn queue_failure(&self, session_id: Uuid, failure: QueueFailure) -> AppError {
+        self.close_transport_from_sync(session_id, TRANSPORT_LOST_EXIT_CODE);
+        match failure {
+            QueueFailure::Full => {
+                AppError::PtyError("container transport outbound queue full".to_string())
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                self.close_transport_from_sync(session_id, TRANSPORT_LOST_EXIT_CODE);
-                Err(AppError::SessionNotFound(session_id.to_string()))
-            }
+            QueueFailure::Closed => AppError::SessionNotFound(session_id.to_string()),
         }
     }
 
@@ -302,7 +323,7 @@ impl ContainerTransportBackend {
         Ok(removed.map(|state| resources_from_state(session_id, state)))
     }
 
-    /// #930 F1 - after copy-in, if a concurrent teardown already removed the
+    /// F1 - after copy-in, if a concurrent teardown already removed the
     /// session from the map, that teardown's `remove_copied` ran before the file
     /// physically existed (idempotent no-op), so delete the now-orphaned file
     /// here. The shared `sessions` mutex serializes this check against teardown,
@@ -347,6 +368,21 @@ impl ContainerTransportBackend {
                     );
                 }
             }
+        }
+    }
+}
+
+/// `try_send` and `try_reserve` failures normalized without their payload.
+enum QueueFailure {
+    Full,
+    Closed,
+}
+
+impl QueueFailure {
+    fn of<T>(error: &mpsc::error::TrySendError<T>) -> Self {
+        match error {
+            mpsc::error::TrySendError::Full(_) => Self::Full,
+            mpsc::error::TrySendError::Closed(_) => Self::Closed,
         }
     }
 }

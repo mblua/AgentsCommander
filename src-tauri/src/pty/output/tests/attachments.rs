@@ -104,7 +104,7 @@ fn fanout_characterization_preserves_raw_order_and_ui_is_last() {
     assert_eq!(emitted[0].2, Some(1));
 }
 
-/// #2124 T12 - the real wiring through `handle_output`: the fanout's single
+/// T12 - the real wiring through `handle_output`: the fanout's single
 /// detector call reaches the burst filter, so a 64 B status-line chunk after
 /// long silence neither resets the auto-close clock nor fires `on_busy`,
 /// while 1024 B of real output does both.
@@ -465,7 +465,7 @@ fn attach_cuts_the_batch_exactly_at_the_snapshot_boundary() {
     assert_eq!(emitted[1].2, Some(2));
 }
 
-/// #1439. A parser grid that diverged from the grid the `ConPTY` last took must never seed
+/// A parser grid that diverged from the grid the `ConPTY` last took must never seed
 /// an attach: the attach returns no snapshot, converges the parser onto the RECORDED
 /// grid, and the next attach seeds cleanly at that grid with the current sequence.
 ///
@@ -473,7 +473,7 @@ fn attach_cuts_the_batch_exactly_at_the_snapshot_boundary() {
 /// follow A=24x80, desync B=50x132 are pairwise distinct, each asymmetric, and no pair is
 /// a transposition of another. With A != R0, an implementation that never writes
 /// `conpty_size` converges onto R0 and the final grid assertion turns red; asymmetric,
-/// non-transposed grids make a rows/cols argument swap fail loudly (the #973 bug class).
+/// non-transposed grids make a rows/cols argument swap fail loudly (the bug class).
 #[test]
 fn a_grid_divergence_yields_no_seed_and_the_next_attach_seeds_clean() {
     let fanout = fanout();

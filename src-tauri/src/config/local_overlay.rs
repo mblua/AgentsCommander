@@ -1,4 +1,4 @@
-//! #1737 - the `.local` alter-ego override layer.
+//! The `.local` alter-ego override layer.
 //!
 //! Two read-time overrides, one policy module:
 //!
@@ -75,7 +75,7 @@ pub(crate) enum OverlayDiagnostic {
         source: String,
         owned: Vec<String>,
     },
-    /// #1737 (D9) - a present `*.local.md` that could not be used. Lives on the
+    /// A present `*.local.md` that could not be used. Lives on the
     /// same enum as the JSON records so both sides have one `level()`, one
     /// `render()`, and one three-line rendering match per source file.
     MarkdownRejected {
@@ -120,7 +120,7 @@ pub(crate) enum MarkdownOverride {
 }
 
 impl MarkdownOverride {
-    /// #1737 (D9) - the typed diagnostic for a rejected override, `None` for
+    /// The typed diagnostic for a rejected override, `None` for
     /// `Absent` and `Present`. The caller renders it through the same
     /// `level()` / `render()` pair the JSON records use.
     pub(crate) fn diagnostic(&self) -> Option<OverlayDiagnostic> {
@@ -190,7 +190,7 @@ pub(crate) fn read_markdown_override(base: &Path) -> MarkdownOverride {
     }
 }
 
-/// #1737 (D13) - a repair that creates one object per element id of a source
+/// D13: a repair that creates one object per element id of a source
 /// array. Structural, so `local_overlay` needs no crate knowledge: the caller
 /// names the array key, the element field that identifies an element, and the
 /// path prefix under which the repair creates one object per id.
@@ -283,7 +283,7 @@ pub(crate) struct LocalSettingsOverlay {
     rejection: Option<OverlayRejection>,
 }
 
-/// #4638 - `base_values` holds raw `settings.json` values, which can be API keys,
+/// `base_values` holds raw `settings.json` values, which can be API keys,
 /// so Debug never prints them.
 impl std::fmt::Debug for LocalSettingsOverlay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -316,7 +316,7 @@ impl LocalSettingsOverlay {
         &self.paths
     }
 
-    /// #1737 (D7c) - true when the restore plan contains any path whose first
+    /// D7c: true when the restore plan contains any path whose first
     /// segment is `key`, i.e. THE RESTORE PLAN OWNS that top-level key. That is
     /// wider than "the overlay literally supplied a value at or below `key`",
     /// because the D13 derived-id closure also appends paths the overlay did not

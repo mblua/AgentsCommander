@@ -9,7 +9,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("toastStore (#574)", () => {
+describe("toastStore", () => {
   it("push returns an id, items contains the toast, and kind defaults to info", () => {
     const id = toastStore.push({ message: "hello" });
     expect(typeof id).toBe("number");
@@ -171,10 +171,10 @@ describe("toastStore (#574)", () => {
   });
 });
 
-// #1857: the aggregated blocked-menu notice is a single PINNED toast. These
+// The aggregated blocked-menu notice is a single PINNED toast. These
 // pin the two measured ways the old per-session toasts were lost: eviction past
 // MAX_VISIBLE, and the dismiss animation deleting a freshly re-pushed message.
-describe("pinned toasts and the dismiss/re-push race (#1857)", () => {
+describe("pinned toasts and the dismiss/re-push race", () => {
   it("1. survives the measured threshold: four sticky errors then a pinned info", () => {
     for (let i = 0; i < 4; i++) toastStore.error(`error-${i}`);
     toastStore.push({ message: "blocked", kind: "info", durationMs: null, pinned: true });
@@ -185,7 +185,7 @@ describe("pinned toasts and the dismiss/re-push race (#1857)", () => {
 
   it("2. the threshold is exactly four: the pinned toast survives 0..3 prior errors too", () => {
     // Characterisation, NOT a falsifier: all four sub-cases pass against the
-    // pre-#1857 implementation as well. It pins WHERE the measured threshold is;
+    // earlier implementation as well. It pins WHERE the measured threshold is;
     // test 1 is the falsifier. See acceptance criterion 6.
     for (const priorErrors of [0, 1, 2, 3]) {
       toastStore.clear();

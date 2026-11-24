@@ -742,7 +742,7 @@ async fn expired_deadline_retains_maximum_raster_and_permit_until_reclamation() 
     }
 }
 
-/// #1614 requirement (D), section 9.1 "API and snapshot fixture twins".
+/// Requirement (D), section 9.1 "API and snapshot fixture twins".
 ///
 /// This file is on section 6.1's PRESERVED list and takes no production edit.
 /// The two existing FQN literals at the top are unchanged (Rule P2); these are

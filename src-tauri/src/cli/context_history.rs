@@ -1,8 +1,8 @@
-//! `context-history` (#3532 P04): print the context-history report as JSON.
+//! `context-history`: print the context-history report as JSON.
 //!
 //! The report core is pure; this edge validates arguments, resolves the
 //! Project AC Root, reads the retained snapshot once (retention from the
-//! read-only CLI Settings snapshot, #4049) and streams every page of
+//! read-only CLI Settings snapshot) and streams every page of
 //! agents as one schema 3 JSON document on stdout. Errors go to stderr with
 //! exit code 1 and never produce an empty successful result.
 

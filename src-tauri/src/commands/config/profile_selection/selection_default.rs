@@ -25,7 +25,7 @@ use super::target::{
 
 use super::fingerprint::selection_default_fingerprint;
 
-// ── #1941 Matrix selection default commands ──────────────────────────────
+// ── Matrix selection default commands ──────────────────────────────
 
 #[tauri::command]
 pub async fn get_replica_selection_default(
@@ -93,7 +93,7 @@ pub(crate) async fn set_replica_selection_default_inner(
     let normalized_profile = normalize_profile_letter_for_assignment(&request.requested_profile)?;
     let (replica_dir, matrix_dir) =
         validate_selection_anchor(&settings_snapshot, Path::new(&request.target_replica_path))?;
-    // #1941 - the fingerprint binds the canonical Matrix plus the PRIOR default
+    // The fingerprint binds the canonical Matrix plus the PRIOR default
     // (including absence), so a stale window cannot silently overwrite a default
     // published by another window; the write repeats the CAS inside its lock.
     let prior = crate::config::coding_agent_profiles::read_replica_selection_default(&matrix_dir)?;

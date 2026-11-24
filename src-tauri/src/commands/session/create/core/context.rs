@@ -58,7 +58,7 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
     let mut pending = input;
     let id = pending.session.id;
     let effective_continuation = false;
-    // #930 - resolve the host-credential copy-in plan for container coding agents
+    // Resolve the host-credential copy-in plan for container coding agents
     // BEFORE the resume probe and the container env translation, so both consumers
     // observe the CLAUDE_CONFIG_DIR we may inject below. Gated by the global setting
     // (default on) and the per-agent profile descriptor; None when off,
@@ -100,7 +100,7 @@ pub(crate) async fn prepare<'a: 'b, 'b, R: tauri::Runtime>(
     } else {
         None
     };
-    // #930 - when we WILL copy host creds and the user configured no
+    // When we WILL copy host creds and the user configured no
     // CLAUDE_CONFIG_DIR (respecting an explicit value OR an explicit removal),
     // default it to the copy directory so a default-on container authenticates with
     // zero env rows. Injected as a host path; the container env translation maps it
@@ -272,7 +272,7 @@ pub(crate) async fn prepare_instructions<'a: 'b, 'b, R: tauri::Runtime>(
         create_owner,
         ..
     } = ctx;
-    // #529 - resolve the instructions filename from the configured coding agent
+    // Resolve the instructions filename from the configured coding agent
     // (falling back to detection for ad-hoc launches), plus the union of every
     // configured agent's filename for cleanup. Computed under a single settings
     // read guard that is dropped before any filesystem I/O (no guard across the
@@ -383,7 +383,7 @@ fn inject_claude_continue_args(
     shell_args: &mut Vec<String>,
 ) -> bool {
     let mut effective_continuation = false;
-    // #260: Claude's resume flag from the CodingAgentProfile. resume_tokens
+    // Claude's resume flag from the CodingAgentProfile. resume_tokens
     // is a 1-element const for Claude, so [0] is provably in bounds.
     let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
     if let Some(aid) = agent_id {
@@ -475,7 +475,7 @@ fn inject_other_provider_resume_args(
         }
     }
 
-    // #1873 - Muse workspace-latest resume: only a trusted, exact, empty-argv,
+    // Muse workspace-latest resume: only a trusted, exact, empty-argv,
     // local macOS/Linux recipe with resume intent receives `resume --last`,
     // appended to the LOCAL effective vector only. Fresh intent, configured
     // arguments, wrappers, containers, Windows and ad-hoc launches stay plain.
@@ -533,8 +533,8 @@ async fn run_context_work<R: tauri::Runtime>(
         owned_replacement.and_then(|owned| owned.fixture_take_native_await_panic(false));
     let context_native = coordinator.run_blocking_seed_work({
         let cwd = cwd.to_owned();
-        // #1172 D5: capture the FINAL fresh-versus-resume decision. `skip_auto_resume`
-        // is a `mut` parameter of this function whose only mutation is the #756 mirror
+        // D5: capture the FINAL fresh-versus-resume decision. `skip_auto_resume`
+        // is a `mut` parameter of this function whose only mutation is the fresh-session mirror
         // at :1470, ~500 lines above, so the value read here is final. `true` means AC
         // is deliberately NOT resuming: a fresh conversation begins.
         let start_fresh = skip_auto_resume;
@@ -546,7 +546,7 @@ async fn run_context_work<R: tauri::Runtime>(
             if let Some(control) = context_fixture.as_ref() {
                 control.enter();
             }
-            // #1065 Stage F: production records the session-spawn context
+            // Stage F: production records the session-spawn context
             // read/sync and self-heal under the per-project gate (acquired
             // inside the blocking worker so the 10-second poll never blocks a
             // Tokio worker); a `#[cfg(test)]` lib build stays non-emitting.
@@ -567,7 +567,7 @@ async fn run_context_work<R: tauri::Runtime>(
                 container_repos.as_ref(),
                 activation.as_ref(),
             );
-            // #1172 - rotate the origin Agent Matrix's `memory/` for the fresh session
+            // Rotate the origin Agent Matrix's `memory/` for the fresh session
             // about to start, so it begins with a clean write target and the previous
             // session's memory is preserved under `memory-archive/memory_<ts>/`.
             //
@@ -673,7 +673,7 @@ pub(crate) async fn bind_and_check_target<R: tauri::Runtime>(
             return Ok(None);
         }
     }
-    // #1101: the restart replacement create runs while `teardown_old_for_restart`
+    // The restart replacement create runs while `teardown_old_for_restart`
     // has released the old PTY but RETAINED its canonical manager row (removed only
     // at the atomic commit's `mutations.remove(uuid)`, which runs after this gate).
     // For a live-session restart that row is non-Exited, so `appeared_session` is a
@@ -859,7 +859,7 @@ fn apply_resume_args(
         );
     }
 
-    // (#756) Rider: on Claude spawns where AC suppresses resume, mint the fresh
+    // Rider: on Claude spawns where AC suppresses resume, mint the fresh
     // session's identity at spawn. Uuid::new_v4() satisfies the "unused UUID"
     // requirement (Claude errors on a colliding --session-id; v4 collision is
     // negligible and a fresh one is minted per spawn). Mutually exclusive with

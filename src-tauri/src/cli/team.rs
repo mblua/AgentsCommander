@@ -1,7 +1,7 @@
 //! `team` CLI verb: `create`, `list`, `add-member` and `remove-member` for team configs and
 //! their room replicas. Owns `TeamArgs`, the subcommand argument structs and JSON result
 //! types. Member changes run under `TeamConfigMutationGuard`; removal also takes the project
-//! seed-manifest gate first (#1063 lock order). Disk work is delegated to
+//! seed-manifest gate first (lock order). Disk work is delegated to
 //! `commands::entity_creation` and shared helpers in `cli::workgroup`.
 
 use clap::{Args, Subcommand};
@@ -311,15 +311,15 @@ fn add_member(args: TeamAddMemberArgs) -> Result<(), String> {
 }
 
 fn remove_member(args: TeamRemoveMemberArgs) -> Result<(), String> {
-    // #1065 Stage F: activated with the sole production token; no lock-order test barrier.
+    // Stage F: activated with the sole production token; no lock-order test barrier.
     let activation = crate::config::seed_manifest::ManifestActivationToken::production();
     remove_member_hooked(args, Some(&activation), |_| {})
 }
 
-/// CLI team-member removal with the #1063 global lock order.
+/// CLI team-member removal with the global lock order.
 ///
 /// Preflight and initial intent run outside both guards; the blocking commit
-/// then acquires the project seed-manifest gate first and the #1056
+/// then acquires the project seed-manifest gate first and the
 /// `TeamConfigMutationGuard` second (plan sections 5.4/6.3), re-reads and
 /// revalidates the current team config under both, computes the mutation from
 /// that current value, and holds both across the membership commit, typed replica
@@ -327,7 +327,7 @@ fn remove_member(args: TeamRemoveMemberArgs) -> Result<(), String> {
 /// `remove_member` is synchronous, so no guard ever crosses `.await`.
 ///
 /// `activation` is `Some(ManifestActivationToken::production())` in production
-/// (#1065 Stage F); tests may pass `Some(for_test())` or `None`.
+/// (Stage F); tests may pass `Some(for_test())` or `None`.
 /// `after_project_before_team` is a `#[cfg(test)]` cross-process inversion barrier
 /// that fires after the project gate is held and before the team guard; production
 /// passes a no-op.
@@ -349,7 +349,7 @@ fn remove_member_hooked(
     let replica_dir = wg_dir.join(format!("__agent_{agent_name}"));
     crate::cli::session_safety::ensure_no_live_sessions_under(&replica_dir)?;
 
-    // Blocking commit: project gate first, then the #1056 team-config guard.
+    // Blocking commit: project gate first, then the team-config guard.
     let mut project_gate = acquire_lifecycle_project_gate(&project_path)?;
     after_project_before_team(&ac_root);
     let guard = TeamConfigMutationGuard::acquire(&ac_root)?;
@@ -403,7 +403,7 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
     Ok(())
 }
 
-/// #1063 Stage D-owned support for the co-located exact ignored cross-process
+/// Stage D-owned support for the co-located exact ignored cross-process
 /// lock-order inversion CHILD HELPERS in `cli/team.rs` and `cli/workgroup.rs`.
 ///
 /// A future Stage E parent spawns a child by its frozen fully-qualified name via

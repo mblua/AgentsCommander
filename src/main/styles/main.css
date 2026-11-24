@@ -42,7 +42,7 @@
   min-height: 0;
 }
 
-/* #2236 D13 — only a mode change animates, symmetrically. The class is added
+/* Only a mode change animates, symmetrically. The class is added
  * by the host hook right before the flip and removed on transitionend (or the
  * 400 ms fallback), so the pulse, hydration, presets and divider steps are
  * not animated. Suppressed under reduced motion. */
@@ -84,13 +84,13 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  /* #587 — containing block for the Resource Monitor overlay (.main-rm-pane). */
+  /* Containing block for the Resource Monitor overlay (.main-rm-pane). */
   position: relative;
   /* The terminal pane explicitly allows selection (xterm relies on it). */
   user-select: text;
 }
 
-/* #587 — Resource Monitor as a central-pane view. The RM overlay covers the
+/* Resource Monitor as a central-pane view. The RM overlay covers the
  * always-mounted terminal while RM is the selected central view (same pattern
  * as the Home overlay). z-index MUST exceed .home-view's z-index:10 (above) so
  * RM reliably covers Home too; .terminal-layout does not establish its own
@@ -226,7 +226,7 @@ html.light-theme .quit-confirm-body {
   color: rgba(0, 0, 0, 0.7);
 }
 
-/* --- Home view overlay (issue #164) --------------------------------------
+/* --- Home view overlay --------------------------------------
  * Architectural note: .home-view is rendered as a direct child of
  * .terminal-layout (see src/terminal/App.tsx), which is the positioned
  * containing block (`position: relative` set in terminal.css). It is
@@ -353,7 +353,7 @@ html.light-theme .quit-confirm-body {
 html.light-theme .home-markdown code { background: rgba(0, 0, 0, 0.06); }
 html.light-theme .home-markdown pre { background: rgba(0, 0, 0, 0.05); }
 
-/* --- Error modal (#264) --------------------------------------------------
+/* --- Error modal --------------------------------------------------
  * Queued modal surfacing ERROR-level backend log events. One at a time; the
  * "N" counter shows queue depth. z-index sits above the quit-confirm modal
  * (10000) so a coincident error is visually dominant — and, via
@@ -425,7 +425,7 @@ html.light-theme .home-markdown pre { background: rgba(0, 0, 0, 0.05); }
   outline: 2px solid var(--focus-ring, #00d4ff);
   outline-offset: -2px;
 }
-/* #3037 - popup mute field. The main window does not load sidebar.css, so the
+/* Popup mute field. The main window does not load sidebar.css, so the
    reused settings-checkbox classes are styled here, scoped to the error modal. */
 .error-modal .error-mute-field {
   margin: -4px 0 20px;
@@ -531,20 +531,20 @@ html.light-theme .error-modal-btn-copy:hover {
   color: #1a1a1e;
 }
 
-/* #2744 - these two read --fg-secondary, undefined and left undefined because
+/* These two read --fg-secondary, undefined and left undefined because
    its ten call sites pass four different alphas. Dark keeps each alpha. */
 html.light-theme .error-modal-counter,
 html.light-theme .error-modal-meta {
   color: #5a6172;
 }
 
-/* #2744 - error text literals picked for the dark surface. */
+/* Error text literals picked for the dark surface. */
 html.light-theme .home-status-error,
 html.light-theme .error-modal-title {
   color: #b91c1c;
 }
 
-/* #3367 — embedded web browser. The page is a native window laid over
+/* Embedded web browser. The page is a native window laid over
  * .web-browser-viewport by the backend; the DOM only draws the toolbar. */
 .main-web-browser-pane > .web-browser {
   display: flex;

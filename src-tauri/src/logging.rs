@@ -2,9 +2,9 @@
 //!
 //! Both `lib::run()` (GUI) and `main()` (CLI branch, before `cli::handle_cli`)
 //! call [`init_logger`] so every `log::*` invocation reaches a single sink:
-//! stderr **and** `<config_dir>/app.log`. Pre-#137-followup the CLI path
+//! stderr **and** `<config_dir>/app.log`. Previously the CLI path
 //! skipped this and silently dropped every `log::*` call (including the
-//! `[task]` audit lines), undermining plan #137 §3a's HIGH-1 mitigation.
+//! `[task]` audit lines), undermining the HIGH-1 mitigation.
 //!
 //! Idempotent via a process-wide [`OnceLock`]: calling more than once is a
 //! silent no-op. Defensive only — current call sites are mutually exclusive
@@ -116,18 +116,18 @@ pub(crate) fn collapse_payload_task<T>(
     }
 }
 
-/// #612 runtime-adjustable verbosity for our own targets (`agentscommander*`),
+/// Runtime-adjustable verbosity for our own targets (`agentscommander*`),
 /// stored as `log::Level as u8` (Error=1 .. Trace=5). Installed ONLY on the
 /// no-RUST_LOG path (see `init_logger_inner`); the `RUST_LOG` dev-override path
 /// keeps `env_logger` frozen and leaves this unset.
 static RUNTIME_LEVEL: OnceLock<Arc<AtomicU8>> = OnceLock::new();
 
-/// #612 fixed inner filter for the gated path: third-party crates pinned at
+/// Fixed inner filter for the gated path: third-party crates pinned at
 /// `warn`; our own targets opened to `trace` so the runtime atomic (not
 /// `env_logger`) is the sole gate for `agentscommander*`.
 const GATE_INNER_FILTER: &str = "warn,agentscommander=trace";
 
-/// #612 lenient string -> Level for the runtime gate. None / legacy full-filter
+/// Lenient string -> Level for the runtime gate. None / legacy full-filter
 /// string / typo all fall back to Info (the historical default).
 fn level_from_str(s: &str) -> log::Level {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -140,7 +140,7 @@ fn level_from_str(s: &str) -> log::Level {
     }
 }
 
-/// #612 strict normalize for the command boundary: returns the canonical
+/// Strict normalize for the command boundary: returns the canonical
 /// lowercase string for a valid level, else None (so `set_log_level` rejects
 /// junk instead of silently persisting it).
 pub fn normalize_log_level(s: &str) -> Option<&'static str> {
@@ -154,7 +154,7 @@ pub fn normalize_log_level(s: &str) -> Option<&'static str> {
     }
 }
 
-/// #612 global `max_level` for the gated path. Clamped to at least Warn so
+/// Global `max_level` for the gated path. Clamped to at least Warn so
 /// third-party `warn!` stays visible even when the user picks Error for our own
 /// targets; raising it to the selected level lets the `log!` macro short-circuit
 /// suppressed debug!/trace! on hot paths BEFORE they reach the gate (the PTY
@@ -163,11 +163,11 @@ fn max_filter_for(level: log::Level) -> log::LevelFilter {
     std::cmp::max(level.to_level_filter(), log::LevelFilter::Warn)
 }
 
-/// #612 thin `log::Log` wrapper: consults the runtime atomic for
+/// Thin `log::Log` wrapper: consults the runtime atomic for
 /// `agentscommander*` targets and delegates everything else to a fixed inner
 /// `env_logger::Logger` (third-party crates pinned by `GATE_INNER_FILTER`).
 /// Lets the level change with no restart while reusing the inner logger's
-/// format closure (timestamp + secret scrub + #264 sink + rotation) unchanged.
+/// format closure (timestamp + secret scrub + error sink + rotation) unchanged.
 struct LevelGateLogger {
     inner: env_logger::Logger,
     level: Arc<AtomicU8>,
@@ -186,7 +186,7 @@ impl log::Log for LevelGateLogger {
     fn log(&self, record: &log::Record) {
         // Re-check per the log::Log contract: the global max_level may admit
         // records this gate rejects. Delegating to inner reuses the existing
-        // format closure unchanged (scrub + #264 sink + rotation).
+        // format closure unchanged (scrub + error sink + rotation).
         if self.enabled(record.metadata()) {
             self.inner.log(record);
         }
@@ -223,7 +223,7 @@ impl<L: log::Log> log::Log for PrivacyFilterLogger<L> {
     }
 }
 
-/// #2455 test-only tee: every record reaching `PrivacyFilterLogger`, whichever
+/// Test-only tee: every record reaching `PrivacyFilterLogger`, whichever
 /// `init_logger` leg installed it. Snapshot-only on purpose: the lib test
 /// binary runs tests concurrently, so a drain by one test would destroy
 /// another's evidence.
@@ -239,7 +239,7 @@ fn test_tee_push(record: &log::Record) {
         .push(line);
 }
 
-/// #2455 clone of every line the tee has seen so far; never drains.
+/// Clone of every line the tee has seen so far; never drains.
 #[cfg(test)]
 pub(crate) fn test_tee_snapshot() -> Vec<String> {
     TEST_TEE
@@ -248,7 +248,7 @@ pub(crate) fn test_tee_snapshot() -> Vec<String> {
         .clone()
 }
 
-/// #2455 make sure SOME logger is installed (a second `set_boxed_logger` is a
+/// Make sure SOME logger is installed (a second `set_boxed_logger` is a
 /// harmless `Err`), then open the static max level to `Info`: `log::info!`
 /// checks it before it ever reaches the logger.
 #[cfg(test)]
@@ -257,7 +257,7 @@ pub(crate) fn test_install_logger() {
     log::set_max_level(log::LevelFilter::Info);
 }
 
-/// #612 update runtime verbosity for `agentscommander*`. Returns false (no-op)
+/// Update runtime verbosity for `agentscommander*`. Returns false (no-op)
 /// when the gate is not installed (`RUST_LOG` override active, or called before
 /// `init_logger`), so callers can tell whether the backend stayed frozen.
 pub fn set_runtime_log_level(level: &str) -> bool {
@@ -272,12 +272,12 @@ pub fn set_runtime_log_level(level: &str) -> bool {
     }
 }
 
-/// #280 §2 — size cap per `app.log` file. Above this, the file is rotated.
+/// §2 — size cap per `app.log` file. Above this, the file is rotated.
 /// 50 MB chosen so a single file is still grep-able in a text editor while
 /// keeping the combined retention cap below ~300 MB total per binary instance.
 const APP_LOG_MAX_BYTES: u64 = 50 * 1024 * 1024;
 
-/// #280 §2 — number of rotated files to keep (`app.log.1` … `app.log.<KEEP>`).
+/// §2 — number of rotated files to keep (`app.log.1` … `app.log.<KEEP>`).
 /// Combined with `APP_LOG_MAX_BYTES` this caps total log disk usage at
 /// roughly `APP_LOG_MAX_BYTES * (APP_LOG_KEEP + 1)` bytes per binary instance
 /// (active file + KEEP rotated). Rotation walks `(KEEP - 1) ..= 1` so the
@@ -289,7 +289,7 @@ fn machine_output_enabled() -> bool {
     crate::config::environment::machine_output_os().is_some()
 }
 
-/// #280 §2 — log file plus a bookkeeping counter for size-based rotation.
+/// §2 — log file plus a bookkeeping counter for size-based rotation.
 /// `bytes` is read/written with `Relaxed` ordering: it's a best-effort cap
 /// counter, not a synchronization primitive. A small over-shoot at the
 /// rotation boundary is acceptable.
@@ -299,7 +299,7 @@ struct AppLogFile {
     path: PathBuf,
 }
 
-/// #280 §2 — rotate `path` → `path.1` and shift existing `path.<i>` to
+/// §2 — rotate `path` → `path.1` and shift existing `path.<i>` to
 /// `path.<i+1>`. The walk runs `(KEEP - 1) ..= 1` so the highest rename is
 /// `.(KEEP - 1) → .KEEP`; the existing `.KEEP` is implicitly evicted by
 /// `std::fs::rename`'s atomic-replace semantics (G-HIGH-1 fix). Caller must
@@ -316,7 +316,7 @@ fn rotate(state: &AppLogFile) {
         Err(e) => e.into_inner(),
     };
 
-    // #280 G-MED-1 — re-check the byte counter under the lock. If another
+    // G-MED-1 — re-check the byte counter under the lock. If another
     // thread already rotated (their `bytes.store(0)` ran), nothing to do.
     if state.bytes.load(Ordering::Relaxed) < APP_LOG_MAX_BYTES {
         return;
@@ -479,11 +479,11 @@ pub fn init_logger() {
     INIT.get_or_init(init_logger_inner);
 }
 
-/// #612 apply the shared format closure (timestamp + universal secret scrub +
-/// #264 error-sink tee + 50MB rotation) to `builder`. The body is the EXACT
+/// Apply the shared format closure (timestamp + universal secret scrub +
+/// error-sink tee + 50MB rotation) to `builder`. The body is the EXACT
 /// closure that was inline in `init_logger_inner`; only the captured `log_state`
 /// moves to this parameter, so both the `RUST_LOG` path and the runtime-gated
-/// path build on one definition. Do NOT reorder: the #264 capture stays BEFORE
+/// path build on one definition. Do NOT reorder: the capture stays BEFORE
 /// the buf/file writes (M1) so a failing write cannot skip error capture.
 fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<AppLogFile>>>) {
     builder.format(move |buf, record| {
@@ -495,14 +495,14 @@ fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<A
             record.target(),
             record.args()
         );
-        // #280 — universal secret scrub before the line reaches
+        // Universal secret scrub before the line reaches
         // stderr or app.log. Defends against new call sites and
         // third-party crate errors that may have bypassed api.rs's
         // and voice.rs's redaction. Near-zero cost when the line
         // contains no "/bot" or "key=" substring (early-return
         // inside redact()).
         let line = crate::telegram::redact::redact(&line);
-        // #264 — tee ERROR-level entries from AgentsCommander's own
+        // Tee ERROR-level entries from AgentsCommander's own
         // targets into the process-wide sink for the UI error modal.
         // Placed BEFORE the `?` writes below so a failing stderr/app.log
         // write cannot skip capture (M1). MUST NOT call any log::* macro
@@ -550,7 +550,7 @@ fn init_logger_inner() {
         })
     });
 
-    // #280 §2.6 — first-time migration. Existing users may have multi-GB
+    // §2.6 — first-time migration. Existing users may have multi-GB
     // app.log from before the rotation rollout; rotate immediately so this
     // run starts on a fresh file instead of appending to it.
     if let Some(ref state) = log_state {
@@ -560,7 +560,7 @@ fn init_logger_inner() {
     }
     let log_state = Arc::new(log_state);
 
-    // #612 precedence (was #93): RUST_LOG env > settings.logLevel > Info default.
+    // Precedence: RUST_LOG env > settings.logLevel > Info default.
     //
     // RUST_LOG is the dev override and wins. When set, keep the original frozen
     // env_logger path with NO runtime gate: a dev who exports RUST_LOG wants
@@ -613,10 +613,10 @@ fn init_logger_inner() {
 }
 
 // ===========================================================================
-// #264 — ERROR-level log capture for the UI error modal.
+// ERROR-level log capture for the UI error modal.
 // ===========================================================================
 
-/// One captured ERROR-level log entry, surfaced to the UI error modal (#264).
+/// One captured ERROR-level log entry, surfaced to the UI error modal.
 /// Field names serialize to camelCase to match `src/shared/types.ts`.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -629,11 +629,11 @@ pub struct ErrorLogEntry {
     pub target: String,
     /// Full message; may contain embedded newlines (multi-line git errors etc.).
     pub message: String,
-    /// #3036 emission-site identity (`typeId`); see `error_type_id`.
+    /// Emission-site identity (`typeId`); see `error_type_id`.
     pub type_id: String,
 }
 
-/// #3036 — collision-free emission-site identity built from
+/// Collision-free emission-site identity built from
 /// `(target, file, line)`: byte-length prefixes and explicit presence markers,
 /// never the message. Format: `v1|<len>:<target>|<n|s<len>:file>|<n|u<line>>`.
 fn error_type_id(target: &str, file: Option<&str>, line: Option<u32>) -> String {
@@ -653,7 +653,7 @@ impl ErrorLogEntry {
     /// Factored out of the format closure so it is unit-testable with a
     /// synthetic `Record` — the closure itself cannot be invoked from a test.
     fn from_record(timestamp: String, record: &log::Record) -> Self {
-        // #280 — the error modal is exposed to the UI; scrub the message
+        // The error modal is exposed to the UI; scrub the message
         // so a leaked bot token / Gemini key cannot reach the frontend
         // payload. Source-side redaction in api.rs / voice.rs is the
         // first line of defense; this is defense-in-depth.
@@ -673,7 +673,7 @@ impl ErrorLogEntry {
 /// (`agentscommander_lib::…` or `agentscommander`). The target-prefix guard
 /// keeps third-party crates' ERROR logs (`hyper`, `reqwest`, …) out of the modal
 /// even if `RUST_LOG` is widened. Factored out of the format closure so the
-/// single most safety-critical predicate of #264 is directly unit-testable (M3).
+/// single most safety-critical predicate of the capture is directly unit-testable (M3).
 fn should_capture(record: &log::Record) -> bool {
     record.level() == log::Level::Error && record.target().starts_with("agentscommander")
 }
@@ -699,7 +699,7 @@ pub struct ErrorEventSink {
     notify: tokio::sync::Notify,
 }
 
-/// #3036 — one lock guards the queue and the process-only mute state, so a
+/// One lock guards the queue and the process-only mute state, so a
 /// mute linearizes against capture/drain: already-queued entries stay; only
 /// later inserts of a muted type are skipped. `known` holds observed type IDs.
 #[derive(Default)]
@@ -735,7 +735,7 @@ impl ErrorEventSink {
             if !state.known.contains(&entry.type_id) {
                 state.known.insert(entry.type_id.clone());
             }
-            // #3036 — muted type: skip only the popup queue; the caller's
+            // Muted type: skip only the popup queue; the caller's
             // stderr/app.log writes still run.
             if state.muted.contains(&entry.type_id) {
                 return;
@@ -758,12 +758,12 @@ impl ErrorEventSink {
         Vec::from(std::mem::take(&mut state.pending))
     }
 
-    /// #3036 — sorted snapshot of the muted type IDs.
+    /// Sorted snapshot of the muted type IDs.
     pub fn muted_snapshot(&self) -> Vec<String> {
         sorted_ids(&self.lock_state().muted)
     }
 
-    /// #3036 — idempotently mute/unmute future captures of a known type ID.
+    /// Idempotently mute/unmute future captures of a known type ID.
     /// Unknown IDs are rejected with no mutation. Never replays skipped entries.
     pub fn set_muted(&self, type_id: &str, muted: bool) -> Result<Vec<String>, String> {
         let mut state = self.lock_state();
@@ -797,7 +797,7 @@ pub fn error_sink() -> &'static ErrorEventSink {
     ERROR_SINK.get_or_init(ErrorEventSink::new)
 }
 
-/// #1883 — test-only serialization for error-sink drain windows. Two library
+/// Test-only serialization for error-sink drain windows. Two library
 /// tests read-and-clear the process-wide `ERROR_SINK` (`phone::mailbox::tests`
 /// async, `logging::tests` sync); without mutual exclusion one test's drain can
 /// steal the other's entries. This lock is compiled only for tests and never

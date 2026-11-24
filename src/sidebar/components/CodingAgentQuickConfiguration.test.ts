@@ -18,7 +18,7 @@ import { onboardingPendingSettings } from "../../shared/testing/base-settings";
 import { declValue, scanRules, soleRuleBody } from "../styles/css-test-helpers";
 import { readFileSync } from "node:fs";
 
-// #1965 — the cards are driven by codingAgentsStore, which reads the catalog
+// The cards are driven by codingAgentsStore, which reads the catalog
 // report (never a bundled fallback). Resolve a report carrying Codex, the
 // preset this suite selects; tests override it per case.
 function defaultReport(): CatalogReport {
@@ -54,7 +54,7 @@ vi.mock("../../shared/ipc", () => ({
     get: vi.fn(() => Promise.resolve(settings())),
     update: vi.fn(() => Promise.resolve()),
   },
-  // #2736 P5 - the install listener must resolve to a function.
+  // The install listener must resolve to a function.
   onCodingAgentInstallFinished: vi.fn(() => Promise.resolve(() => {})),
   CodingAgentsAPI: {
     install: vi.fn(() => Promise.resolve()),
@@ -320,7 +320,7 @@ describe("CodingAgentQuickConfiguration", () => {
 
     await selectCodexAndConfirm();
 
-    // #975 — the reusable component persists the agent and nothing else: it
+    // The reusable component persists the agent and nothing else: it
     // must never flip onboardingDismissed on a consumer's behalf.
     expect(SettingsAPI.update).toHaveBeenCalledTimes(1);
     expect(SettingsAPI.update).toHaveBeenCalledWith(
@@ -362,7 +362,7 @@ describe("CodingAgentQuickConfiguration", () => {
     dispose();
   });
 
-  it("closes on Escape in the success state without re-entering the cancel path (#975)", async () => {
+  it("closes on Escape in the success state without re-entering the cancel path", async () => {
     const onCancel = vi.fn();
     const onClose = vi.fn();
     const root = document.createElement("div");
@@ -385,7 +385,7 @@ describe("CodingAgentQuickConfiguration", () => {
     pressEscape();
     await settle();
 
-    // #975 F1 — the success footer renders only "Get started", so Escape must
+    // The success footer renders only "Get started", so Escape must
     // resolve to onClose. Routing it to onCancel would re-run the consumer's
     // cancel path and issue a second settings write after a completed save.
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -590,7 +590,7 @@ describe("CodingAgentQuickConfiguration", () => {
     dispose();
   });
 
-  describe("Welcome status chips (#2736)", () => {
+  describe("Welcome status chips", () => {
     const welcomeCatalog = () => [
       catalogDef("codex", "Codex", "codex"),
       catalogDef("claude", "Claude Code", "claude"),
@@ -902,9 +902,9 @@ describe("CodingAgentQuickConfiguration", () => {
       dispose();
     });
 
-    // #2784 - rules selected by their EXACT selector prelude, comments blanked.
+    // Rules selected by their EXACT selector prelude, comments blanked.
     const sheetRules = () => {
-      // Real file: URL base (see sidebar-compact.test.ts); sheets in load order (#4577).
+      // Real file: URL base (see sidebar-compact.test.ts); sheets in load order.
       const read = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
       const css = read("../styles/sidebar.css") + read("../styles/onboarding-modal.css");
       return scanRules(css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " ")));
@@ -1145,7 +1145,7 @@ describe("CodingAgentQuickConfiguration", () => {
     });
   });
 
-  describe("Welcome install actions (#2736)", () => {
+  describe("Welcome install actions", () => {
     const CODEX_CMD = "npm install -g @openai/codex";
     const MINE_CMD = "npm install -g mine-agent";
 
@@ -1520,7 +1520,7 @@ describe("CodingAgentQuickConfiguration", () => {
       });
 
       expect(byTestId("onboarding.agentPreset.codex.status")?.textContent).toBe("Not installed");
-      // P6 (#2745) supersedes the P5 text: an event-driven failure has output.
+      // P6 supersedes the P5 text: an event-driven failure has output.
       expect(failedLine("codex")?.textContent).toBe("Install failed.");
       const button = installButton("codex")!;
       expect(button.getAttribute("aria-disabled")).toBe("false");
@@ -2011,7 +2011,7 @@ describe("CodingAgentQuickConfiguration", () => {
       dispose();
     });
 
-    // #2745 (P6) - install failure output disclosure. Continues the P5 numbering at 32.
+    // Install failure output disclosure. Continues the P5 numbering at 32.
     const outputToggle = (key: string) =>
       byTestId<HTMLButtonElement>(`onboarding.agentPreset.${key}.outputToggle`);
     const outputBox = (key: string) => byTestId(`onboarding.agentPreset.${key}.output`);
@@ -2116,7 +2116,7 @@ describe("CodingAgentQuickConfiguration", () => {
       );
       expect(box.getAttribute("tabindex")).toBe("0");
       // jsdom cannot measure the scroll; the declarations pin the row width.
-      // Real file: URL base (see sidebar-compact.test.ts); sheets in load order (#4577).
+      // Real file: URL base (see sidebar-compact.test.ts); sheets in load order.
       const read = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
       const css = read("../styles/sidebar.css") + read("../styles/onboarding-modal.css");
       const body = soleRuleBody(

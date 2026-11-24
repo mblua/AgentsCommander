@@ -1,3 +1,9 @@
+//! Mailbox self-switch: handles an agent request to switch its own session,
+//! finding the target replica and restarting the session there.
+//! It owns no persistent data; it does not handle peer-to-peer messages.
+
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 mod phase;
 
 use super::handoff::{
@@ -175,7 +181,7 @@ fn record_first_replica(
 }
 
 impl MailboxPoller {
-    /// #1632 - despite the name, this drives BOTH self-handoff flavors: pass
+    /// Despite the name, this drives BOTH self-handoff flavors: pass
     /// `SELF_HANDOFF_FLAVOR_SWITCH` for self-handoff-and-switch and
     /// `SELF_HANDOFF_FLAVOR_RESTART` for self-handoff-and-restart. The two differ only in the four
     /// `SelfHandoffFlavor` fields (three `&'static str` plus one prompt-builder `fn` pointer); the
@@ -256,7 +262,7 @@ impl MailboxPoller {
             match action {
                 SelfClearGateAction::Wait => {}
                 SelfClearGateAction::InjectClear => {
-                    // #1940: keep the turn through persist, restart and alias bookkeeping,
+                    // Keep the turn through persist, restart and alias bookkeeping,
                     // releasing it before phase-2 settling and handoff injection.
                     let (_turn, new_id) = match phase::restart_with_alias(
                         (&cwd, &target_agent, &target_profile, settle),
@@ -304,7 +310,7 @@ impl MailboxPoller {
         )
     }
 
-    /// (#885) Write the purge response JSON and move the message to delivered/.
+    /// Write the purge response JSON and move the message to delivered/.
     /// Mirrors `handle_close_session`'s dual-write block (§224 A.6, G-IMPL-2).
     pub(crate) async fn write_purge_response_and_deliver<S: MailboxHost>(
         &self,
@@ -357,7 +363,7 @@ impl MailboxPoller {
         self.move_to_delivered(app, path, msg).await
     }
 
-    /// #617 - write the self-clear queue-ack response, then move the message to
+    /// Write the self-clear queue-ack response, then move the message to
     /// delivered/. Mirrors the close-session dual-write (self-contained copy; the
     /// landed close-session block is intentionally left untouched, blast radius 0).
     pub(crate) async fn write_self_clear_response<S: MailboxHost>(
@@ -407,7 +413,7 @@ impl MailboxPoller {
             .await
     }
 
-    /// #1632 - write the self-handoff-and-restart queue-ack response, then move the message to
+    /// Write the self-handoff-and-restart queue-ack response, then move the message to
     /// delivered/. `profile` serializes as JSON `null` when the session inherited its letter: the
     /// recipe pins nothing there, and reporting an invented `"A"` would be a lie about the pin.
     #[allow(
@@ -582,6 +588,10 @@ impl MailboxPoller {
     /// with §DR2-4 composition: `matches.push(...); break;` within a single
     /// `rp` iteration (FQN can only match one replica dir per project) while
     /// the outer loop continues so cross-project ambiguity is still detected.
+    #[allow(
+        clippy::unwrap_used,
+        reason = "the match arm guarantees exactly one element"
+    )]
     pub(crate) async fn resolve_repo_path<S: MailboxHost>(
         &self,
         agent_name: &str,
@@ -723,11 +733,11 @@ impl MailboxPoller {
                     agent_id,
                     &cwd,
                     msg.requested_profile.as_deref(),
-                    // #1635-2 D2: the dispatch request outranks the replica
+                    // The dispatch request outranks the replica
                     // pin for this spawn only.
                     msg.requested_profile.is_some(),
                 )?;
-                // #1271 - same-guard host shell: copied from the exact snapshot
+                // Same-guard host shell: copied from the exact snapshot
                 // that built the spawn, before any await.
                 let host_shell = if spawn.is_some() {
                     Some(crate::pty::backend::ResolvedAgentHostShell {
@@ -778,7 +788,7 @@ impl MailboxPoller {
         let agents = {
             let settings = app.pty_settings();
             let cfg = settings.read().await;
-            // #2716 (B3, option C) row 7: an unreadable agents layer is refused and
+            // (B3, option C) row 7: an unreadable agents layer is refused and
             // reported, never resolved against a list that is not the user's.
             if let Some(path) = cfg.agents_layer.unreadable_path() {
                 return Err(crate::config::settings::agents_unreadable_session_error(

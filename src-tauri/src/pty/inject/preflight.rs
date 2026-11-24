@@ -38,7 +38,7 @@ where
         None
     };
 
-    // #2586 D1 - on a `send_enter` shell the two later lone `\r` are the submit;
+    // D1 - on a `send_enter` shell the two later lone `\r` are the submit;
     // the wake render's trailing `\n\r` rides inside the pasted burst and can
     // only add a blank line. Strip exactly that two-byte suffix and nothing
     // else, never down to empty. Plain shells keep every byte.

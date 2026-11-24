@@ -17,10 +17,10 @@ import { settingsStore } from "../../shared/stores/settings";
 import { clockStore } from "../stores/clock";
 import type { AcAgentReplica } from "../../shared/types";
 
-// #588 — the MANUALLY-CLOSED pill mirrors AUTO-CLOSED (same `coord-autoclosed`
+// The MANUALLY-CLOSED pill mirrors AUTO-CLOSED (same `coord-autoclosed`
 // class, only the label differs), shows ONLY on a manually-closed *dormant*
 // coordinator, wins the XOR over both the idle badge and AUTO-CLOSED, and — like
-// #589's AUTO-CLOSED gate — hides the instant the coordinator has a live session
+// the AUTO-CLOSED gate — hides the instant the coordinator has a live session
 // again (the `!isSessionLive(session())` gate, the stale-on-raise guard).
 
 const projectPath = "C:\\Project";
@@ -61,7 +61,7 @@ function closedPills(root: HTMLElement): Element[] {
   return Array.from(root.querySelectorAll(".coord-autoclosed"));
 }
 
-describe("ProjectPanel MANUALLY-CLOSED pill (#588)", () => {
+describe("ProjectPanel MANUALLY-CLOSED pill", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -137,7 +137,7 @@ describe("ProjectPanel MANUALLY-CLOSED pill (#588)", () => {
     }
   });
 
-  it("suppresses the pill the moment the coordinator has a live session again (#589-parity !isSessionLive gate)", async () => {
+  it("suppresses the pill the moment the coordinator has a live session again (!isSessionLive gate parity)", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve("get_settings", baseSettings({ coordinatorAutoCloseEnabled: true }));
@@ -145,7 +145,7 @@ describe("ProjectPanel MANUALLY-CLOSED pill (#588)", () => {
 
     // A live (running) session matching the replica name -> isSessionLive() true,
     // so the manual pill must NOT render even though the marker is present. This
-    // is the exact stale-on-raise trap #589 fixes for AUTO-CLOSED.
+    // is the exact stale-on-raise trap the gate fixes for AUTO-CLOSED.
     sessionsStore.setSessions([
       session({
         id: "live-coord",

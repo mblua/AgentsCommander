@@ -23,7 +23,7 @@ pub(super) enum BackendWatchdogMode {
     Warn,
     KillGroup,
     Tick,
-    /// #1151 - runs the production quarantine-retry gate and loop, so native verification
+    /// Runs the production quarantine-retry gate and loop, so native verification
     /// of the orphan path is a deterministic, assertable artifact rather than log scraping
     /// behind a 15 second backoff.
     QuarantineRetry,
@@ -190,7 +190,7 @@ pub(crate) async fn handle_resource_watchdog_backend_request_with_config<H: Back
                 "groupKillPrivateBytes": limits.group_kill_private_bytes,
                 "processKillPrivateBytes": limits.process_kill_private_bytes,
             },
-            // #1151 - `snapshot` is captured BEFORE the action loop and is deliberately
+            // `snapshot` is captured BEFORE the action loop and is deliberately
             // left that way. Every post-retry assertion reads `quarantineRetries[i]`
             // instead; reading `snapshot.activeAgentGroups` after a successful reclaim
             // still shows the pre-action figure and produces a false FAIL.
@@ -253,7 +253,7 @@ async fn apply_watchdog_kills<H: BackendWatchdogHost>(
                         "result": result,
                     }));
                 }
-                // #1151 - `alreadyPending` keeps its value and type byte-identical so every
+                // `alreadyPending` keeps its value and type byte-identical so every
                 // existing automation assertion still passes; `reason` is the additive
                 // discriminator that makes the split observable from outside the process.
                 Ok(crate::session::selection::WatchdogKillOutcome::AlreadyInFlight) => kill_results
@@ -292,7 +292,7 @@ async fn apply_quarantine_retries<H: BackendWatchdogHost>(
     resource_monitor_enabled: bool,
     mode: BackendWatchdogMode,
 ) -> Vec<serde_json::Value> {
-    // #1151 - run the PRODUCTION quarantine-retry gate and loop, not a mirrored copy, so
+    // Run the PRODUCTION quarantine-retry gate and loop, not a mirrored copy, so
     // these reports are evidence about shipped dispatch logic. The coordinator is resolved
     // ONCE before the call, because the loop takes it by reference for every group.
     let mut quarantine_retries = Vec::new();

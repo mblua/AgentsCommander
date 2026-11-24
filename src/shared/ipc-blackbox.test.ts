@@ -135,12 +135,14 @@ describe("ipc black box", () => {
     expect(record.overdueTotal).toBe(1);
   });
 
-  it("never marks the four never-overdue commands overdue", async () => {
+  it("never marks the six never-overdue commands overdue", async () => {
     await installIpcBlackBox();
 
     noteInvokeStart("pick_folder");
     noteInvokeStart("spec_board_pick_open");
     noteInvokeStart("spec_board_pick_save");
+    noteInvokeStart("coding_agents_export_pick_save");
+    noteInvokeStart("coding_agents_import_pick_open");
     noteInvokeStart("quit_application");
     vi.advanceTimersByTime(60_000);
 
@@ -149,10 +151,12 @@ describe("ipc black box", () => {
       ["pick_folder", false],
       ["spec_board_pick_open", false],
       ["spec_board_pick_save", false],
+      ["coding_agents_export_pick_save", false],
+      ["coding_agents_import_pick_open", false],
       ["quit_application", false],
     ]);
     expect(record.pending[0].ageMs).toBeGreaterThanOrEqual(60_000);
-    expect(record.pendingTotal).toBe(4);
+    expect(record.pendingTotal).toBe(6);
     expect(record.overdueTotal).toBe(0);
   });
 
@@ -261,7 +265,7 @@ describe("ipc black box", () => {
     expect(record.lastSentAtMs).toBe(0);
   });
 
-  // #2646 - the `window` URL param is untrusted: known values are kept, any
+  // The `window` URL param is untrusted: known values are kept, any
   // other value (or an empty one) is recorded as "main".
   it.each([
     ...["main", "browser", "detached", "resource-monitor", "screenshot-overlay", "spec-board", "watchers", "terminal"].map(

@@ -15,7 +15,6 @@ use std::path::Path;
 /// `list_peers::detect_wg_replica` and
 /// `phone::mailbox::derive_project_from_outbox_path`, so `send` resolves WG-peer
 /// targets against the same source `list-peers` reports as `reachable: true`.
-/// See #228 / #726.
 pub(crate) fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
     let Some(canon) =
         crate::filesystem::directories::canonical_cli_discovery_path(Path::new(root)).ok()

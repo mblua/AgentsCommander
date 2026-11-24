@@ -1,8 +1,8 @@
-//! Production project environment of context history (#4001).
+//! Production project environment of context history.
 //!
 //! The composition side owns the concrete adapter so `history_runtime`
 //! depends only on its port, never on `config::teams` or `config::root_agent`.
-//! History configuration is the app-wide Settings snapshot (#4049); no project
+//! History configuration is the app-wide Settings snapshot; no project
 //! file is read for it.
 
 use std::path::Path;

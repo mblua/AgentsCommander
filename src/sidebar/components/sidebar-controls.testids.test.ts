@@ -1,4 +1,4 @@
-// #4825 - every interactive control in the three sidebar menu files carries a
+// Every interactive control in the three sidebar menu files carries a
 // non-empty data-ac-testid. Parser-backed (TSX), so comments and strings are
 // never counted; the minimum scanned counts fail a wrong path or parse mode.
 import { readFileSync } from "node:fs";
@@ -52,7 +52,7 @@ function scan(path: string): { controls: number; missing: string[] } {
   return { controls, missing };
 }
 
-describe("#4825 sidebar menu controls carry data-ac-testid", () => {
+describe("sidebar menu controls carry data-ac-testid", () => {
   for (const file of FILES) {
     it(`${file.path}: every control has a non-empty data-ac-testid`, () => {
       const result = scan(file.path);

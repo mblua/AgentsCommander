@@ -44,17 +44,62 @@ test('each method passes an exact argument array', () => {
 });
 
 test('a non-zero status throws ApiError without token text', () => {
-  const stderr = Buffer.from('HTTP 403: secret ghp_TOKEN123 rejected');
-  const { run } = fakeRun(() => ({ status: 1, stdout: Buffer.alloc(0), stderr }));
-  const gh = createGitHub({ repo: 'o/r', run });
-  assert.throws(
-    () => gh.attempt(5, 1),
-    (error) =>
-      error instanceof ApiError &&
-      error.http === 403 &&
-      error.message.includes(`${A}/runs/5/attempts/1`) &&
-      !error.message.includes('ghp_TOKEN123'),
-  );
+  const cases = [
+    {
+      status: 1,
+      http: 403,
+      stderr: 'HTTP 403: secret ghp_TOKEN123 rejected',
+      message: 'gh api repos/o/r/actions/runs/5/attempts/1 failed (exit 1, HTTP 403)',
+    },
+    {
+      status: 7,
+      http: undefined,
+      stderr: 'permission denied: secret ghp_TOKEN123 rejected',
+      message: 'gh api repos/o/r/actions/runs/5/attempts/1 failed (exit 7)',
+    },
+  ];
+  for (const { status, http, stderr, message } of cases) {
+    const { run } = fakeRun(() => ({
+      status, stdout: Buffer.alloc(0), stderr: Buffer.from(stderr),
+    }));
+    const gh = createGitHub({ repo: 'o/r', run });
+    assert.throws(() => gh.attempt(5, 1), (error) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.message, message);
+      assert.equal(error.name, 'ApiError');
+      assert.equal(error.endpoint, 'repos/o/r/actions/runs/5/attempts/1');
+      assert.equal(error.status, status);
+      assert.equal(error.http, http);
+      assert.ok(!error.message.includes(stderr));
+      assert.doesNotMatch(error.message, /secret|ghp_TOKEN123/);
+      return true;
+    });
+  }
+});
+
+test('ApiError coerces endpoint, status and HTTP in order and omits falsy HTTP', () => {
+  const calls = [];
+  const observed = (label, value) => ({
+    toString() {
+      calls.push(label);
+      return value;
+    },
+  });
+  const endpoint = observed('endpoint', 'endpoint text');
+  const status = observed('status', 'exit text');
+  const http = observed('http', 'http text');
+  const error = new ApiError(endpoint, status, http);
+  assert.deepEqual(calls, ['endpoint', 'status', 'http']);
+  assert.equal(error.message, 'gh api endpoint text failed (exit exit text, HTTP http text)');
+  assert.equal(error.endpoint, endpoint);
+  assert.equal(error.status, status);
+  assert.equal(error.http, http);
+
+  calls.length = 0;
+  const withoutHttp = new ApiError(endpoint, status, 0);
+  assert.deepEqual(calls, ['endpoint', 'status']);
+  assert.equal(withoutHttp.message, 'gh api endpoint text failed (exit exit text)');
+  assert.equal(withoutHttp.http, 0);
 });
 
 test('downloadText unzips the member and deletes the zip', () => {
@@ -215,7 +260,7 @@ test('AC-4527-006: a PR on a full page does not stop paging or duplicate an issu
   const result = runQuarantine({ gh, report, nowIso: 'x', runUrl: 'U' });
   assert.deepEqual(pages, [1, 2]);
   assert.deepEqual(result.applied, []);
-  // Issue #120 is found (old evidence, so not read: known F1), never created again.
+  // The tracking issue is found (old evidence, so not read: known F1), never created again.
   assert.deepEqual(result.overflow.notices,
     [{ test_id: 't::120', kind: 'reopen', reason: 'not_read' }]);
   assert.ok(!calls.some((c) => c.args.includes('POST')));

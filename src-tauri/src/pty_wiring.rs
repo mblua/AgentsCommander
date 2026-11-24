@@ -25,7 +25,7 @@ use crate::session::manager::SessionManager;
 
 use crate::config;
 
-// ---- #1032/#1056: the four narrow scrape adapters ---------------------------------
+// ---- The four narrow scrape adapters ---------------------------------
 //
 // This is the capability boundary. A sample may enqueue an informational coordinator
 // notice, but the scraper itself cannot route, inject, wake, or remediate a session.
@@ -129,7 +129,7 @@ impl<H: ContextEventSink> ContextEventSink for ScraperSink<H> {
     }
 }
 
-// ---- #2482: the three quota adapters ----------------------------------------------
+// ---- The three quota adapters ----------------------------------------------
 //
 // Each is its `context_scrape` twin above, narrowed. They live here, and only here, because
 // this is the file allowed to touch both the engine and the settings / session / Tauri world;
@@ -193,7 +193,7 @@ pub(crate) struct QuotaSources {
 }
 
 impl QuotaSources {
-    /// #2566 D3 - membership is by COMMAND, and this is the only place it is decided. Every
+    /// D3 - membership is by COMMAND, and this is the only place it is decided. Every
     /// agent whose command yields an account key with at least one enabled, valid source
     /// behind it gets an entry: its OWN pattern when its own entry is enabled, otherwise the
     /// key winner's, the first enabled entry in `quota_sources` order (a `BTreeMap`, so the
@@ -306,7 +306,7 @@ pub(crate) struct ScraperSamples {
     pub(crate) closed_logged: AtomicBool,
     pub(crate) saturated: AtomicBool,
     pub(crate) dropped: AtomicU64,
-    /// #3532 - optional, independent fanout to the context-history ingress. It is
+    /// Optional, independent fanout to the context-history ingress. It is
     /// offered first and is itself nonblocking, so it can never delay or suppress
     /// the alert bridge below.
     pub(crate) history: Option<crate::history_runtime::HistoryIngress>,
@@ -369,7 +369,7 @@ impl ContextSampleSink for ScraperSamples {
     }
 }
 
-/// #1088 - the fifth sink's concrete impl. It owns the `SessionManager` handle
+/// The fifth sink's concrete impl. It owns the `SessionManager` handle
 /// so the scraper never has to: `commit` writes each changed reading onto its
 /// `Session` and triggers the same whole-file persist the idle/busy callbacks
 /// already call. It holds no `AppHandle` and no `PtyManager`, so the scraper's
@@ -400,7 +400,7 @@ impl ContextPersistSink for ScraperPersist {
     }
 }
 
-/// #3532 - the history runtime's view of a live session: its launch facts, copied
+/// The history runtime's view of a live session: its launch facts, copied
 /// under one short read of the manager and released before any history I/O.
 pub(crate) struct HistorySessions {
     pub(crate) session_mgr: Arc<tokio::sync::RwLock<SessionManager>>,
@@ -438,7 +438,7 @@ impl SessionLaunchSource for HistorySessions {
     }
 }
 
-/// #2879 - the watcher engine's internal activity factory, composed over the idle detector.
+/// The watcher engine's internal activity factory, composed over the idle detector.
 /// Each call is one attach (`activity_consumer`); the returned consumer only maps the engine's
 /// observation onto that attach's own `observe`/`retire` and returns their verdict unchanged.
 /// The engine never names the detector, and the detector never learns about the engine.
@@ -459,7 +459,7 @@ pub(crate) fn codex_activity_factory(detector: &Arc<IdleDetector>) -> ActivityFa
     })
 }
 
-// ---- #1171: the three narrow watcher adapters -------------------------------------------
+// ---- The three narrow watcher adapters -------------------------------------------
 //
 // The same capability boundary the scrape adapters draw. The engine can read one session's
 // screen through a narrowed reader, ask for its lightweight liveness, read the resolved

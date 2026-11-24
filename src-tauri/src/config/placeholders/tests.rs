@@ -168,7 +168,7 @@ fn expand_in_content_skips_tokens_with_no_matching_root() {
     );
 }
 
-// ---- %USER_HOME% (#924) ------------------------------------------------
+// ---- %USER_HOME% ------------------------------------------------
 
 /// `dirs::home_dir()` forward-slashed, or `None` on a machine without a home.
 /// Tests derive the expectation instead of hardcoding a literal, so they stay
@@ -362,7 +362,7 @@ fn non_replica_inside_ac_resolves_ac_root_only() {
     );
 }
 
-/// #4786: a `config_dir()/temp-room-trNN` launch root.
+/// A `config_dir()/temp-room-trNN` launch root.
 #[test]
 fn temp_room_context_has_replica_root_only() {
     let base = crate::config::config_dir().expect("config dir");

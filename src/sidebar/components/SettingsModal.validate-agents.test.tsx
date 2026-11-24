@@ -11,7 +11,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { AgentConfig, CodingAgentEnv, ProfileCellConfig } from "../../shared/types";
 
-// #2611 — validateAgents was split into helpers. These tests pin its messages
+// ValidateAgents was split into helpers. These tests pin its messages
 // and its order (agents, then profile cells; first error wins) through the
 // rendered footer error and the Save path.
 
@@ -65,7 +65,7 @@ async function expectFooterError(root: HTMLElement, text: string): Promise<void>
 const CODEX_RESUME_ERROR =
   ": Codex commands must not include resume or --last; AgentsCommander injects codex resume --last automatically";
 
-describe("SettingsModal validateAgents (#2611)", () => {
+describe("SettingsModal validateAgents", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -136,8 +136,8 @@ describe("SettingsModal validateAgents (#2611)", () => {
   });
 });
 
-// #3021 - base/profile labels and canonical keys on save after a mixed-key reload.
-describe("SettingsModal command field labels and writes (#3021)", () => {
+// Base/profile labels and canonical keys on save after a mixed-key reload.
+describe("SettingsModal command field labels and writes", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

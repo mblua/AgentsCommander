@@ -77,7 +77,7 @@ fn assert_root_role_md_content() {
     assert!(!ROOT_ROLE_MD.contains("verified workgroup coordinator replicas only"));
     assert!(!ROOT_ROLE_MD.contains("list-peers-lean"));
     assert!(!ROOT_ROLE_MD.contains("AGENTSCOMMANDER_TOKEN"));
-    // #648: the Agency guidance moved into skills/agency-agents-roles; the
+    // The Agency guidance moved into skills/agency-agents-roles; the
     // role now carries only a trigger pointer, not the inline CLI block.
     assert!(!ROOT_ROLE_MD.contains("agency-templates update"));
     assert!(!ROOT_ROLE_MD.contains("Do not invent Agency template IDs"));
@@ -121,7 +121,7 @@ fn assert_root_templates_and_config(temp: &std::path::Path, root: &std::path::Pa
         temp.join(crate::config::session_context::GLOBAL_CONTEXT_TEMPLATE_FILENAME);
     let coordinator_template_path =
         temp.join(crate::config::session_context::COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
-    // #979: Root provisioning seeds ONLY the Root supplement. It never creates a
+    // Root provisioning seeds ONLY the Root supplement. It never creates a
     // standalone global or coordinator template; the one editable global is
     // project-scoped and lives in `<project>/.ac`.
     assert!(template_path.is_file());
@@ -201,7 +201,7 @@ fn ensure_root_agent_dir_at_preserves_existing_custom_template_and_seeds_minimal
         std::fs::read_to_string(template_path).expect("read template"),
         custom_template
     );
-    // #979: an unused custom coordinator file is outside this issue and is left
+    // An unused custom coordinator file is outside this issue and is left
     // exactly as it is.
     assert_eq!(
         std::fs::read_to_string(coordinator_template_path).expect("read coordinator template"),
@@ -222,7 +222,7 @@ fn ensure_root_agent_dir_at_preserves_existing_custom_template_and_seeds_minimal
     );
 }
 
-/// #979: the inert `Context.AgentsCommander.md.retired-<ts>[.<n>].bak` shapes.
+/// The inert `Context.AgentsCommander.md.retired-<ts>[.<n>].bak` shapes.
 fn retired_global_backups(config_dir: &Path) -> Vec<PathBuf> {
     let prefix = format!(
         "{}.retired-",
@@ -242,7 +242,7 @@ fn retired_global_backups(config_dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn ensure_root_agent_dir_at_still_provisions_when_retirement_fails() {
-    // #979 G2: retirement is BEST-EFFORT. `ensure_root_agent_dir` is fatal at two
+    // G2: retirement is BEST-EFFORT. `ensure_root_agent_dir` is fatal at two
     // of its four callers (commands/session.rs:2741 and :3276), so a retirement
     // error must never make the Root Agent uncreatable or unrestartable. A
     // directory at the live global path is the portable way to force that error.
@@ -280,7 +280,7 @@ fn ensure_root_agent_dir_at_still_provisions_when_retirement_fails() {
     assert!(retired_global_backups(temp.path()).is_empty());
 }
 
-/// The frozen v8 supplement retains the #1370 vocabulary contract. The v9
+/// The frozen v8 supplement retains the vocabulary contract. The v9
 /// resource also includes filesystem policy that describes workspace roots.
 #[test]
 fn frozen_v8_root_supplement_has_no_workspace_prose() {
@@ -290,8 +290,8 @@ fn frozen_v8_root_supplement_has_no_workspace_prose() {
     );
 }
 
-/// #1370 C7 / AC-5: the frozen v5 root snapshot must stay byte-identical to
-/// what the #1005 S5..cfde2968 builds shipped. Expected values captured by a
+/// C7 / AC-5: the frozen v5 root snapshot must stay byte-identical to
+/// what the S5..cfde2968 builds shipped. Expected values captured by a
 /// one-off run of `default_root_context_template()` AT base commit cfde2968,
 /// never from this const.
 #[test]
@@ -317,7 +317,7 @@ fn root_context_before_workspace_prose_snapshot_is_byte_exact() {
     );
 }
 
-/// #1614 AC7.9 and AC7.10. ONE fixture (the frozen pre-Room-rename bytes)
+/// AC7.9 and AC7.10. ONE fixture (the frozen pre-Room-rename bytes)
 /// drives BOTH root paths, modelled on
 /// `frozen_v5_root_context_is_recognized_and_migrated_on_both_paths`, whose
 /// doc comment says a list edited in only one place cannot pass silently.
@@ -354,7 +354,7 @@ fn frozen_pre_room_rename_root_context_migrates_on_the_role_path_too() {
     ));
 }
 
-/// #1614 AC7.9 for the root spec.
+/// AC7.9 for the root spec.
 #[test]
 fn frozen_pre_room_rename_root_context_is_recognized() {
     assert!(is_known_generated_root_context_template(
@@ -368,7 +368,7 @@ fn frozen_pre_room_rename_root_context_is_recognized() {
     assert!(!ROOT_ROLE_MD.to_lowercase().contains("workgroup"));
 }
 
-/// #1614 AC7.3 and AC7.5. Expected values taken from the frozen base and
+/// AC7.3 and AC7.5. Expected values taken from the frozen base and
 /// written into the plan (section 3.12 Table B), never read back from the
 /// constants they check.
 #[test]
@@ -404,7 +404,7 @@ fn frozen_snapshots_are_byte_exact_at_d7008b34() {
     );
 }
 
-/// #1614 AC7.6 / D8d. `OLD_DEFERRED_MESSAGING_PARAGRAPH` is NOT compared for
+/// AC7.6 / D8d. `OLD_DEFERRED_MESSAGING_PARAGRAPH` is NOT compared for
 /// equality; it is searched for INSIDE the user's live Role.md, and on a hit
 /// the migration substitutes the coordination paragraph for it. Editing it
 /// would silently disable that migration for every installation still on the
@@ -430,7 +430,7 @@ fn old_deferred_messaging_paragraph_is_frozen() {
     );
 }
 
-/// #1005 S5 / G3: the frozen v4 root snapshot must stay byte-identical to what
+/// S5 / G3: the frozen v4 root snapshot must stay byte-identical to what
 /// the #698..409b7f90 builds shipped. Expected values captured by a one-off run
 /// of `default_root_context_template()` AT base commit 409b7f90, never from
 /// this const.
@@ -452,7 +452,7 @@ fn root_context_before_token_minimization_snapshot_is_byte_exact() {
     );
 }
 
-/// #1005 S5 failing-first proof for ALL of: the v5 rewrite (`assert_ne`), the
+/// S5 failing-first proof for ALL of: the v5 rewrite (`assert_ne`), the
 /// recognizer list (E5.4 path 1), the `migrate_root_role` pristine list
 /// (E5.4 path 2), and the `root_spec` version bump. ONE fixture (the frozen v4
 /// bytes) drives both migration paths so a missed list cannot pass silently:
@@ -507,7 +507,7 @@ fn frozen_v4_root_context_is_recognized_and_migrated_on_both_paths() {
     );
 }
 
-/// #1571 T3: the frozen pre-rename Root snapshot must stay byte-identical to
+/// T3: the frozen pre-rename Root snapshot must stay byte-identical to
 /// what shipped at base commit ecc6527b. Expected values captured by a one-off
 /// run of the shipped constant AT ecc6527b (plan 3.6), never from this const.
 #[test]
@@ -528,7 +528,7 @@ fn root_context_pre_orchestrator_rename_snapshot_is_byte_exact() {
     );
 }
 
-/// #3024: the frozen v9 Root snapshot must stay byte-identical to what
+/// The frozen v9 Root snapshot must stay byte-identical to what
 /// shipped at base commit f6e5d08. Expected values captured externally from
 /// `git show f6e5d08:...Context.root-agent.md`, never from this const.
 #[test]
@@ -549,7 +549,7 @@ fn root_context_before_reporting_scope_snapshot_is_byte_exact() {
     );
 }
 
-/// #1370 C7 / AC-6: failing-first proof for the recognizer list, the
+/// C7 / AC-6: failing-first proof for the recognizer list, the
 /// `migrate_root_role` pristine list and the `root_spec` version bump. ONE
 /// fixture (the frozen v5 bytes) drives both migration paths so a list edited
 /// in only one place cannot pass silently: a pristine v5 Role.md must reduce
@@ -597,7 +597,7 @@ fn frozen_v5_root_context_is_recognized_and_migrated_on_both_paths() {
     );
 }
 
-/// #1571 T4: the same both-paths proof for the frozen pre-rename Root bytes.
+/// T4: the same both-paths proof for the frozen pre-rename Root bytes.
 /// ONE fixture drives `migrate_root_role` and the recognizer array, so wiring
 /// one list and forgetting the other cannot pass silently.
 ///

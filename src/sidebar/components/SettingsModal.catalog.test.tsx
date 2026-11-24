@@ -110,7 +110,7 @@ async function mountAlphaCatalog(): Promise<{
   return { fake, rendered, button: presetBtn(rendered.root, "alpha")! };
 }
 
-describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () => {
+describe("SettingsModal coding-agent quick-add row (catalog report)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -396,7 +396,7 @@ describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () =
     }
   });
 
-  it("shows the Auto-update error note while the catalog is unavailable (#1551)", async () => {
+  it("shows the Auto-update error note while the catalog is unavailable", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_settings", baseSettings());
     fake.resolve("get_web_server_status", false);
@@ -427,7 +427,7 @@ describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () =
   });
 });
 
-// #2143 - the COMMAND block reads the shared agent-help resolvers.
+// The COMMAND block reads the shared agent-help resolvers.
 function helpAgent(id: string, label: string, command: string): AgentConfig {
   return { id, label, command, color: "#334155", envs: [], isolatedHome: false };
 }
@@ -469,7 +469,7 @@ function localErrorText(): string | null | undefined {
   return document.querySelector('[data-ac-testid="agentHelpTips.localError"]')?.textContent;
 }
 
-describe("SettingsModal agent help (#2143)", () => {
+describe("SettingsModal agent help", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

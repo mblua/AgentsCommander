@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4779 P04 - the "Temporary Rooms" sidebar category, driven over FakeTransport.
+// The "Temporary Rooms" sidebar category, driven over FakeTransport.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TemporaryRoomsPanel from "./TemporaryRoomsPanel";
 import ProjectPanel from "./ProjectPanel";
@@ -156,7 +156,7 @@ const liveSession = (overrides: Partial<Session> = {}) =>
 
 const SAVED: TempRoomAgentChoice = { agentId: "claude", requestedProfile: null };
 
-describe("#4779 TemporaryRoomsPanel", () => {
+describe("TemporaryRoomsPanel", () => {
   let cleanupDom: (() => void) | null = null;
   let cleanups: (() => void)[] = [];
 
@@ -257,7 +257,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(second.fake.callsFor("create_session")).toHaveLength(0);
   });
 
-  it("4c. #4786 a saved agent using %AC_MATRIX_ROOT% shows the red warning", async () => {
+  it("4c. a saved agent using %AC_MATRIX_ROOT% shows the red warning", async () => {
     track(setup({ saved: SAVED, agents: [agent("claude", "claude %AC_MATRIX_ROOT%")] }));
     await waitFor(() => expect(byId("tempRooms.placeholderWarning")).not.toBeNull());
     const warning = byId("tempRooms.placeholderWarning")!;
@@ -265,14 +265,14 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(warning.textContent).toBe(tempRoomPlaceholderWarning("%AC_MATRIX_ROOT%"));
   });
 
-  it("4d. #4786 a clean saved agent shows no warning", async () => {
+  it("4d. a clean saved agent shows no warning", async () => {
     const { fake } = track(setup({ saved: SAVED }));
     await waitFor(() => expect(fake.callsFor("get_settings").length).toBeGreaterThan(0));
     await waitFor(() => expect(roomRow()).not.toBeNull());
     expect(byId("tempRooms.placeholderWarning")).toBeNull();
   });
 
-  it("4e. #4786 chosen agent with %AC_MATRIX_ROOT%: warning and exactly one toast", async () => {
+  it("4e. chosen agent with %AC_MATRIX_ROOT%: warning and exactly one toast", async () => {
     const matrixErr = "%AC_MATRIX_ROOT% does not apply to Temporary Rooms: they have no Agent Matrix";
     const { fake } = track(
       setup({ rooms: [], agents: [agent("claude", "claude %AC_MATRIX_ROOT%")] }),
@@ -317,7 +317,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(roomRow()).not.toBeNull();
   });
 
-  it("6. live agent-row menu: catalogue order, room folder, #4805 items enabled", async () => {
+  it("6. live agent-row menu: catalogue order, room folder, items enabled", async () => {
     const { fake } = track(setup({ sessions: [liveSession()] }));
     const menu = await openAgentMenu();
     const p = `tempRoom.${ROOM_1.name}`;
@@ -342,7 +342,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
       expect(text).not.toContain(absent);
     }
     expect(menu.querySelector(".session-context-repo-option")).toBeNull();
-    // #4805 - the three items are live now: no dimmed class, no #4779 title.
+    // No dimmed class, no offline title.
     for (const suffix of [".groups.trigger", ".menu.editTaskTitle", ".menu.clearTaskTitle"]) {
       const item = byId(`${p}${suffix}`) as HTMLButtonElement;
       expect(item.className).not.toContain("context-option-disabled");
@@ -473,17 +473,44 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(roomRow()).not.toBeNull();
   });
 
-  it("8c. #4838 the task title label carries the full title as tooltip", async () => {
+  it("8c. the task title label carries the full title as tooltip", async () => {
     const full = "A very long temporary room task title that the sidebar ellipsizes";
-    track(setup({ rooms: [{ ...ROOM_1, taskTitle: full }] }));
+    const { fake } = track(setup({
+      rooms: [{ ...ROOM_1, taskTitle: `  ${full}  ` }],
+      sessions: [liveSession()],
+    }));
     await waitFor(() => expect(byId("tempRoom.temp-room-tr01.taskTitle")).not.toBeNull());
     const label = byId("tempRoom.temp-room-tr01.taskTitle")!;
     expect(label.textContent).toBe(full);
     expect(label.getAttribute("title")).toBe(full);
+    expect(label.getAttribute("data-ac-role")).toBe("text");
+    expect(label.getAttribute("data-ac-state")).toBe("task");
     expect(label.closest(".ac-wg-header")!.getAttribute("title")).toBe(ROOM_1.path);
+    click(label);
+    label.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    label.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    expect(fake.callsFor("switch_session")).toHaveLength(0);
+    expect(fake.callsFor("create_session")).toHaveLength(0);
+    expect(fake.callsFor("restart_session")).toHaveLength(0);
+
+    contextMenu(label);
+    await waitFor(() => expect(byId("tempRoom.headerMenu.delete")).not.toBeNull());
   });
 
-  it("8b. #4825 the header collapse button carries tempRooms.header.toggle", async () => {
+  it("keeps task title text and hooks outside the Tab order", async () => {
+    const full = "A long temporary room task title that remains available as a tooltip";
+    track(setup({ rooms: [{ ...ROOM_1, taskTitle: `  ${full}  ` }] }));
+    const taskTitleId = "tempRoom.temp-room-tr01.taskTitle";
+    await waitFor(() => expect(byId(taskTitleId)).not.toBeNull());
+    const label = byId(taskTitleId)!;
+    expect(label.hasAttribute("tabindex")).toBe(false);
+    expect(label.textContent).toBe(full);
+    expect(label.getAttribute("title")).toBe(full);
+    expect(label.getAttribute("data-ac-role")).toBe("text");
+    expect(label.getAttribute("data-ac-state")).toBe("task");
+  });
+
+  it("8b. the header collapse button carries tempRooms.header.toggle", async () => {
     track(setup());
     await waitFor(() => expect(byId("tempRooms.header.toggle")).not.toBeNull());
     expect(document.querySelectorAll('[data-ac-testid="tempRooms.header.toggle"]')).toHaveLength(1);
@@ -514,6 +541,41 @@ describe("#4779 TemporaryRoomsPanel", () => {
     proxy.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await waitFor(() => expect(fake.callsFor("create_session")).toHaveLength(1));
     expect(fake.lastCall("create_session")!.args).toMatchObject({ cwd: ROOM_1.path });
+  });
+
+  it("switches a live room once per proxy activation and row click", async () => {
+    const { fake } = track(setup({ sessions: [liveSession()] }));
+    await waitFor(() => expect(roomRow()).not.toBeNull());
+    const row = roomRow()!;
+    const stops = Array.from(row.querySelectorAll<HTMLButtonElement>("button, [tabindex]"));
+    expect(stops).toHaveLength(1);
+    const [proxy] = stops;
+    expect(proxy).toBeInstanceOf(HTMLButtonElement);
+    expect(proxy.getAttribute("aria-label")).toBe(ROOM_1.name);
+    expect(proxy.tabIndex).toBe(0);
+    proxy.focus();
+    expect(document.activeElement).toBe(proxy);
+
+    const press = (key: string, repeat = false) => {
+      proxy.dispatchEvent(new KeyboardEvent("keydown", { key, repeat, bubbles: true }));
+    };
+    press("Enter");
+    await waitFor(() => expect(fake.callsFor("switch_session")).toHaveLength(1));
+    press(" ");
+    await waitFor(() => expect(fake.callsFor("switch_session")).toHaveLength(2));
+    press("Enter", true);
+    press(" ", true);
+    press("ArrowDown");
+    press("Escape");
+    expect(fake.callsFor("switch_session")).toHaveLength(2);
+
+    click(row.querySelector(".replica-item-name")!);
+    await waitFor(() => expect(fake.callsFor("switch_session")).toHaveLength(3));
+    expect(fake.callsFor("switch_session").map(({ args }) => args)).toEqual([
+      { id: "tr1" }, { id: "tr1" }, { id: "tr1" },
+    ]);
+    await openAgentMenu();
+    expect(fake.callsFor("switch_session")).toHaveLength(3);
   });
 
   it("9b. an exited session: row click restarts it", async () => {
@@ -681,7 +743,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     await openCategoryMenu();
   });
 
-  // #4810 - jsdom has no layout: one prototype stub gives the scroll area (the render
+  // One prototype stub gives the scroll area (the render
   // container) and each group panel (told apart by its header testid) a rect.
   let layout: "top" | "project" = "top";
   const stubLayout = (scroller: HTMLElement) =>

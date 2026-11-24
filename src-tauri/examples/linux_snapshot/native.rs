@@ -1,4 +1,4 @@
-// Linux-only GTK/WebKit harness for the #4248 snapshot experiment: windows,
+// Linux-only GTK/WebKit harness for the snapshot experiment: windows,
 // callbacks, timers, capture and cleanup. It uses only std and receipt types;
 // main supplies the validators as plain fn hooks.
 use std::{

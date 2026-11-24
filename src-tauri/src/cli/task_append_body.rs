@@ -4,7 +4,7 @@
 //! Trust model: caller honestly reports their own `--root` and `--token`.
 //! The same model is inherited from `send`/`close-session` and has a known
 //! weakness (any well-formed UUID is accepted as a token, and `--root` is
-//! unverified). See plan #137 §3a for the escalation analysis. A follow-up
+//! unverified). A follow-up
 //! issue is recommended to bind tokens to issued sessions, closing the hole
 //! for all CLI verbs simultaneously.
 
@@ -159,7 +159,7 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
             0
         }
         Ok(EditOutcome::RejectedUserTitle { .. }) => {
-            // Unreachable for AppendBody (the #738 user-lock guard only fires on
+            // Unreachable for AppendBody (the user-lock guard only fires on
             // TaskOp::SetTitle); defensive arm so the match stays exhaustive.
             crate::cli_println!("TASK.md unchanged");
             0

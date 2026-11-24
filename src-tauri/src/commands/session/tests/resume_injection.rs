@@ -252,7 +252,7 @@ fn pi_tuned_profile_flag_stays_false_while_direct_shell_capability_is_separate()
         .insert("dev-rust".to_string(), true);
     let requested = crate::config::settings::resolve_auto_self_clear(&settings, "dev-rust", false);
     assert!(requested);
-    // The tuned profile retains #1069's value. Launch gating uses #1059's
+    // The tuned profile keeps its value. Launch gating uses the
     // independent exact-stem direct-shell capability instead.
     assert!(!CodingAgentKind::Pi.profile().auto_self_clear_supported && requested);
 }

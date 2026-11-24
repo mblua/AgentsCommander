@@ -9,7 +9,7 @@ import ContextHistoryCard, {
 } from "./ContextHistoryCard";
 import type { SessionWindowBucket } from "../../shared/context-history";
 
-// #3532 P11 - the card only renders the state it is given.
+// The card only renders the state it is given.
 
 /** recordsPerSession = records / actual sessions; null without sessions. */
 const bucket = (
@@ -61,7 +61,7 @@ function renderCard(
   return { card, dispose };
 }
 
-describe("ContextHistoryCard (#3532 P11)", () => {
+describe("ContextHistoryCard", () => {
   afterEach(() => {
     document.body.innerHTML = "";
   });
@@ -164,7 +164,7 @@ describe("ContextHistoryCard (#3532 P11)", () => {
 });
 
 // AC-3532-030 - viewport placement with stubbed measures (jsdom has no layout).
-describe("ContextHistoryCard placement (#3532 P11)", () => {
+describe("ContextHistoryCard placement", () => {
   let cardH = 100;
   const CARD_W = 260;
   const restore: (() => void)[] = [];
@@ -272,7 +272,7 @@ describe("ContextHistoryCard placement (#3532 P11)", () => {
   });
 });
 
-// #3532 P18 - native card listeners (Sonar S6847/S1082) and explicit legend spacing (S6772).
+// Native card listeners (Sonar S6847/S1082) and explicit legend spacing (S6772).
 describe("ContextHistoryCard P18 native listeners", () => {
   afterEach(() => {
     document.body.innerHTML = "";

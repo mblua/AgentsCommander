@@ -7,7 +7,7 @@ import type {
 import { CodingAgentsAPI } from "../../shared/ipc";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 
-// #1965 — the catalog is served as a report (primary identity, source path,
+// The catalog is served as a report (primary identity, source path,
 // warnings and an unavailable diagnostic) instead of a bare array. The store
 // keeps one request per primary-identity generation so a superseded read can
 // never publish stale presets, diagnostics, or re-seed eligibility, and it
@@ -37,7 +37,7 @@ interface InFlightLoad {
 }
 let inFlight: InFlightLoad | null = null;
 
-// #1965 — Windows-shaped roots compare by shape (slash/case folding, ordinary
+// Windows-shaped roots compare by shape (slash/case folding, ordinary
 // verbatim prefix removal, trailing-separator trimming), POSIX roots keep case
 // and literal backslashes; null never aliases a path. Reuses the project-refresh
 // comparator unchanged.

@@ -1,3 +1,6 @@
+//! Creates or reuses the Root Agent session through selection transactions.
+//! Owns no long-lived state. Does not handle non-root sessions.
+
 pub(crate) use super::restart::context::ensure_owned_root_directory;
 use super::restart::context::{ensure_lifecycle_root_directory, LifecycleExecutionContext};
 use crate::commands::session::attach_local_config_telegram_if_any;
@@ -177,7 +180,7 @@ async fn resolve_root_agent_launch(
         )?
     };
     let (resolved_spawn, resolved_agent_host_shell) = if let Some(agent_id) = agent_id.as_deref() {
-        // #1271 - build the spawn and copy the configured default host shell
+        // Build the spawn and copy the configured default host shell
         // from the SAME single guard, before any await, so the pair can never
         // mix across a configuration change (Phase 1 items 1-2; mirrors the
         // restart pattern).

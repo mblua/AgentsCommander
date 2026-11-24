@@ -25,7 +25,7 @@ pub async fn check_project_path(path: String) -> Result<bool, String> {
 #[tauri::command]
 pub async fn create_ac_project(path: String) -> Result<(), String> {
     crate::config::seed_manifest::run_blocking_owned(move || {
-        // #1065 Stage F: the bare fresh-root create publishes its project context
+        // The bare fresh-root create publishes its project context
         // templates under the sole production token; a `#[cfg(test)]` lib build
         // stays non-emitting so unit fixtures keep manifest-free `.ac` roots.
         #[cfg(not(test))]
@@ -38,7 +38,7 @@ pub async fn create_ac_project(path: String) -> Result<(), String> {
                 on_publication,
             )
         })?;
-        // #1318 - a fresh `.ac` root seeds the catalog + masters immediately
+        // A fresh `.ac` root seeds the catalog + masters immediately
         // (no restart needed). INSIDE this blocking closure, so the gate acquire
         // runs on the blocking thread. Fail-soft: any error is logged and the
         // boot loop covers the project at the next boot.
@@ -148,7 +148,7 @@ where
     })?;
     if created {
         ensure_ac_root_gitignore(&ac_root)?;
-        // #1065 Stage F: record each freshly created project context template under
+        // Record each freshly created project context template under
         // the held gate at its commit-point time. A pre-existing `.ac` is not
         // backfilled (the `else` branch creates no templates), preserving the bare
         // create's no-backfill contract (acceptance item 38).

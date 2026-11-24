@@ -537,7 +537,7 @@ fn the_export_moves_both_groups_and_leaves_memory_untouched() {
         serde_json::to_value(&loaded.agents).unwrap(),
         serde_json::to_value(&before.agents).unwrap()
     );
-    // The export's save adds the #2450 identity rows, as any save does; every
+    // The export's save adds the identity rows, as any save does; every
     // user-authored value is unchanged.
     let mut loaded_profiles = loaded.coding_agent_profiles.clone();
     loaded_profiles.identity_by_agent.clear();
@@ -786,7 +786,7 @@ fn a_sidecar_that_disagrees_with_the_legacy_keys_is_not_overwritten() {
     let disk = b3_object(&path);
     assert_eq!(disk["agents"], legacy["agents"]);
     assert_eq!(disk["codingAgentProfiles"], legacy["codingAgentProfiles"]);
-    // The save may add the #2450 identity rows; the sidecar's values still win.
+    // The save may add the identity rows; the sidecar's values still win.
     let sidecar = b3_object(&b3_sidecar_path(temp.path()));
     assert_eq!(sidecar["agents"][0]["label"], "Sidecar");
     assert_eq!(

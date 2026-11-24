@@ -52,7 +52,7 @@ impl MailboxPoller {
         }
     }
 
-    /// #668 - queue a deferred self switch for the session that owns `msg.token`.
+    /// Queue a deferred self switch for the session that owns `msg.token`.
     /// It shares the self context pending set with self-clear, so clear and switch
     /// requests cannot stack on the same live session.
     pub(crate) async fn handle_self_handoff_switch<S: MailboxHost>(
@@ -165,7 +165,7 @@ impl MailboxPoller {
         .await
     }
 
-    /// #1632 - self-handoff-and-restart: hand off through `SELF-HANDOFF.md`, then respawn the
+    /// Self-handoff-and-restart: hand off through `SELF-HANDOFF.md`, then respawn the
     /// caller's own session on the SAME configured coding agent and profile letter it is already
     /// running, then resume in the NEW session. Scope is every agent: Room replicas, origin Agent
     /// Matrix agents, and the Root Agent.
@@ -209,8 +209,7 @@ impl MailboxPoller {
         //    real spawn; a re-implementation could.
         let settings_snapshot = {
             let settings = host.pty_settings();
-            let snapshot = settings.read().await.clone();
-            snapshot
+            settings.read().await.clone()
         };
         if let Err(reason) = validate_self_restart_spawn(&settings_snapshot, &session, &recipe) {
             return self.reject_message(path, msg, &reason).await;
@@ -297,9 +296,9 @@ impl MailboxPoller {
         .await
     }
 
-    /// #626 - thin timer driver around `self_clear_gate_advance`. Fire-and-forget. Drives both
+    /// Thin timer driver around `self_clear_gate_advance`. Fire-and-forget. Drives both
     /// phases on the stable `session_id`, injecting provider-resolved logical-clear text, then
-    /// (#749) archiving `SELF-HANDOFF.md` and injecting the handoff prompt that names the archived
+    /// Archiving `SELF-HANDOFF.md` and injecting the handoff prompt that names the archived
     /// path, and ALWAYS de-registers on exit. No "inject anyway" fallback - a busy or never-idle
     /// session is never cleared (the user-approved "30s sustained idle" semantic).
     #[allow(
@@ -458,7 +457,7 @@ impl MailboxPoller {
                     )
                     .await;
                     if injected {
-                        // (#756) handoff prompt is post-boundary content.
+                        // Handoff prompt is post-boundary content.
                         note_boundary(session_id, SelfClearBoundary::ContentInjected).await;
                     }
                     break (!injected).then(|| CONTINUATION_FAILURE.to_string());
@@ -743,7 +742,7 @@ async fn restart_communication(
     session_mgr: &tokio::sync::RwLock<SessionManager>,
     session_id: Uuid,
 ) -> Option<crate::session::session::SessionCommunication> {
-    // (#747) The self-clear restart is agent-initiated, not user
+    // The self-clear restart is agent-initiated, not user
     // input: a pending raised hand must survive it (the injected
     // handoff continues the same work). Capture before the
     // destroy; restore_communication re-gates kind, visibility,
@@ -850,7 +849,7 @@ where
         session_id,
         settle.as_secs()
     );
-    // #749 - archive-first contract; see inject_handoff_prompt_with_archive.
+    // Archive-first contract; see inject_handoff_prompt_with_archive.
     inject_handoff_prompt_with_archive(
         root,
         session_id,
@@ -867,7 +866,7 @@ fn validate_self_restart_spawn(
     session: &crate::session::session::SessionInfo,
     recipe: &super::handoff::SelfRestartRecipe,
 ) -> Result<(), String> {
-    // #1632: mirror the restart transaction's Root substitution so the pre-flight cannot
+    // Mirror the restart transaction's Root substitution so the pre-flight cannot
     // resolve a different profile cell or placeholder root than the spawn it is predicting.
     // Read-only: `root_agent_dir()` returns exactly the string `ensure_root_agent_dir()`
     // returns, without provisioning anything. On Err, fall back to the raw cwd rather than

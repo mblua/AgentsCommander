@@ -75,7 +75,7 @@ fn publish_path_wide_leaves_unconvertible_shapes_byte_identical() {
 
 /// Builds a non-verbatim directory over 300 wide units holding an existing
 /// `config.json` (old bytes) and a temp file (new bytes), and asserts the
-/// fixture rules of plan #2378 section 5.1 before the caller acts.
+/// fixture rules of the plan, section 5.1 before the caller acts.
 #[cfg(windows)]
 fn long_path_publish_fixture(root: &Path) -> (PathBuf, PathBuf) {
     use std::os::windows::ffi::OsStrExt;
@@ -132,7 +132,7 @@ fn publish_over_a_destination_longer_than_max_path_succeeds() {
 /// Inverse control for the long-path publish test: raw non-verbatim
 /// arguments still fail with `ERROR_PATH_NOT_FOUND`, so that test is not
 /// vacuous. If this ever goes red, the process gained long-path awareness
-/// (for example through a manifest); re-triage #2378 instead of relaxing
+/// (for example through a manifest); re-triage the plan instead of relaxing
 /// this test.
 #[cfg(windows)]
 #[test]

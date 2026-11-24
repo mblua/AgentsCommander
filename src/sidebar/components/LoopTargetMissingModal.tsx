@@ -3,10 +3,10 @@ import { automationAttrs } from "../../shared/automation-hooks";
 import type { UnresolvedLoopTarget } from "../../shared/types";
 
 /**
- * #2171 - startup notice for Loops whose configured room cannot be resolved in
+ * Startup notice for Loops whose configured room cannot be resolved in
  * this project. Presentational only: it holds no state and performs no IPC; the
  * owner (ProjectPanel) loads the alerts, opens the Loop configuration, disables
- * the Loop (#2733) and keeps the per-row errors.
+ * the Loop and keeps the per-row errors.
  */
 const LoopTargetMissingModal: Component<{
   alerts: UnresolvedLoopTarget[];

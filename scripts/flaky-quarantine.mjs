@@ -1,4 +1,4 @@
-// #4527 P07: advisory quarantine issues from the daily flaky report. Opens or reopens one
+// P07: advisory quarantine issues from the daily flaky report. Opens or reopens one
 // issue per flaky test (label `flaky-test`), comments new evidence and release proposals,
 // and never closes an issue or touches merge gating. Notices carry markers, so a notice
 // lost to a cap or an error is planned again the next day and delivered exactly once.
@@ -65,7 +65,11 @@ function table(report, testId) {
 }
 
 // Code-unit order, the same order as a default sort() of strings.
-const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+function byCodeUnit(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
 
 // Evidence SHAs of one candidate, one entry per SHA with its latest day on any platform.
 function evidenceShas(report, testId) {
@@ -164,90 +168,122 @@ export function markersOf(text) {
   return String(text ?? '').match(NOTICE_RE) ?? [];
 }
 
+function planIssueCreation(report, id, shas, context) {
+  // An index that may miss this test's issue never creates (no duplicate issue).
+  if (!context.indexComplete) {
+    context.defer(id, 'create', 'index_incomplete');
+    return;
+  }
+  if (context.opened >= MAX_NEW_OR_REOPENED) {
+    context.defer(id, 'create', 'cap');
+    return;
+  }
+  context.opened += 1;
+  const body = issueBody(report, id, shas.map((s) => s.sha), context.runUrl);
+  context.actions.push({ type: 'create', test_id: id, title: title(id), body });
+}
+
+function planIssueReopen(report, id, issue, missing, context) {
+  const fresh = missing.filter((s) => s.last_day > closedDay(issue)).map((s) => s.sha);
+  if (fresh.length === 0) {
+    context.heldClosed.push({ test_id: id, issue: issue.number });
+    return;
+  }
+  if (context.opened >= MAX_NEW_OR_REOPENED || context.commented >= MAX_COMMENTS) {
+    context.defer(id, 'reopen', 'cap');
+    return;
+  }
+  context.opened += 1;
+  context.commented += 1;
+  context.actions.push({ type: 'reopen', test_id: id, issue: issue.number });
+  const body = evidenceComment(report, id, fresh, context.runUrl);
+  context.actions.push({
+    type: 'comment', kind: 'evidence', test_id: id, issue: issue.number, body,
+  });
+}
+
+function planIssueEvidence(report, id, issue, missing, context) {
+  if (missing.length === 0) return;
+  if (context.commented >= MAX_COMMENTS) {
+    context.defer(id, 'evidence', 'cap');
+    return;
+  }
+  context.commented += 1;
+  const body = evidenceComment(report, id, missing.map((s) => s.sha), context.runUrl);
+  context.actions.push({
+    type: 'comment', kind: 'evidence', test_id: id, issue: issue.number, body,
+  });
+}
+
+function planCandidate(report, id, context) {
+  const h = sha256hex(id);
+  const shas = evidenceShas(report, id);
+  const issue = context.byHash.get(h);
+  if (!issue) {
+    planIssueCreation(report, id, shas, context);
+    return;
+  }
+  const markers = context.read(issue);
+  if (!markers) {
+    context.defer(id, issue.state === 'open' ? 'evidence' : 'reopen', 'not_read');
+    return;
+  }
+  const missing = shas.filter((s) => !markers.has(evidenceMarker(h, s.sha)));
+  if (issue.state !== 'open') {
+    planIssueReopen(report, id, issue, missing, context);
+    return;
+  }
+  planIssueEvidence(report, id, issue, missing, context);
+}
+
+function planRelease(item, context) {
+  const h = sha256hex(item.test_id);
+  const issue = context.byHash.get(h);
+  if (issue?.state !== 'open') return;
+  const markers = context.read(issue);
+  if (!markers) {
+    context.defer(item.test_id, 'release', 'not_read');
+    return;
+  }
+  if (markers.has(releaseMarker(h, item.streak_since))) return;
+  if (context.commented >= MAX_COMMENTS) {
+    context.defer(item.test_id, 'release', 'cap');
+    return;
+  }
+  context.commented += 1;
+  const body = releaseComment(item);
+  context.actions.push({
+    type: 'comment', kind: 'release', test_id: item.test_id, issue: issue.number, body,
+  });
+}
+
 export function planActions(report, issues, comments, nowIso, runUrl = '', indexComplete = true) {
   const { byHash, duplicates } = indexIssues(issues);
-  const actions = [];
-  const notices = [];
-  const heldClosed = [];
-  let opened = 0;
-  let commented = 0;
-  const read = (issue) => {
-    const set = comments instanceof Map ? comments.get(issue.number) : comments[issue.number];
-    return set ? new Set(set) : null;
+  const context = {
+    byHash,
+    indexComplete,
+    runUrl,
+    actions: [],
+    notices: [],
+    heldClosed: [],
+    opened: 0,
+    commented: 0,
+    read(issue) {
+      const set = comments instanceof Map ? comments.get(issue.number) : comments[issue.number];
+      return set ? new Set(set) : null;
+    },
+    defer(testId, kind, reason) {
+      this.notices.push({ test_id: testId, kind, reason });
+    },
   };
-  const defer = (testId, kind, reason) => notices.push({ test_id: testId, kind, reason });
 
   for (const id of report.quarantine_candidates ?? []) {
-    const h = sha256hex(id);
-    const shas = evidenceShas(report, id);
-    const issue = byHash.get(h);
-    if (!issue) {
-      // An index that may miss this test's issue never creates (no duplicate issue).
-      if (!indexComplete) {
-        defer(id, 'create', 'index_incomplete');
-        continue;
-      }
-      if (opened >= MAX_NEW_OR_REOPENED) {
-        defer(id, 'create', 'cap');
-        continue;
-      }
-      opened += 1;
-      const body = issueBody(report, id, shas.map((s) => s.sha), runUrl);
-      actions.push({ type: 'create', test_id: id, title: title(id), body });
-      continue;
-    }
-    const markers = read(issue);
-    if (!markers) {
-      defer(id, issue.state === 'open' ? 'evidence' : 'reopen', 'not_read');
-      continue;
-    }
-    const missing = shas.filter((s) => !markers.has(evidenceMarker(h, s.sha)));
-    if (issue.state !== 'open') {
-      const fresh = missing.filter((s) => s.last_day > closedDay(issue)).map((s) => s.sha);
-      if (fresh.length === 0) {
-        heldClosed.push({ test_id: id, issue: issue.number });
-        continue;
-      }
-      if (opened >= MAX_NEW_OR_REOPENED || commented >= MAX_COMMENTS) {
-        defer(id, 'reopen', 'cap');
-        continue;
-      }
-      opened += 1;
-      commented += 1;
-      actions.push({ type: 'reopen', test_id: id, issue: issue.number });
-      const body = evidenceComment(report, id, fresh, runUrl);
-      actions.push({ type: 'comment', kind: 'evidence', test_id: id, issue: issue.number, body });
-      continue;
-    }
-    if (missing.length === 0) continue;
-    if (commented >= MAX_COMMENTS) {
-      defer(id, 'evidence', 'cap');
-      continue;
-    }
-    commented += 1;
-    const body = evidenceComment(report, id, missing.map((s) => s.sha), runUrl);
-    actions.push({ type: 'comment', kind: 'evidence', test_id: id, issue: issue.number, body });
+    planCandidate(report, id, context);
   }
-
   for (const item of report.release_ready ?? []) {
-    const h = sha256hex(item.test_id);
-    const issue = byHash.get(h);
-    if (!issue || issue.state !== 'open') continue;
-    const markers = read(issue);
-    if (!markers) {
-      defer(item.test_id, 'release', 'not_read');
-      continue;
-    }
-    if (markers.has(releaseMarker(h, item.streak_since))) continue;
-    if (commented >= MAX_COMMENTS) {
-      defer(item.test_id, 'release', 'cap');
-      continue;
-    }
-    commented += 1;
-    const body = releaseComment(item);
-    actions.push({ type: 'comment', kind: 'release', test_id: item.test_id, issue: issue.number,
-      body });
+    planRelease(item, context);
   }
+  const { actions, notices, heldClosed } = context;
   return { actions, overflow: { notices, duplicates }, held_closed: heldClosed };
 }
 
@@ -335,9 +371,16 @@ function summary(result) {
 function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] === '--repo') args.repo = argv[(i += 1)];
-    else if (argv[i] === '--report') args.report = argv[(i += 1)];
-    else if (argv[i] === '--out') args.out = argv[(i += 1)];
+    if (argv[i] === '--repo') {
+      i += 1;
+      args.repo = argv[i];
+    } else if (argv[i] === '--report') {
+      i += 1;
+      args.report = argv[i];
+    } else if (argv[i] === '--out') {
+      i += 1;
+      args.out = argv[i];
+    }
   }
   return args;
 }

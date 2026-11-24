@@ -366,7 +366,7 @@ impl Drop for BodyStreamDropProbe {
     }
 }
 
-/// A loopback listener the caller keeps until the API server adopts it (#1768). Returning the
+/// A loopback listener the caller keeps until the API server adopts it. Returning the
 /// socket rather than a bare port number is the whole point: nothing else can take the port
 /// between reservation and service.
 pub(super) fn reserved_loopback_listener() -> std::net::TcpListener {

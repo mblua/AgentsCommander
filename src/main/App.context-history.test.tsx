@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #3532 P07 - the context history is hosted in the central pane next to the
+// The context history is hosted in the central pane next to the
 // always-mounted terminal and sidebar, desktop only, for the sidebar's
 // selected project and without any fallback project.
 import { render } from "solid-js/web";
@@ -129,7 +129,7 @@ async function mountMain(): Promise<HTMLDivElement> {
 const pane = () => document.querySelector('[data-ac-testid="main.contextHistoryPane"]');
 const historyCalls = () => fake.calls.filter((call) => call.cmd.startsWith("get_context_history"));
 
-describe("MainApp context history host (#3532 P07)", () => {
+describe("MainApp context history host", () => {
   beforeEach(() => {
     h.isTauri = true;
     h.activeKey = null;

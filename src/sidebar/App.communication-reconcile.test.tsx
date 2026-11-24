@@ -15,7 +15,7 @@ import { sessionsStore } from "./stores/sessions";
 import { isSessionWorking } from "../shared/session-activity";
 import type { Session, SessionCommunication } from "../shared/types";
 
-// #1856: the sidebar's view of session.communication is fed ONLY by the
+// The sidebar's view of session.communication is fed ONLY by the
 // session_communication_changed event, so any missed edge (a backend clobber, a
 // dropped event, a transport reconnect, a reload) latches a wrong notice forever
 // because the backend does not republish while the screen is quiet. The five
@@ -69,7 +69,7 @@ function storedCommunication(id: string): SessionCommunication | null | undefine
   return sessionsStore.sessions.find((r) => r.id === id)?.communication;
 }
 
-describe("SidebarApp communication reconcile from the polled listing (#1856)", () => {
+describe("SidebarApp communication reconcile from the polled listing", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
   // Every call BUILDS a fresh session AND a fresh communication object. Solid's

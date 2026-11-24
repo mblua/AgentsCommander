@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn build_replica_context_refuses_a_root_named_directory() {
-    // #979 G.4, guard 2 of 4 (the generic builder). Must hold for BOTH a missing
+    // G.4, guard 2 of 4 (the generic builder). Must hold for BOTH a missing
     // and a present config.json: the guard is the first executable line, ahead of
     // the missing-config `Ok(None)` early return.
     let temp = tempfile::tempdir().expect("tempdir");
@@ -50,7 +50,7 @@ fn ensure_session_context_returns_the_root_prologue_and_never_touches_the_global
 
 #[test]
 fn resolve_agent_context_refuses_a_root_named_path_without_touching_the_global() {
-    // #979 G.4, guard 4 of 4 (the global resolver). The guard is the FIRST
+    // G.4, guard 4 of 4 (the global resolver). The guard is the FIRST
     // executable statement, so nothing is read, created, synced, or rewritten.
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().join("ac-root-agent");
@@ -94,7 +94,7 @@ fn resolve_agent_context_refuses_a_root_named_path_without_touching_the_global()
 
 #[test]
 fn root_context_builder_preserves_order_and_skips_tokens() {
-    // #979 G.8: prologue first, then the raw entries in their stored order. The
+    // G.8: prologue first, then the raw entries in their stored order. The
     // stale global token, the deprecated repos token, and non-string values are
     // all skipped.
     let temp = tempfile::tempdir().expect("tempdir");
@@ -122,7 +122,7 @@ fn root_context_builder_preserves_order_and_skips_tokens() {
 
 #[test]
 fn root_context_builder_reports_every_missing_file_together() {
-    // #979 G.8: one aggregated `Root Agent` error, not the generic `Replica` one.
+    // G.8: one aggregated `Root Agent` error, not the generic `Replica` one.
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().join("ac-root-agent");
     std::fs::create_dir_all(&root).expect("create root");
@@ -488,7 +488,7 @@ fn agent_repos_placeholder_uses_empty_context_repaired_to_global() {
     );
 }
 
-/// #1369 (C4) AC-2: render `template` as the whole global template of a
+/// AC-2: render `template` as the whole global template of a
 /// replica that has one repo, end to end through
 /// `materialize_agent_context_file`, and return the materialized bytes. Same
 /// shape as the three legacy-token tests above; kept local to the alias
@@ -535,7 +535,7 @@ fn agent_repos_current_token_renders_exactly_one_block() {
 }
 
 /// AC-2 case 2.2 (the issue's AC#2 verbatim): a template carrying ONLY the
-/// pre-#1369 token renders exactly one block, and the legacy token itself
+/// older token renders exactly one block, and the legacy token itself
 /// does not survive into the prompt.
 #[test]
 fn agent_repos_legacy_token_renders_exactly_one_block() {

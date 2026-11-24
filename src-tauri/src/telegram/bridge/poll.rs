@@ -1,3 +1,6 @@
+//! Telegram poll loop: fetches bot updates, skips old ones, delivers new
+//! ones and backs off on network errors. It does not send replies.
+
 use super::PollNetworkErrorState;
 use super::PollNetworkLogAction;
 use super::TelegramRuntime;
@@ -426,7 +429,7 @@ async fn deliver_text(
         log::error!("Failed to write Telegram input to PTY: {e}");
     }
 
-    // Text and transcribed voice both reset the real-user badge clock (#552).
+    // Text and transcribed voice both reset the real-user badge clock.
     runtime.note_user_message(session_id).await;
     event_port.incoming(session_id_str, text, from);
     let tg_prompt = format!("[TG] {text}");

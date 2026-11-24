@@ -14,7 +14,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { AppSettings } from "../../shared/types";
 
-// #2232 phase 9 tests 1 to 4 and 14 — the Co-managed (Jev) settings group.
+// Tests 1 to 4 and 14 — the Co-managed (Jev) settings group.
 //
 // The group is a SIBLING of the Voice to Text section, outside its
 // <Show when={voiceToTextEnabled}> (plan section 4.1). Every test below therefore
@@ -90,7 +90,7 @@ function rustNumberDefault(source: string, fn: string): number {
   return Number.parseFloat(match[1]);
 }
 
-describe("SettingsModal Jev group (#2232 phase 9)", () => {
+describe("SettingsModal Jev group", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

@@ -1,3 +1,7 @@
+//! `terminal-snapshot` CLI command: builds the host request, polls for the
+//! response and writes text or PNG output. Owns the command arguments and the
+//! stage history. Does not render snapshots itself.
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -385,7 +389,7 @@ fn execute_inner(
     }
 }
 
-/// #1245: fixed, path-free diagnostic for a local requester-identity failure.
+/// Fixed, path-free diagnostic for a local requester-identity failure.
 /// The stable CLI error stays `requester_unavailable`; this text only reaches
 /// `app.log`, never stdout or stderr. Every reason in this chain is a fixed
 /// literal except the five `config::ac_root::ensure_authoritative_ac_root`

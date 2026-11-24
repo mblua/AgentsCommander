@@ -26,7 +26,7 @@ use super::target::enumerate_profile_assignment_targets;
 
 use super::fingerprint::{refresh_locked_count, removal_fingerprint, selection_error_code};
 
-// ── #1941 selection-lock removal commands ────────────────────────────────
+// ── Selection-lock removal commands ────────────────────────────────
 
 #[tauri::command]
 pub async fn preview_selection_lock_removal(
@@ -43,7 +43,7 @@ pub async fn preview_selection_lock_removal(
 }
 
 /// Enumerate the removal candidates and compute the fingerprint the client
-/// echoes back on apply. Reads only; the caller owns the #1940 turn.
+/// echoes back on apply. Reads only; the caller owns the turn.
 pub(crate) async fn preview_selection_lock_removal_inner(
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
     settings: &SettingsState,
@@ -93,7 +93,7 @@ pub async fn apply_selection_lock_removal<R: tauri::Runtime>(
     settings: State<'_, SettingsState>,
     request: ApplySelectionLockRemovalRequest,
 ) -> Result<ApplySelectionLockRemovalResult, String> {
-    // #1940/#1941 - the whole removal (prevalidation re-read, every guarded
+    // The whole removal (prevalidation re-read, every guarded
     // unlock and the final refresh) is one owned operation; the event is emitted
     // before the turn is released, so no later bulk can restart behind it.
     let app_handle = app.clone();
@@ -154,7 +154,7 @@ pub(crate) async fn apply_selection_lock_removal_inner(
                 });
             }
             SelectionState::Unlocked => {
-                // #1941 - classified from the validated read; the mutation
+                // Classified from the validated read; the mutation
                 // funnel is deliberately NOT called for this target, so no
                 // config publish, sidecar or restart can happen for it.
                 already_unlocked_paths.push(target.replica_path.clone());

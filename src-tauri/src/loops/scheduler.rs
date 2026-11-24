@@ -1,3 +1,9 @@
+//! Loop scheduler: scans configured loops, decides which are due and delivers
+//! their prompts to the target sessions, keeping per-loop runtime records.
+//! It does not edit loop configuration files.
+
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -63,7 +69,7 @@ pub(crate) struct LoopReplayGate {
     pub(crate) at_lock: tokio::sync::oneshot::Sender<()>,
 }
 
-/// #2698: a run whose prompt was delivered but whose commit failed. A later
+/// A run whose prompt was delivered but whose commit failed. A later
 /// scan retries the commit instead of delivering the run again.
 #[derive(Clone)]
 struct UnrecordedDelivery {
@@ -142,7 +148,7 @@ pub struct LoopScheduler {
     /// Per-Loop generation, bumped by every Loop command under `io_lock`, so
     /// a scan can tell that the Loop it read was replaced underneath it.
     loop_generations: std::sync::Mutex<HashMap<String, u64>>,
-    /// #2698: Delivered runs whose state write failed, keyed like
+    /// Delivered runs whose state write failed, keyed like
     /// `loop_generations`. A scan retries the write instead of delivering again.
     unrecorded_deliveries: std::sync::Mutex<HashMap<String, UnrecordedDelivery>>,
     #[cfg(test)]
@@ -452,7 +458,7 @@ impl LoopScheduler {
         s0_raw: Option<&[u8]>,
     ) -> Result<(), String> {
         let _io = self.io_lock.lock().await;
-        // #2682: no Loop lock here. `commit_scan_section` takes it at entry
+        // No Loop lock here. `commit_scan_section` takes it at entry
         // and re-checks freshness and config presence under it; holding it
         // here too would self-deadlock, since a second handle in this
         // process blocks on the same sidecar (T0).

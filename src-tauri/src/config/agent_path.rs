@@ -1,4 +1,4 @@
-//! #2589 - the search path used to resolve and run coding-agent binaries.
+//! The search path used to resolve and run coding-agent binaries.
 //!
 //! A GUI-launched app inherits a PATH without the user's login-profile entries
 //! (`~/.local/bin`, `~/.npm-global/bin`, nvm, ...). This module builds one
@@ -22,7 +22,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// #2589 - fixed by user decision, not configurable. Relative entries resolve
+/// Fixed by user decision, not configurable. Relative entries resolve
 /// against the user's home; absolute entries are used as-is. This is the search
 /// order AMONG the added dirs; all of them rank after the inherited PATH.
 const HOME_RELATIVE_BIN_DIRS: &[&str] = &[".local/bin", ".npm-global/bin", "bin", ".cargo/bin"];
@@ -115,7 +115,7 @@ pub fn effective_search_path() -> OsString {
     compose(&inputs_from_process())
 }
 
-/// #2683 - the ONLY place the platform decision is made and the ONLY place
+/// The ONLY place the platform decision is made and the ONLY place
 /// the test override is read. `None` on Windows by decision.
 fn search_path_to_apply() -> Option<OsString> {
     if cfg!(windows) {
@@ -134,14 +134,14 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// #2683 - the search path installed on this thread by a
+/// The search path installed on this thread by a
 /// `SearchPathOverrideGuard`, if any.
 #[cfg(test)]
 pub(crate) fn test_search_path_override() -> Option<OsString> {
     TEST_SEARCH_PATH_OVERRIDE.with(|cell| cell.borrow().clone())
 }
 
-/// #2683 - installs a thread-local search path override for the lifetime of
+/// Installs a thread-local search path override for the lifetime of
 /// the guard; `Drop` restores the previous value, even on panic.
 #[cfg(test)]
 pub(crate) struct SearchPathOverrideGuard {
@@ -165,7 +165,7 @@ impl Drop for SearchPathOverrideGuard {
     }
 }
 
-/// #2683 - sets `PATH` on a PTY command to the effective search path. A no-op
+/// Sets `PATH` on a PTY command to the effective search path. A no-op
 /// on Windows by decision. The assignment is also what `portable_pty` searches
 /// to resolve a bare program name (`cmdbuilder.rs` `resolve_path` reads
 /// `get_env("PATH")`), so it both finds the binary and reaches the child.
@@ -175,7 +175,7 @@ pub fn apply_search_path_to_pty_command(command: &mut portable_pty::CommandBuild
     }
 }
 
-/// #2683 - sets `PATH` on a std command to the effective search path. A no-op
+/// Sets `PATH` on a std command to the effective search path. A no-op
 /// on Windows by decision.
 pub fn apply_search_path_to_std_command(command: &mut std::process::Command) {
     if let Some(path) = search_path_to_apply() {
@@ -183,7 +183,7 @@ pub fn apply_search_path_to_std_command(command: &mut std::process::Command) {
     }
 }
 
-/// #2683 - sets `PATH` on a tokio command to the effective search path. A
+/// Sets `PATH` on a tokio command to the effective search path. A
 /// no-op on Windows by decision.
 pub fn apply_search_path_to_tokio_command(command: &mut tokio::process::Command) {
     if let Some(path) = search_path_to_apply() {

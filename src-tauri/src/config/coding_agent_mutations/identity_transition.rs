@@ -1,6 +1,20 @@
 mod packets;
 
-use crate::config::settings::AppSettings;
+use crate::config::settings::{
+    prepare_source_candidate_with_original_links, read_own_source_journal, read_source_snapshot,
+    source_original_mappings, source_transition_digest, update_own_source_journal_with_validation,
+    AppSettings, IdentityWriteLease, LegacyCompatibilityOrigin, OriginInputs, SourceInventoryProof,
+    SourceLocalProgress, SourceWriteContext,
+};
+
+#[cfg(not(test))]
+type SourceTransitionReload<'a> =
+    &'a dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>;
+#[cfg(test)]
+type SourceTransitionReload<'a> = (
+    &'a dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+    &'a IdentityTransitionTestControls,
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IdentityTransitionReadState {
@@ -12,7 +26,7 @@ pub(crate) enum IdentityTransitionReadState {
     Complete,
 }
 
-// Fields are read only by tests until the source protocol is activated (#2897).
+// Fields are read only by tests until the source protocol is activated.
 #[allow(
     dead_code,
     reason = "fields read only by tests until the source protocol is activated (#2897)"
@@ -162,7 +176,7 @@ pub(crate) struct SourceResumeExpectation {
 /// Reload is synchronous backend-local work only. It must not wait for IPC or
 /// frontend acknowledgement, await, dispatch a worker, or reacquire coordination
 /// leases. Any future activated caller must be reviewed against this contract.
-// Inactive entry point (#2897): no production caller until the source protocol is
+// Inactive entry point: no production caller until the source protocol is
 // activated; the rest of the transition is reached only from here and from resume.
 #[allow(
     dead_code,
@@ -175,17 +189,10 @@ pub(crate) fn commit_source_candidate(
     request_id: &str,
     expected: &crate::config::settings::SourceRevision,
     candidate: &serde_json::Value,
-    #[cfg(not(test))] reload: &dyn Fn() -> Result<
-        (),
-        crate::config::settings::SourceCoordinationError,
-    >,
-    #[cfg(test)] reload_and_controls: (
-        &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
-        &IdentityTransitionTestControls,
-    ),
+    reload: SourceTransitionReload<'_>,
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
     #[cfg(test)]
-    let (reload, controls) = reload_and_controls;
+    let (reload, controls) = reload;
     if !crate::config::settings::source_protocol_active() {
         return Err(SourceTransitionError::ActivationRequired);
     }
@@ -203,6 +210,7 @@ pub(crate) fn commit_source_candidate(
     )
 }
 
+/// settings alone constructs original authorization, mapping and binding.
 pub(super) fn commit_source_candidate_internal(
     settings: &AppSettings,
     context: &crate::config::settings::SourceReadContext,
@@ -210,23 +218,10 @@ pub(super) fn commit_source_candidate_internal(
     request_id: &str,
     expected: &crate::config::settings::SourceRevision,
     candidate: &serde_json::Value,
-    #[cfg(not(test))] reload: &dyn Fn() -> Result<
-        (),
-        crate::config::settings::SourceCoordinationError,
-    >,
-    #[cfg(test)] reload_and_controls: (
-        &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
-        &IdentityTransitionTestControls,
-    ),
+    reload: SourceTransitionReload<'_>,
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
     #[cfg(test)]
-    let (reload, controls) = reload_and_controls;
-    use crate::config::settings::{
-        prepare_source_candidate_with_original_links, read_own_source_journal,
-        read_source_snapshot, source_original_mappings, source_transition_digest,
-        update_own_source_journal_with_validation, IdentityWriteLease, LegacyCompatibilityOrigin,
-        OriginInputs, SourceInventoryProof, SourceLocalProgress, SourceWriteContext,
-    };
+    let (reload, controls) = reload;
     let identity = IdentityWriteLease::acquire(context, std::time::Duration::ZERO)?;
     let lease = SourceWriteContext::acquire(context, source, &identity)?;
     let payload_digest = source_transition_digest(&(source, expected, candidate))?;
@@ -259,7 +254,6 @@ pub(super) fn commit_source_candidate_internal(
         #[cfg(test)]
         controls,
     );
-    // settings alone constructs original authorization, mapping and binding.
     let authority = SourceInventoryProof::for_candidate(
         crate::config::settings::SourceInventoryInputs {
             settings,
@@ -442,7 +436,7 @@ fn continue_candidate_intent(
 /// fresh observation. It never receives new paths, candidate bytes or roles.
 /// Reload obeys the same synchronous backend-local, nonblocking contract as Save;
 /// the Fn signature itself does not prove that an arbitrary callback is safe.
-// Inactive entry point (#2897): see `commit_source_candidate`.
+// Inactive entry point: see `commit_source_candidate`.
 #[allow(
     dead_code,
     reason = "inactive entry point until the source protocol is activated (#2897)"
@@ -576,17 +570,10 @@ pub(super) fn drive_identity_transition(
     operation_id: &str,
     authority: &crate::config::settings::SourceInventoryProof,
     rediscover: &dyn Fn() -> Result<(), SourceTransitionError>,
-    #[cfg(not(test))] reload: &dyn Fn() -> Result<
-        (),
-        crate::config::settings::SourceCoordinationError,
-    >,
-    #[cfg(test)] reload_and_controls: (
-        &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
-        &IdentityTransitionTestControls,
-    ),
+    reload: SourceTransitionReload<'_>,
 ) -> Result<IdentityTransitionRead, SourceTransitionError> {
     #[cfg(test)]
-    let (reload, controls) = reload_and_controls;
+    let (reload, controls) = reload;
     use crate::config::settings::{
         publish_source_intent_with_validation, read_own_source_journal,
         source_transition_digest_bytes, SourceCoordinationError, SourceLocalProgress,

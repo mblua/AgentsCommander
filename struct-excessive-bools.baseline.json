@@ -157,13 +157,6 @@
       ]
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox/session_lookup.rs::CloseSessionOutcome",
-      "platforms": [
-        "linux",
-        "windows"
-      ]
-    },
-    {
       "id": "rust:src-tauri/src/phone/mailbox/tests/support_retained_source.rs::RetainedSourceFlags",
       "platforms": [
         "linux",
@@ -172,13 +165,6 @@
     },
     {
       "id": "rust:src-tauri/src/pty/response_close.rs::ResponseCloseInner",
-      "platforms": [
-        "linux",
-        "windows"
-      ]
-    },
-    {
-      "id": "rust:src-tauri/src/pty/terminal_snapshot/test_support.rs::TerminalSnapshotBlockingControlState",
       "platforms": [
         "linux",
         "windows"
@@ -228,13 +214,6 @@
     },
     {
       "id": "rust:src-tauri/src/session/session.rs::SessionInfo",
-      "platforms": [
-        "linux",
-        "windows"
-      ]
-    },
-    {
-      "id": "rust:src-tauri/src/telegram/claude_watcher.rs::ClaudeReader",
       "platforms": [
         "linux",
         "windows"

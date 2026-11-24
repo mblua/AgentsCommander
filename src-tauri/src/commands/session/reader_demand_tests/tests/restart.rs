@@ -80,7 +80,7 @@ async fn a_live_restart_transfers_the_reader_to_the_new_uuid() {
     // The replacement resolves a different transcript directory: a >64 KiB
     // Claude file whose only final answer sits above the 64 KiB tail
     // window, so cold-start rules never replay it. It is written AFTER
-    // the restart, named from the replacement's minted id (#2454); the
+    // the restart, named from the replacement's minted id; the
     // pre-restart `session.jsonl` is a backdated decoy that is never the
     // newest, so only the pin can choose the minted file.
     let new_projects = stage_replacement_projects_dir(&h, &fixture, cwd).await;
@@ -163,7 +163,7 @@ async fn a_live_restart_transfers_the_reader_to_the_new_uuid() {
     h.close().await;
 }
 
-/// Test 9 (Claude, same directory, fresh restart; #2454 p3b test 23a): a
+/// Test 9 (Claude, same directory, fresh restart): a
 /// fresh restart mints a NEW transcript id, so the replacement never
 /// appends to the previous spawn's file. It pins its own minted file and
 /// reads only that file's appended bytes; nothing the old spawn wrote ever
@@ -276,7 +276,7 @@ async fn a_fresh_restart_reads_only_its_own_minted_transcript() {
     h.close().await;
 }
 
-/// Test 9 (Claude, same path, resumed restart; #2454 p3b test 23b): the
+/// Test 9 (Claude, same path, resumed restart): the
 /// replacement cold-binds the same transcript file. That is reachable
 /// only when no transcript id is minted, forced here by a configured
 /// `--continue`. Normal cold-start rules apply: the recent tail is
@@ -381,7 +381,7 @@ async fn a_codex_live_restart_transfers_the_reader_to_the_new_uuid() {
     let old = h.live_session(cwd, CodingAgentKind::Codex).await;
     let old_key = old.to_string();
 
-    // #3420: one reader, spawned by the create-time raise; the explicit
+    // One reader, spawned by the create-time raise; the explicit
     // raise below joins it instead of racing it.
     h.settle_create_time_raise(old).await;
     assert!(raise_room_reader_demand_in(h.app.handle(), fixture.room_path(), old).await);

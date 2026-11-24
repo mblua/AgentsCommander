@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-// Test-only helpers shared by the stylesheet byte tests (#2271 dup gate).
+// Test-only helpers shared by the stylesheet byte tests (dup gate).
 // Every extraction throws on a miss: the absence and count assertions in those
 // suites would otherwise pass vacuously on an empty or partial match.
 
@@ -13,26 +13,35 @@ export interface ScannedRule {
 }
 
 /**
- * Every innermost `selector-list { ... }` in the sheet, with the byte index of
+ * Every innermost `selector-list { ... }` in the sheet, with the UTF-16 index of
  * the first character of the selector list. Rules nested in an @media block are
  * found too; the wrapper itself never yields a match because its body contains
  * braces.
  */
 export function scanRules(css: string): ScannedRule[] {
   const out: ScannedRule[] = [];
-  const re = /([^{}]*)\{([^{}]*)\}/g;
-  let m: RegExpExecArray | null = re.exec(css);
-  while (m !== null) {
-    const lead = m[1] ?? ""; // group 1 always captures
-    const raw = lead.trim();
-    if (raw !== "") {
-      out.push({
-        selectors: raw.split(",").map((s) => s.trim()).filter((s) => s !== ""),
-        body: m[2] ?? "", // group 2 always captures
-        index: m.index + (lead.length - lead.trimStart().length),
-      });
+  let leadStart = 0;
+  let open = -1;
+  for (let i = 0; i < css.length; i++) {
+    if (css[i] === "{") {
+      if (open >= 0) leadStart = open + 1;
+      open = i;
+    } else if (css[i] === "}") {
+      if (open >= 0) {
+        const lead = css.slice(leadStart, open);
+        const trimmedStart = lead.trimStart();
+        const raw = trimmedStart.trimEnd();
+        if (raw !== "") {
+          out.push({
+            selectors: raw.split(",").map((s) => s.trim()).filter((s) => s !== ""),
+            body: css.slice(open + 1, i),
+            index: leadStart + lead.length - trimmedStart.length,
+          });
+        }
+      }
+      leadStart = i + 1;
+      open = -1;
     }
-    m = re.exec(css);
   }
   if (out.length === 0) throw new Error("scanRules found no rules at all");
   return out;

@@ -1,4 +1,4 @@
-// #4143: struct_excessive_bools ratchet tests. Small embedded fixtures only.
+// Struct_excessive_bools ratchet tests. Small embedded fixtures only.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -307,9 +307,11 @@ test('adoption requires the exact frozen seed, not just 33 ids', () => {
   assert.match(m.ratchet(baseline([]), null).join(), /exact frozen/);
 });
 
-test('committed baseline is valid and lists exactly the seed', () => {
+test('committed baseline is valid and lists only remaining seed ids', () => {
   const b = m.parseBaseline(fs.readFileSync(path.join(REPO, m.BASELINE), 'utf8'));
-  assert.deepEqual(b.entries.map(e => e.id), [...m.SEED]);
+  const seed = new Set(m.SEED);
+  const unexpected = b.entries.map(e => e.id).filter(id => !seed.has(id));
+  assert.deepEqual(unexpected, [], `ids outside the frozen seed: ${unexpected.join(', ')}`);
 });
 
 function gitRepo() {
@@ -425,7 +427,7 @@ test('test-debt runs the self-test and committed ratchet blocking', () => {
   assert.match(jobBody('test-debt'), /node-version: 22/);
 });
 
-// #4192: trivia starting exactly at the 4096-character prefix cap must fail closed, not hang.
+// Trivia starting exactly at the 4096-character prefix cap must fail closed, not hang.
 // Each case runs in a child with a 5 s timeout: a synchronous loop cannot be interrupted here.
 function declarationInChild(text, index) {
   const url = new URL('./check-struct-excessive-bools.mjs', import.meta.url).href;

@@ -1,4 +1,4 @@
-// #4527 P06: the ONLY flaky-rate module that starts processes. Every GitHub call goes
+// P06: the ONLY flaky-rate module that starts processes. Every GitHub call goes
 // through `gh api` with an argument array (never a shell string) and counts against an
 // optional call budget.
 import { spawnSync } from 'node:child_process';
@@ -10,7 +10,9 @@ const TIMEOUT_MS = 120000;
 
 export class ApiError extends Error {
   constructor(endpoint, status, http) {
-    super(`gh api ${endpoint} failed (exit ${status}${http ? `, HTTP ${http}` : ''})`);
+    const prefix = `gh api ${endpoint} failed (exit ${status}`;
+    const httpSuffix = http ? `, HTTP ${http}` : '';
+    super(`${prefix}${httpSuffix})`);
     this.name = 'ApiError';
     this.endpoint = endpoint;
     this.status = status;
@@ -92,7 +94,7 @@ export function createGitHub({ repo, run = defaultRun, budget = Infinity }) {
     return null;
   };
 
-  // #4527 P07: advisory quarantine issues. Bodies go as JSON on stdin, never in argv.
+  // P07: advisory quarantine issues. Bodies go as JSON on stdin, never in argv.
   // AC-4527-006: `more` comes from the raw page length, before pull requests are dropped.
   gh.listLabeledIssues = (label, page) => {
     const items = json(`${issues}?labels=${label}&state=all&per_page=100&page=${page}`);

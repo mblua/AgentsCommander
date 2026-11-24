@@ -131,7 +131,7 @@ pub(crate) async fn attach_local_config_telegram_if_any<R: tauri::Runtime>(
 ) {
     let config_dir = std::path::Path::new(cwd).join(crate::config::agent_local_dir_name());
 
-    // #2786 (C1) - through the shared loader, off the async worker: the
+    // Through the shared loader, off the async worker: the
     // loader does blocking file reads.
     let Some(bot_label) =
         tokio::task::spawn_blocking(move || agent_config::read_agent_local_config(&config_dir))

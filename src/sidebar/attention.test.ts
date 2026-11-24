@@ -47,7 +47,7 @@ afterEach(() => {
   mocks.windowModuleFails = false;
 });
 
-describe("requestTaskbarAttention (#1857)", () => {
+describe("requestTaskbarAttention", () => {
   it("8. asks for Critical attention when the window is NOT focused", async () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
     await requestTaskbarAttention();

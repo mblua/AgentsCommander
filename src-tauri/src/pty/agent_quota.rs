@@ -1,5 +1,5 @@
-//! #2482 - a per-session, best-effort reading of a coding agent's weekly (7-day) quota
-//! usage, sampled from the same screen rows #1032's context badge reads.
+//! A per-session, best-effort reading of a coding agent's weekly (7-day) quota
+//! usage, sampled from the same screen rows the context badge reads.
 //!
 //! A narrowed copy of `context_scrape::ContextScraper`: no persistence, no alert
 //! routing, a slower interval. The engine holds three narrow trait objects and no
@@ -7,7 +7,7 @@
 //! nothing else. It names only `crate::shutdown` and `crate::pty::context_scrape`, which
 //! keeps it out of the crate's cyclic SCC.
 //!
-//! #2566 - the reading belongs to an ACCOUNT, not to a session. The provider hands each
+//! The reading belongs to an ACCOUNT, not to a session. The provider hands each
 //! agent an OPAQUE `account_key` (its command's program token); a successful sample is
 //! stored under that key and published to EVERY agent on it, so agents sharing a command
 //! show one number whether or not they have a terminal open. `pty::agent_quota` gains NO
@@ -40,7 +40,7 @@ pub trait QuotaRowsSource: Send + Sync {
     fn get_session_liveness(&self, id: Uuid) -> ContextSessionLiveness;
 }
 
-/// #2566 - one agent's enabled source plus the ACCOUNT it belongs to. `account_key`
+/// One agent's enabled source plus the ACCOUNT it belongs to. `account_key`
 /// is OPAQUE here: the engine compares it and never parses it, which is what keeps
 /// this module free of `config::` (see the module doc).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +79,7 @@ pub struct AgentQuotaPayload {
     pub weekly_used_percent: Option<u8>,
 }
 
-/// One registered session: which agent's source applies to it. #2566 - a session is no
+/// One registered session: which agent's source applies to it. A session is no
 /// longer a publication unit, so it carries no emitted value.
 struct Registered {
     agent_id: String,
@@ -121,10 +121,10 @@ pub struct AgentQuotaEngine {
     /// `account_readings`, published. None is ever held across an `.await`.
     sequence: Mutex<()>,
     registered: Mutex<HashMap<Uuid, Registered>>,
-    /// #2566 - the latest SUCCESSFUL sample per account key. An absent key IS "nothing
+    /// The latest SUCCESSFUL sample per account key. An absent key IS "nothing
     /// read yet"; only a success ever writes here (D4), so there is no None to store.
     account_readings: Mutex<HashMap<String, u8>>,
-    /// #2566 - the last value EMITTED per agent id. `Option` exists only for the removal
+    /// The last value EMITTED per agent id. `Option` exists only for the removal
     /// branch of the reconcile step; absent and `Some(None)` compare equal there.
     published: Mutex<HashMap<String, Option<u8>>>,
     /// Keyed by AGENT id, bounded by agent count.
@@ -224,7 +224,7 @@ impl AgentQuotaEngine {
     }
 
     /// Stop sampling a session. Idempotent. Emits nothing: the account value outlives
-    /// the terminal (#2566 D4).
+    /// the terminal (D4).
     pub fn retire_session(&self, id: Uuid) {
         let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
         self.registered
@@ -241,7 +241,7 @@ impl AgentQuotaEngine {
             .contains_key(&id)
     }
 
-    /// #2566 - every value last emitted, by agent id. A `None` value and an absent key both
+    /// Every value last emitted, by agent id. A `None` value and an absent key both
     /// mean unavailable.
     pub fn published(&self) -> HashMap<String, Option<u8>> {
         self.published
@@ -281,7 +281,7 @@ impl AgentQuotaEngine {
     }
 
     /// Drop every cached source whose agent is not configured, so the cache is bounded by
-    /// the configured agent set rather than by every agent ever seen. #2566 - keyed by
+    /// the configured agent set rather than by every agent ever seen. Keyed by
     /// configured agents, not registered sessions: closing a terminal must not discard a
     /// pattern other sessions and the published value still need.
     fn prune_resolved(&self, configured: &HashMap<String, AgentQuotaSource>) {
@@ -291,14 +291,20 @@ impl AgentQuotaEngine {
             .retain(|agent_id, _| configured.contains_key(agent_id));
     }
 
+    /// Snapshot of the registered sessions and their agent ids.
+    fn registered_ids(&self) -> Vec<(Uuid, String)> {
+        let registered = self
+            .registered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        registered
+            .iter()
+            .map(|(id, entry)| (*id, entry.agent_id.clone()))
+            .collect()
+    }
+
     pub(crate) async fn tick(&self) {
-        let mut ids: Vec<(Uuid, String)> = {
-            let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
-            registered
-                .iter()
-                .map(|(id, entry)| (*id, entry.agent_id.clone()))
-                .collect()
-        };
+        let mut ids = self.registered_ids();
 
         // Before `sources()`, so the fully idle app reads nothing at all. With something
         // published it continues: an agent deleted while no terminal is open must still
@@ -375,7 +381,10 @@ impl AgentQuotaEngine {
             .account_readings
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let mut published = self.published.lock().unwrap_or_else(|e| e.into_inner());
+        let mut published = self
+            .published
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
 
         let mut configured: Vec<(&String, &AgentQuotaSource)> = sources.iter().collect();
         configured.sort_unstable_by(|a, b| a.0.cmp(b.0));
@@ -418,7 +427,7 @@ impl AgentQuotaEngine {
     }
 }
 
-/// #2482 - the engine's own fakes, shared with the call-site tests in
+/// The engine's own fakes, shared with the call-site tests in
 /// `commands::session` and `commands::pty` (phase 2). `#[cfg(test)]`, so nothing
 /// here is compiled into a shipped binary; `pub(crate)`, because the two call
 /// sites that need an engine live in other modules and this file is frozen once

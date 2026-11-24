@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4810 - the one sidebar filter row follows the stuck group header.
+// The one sidebar filter row follows the stuck group header.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot } from "solid-js";
 import { createSidebarFilterHost, pickHostIndex, placeFilterRow } from "./sidebar-filter-host";
@@ -48,7 +48,7 @@ const SPANS: Record<number, Record<string, [number, number]>> = {
   1: { p0: [-100, -50], p1: [-50, 50], p2: [50, 150] },
 };
 
-describe("#4810 sidebar filter host", () => {
+describe("sidebar filter host", () => {
   beforeEach(() => {
     boxes = { scroller: [0, 300], ...SPANS[0] };
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (

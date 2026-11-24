@@ -1,6 +1,6 @@
 use super::*;
 
-// ── Issue #248 — legacy startOnlyCoordinators → restoreCoordinatorWakeState ──
+// ── legacy startOnlyCoordinators → restoreCoordinatorWakeState ──
 //
 // The minimal JSON below carries the three fields without serde defaults
 // (`defaultShell`, `defaultShellArgs`, `agents`) plus whichever issue-#248
@@ -84,7 +84,7 @@ fn issue_248_migration_conflict_keeps_new_value_and_drops_legacy() {
     assert!(s.legacy_start_only_coordinators.is_none()); // dropped
 }
 
-// ── Issue #1793 — restart-resume settings contract ─────────────────────
+// ── restart-resume settings contract ─────────────────────
 
 #[test]
 fn restart_resume_defaults_are_the_decided_strings() {
@@ -94,7 +94,7 @@ fn restart_resume_defaults_are_the_decided_strings() {
         "AgentsCommander was restarted. Continue with the work that was in flight."
     );
     assert_eq!(s.restart_resume_agent_prompt, ".");
-    // #2190: on a fresh install the struct default is now on.
+    // On a fresh install the struct default is now on.
     assert!(s.restart_resume_wake_working_agents);
 }
 
@@ -127,7 +127,7 @@ fn restart_resume_keys_absent_from_disk_load_as_defaults() {
         "AgentsCommander was restarted. Continue with the work that was in flight."
     );
     assert_eq!(s.restart_resume_agent_prompt, ".");
-    // #2190 changed the struct default to true, but the field carries a bare
+    // Changed the struct default to true, but the field carries a bare
     // `#[serde(default)]`, so an existing settings.json without the key keeps
     // loading as false — existing user configs are deliberately untouched.
     assert!(!s.restart_resume_wake_working_agents);
@@ -253,7 +253,7 @@ fn spec_board_enabled_defaults_false_when_missing_from_json() {
 
 #[test]
 fn web_browser_enabled_defaults_false_when_missing_from_json() {
-    // #4751 - older settings.json files without the key keep the WWW button hidden.
+    // Older settings.json files without the key keep the WWW button hidden.
     let json = r#"{
             "defaultShell": "bash",
             "defaultShellArgs": [],
@@ -396,7 +396,7 @@ fn co_managed_enabled_round_trips_under_its_camel_case_key() {
     );
 }
 
-// ---- #548: per-(agent, letter) profile label overrides ----
+// ---- Per-(agent, letter) profile label overrides ----
 
 #[test]
 fn profile_labels_override_survives_serde_round_trip() {
@@ -538,7 +538,7 @@ fn resource_monitor_settings_default_when_missing_from_json() {
     assert!(validate_resource_settings(&s).is_ok());
 }
 
-// ---- #1032: the per-agent context regex ---------------------------------------
+// ---- The per-agent context regex ---------------------------------------
 
 /// Criterion 6. Every settings file that exists today predates this field, so the one
 /// thing this field must never do is make an existing config fail to load.
@@ -583,11 +583,11 @@ fn context_regex_round_trips_as_camel_case() {
     );
 }
 
-// ---- #1646 / #1647: blocking menus and menu guard -----------------------------
+// ---- Blocking menus and menu guard -----------------------------
 
 #[test]
 fn shipped_defaults_serve_pi_and_codex_only() {
-    // The shipped patterns, not any per-agent materialization: the #1905 export
+    // The shipped patterns, not any per-agent materialization: the export
     // drops pristine arrays and the store serves these defaults for `None`.
 
     // Pi
@@ -627,7 +627,7 @@ fn shipped_defaults_serve_pi_and_codex_only() {
         Some("codex 0.x / Linux")
     );
 
-    // #1757 - the hooks-review entry, appended AFTER folder-trust (D13).
+    // The hooks-review entry, appended AFTER folder-trust (D13).
     let codex_hooks_cfg = codex_menus[1].valid().unwrap();
     assert_eq!(
         codex_hooks_cfg.pattern,
@@ -738,7 +738,7 @@ fn test_menu_guard_master_switch() {
     assert!(serialized.contains("\"menuGuardEnabled\":false"));
 }
 
-// ---- #1757: the Codex hooks-review blocking menu -----------------------
+// ---- The Codex hooks-review blocking menu -----------------------
 
 /// One agent carrying exactly the `blocking_menus` state under test.
 pub(super) fn agent_1757(

@@ -8,7 +8,7 @@ import type {
 } from "../../shared/types";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 
-// #1283 baseline cycle break (2026-08-12 plan amendment): the ProjectState
+// Baseline cycle break (2026-08-12 plan amendment): the ProjectState
 // interface moved here from ./project so that project.ts imports from
 // project-merge only and project-merge imports nothing from project. project.ts
 // re-exports this local declaration (import + `export type { ProjectState }`) so

@@ -178,7 +178,7 @@ fn a_live_child_with_no_parser_is_unavailable_not_over() {
     );
 }
 
-/// #1171, 9.1.4 (local half) - an unknown id is `Missing` here, where the container
+/// 9.1.4 (local half) - an unknown id is `Missing` here, where the container
 /// backend answers `Gone` to the identical question.
 ///
 /// Asserted against the fanout call the `screen_rows_since` override delegates to, and not

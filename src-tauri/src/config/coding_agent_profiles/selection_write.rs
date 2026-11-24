@@ -1,3 +1,6 @@
+//! Guarded write of a replica coding agent selection, with a strict reread
+//! and stale-state check first. It does not resolve profiles or sources.
+
 use super::paths::validate_profile_selection_agent_path;
 use super::selection_state::describe_selection_pair;
 use super::selection_state::{
@@ -28,8 +31,8 @@ pub(super) fn validated_replica_dir(
     Ok(validated.launch_path)
 }
 
-/// #1939 - strict reread plus expected-state comparison, executed INSIDE the
-/// #1938 guarded callback (read-only; it never takes the mutation guard
+/// Strict reread plus expected-state comparison, executed INSIDE the
+/// guarded callback (read-only; it never takes the mutation guard
 /// recursively). Every mismatch is a stale error before any mutation.
 pub(super) fn validate_selection_write_state(
     replica_dir: &Path,
@@ -90,7 +93,7 @@ pub(super) fn validate_selection_write_state(
     Ok((current_pair, current_locked))
 }
 
-/// #1939 - guarded selection write. The pair is written as one publish
+/// Guarded selection write. The pair is written as one publish
 /// (`currentCodingAgent`, `profile`, legacy `instanceProfileOverride`, source
 /// `manual`); assign-lock intents add `selectionLocked: true` (a false->true
 /// flip is reported in [`SelectionWriteOutcome::lock_transition`]) while
@@ -177,7 +180,7 @@ pub(super) fn write_replica_selection_prepared(
                 match intent {
                     SelectionWriteIntent::Individual
                     | SelectionWriteIntent::IndividualAssignLock => {
-                        // #2010 - KEEP: the same stored pair is a no-op, not an
+                        // KEEP: the same stored pair is a no-op, not an
                         // error; the lock stays and nothing is published.
                         if current_pair.as_ref() == Some(&requested_pair)
                             && expected.configuration_ref.as_ref()
@@ -332,7 +335,7 @@ pub(crate) fn set_prepared_source_profile_override(
     Ok(())
 }
 
-/// #1939 - guarded unlock. Only the flag is written (`false`); the pair and
+/// Guarded unlock. Only the flag is written (`false`); the pair and
 /// every other field stay untouched. An already-false/absent flag exits through
 /// the private callback marker before any object mutation, so nothing of the
 /// caller's intent is serialized or published, though a pending state migration
@@ -394,7 +397,7 @@ pub(super) fn clear_replica_selection_lock_with_publish(
     }
 }
 
-/// #1939 - deliberate per-replica assignment. Preserves the stored flag through
+/// Deliberate per-replica assignment. Preserves the stored flag through
 /// [`SelectionWriteIntent::Individual`] and cannot bypass a lock: a locked
 /// replica with a different pair is rejected with the stored bytes untouched,
 /// while the same stored pair is a no-op that returns without writing.

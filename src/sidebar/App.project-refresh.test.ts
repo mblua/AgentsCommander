@@ -64,7 +64,7 @@ describe("handleProjectRefreshRequested", () => {
   });
 });
 
-// #1966 — App owns the observer that binds the served catalog to the FIRST
+// App owns the observer that binds the served catalog to the FIRST
 // persisted project (the backend's primary). The store already owns generation
 // safety, identity comparison and the visible source-changed state, so these
 // tests mount the real SidebarApp with the real stores and FakeTransport and
@@ -141,7 +141,7 @@ function resolveSidebarTransport(fake: FakeTransport, projectPaths: string[]): v
   }));
 }
 
-describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
+describe("SidebarApp primary-project catalog invalidation", () => {
   let cleanupDom: (() => void) | null = null;
   let fake!: FakeTransport;
   let setPrimary!: MockInstance<typeof codingAgentsStore.setPrimaryProject>;

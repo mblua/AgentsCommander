@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1571 T2, failing-first migration proof for the fifth recognizer arm: the
+/// T2, failing-first migration proof for the fifth recognizer arm: the
 /// `assert_ne` fails while the live template still equals the frozen v4 bytes
 /// (pre-rewrite), and the sync half proves a pristine v4 file on disk
 /// auto-upgrades to the current default.
@@ -49,7 +49,7 @@ fn read_sync_updates_pre_orchestrator_rename_coordinator_template() {
     ));
 }
 
-/// #1005 S6 / G3: the frozen v1 global snapshot must stay byte-identical to
+/// S6 / G3: the frozen v1 global snapshot must stay byte-identical to
 /// what the #658..ec660c17 builds shipped. Expected values captured by a
 /// one-off run of the shipped accessor AT base commit ec660c17, never from
 /// this const.
@@ -67,8 +67,8 @@ fn global_pre_token_minimization_snapshot_is_byte_exact() {
     );
 }
 
-/// #1005 S6 failing-first proof for the v2 rewrite (`assert_ne`), the #979
-/// standalone recognizer and the version bump, retargeted by #1748 at the scan:
+/// S6 failing-first proof for the v2 rewrite (`assert_ne`), the
+/// standalone recognizer and the version bump, retargeted at the scan:
 /// the distribution repair, not the read path, is what lands the current
 /// default on an old pristine file.
 #[test]
@@ -125,8 +125,8 @@ fn scan_replaces_pre_token_minimization_global_template() {
     );
 }
 
-/// #1369 (C4) AC-4.3: the frozen v2 global snapshot must stay byte-identical
-/// to what the #1005 S6..8f272a76 builds shipped. Expected values captured
+/// AC-4.3: the frozen v2 global snapshot must stay byte-identical
+/// to what the S6..8f272a76 builds shipped. Expected values captured
 /// externally from the raw literal AT base commit 8f272a76, never from this
 /// const.
 #[test]
@@ -162,7 +162,7 @@ fn global_before_summarization_snapshot_is_byte_exact() {
     );
 }
 
-/// #1605: the frozen v4 global snapshot must stay byte-identical to what
+/// The frozen v4 global snapshot must stay byte-identical to what
 /// shipped at base commit 047248bc. Expected values captured by a one-off
 /// run of the shipped accessor AT 047248bc (len 539, sha256
 /// f44065965f3c53c8b8d2c2e6b3d38c68b998f848ae893eddb7e64085a3c5316a),
@@ -473,7 +473,7 @@ fn scan_replaces_pristine_v3_global_template_with_trusted_state() {
         .is_empty());
 }
 
-/// #1748 inverted this: a near match is no longer a preserved category. It is
+/// This case is inverted: a near match is no longer a preserved category. It is
 /// drift like any other and the scan replaces it, in both state shapes. The
 /// read path still leaves it alone, which is D2.
 #[test]
@@ -569,7 +569,7 @@ fn scan_replaces_v3_global_near_matches_in_both_project_state_shapes() {
     }
 }
 
-/// #1748 inverted this the same way as the near-match test: a fine custom
+/// This case is inverted the same way as the near-match test: a fine custom
 /// global is replaced by the scan, in both state shapes.
 #[test]
 fn scan_replaces_the_compact_fine_token_global_in_both_state_shapes() {
@@ -651,8 +651,8 @@ fn scan_replaces_the_compact_fine_token_global_in_both_state_shapes() {
     }
 }
 
-/// #1605 failing-first proof for the v5 placeholder insertion (`assert_ne`), the
-/// #979 standalone recognizer and the version bump, retargeted by #1748 at the
+/// Failing-first proof for the v5 placeholder insertion (`assert_ne`), the
+/// standalone recognizer and the version bump, retargeted at the
 /// scan.
 #[test]
 fn scan_replaces_pre_host_platform_rules_global_template() {

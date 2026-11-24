@@ -1,4 +1,4 @@
-//! #2713 (phase B1a of #2703) - the file-naming migration engine: the journal,
+//! The file-naming migration engine: the journal,
 //! the locking, the disk-driven decision table and the create-only rename
 //! primitive that every later phase-B migration calls.
 //!
@@ -848,7 +848,10 @@ pub(crate) fn rename_prefix_family(
     )
 }
 
-#[cfg_attr(test, allow(clippy::too_many_arguments))]
+#[cfg_attr(
+    test,
+    allow(clippy::too_many_arguments, reason = "test-only faults parameter")
+)]
 fn rename_prefix_family_with_faults(
     dir: &Path,
     old_prefix: &str,
@@ -972,7 +975,7 @@ impl MigrationPathFaults {
     }
 }
 
-/// A copy of the #2682 harness in `config/loops.rs`, which is inside the SCC
+/// A copy of the harness in `config/loops.rs`, which is inside the SCC
 /// this leaf must not name. In-process legs arm a `(stage, dir)` pair; a
 /// cross-process child is armed by environment through a rendezvous directory.
 #[cfg(test)]

@@ -1,6 +1,6 @@
 use super::*;
 
-/// (#1399 T1) Same-target exclusion and RAII release.
+/// Same-target exclusion and RAII release.
 #[test]
 fn same_target_is_exclusive_until_the_reservation_drops() {
     let lanes = Arc::new(WakeLanes::default());
@@ -12,7 +12,7 @@ fn same_target_is_exclusive_until_the_reservation_drops() {
     assert!(lanes.try_reserve("proj:wg-1/dev-rust").is_some());
 }
 
-/// (#1399 T1) The global cap refuses a ninth distinct target until one
+/// The global cap refuses a ninth distinct target until one
 /// reservation is released.
 #[test]
 fn ninth_distinct_target_is_refused_until_a_release() {

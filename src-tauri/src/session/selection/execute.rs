@@ -333,7 +333,7 @@ fn restored_dormant_session(
         was_detached: persisted.was_detached,
         detached_geometry: persisted.detached_geometry,
         start_fresh_on_restore: persisted.start_fresh_on_restore,
-        // #1088 ignored on restore: the scraper re-reads and re-commits on its
+        // Ignored on restore: the scraper re-reads and re-commits on its
         // first post-restart tick (mirrors id/waiting_for_input/created_at above).
         context_percent: None,
     }

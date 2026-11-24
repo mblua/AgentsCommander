@@ -33,12 +33,12 @@ import { executeAutomationRequest, resetAutomationBridgeForTests } from "../../s
 import type { UiAutomationAction } from "../../shared/types";
 import { stubAutomationGeometry } from "../../shared/testing/automation-geometry";
 
-// #710: modal-open state used to live on the per-project <For> row. A background
+// Modal-open state used to live on the per-project <For> row. A background
 // discovery refresh replaces each project object reference, so SolidJS disposes
 // and re-creates the row — tearing down any modal whose open-flag lived there.
 // These tests drive the three reported flows to a modal and assert it survives a
 // reloadProject (and, for the workgroup modal, that its live data re-resolves by
-// stable identity). They mirror the restart-prompt (#537) / edit-team (#669)
+// stable identity). They mirror the restart-prompt / edit-team
 // survival tests, the precedents for the same bug class.
 
 
@@ -107,7 +107,7 @@ function resolution(): CodingAgentProfileResolution {
 
 /** Discovery payload with one workgroup + coordinator replica. `extraTeams`
  *  lets a test add teams on a later reload to prove the New Workgroup modal
- *  re-resolves its live `teams` prop by stable projectPath (#710); `loops` seeds
+ *  re-resolves its live `teams` prop by stable projectPath; `loops` seeds
  *  Loop rows for the Edit Loop survival test. */
 function discoveryResult(extraTeams: string[] = [], loops: AcLoopSummary[] = []) {
   return discovery({
@@ -129,7 +129,7 @@ function discoveryResult(extraTeams: string[] = [], loops: AcLoopSummary[] = [])
             path: replicaPath,
             repoPaths: [],
             isCoordinator: true,
-            // #1943 - full persisted lock payload: unprotected, so the lock row
+            // Full persisted lock payload: unprotected, so the lock row
             // is actionable and no lock chip is drawn.
             savedPair: null,
             selectionState: "unlocked",
@@ -175,7 +175,7 @@ function setupTransport(fake: FakeTransport): void {
     baseSettings({ agents: [codexAgent(), claudeAgent()] }) satisfies AppSettings,
   );
   fake.resolve("resolve_coding_agent_profile", resolution());
-  // #1943 - every command the lock bar drives, with fully populated payloads.
+  // Every command the lock bar drives, with fully populated payloads.
   fake.resolve("preview_coding_agent_profile_selection", {
     scope: "replica",
     targetCount: 1,
@@ -251,7 +251,7 @@ function seedLiveSession(): void {
   ]);
 }
 
-/** #977: replica-menu items now lead with an icon (Restart Session and Coding
+/** Replica-menu items now lead with an icon (Restart Session and Coding
  *  Agent joined the folder/broom items), so match on the label with any leading
  *  icon stripped - the same normalization menuButtonLabels uses in
  *  ProjectPanel.context-menu.test.tsx. */
@@ -293,7 +293,7 @@ async function expectSecondDiscover(fake: FakeTransport): Promise<void> {
   );
 }
 
-describe("ProjectPanel modal survival across project refresh (#710)", () => {
+describe("ProjectPanel modal survival across project refresh", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
   const originalScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
@@ -446,16 +446,16 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     await waitFor(() => expect(q("agentPicker.modal")).toBeTruthy());
 
     // Background discovery refresh WITH changed data: rebuilds the project
-    // object → re-creates the <For> row. (#748 made an identical snapshot a
+    // object → re-creates the <For> row. (made an identical snapshot a
     // no-op, so the refresh must carry a real change to exercise re-creation.)
-    // Before #710 this disposed the per-row signal and the picker vanished;
+    // Before the fix this disposed the per-row signal and the picker vanished;
     // hoisted to the stable root and resolved by sessionId, it survives.
     fake.resolve("discover_project", discoveryResult(["ops-team"]));
     await projectStore.reloadProject(projectPath);
     await expectSecondDiscover(fake);
     expect(q("agentPicker.modal")).toBeTruthy();
 
-    // A replica-branch event lands in the volatile store (#748) and must not
+    // A replica-branch event lands in the volatile store and must not
     // disturb the modal either.
     replicaVolatileStore.setRepoBranch(replicaPath, "feature/x");
     expect(q("agentPicker.modal")).toBeTruthy();
@@ -467,8 +467,8 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
 
     // No live session: the coordinator row is gray and right-clicks into the
-    // inactive (not-running) context menu (#545), whose target previously held
-    // disposable wg/replica object refs (#710).
+    // inactive (not-running) context menu, whose target previously held
+    // disposable wg/replica object refs.
     await projectStore.createAndLoad(projectPath);
     await waitFor(() => expect(rendered!.root.querySelector(replicaRowSelector)).toBeTruthy());
 
@@ -478,7 +478,7 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
 
     await waitFor(() => expect(q("agentPicker.modal")).toBeTruthy());
 
-    // Changed snapshot so the reload still re-creates the row (#748).
+    // Changed snapshot so the reload still re-creates the row.
     fake.resolve("discover_project", discoveryResult(["ops-team"]));
     await projectStore.reloadProject(projectPath);
     await expectSecondDiscover(fake);
@@ -519,9 +519,9 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     );
     input(q<HTMLInputElement>("loop.edit.name")!, "Unsaved loop name");
 
-    // The loop is re-resolved by stable id (editingLoopResolved). Before #710 the
+    // The loop is re-resolved by stable id (editingLoopResolved). Before the fix the
     // refresh disposed the row's editingLoop signal and the modal vanished.
-    // #748: the snapshot carries a changed loop so the reload still re-creates
+    // The snapshot carries a changed loop so the reload still re-creates
     // the project row (an identical snapshot is a no-op now).
     fake.resolve(
       "discover_project",

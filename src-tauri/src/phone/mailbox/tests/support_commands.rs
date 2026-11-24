@@ -286,7 +286,7 @@ pub(super) fn read_reject_reason(cwd: &Path, msg_id: &str) -> Option<String> {
     .ok()
 }
 
-/// #1632 - sibling of `build_self_clear_message_with_from`. The landed helper hardcodes
+/// Sibling of `build_self_clear_message_with_from`. The landed helper hardcodes
 /// `action: Some(SELF_CLEAR_ACTION)`, so it cannot be reused and must not be edited.
 pub(super) fn build_self_restart_message_with_from(
     cwd: &Path,
@@ -335,7 +335,7 @@ pub(super) fn build_self_restart_message_with_from(
 
 pub(super) const SELF_RESTART_TEST_FROM: &str = "proj-a:wg-1-dev-team/dev-rust";
 
-// ── (#1001 PR1) consumption-verdict wiring: AC3 deterministic hooked tests ──
+// ── consumption-verdict wiring: AC3 deterministic hooked tests ──
 //
 // These prove the shared `verdict_to_result` (G6) is what
 // `inject_wake_into_pty` runs, so the conversion A (PR3) changes has real,
@@ -405,7 +405,7 @@ pub(super) fn write_logical_command_message(
     path
 }
 
-/// (#1399) A plain wake message (no logical command) written into the
+/// A plain wake message (no logical command) written into the
 /// sender's outbox with the master token, as `poll()` finds it.
 pub(super) fn write_wake_message(sender_cwd: &Path, msg_id: &str, timestamp: &str) -> PathBuf {
     let outbox_dir = sender_cwd
@@ -432,7 +432,7 @@ pub(super) fn dispatch_wake_message(agent: &str, profile: Option<&str>) -> Outbo
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// #1163 session-request result sidecars (M1-M5)
+// Session-request result sidecars (M1-M5)
 // ──────────────────────────────────────────────────────────────────────
 
 pub(super) struct SessionRequestFixture {
@@ -585,7 +585,7 @@ pub(super) fn read_session_request_result_json(id: &str) -> serde_json::Value {
     .expect("result json")
 }
 
-// ── (#885) evaluate_gate pure function tests ──
+// ── evaluate_gate pure function tests ──
 
 pub(super) fn make_readiness(
     session_id: Uuid,

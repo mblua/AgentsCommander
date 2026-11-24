@@ -54,7 +54,7 @@ async fn create_ac_project_creates_ac() {
     assert!(!tmp.path().join(".ac").join("templates").exists());
 }
 
-// #1065 Stage F activation coverage: the direct fresh-root `create_ac_project`
+// Context-template activation coverage: the direct fresh-root `create_ac_project`
 // path records its two project context templates into the seed manifest under the
 // gate held since acquisition. Removing the recording closure (the adapter) would
 // leave no manifest and fail this test (plan acceptance items 22/38).
@@ -90,7 +90,7 @@ fn create_ac_project_fresh_root_records_context_templates() {
     );
 }
 
-// #1065 Stage F activation coverage: an explicit context-template overwrite
+// Context-template activation coverage: an explicit context-template overwrite
 // records its commit-point publication into the seed manifest under the gate.
 // Removing the `record_project_context_publication` call from
 // `overwrite_context_template_recorded` (the adapter) would leave no manifest and

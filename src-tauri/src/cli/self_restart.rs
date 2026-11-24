@@ -93,7 +93,7 @@ fn self_restart_queued_status(settle_secs: u64) -> String {
     )
 }
 
-/// #1632 - build the self-handoff-and-restart outbox message, INCLUDING its `from`.
+/// Build the self-handoff-and-restart outbox message, INCLUDING its `from`.
 ///
 /// This is a function rather than four inline lines inside `execute` on purpose. The landed
 /// `self_clear.rs` builds its `OutboxMessage` inline (`self_clear.rs:105-134`), which is why no

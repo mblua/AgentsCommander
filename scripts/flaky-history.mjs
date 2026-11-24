@@ -1,4 +1,4 @@
-// #4527 P05: rolling 30-day flaky history and the rate report. Pure module: no fs, no
+// P05: rolling 30-day flaky history and the rate report. Pure module: no fs, no
 // network. Callers (P06) read and write the files and pass text and dates in.
 
 export const WINDOW_DAYS = 30;
@@ -83,7 +83,11 @@ export function parseRecord(text) {
 const testKey = (suite, platform, id) => `${suite}|${platform}|${id}`;
 const maxDay = (a, b) => (a && a > b ? a : b);
 // Code-unit order, the same order as a default sort() of strings (deterministic output).
-const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+function byCodeUnit(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
 
 function testEntry(history, key) {
   let entry = own(history.tests, key);
@@ -294,7 +298,11 @@ function quarantineOrder(rows) {
     best.set(row.test_id, Math.max(best.get(row.test_id) ?? 0, row.flaky_shas));
   }
   return [...best.entries()]
-    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .sort((a, b) => {
+      const countDifference = b[1] - a[1];
+      if (countDifference) return countDifference;
+      return byCodeUnit(a[0], b[0]);
+    })
     .map(([id]) => id);
 }
 

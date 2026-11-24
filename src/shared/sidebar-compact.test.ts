@@ -18,7 +18,7 @@ import {
 } from "./sidebar-compact";
 import { resetSidebarCompactForTests } from "./testing/ui-harness";
 
-describe("sidebar compact signal (#2236)", () => {
+describe("sidebar compact signal", () => {
   beforeEach(() => {
     resetSidebarCompactForTests();
   });

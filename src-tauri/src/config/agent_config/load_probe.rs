@@ -1,3 +1,6 @@
+//! Diagnostic probe for agent config loading, active only when its env var is
+//! set. It records observations in memory; it does not change load results.
+
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
@@ -40,7 +43,7 @@ impl Observation {
     }
 }
 
-// #2786 C1 r29 suppression inventory. The candidate carries exactly ONE
+// Suppression inventory. The candidate carries exactly ONE
 // `allow(dead_code)`, on `NoObservation::open` below. r28 carried two and
 // described them with a single shared sentence; that sentence was false for
 // the field one, which a reviewer measured separately.

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// Resolve the preferred coding agent for a directory from its config.json
 /// `tooling.lastCodingAgent` and that id's `codingAgents` descriptor.
 ///
-/// #2434 - resolved through `resolve_portable_reference` (local id, cell digest,
+/// Resolved through `resolve_portable_reference` (local id, cell digest,
 /// case-insensitive label, canonical command), so a foreign id maps to OUR
 /// agent. The sidebar lists rather than launches: no letter is requested and
 /// only the resolved id is read. An unresolvable reference returns `None` with
@@ -37,7 +37,7 @@ pub(crate) fn read_preferred_agent_id_logged(
     warnings: &mut Vec<String>,
 ) -> Option<String> {
     let config_path = crate::config::config_file_path(dir);
-    // #2786 (C1) - through the shared loader: state file first, key-wise.
+    // Through the shared loader: state file first, key-wise.
     let v = match crate::config::agent_config::read_agent_local_config_json(dir) {
         Ok(v) => v?,
         Err(e) => {
@@ -79,7 +79,7 @@ pub(crate) struct ReplicaIdentityRead {
     pub(crate) invalid_identity: bool,
 }
 
-/// #1941 - strict protection state for discovery: `invalid` carries its
+/// Strict protection state for discovery: `invalid` carries its
 /// diagnostic and is never reported as an unlocked/false default.
 pub(crate) fn replica_selection_wire_fields(
     replica_dir: &Path,
@@ -193,7 +193,7 @@ pub(crate) fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String
 ///
 /// Without this, a TASK.md that opens with `---` (frontmatter) sends the
 /// literal `---` to the sidebar — the `wg.task` field then defeats the
-/// frontend's frontmatter-stripping renderer (issue #161).
+/// frontend's frontmatter-stripping renderer.
 pub(crate) fn extract_task_first_line(content: &str) -> Option<String> {
     // Strip a UTF-8 BOM if present — `read_to_string` does not, and `str::trim`
     // does not treat U+FEFF as whitespace, so without this the frontmatter opener

@@ -1,6 +1,6 @@
 use super::*;
 
-// #2434 - restart and drift read one matched selection.
+// Restart and drift read one matched selection.
 
 fn route_agent(id: &str, label: &str, command: &str) -> AgentConfig {
     AgentConfig {

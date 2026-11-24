@@ -1,4 +1,4 @@
-//! #2817 regression harness for the `tao` keyboard reentrancy deadlock.
+//! Regression harness for the `tao` keyboard reentrancy deadlock.
 //!
 //! `tao 0.34.8` held a global, non-reentrant `KEY_EVENT_BUILDERS` mutex while
 //! its `WM_KEYUP` branch called `PeekMessageW`. That peek delivers pending sent

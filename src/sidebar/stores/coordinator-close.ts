@@ -13,7 +13,7 @@ const [pendingCoordinatorClose, setPendingCoordinatorClose] =
   createSignal<PendingCoordinatorClose | null>(null);
 export { pendingCoordinatorClose, setPendingCoordinatorClose };
 
-// #588 confirm-modal host presence (ref-counted). ProjectPanel — the ONLY
+// Confirm-modal host presence (ref-counted). ProjectPanel — the ONLY
 // renderer of the pendingCoordinatorClose modal — registers itself on mount so
 // the by-id helper knows whether a confirmation modal can actually be shown in
 // THIS window. In a detached terminal webview no host registers (separate JS
@@ -21,7 +21,7 @@ export { pendingCoordinatorClose, setPendingCoordinatorClose };
 // a plain destroy instead of setting a signal nothing renders (a silent no-op).
 let modalHostRefs = 0;
 
-/** #588 Register the confirm-modal host (ProjectPanel) for the current window.
+/** Register the confirm-modal host (ProjectPanel) for the current window.
  *  Returns a disposer to call on cleanup. */
 export function registerCoordinatorCloseModalHost(): () => void {
   modalHostRefs += 1;
@@ -30,7 +30,7 @@ export function registerCoordinatorCloseModalHost(): () => void {
   };
 }
 
-/** #588 True iff a confirm-modal host is mounted in this window. */
+/** True iff a confirm-modal host is mounted in this window. */
 function coordinatorCloseModalHostAvailable(): boolean {
   return modalHostRefs > 0;
 }
@@ -41,7 +41,7 @@ export function __resetCoordinatorCloseModalHostForTests(): void {
   modalHostRefs = 0;
 }
 
-/** #588 by-id entry point: the single implementation. Resolves the live session
+/** By-id entry point: the single implementation. Resolves the live session
  *  ONLY to give the modal a friendly name; the backend self-routes a
  *  non-coordinator id to a plain destroy, so id-only callers (the keyboard
  *  shortcut) need no `Session`. On needs-confirmation it opens the modal (host
@@ -63,11 +63,11 @@ export async function requestCoordinatorCloseById(id: string): Promise<void> {
           workingCount: outcome.workingCount,
         });
       } else {
-        // #588 No confirm-modal host in this window (e.g. the detached terminal
+        // No confirm-modal host in this window (e.g. the detached terminal
         // webview's keyboard shortcut): fall back to closing JUST the coordinator
         // (plain destroy, no cascade) so the user is never left with a silent
         // no-op. The backend refused to cascade busy members without confirmation;
-        // destroying only the coordinator restores the pre-#588 behavior here.
+        // destroying only the coordinator restores the earlier behavior here.
         await SessionAPI.destroy(id);
       }
     }
@@ -76,7 +76,7 @@ export async function requestCoordinatorCloseById(id: string): Promise<void> {
   }
 }
 
-/** #588 entry point for callers that already hold the `Session` (ProjectPanel
+/** Entry point for callers that already hold the `Session` (ProjectPanel
  *  "X", SessionItem). Non-coordinator -> plain destroy (unchanged behavior);
  *  coordinator -> delegate to the by-id helper (one implementation). */
 export async function requestCoordinatorClose(session: Session): Promise<void> {

@@ -14,7 +14,7 @@ pub(crate) async fn detect_repo_branch(dir: &str) -> Option<String> {
     crate::process::git::read::detect_repo_branch(dir).await
 }
 
-// --- Project file difference (#3060) ---
+// --- Project file difference ---
 
 /// One total bound for every Git read of a single `get_project_file_difference` request.
 pub(crate) const PROJECT_FILE_DIFFERENCE_TIMEOUT: Duration = Duration::from_secs(5);

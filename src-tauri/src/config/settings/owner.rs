@@ -30,7 +30,7 @@ pub(crate) use lease::SettingsOwnerLease;
 pub(crate) use lease::{SettingsOwnerLeaseVerifyFaultGuard, SETTINGS_OWNER_LEASE_VERIFY_FAULT};
 
 // ---------------------------------------------------------------------------
-// #2994 (E2992 P41) - the settings owner
+// (E2992 P41) - the settings owner
 // ---------------------------------------------------------------------------
 //
 // One authoritative `AppSettings` lives in the owner's `RwLock`. Until P50 the

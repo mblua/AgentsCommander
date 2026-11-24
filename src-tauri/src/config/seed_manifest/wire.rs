@@ -31,7 +31,7 @@ impl ManifestPathEncoding {
 pub(crate) enum ManifestFileKind {
     ProjectContextTemplate,
     ReplicaConfigFile,
-    /// #1318 - the coding-agent catalog manifest published per project at
+    /// The coding-agent catalog manifest published per project at
     /// `.ac/coding-agents/agents.json` (scope `catalog:coding-agents`).
     CodingAgentCatalog,
 }

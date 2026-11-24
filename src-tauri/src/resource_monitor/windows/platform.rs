@@ -49,7 +49,7 @@ impl PlatformProcessTreeBackend {
 impl ProcessTreeBackend for PlatformProcessTreeBackend {
     fn observe_tree(&self, root: ProcessIdentity) -> Result<ObservedProcessTree, ResourceError> {
         let entries = process_entries()?;
-        // #564 - resolve identities lazily for only the PIDs the walk visits
+        // Resolve identities lazily for only the PIDs the walk visits
         // (root + descendants + their direct parents), not every system PID, and
         // memoize so a pid referenced both as a node and as a child's parent is
         // opened at most once and yields one consistent value across the walk
@@ -86,7 +86,7 @@ impl ProcessTreeBackend for PlatformProcessTreeBackend {
         }
     }
 
-    #[allow(private_interfaces)]
+    #[allow(private_interfaces, reason = "crate-private diagnostics on pub port")]
     fn observe_diagnostic_identity(&self, pid: u32) -> schema::CurrentIdentity {
         match query_identity(pid) {
             Ok(Some((handle, _))) => {
@@ -112,7 +112,7 @@ impl ProcessTreeBackend for PlatformProcessTreeBackend {
         }
     }
 
-    #[allow(private_interfaces)]
+    #[allow(private_interfaces, reason = "crate-private diagnostics on pub port")]
     fn terminate_verified_diagnostic(
         &self,
         process: &ObservedProcess,
@@ -152,9 +152,9 @@ impl ProcessTreeBackend for PlatformProcessTreeBackend {
 ///
 /// Root-PID-reuse guard: the registry stores the root's creation time, so the
 /// live process at the root PID must prove it is that same process before we
-/// adopt its subtree. It can fail to prove it two ways. First (#516), its
+/// adopt its subtree. It can fail to prove it two ways. First, its
 /// creation time is readable but differs, because the original root exited and a
-/// foreign process took the recycled PID. Second (#543), its identity cannot be
+/// foreign process took the recycled PID. Second, its identity cannot be
 /// read at all (`creation_time` 0), so a foreign process occupying the recycled PID
 /// could otherwise still expose a readable child that would inherit
 /// `kill_allowed = true`. In either case we drop the whole subtree and report it
@@ -168,7 +168,7 @@ impl ProcessTreeBackend for PlatformProcessTreeBackend {
 /// strict at observe time. Memory lookups are injected so the walk is a pure
 /// function over the snapshot and can be unit-tested without real processes.
 /// Each pid is marked when enqueued, so a parent-PID cycle left by PID reuse
-/// (#2443) cannot re-enqueue a pid: the walk visits each pid at most once and
+/// cannot re-enqueue a pid: the walk visits each pid at most once and
 /// always terminates.
 fn build_observed_tree(
     entries: &HashMap<u32, ProcessEntry>,
@@ -201,9 +201,9 @@ fn build_observed_tree(
             && resolved_identity.map(|id| id.creation_time_100ns) != Some(root.creation_time_100ns)
         {
             // Live process at the root pid is not provably the one we
-            // registered: its creation time is readable but differs (#516, the
+            // registered: its creation time is readable but differs (the
             // pid was recycled by a foreign process) or its identity can't be
-            // read at all (#543, creation_time 0 / unreadable). Either way, drop
+            // read at all (creation_time 0 / unreadable). Either way, drop
             // the subtree and surface the same error the missing-root path uses,
             // so cleanup releases the slot instead of adopting a foreign process
             // and no readable descendant under an unverifiable root becomes
@@ -285,7 +285,7 @@ fn process_entries() -> Result<HashMap<u32, ProcessEntry>, ResourceError> {
     // dwSize is set immediately below before Process32FirstW writes the structure.
     let mut entry = unsafe { std::mem::zeroed::<PROCESSENTRY32W>() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-    // #559 (G1) - a valid snapshot always contains at least System Idle / System /
+    // A valid snapshot always contains at least System Idle / System /
     // the calling process, so a zero return here is an enumeration FAILURE, not a
     // legitimately empty list. Returning Err keeps a failed/partial walk off the
     // reap path: the H1 nomination treats a missing root as "gone", so a spuriously
@@ -323,7 +323,7 @@ fn process_entries() -> Result<HashMap<u32, ProcessEntry>, ResourceError> {
     Ok(entries)
 }
 
-/// #1438 - shared probe body: open the pid and read its creation time, returning
+/// Shared probe body: open the pid and read its creation time, returning
 /// the OPENED HANDLE alongside the identity so the caller can keep querying the
 /// SAME handle. The handle must be shared rather than re-opened per query: a
 /// second `OpenProcess` between two reads could land on a recycled pid and report
@@ -413,7 +413,7 @@ fn current_handle(handle: &OwnedHandle, pid: u32) -> schema::CurrentIdentity {
     }
 }
 
-/// #1438 - corpse-AWARE probe: `Ok(Some(identity))` means a LIVE process with that
+/// Corpse-AWARE probe: `Ok(Some(identity))` means a LIVE process with that
 /// identity exists right now. A process that has exited yields `Ok(None)` even while
 /// open handles elsewhere keep the corpse queryable (Windows keeps a terminated
 /// process openable, with its creation time intact, for as long as ANY handle to it
@@ -440,7 +440,7 @@ fn observe_identity(pid: u32) -> Result<Option<ProcessIdentity>, ResourceError> 
     Ok(Some(identity))
 }
 
-/// #1438 G1 - corpse-TOLERANT resolver for the tree walk: returns the identity of
+/// Corpse-TOLERANT resolver for the tree walk: returns the identity of
 /// any process that is still queryable, INCLUDING one that has exited but is kept
 /// queryable by open handles elsewhere. The tree walk's question is "what did the OS
 /// snapshot contain", never "is this alive right now", and answering it with the

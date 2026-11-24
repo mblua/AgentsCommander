@@ -442,7 +442,7 @@ fn profile_selection_rejects_matrix_outside_configured_project_paths() {
     assert!(!fake.join("config.json").exists());
 }
 
-// #592 - profile content-hash replica persistence.
+// Profile content-hash replica persistence.
 
 #[test]
 fn profile_content_hash_round_trips_and_preserves_profile() {
@@ -500,7 +500,7 @@ fn profile_content_hash_write_persists_for_root_agent_dir() {
     let temp = tempfile::tempdir().unwrap();
     // The Root Agent dir name does NOT start with `__agent_`/`_agent_`, but it
     // is a legitimate replica running a coding agent: the hash must persist
-    // and round-trip so drift survives an AC restart (#592 Root Agent fix).
+    // and round-trip so drift survives an AC restart (Root Agent fix).
     let root_agent = temp
         .path()
         .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
@@ -520,5 +520,5 @@ fn profile_content_hash_write_persists_for_root_agent_dir() {
 }
 
 // ------------------------------------------------------------------
-// #1939 replica selection state, intents, defaults and guarded writes.
+// Replica selection state, intents, defaults and guarded writes.
 // ------------------------------------------------------------------

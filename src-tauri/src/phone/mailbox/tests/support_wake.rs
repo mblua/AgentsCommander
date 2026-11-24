@@ -687,7 +687,7 @@ pub(super) fn mock_pty_writes_for<R: tauri::Runtime>(
         .writes_for(id)
 }
 
-/// #1883 — test-only write-failure switch. `MailboxFixture` keeps no backend
+/// Test-only write-failure switch. `MailboxFixture` keeps no backend
 /// handle (`make_mailbox_app` discards it), so this downcast helper mirrors
 /// `register_mock_pty_route` / `mock_pty_writes_for`.
 pub(super) fn set_mock_pty_write_failure<R: tauri::Runtime>(app: &tauri::AppHandle<R>, fail: bool) {
@@ -835,7 +835,7 @@ pub(super) const LSA_RESIZE_GRACE: Duration = Duration::from_millis(4000);
 
 pub(super) const LSA_MAX_WAIT: Duration = Duration::from_secs(10);
 
-// ── #617 handle_self_clear harness tests (#[cfg(not(test))] spawn gate ⇒ no live poller) ──
+// ── handle_self_clear harness tests (#[cfg(not(test))] spawn gate ⇒ no live poller) ──
 
 pub(super) async fn seed_self_clear_session(
     app: &tauri::AppHandle<tauri::test::MockRuntime>,
@@ -860,14 +860,14 @@ pub(super) async fn seed_self_clear_session(
     (session.id, session.token)
 }
 
-/// #626 - seed the agent's `SELF-HANDOFF.md` so the existence gate passes. The gate (§4.2) rejects
+/// Seed the agent's `SELF-HANDOFF.md` so the existence gate passes. The gate (§4.2) rejects
 /// any self-handoff-and-clear whose root has no `SELF-HANDOFF.md`, so every test that expects a
 /// `"queued"`/`"already_queued"` outcome must seed it first.
 pub(super) fn seed_self_handoff(cwd: &Path) {
     std::fs::write(cwd.join("SELF-HANDOFF.md"), "resume notes for the test").unwrap();
 }
 
-/// #626/#636 - count archived SELF-FORGET files in `cwd/self-clear/` (suffix match; the wall-clock
+/// Count archived SELF-FORGET files in `cwd/self-clear/` (suffix match; the wall-clock
 /// timestamp prefix in the real archive name is unpredictable, so the harness asserts by suffix,
 /// not exact name). Returns 0 if `self-clear/` does not exist
 /// (`read_dir` errors -> `unwrap_or(0)`).

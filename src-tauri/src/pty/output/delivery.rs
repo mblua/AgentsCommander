@@ -135,7 +135,7 @@ impl SessionIoFanout {
             );
         }
 
-        // #2124 - the detector decides whether this chunk counts, resets the
+        // The detector decides whether this chunk counts, resets the
         // silence clock or is absorbed into a pending short burst. The trace
         // order stays TouchSilence then PrintableActivity for the burst-off
         // sessions the trace tests use.
@@ -218,7 +218,7 @@ impl SessionIoFanout {
             return Err(TerminalOutputAttachError::OutputTargetUnavailable);
         }
         let mut reconcile_fault = false;
-        // #1458: carried out of the parser lock exactly like `reconcile_fault`. `Some` only
+        // Carried out of the parser lock exactly like `reconcile_fault`. `Some` only
         // when the ring was flagged unaligned; the pair is (ring length, bytes kept).
         let mut history_unaligned: Option<(usize, usize)> = None;
         let snapshot = if state.parser_availability == ParserAvailability::Available {
@@ -226,7 +226,7 @@ impl SessionIoFanout {
             if (parser_rows, parser_cols) == state.conpty_size {
                 copy_attach_snapshot(state, id, include_history, &mut history_unaligned)
             } else {
-                // #1439: the parser grid diverged from the grid the ConPTY took
+                // The parser grid diverged from the grid the ConPTY took
                 // (a skipped follow, or any path that resized one without the
                 // other). A seed rendered off this parser adopts the stale grid
                 // in the attaching window and replays other-grid bytes into it:
@@ -261,7 +261,7 @@ impl SessionIoFanout {
         }
         if reconcile_fault {
             log::error!("[terminal-snapshot] stage=parser_fault session={id}");
-            // #1439 R2: flush at the transition, OUTSIDE the parser lock. An
+            // R2: flush at the transition, OUTSIDE the parser lock. An
             // emit under that lock stalls the PTY reader on its next chunk;
             // both existing fault sites flush only after releasing the lock.
             self.attachments.flush(id, false);
@@ -342,7 +342,7 @@ fn copy_attach_snapshot(
         // rotates the buffer during what is otherwise a copy out.
         let replay = if uses_history {
             let (front, back) = state.history.as_slices();
-            // #1458: the hot-path realignment is capped at 4 KiB and stays failed
+            // The hot-path realignment is capped at 4 KiB and stays failed
             // for as long as the front sits in a newline-free region, so it can
             // leave the front inside an escape sequence. Attach is cold: pay the
             // full scan here rather than seed a literal sequence tail.
@@ -380,7 +380,7 @@ fn copy_attach_snapshot(
                 // No line start with content behind it. The ring cannot be
                 // replayed from any offset, and in the observed incident it holds
                 // nothing but spinner frames anyway. The mirror is a consistent
-                // full repaint on a grid the #1439 branch above already validated.
+                // full repaint on a grid the branch above already validated.
                 None => screen.contents_formatted(),
             };
             Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {

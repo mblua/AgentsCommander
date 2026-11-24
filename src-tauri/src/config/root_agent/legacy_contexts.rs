@@ -1,3 +1,6 @@
+//! Frozen copies of older generated Root agent contexts and paragraphs, used
+//! to recognize and migrate them. Never edited; it writes no files.
+
 pub(crate) const OLD_DEFERRED_MESSAGING_PARAGRAPH: &str =
     "Direct file-based workgroup messaging is not \
     available from the root-agent directory yet: `send --send` currently requires a workgroup \
@@ -28,7 +31,7 @@ Coordinators may reply by sending to `agentscommander://root-agent`; their repli
     r#"this session as standard file notifications."#
 );
 
-/// #1614 D8c: `ROOT_COORDINATION_MESSAGING_PARAGRAPH` exactly as it shipped
+/// `ROOT_COORDINATION_MESSAGING_PARAGRAPH` exactly as it shipped
 /// through base commit d7008b34. The live constant is DUAL-USE: it is the
 /// paragraph the deferred-messaging migration writes into the user's live
 /// Role.md. The recognizer embeds an independent literal copy in
@@ -39,7 +42,7 @@ Coordinators may reply by sending to `agentscommander://root-agent`; their repli
 /// 956 bytes sha256 17D7303A...E517 (plan 3.12 Table A), value 897 bytes
 /// sha256 FC2164A2...F207 (Table B); pinned by
 /// `frozen_snapshots_are_byte_exact_at_d7008b34`.
-#[cfg_attr(not(test), allow(dead_code))] // Frozen paragraph retained for byte-pin tests (#4077).
+#[cfg(test)]
 pub(crate) const ROOT_COORDINATION_MESSAGING_PARAGRAPH_BEFORE_ROOM_RENAME: &str = concat!(
     r#"You may "#,
     r#"message "#,
@@ -265,7 +268,7 @@ Use only IDs returned by `agency-templates list` when creating agents with `crea
 "#
 );
 
-/// #1005 S5: `ROOT_ROLE_MD` exactly as it shipped from #698 (agency skill
+/// `ROOT_ROLE_MD` exactly as it shipped from #698 (agency skill
 /// pointer) through base commit 409b7f90, frozen as the fifth legacy snapshot
 /// so pristine copies on disk (Role.md and Context.root-agent.md) keep being
 /// recognized and migrated after the v5 token-minimization rewrite.
@@ -348,7 +351,7 @@ Before creating any new specialist agent (any role-defined `create-agent-matrix`
 "#
 );
 
-/// #1370 C7: `ROOT_ROLE_MD` exactly as it shipped from the #1005 S5 v5
+/// C7: `ROOT_ROLE_MD` exactly as it shipped from the S5 v5
 /// token-minimization rewrite through base commit cfde2968, frozen as the sixth
 /// legacy snapshot so pristine copies on disk (Role.md and
 /// Context.root-agent.md) keep being recognized and migrated after the
@@ -430,7 +433,7 @@ Before creating any new specialist agent (any role-defined `create-agent-matrix`
 "#
 );
 
-/// #1571: `ROOT_ROLE_MD` exactly as it shipped through base commit ecc6527b,
+/// `ROOT_ROLE_MD` exactly as it shipped through base commit ecc6527b,
 /// frozen as the sixth legacy Root snapshot so a pristine pre-rename
 /// `Context.root-agent.md` keeps auto-upgrading and a pristine pre-rename
 /// `Role.md` keeps reducing to `MINIMAL_ROOT_ROLE_MD` after the
@@ -585,7 +588,7 @@ Before creating any new specialist agent (any role-defined `create-agent-matrix`
 "#
 );
 
-/// #3374: pristine Root template before the self-handoff skill reference.
+/// Pristine Root template before the self-handoff skill reference.
 /// Frozen from main 8e6f3a7d; do not edit.
 pub(crate) const ROOT_CONTEXT_BEFORE_SELF_HANDOFF_SKILL_MD: &str = concat!(
     "# AgentsCommander Root Runtime Context\n\nYou are running inside an AgentsCommander sess",

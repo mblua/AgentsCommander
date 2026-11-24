@@ -7,7 +7,7 @@ fn cache(cols: u16, rows: u16) -> Mutex<(u16, u16)> {
     Mutex::new((cols, rows))
 }
 
-/// #973 (C) - the frontend calls resize unconditionally from a double
+/// (C) - the frontend calls resize unconditionally from a double
 /// `requestAnimationFrame` and a `ResizeObserver`, so a single attach fires 5-20
 /// identical resizes and `ConPTY` hands every one of them to the child as a real event.
 /// A resize that changes nothing must not reach the child.

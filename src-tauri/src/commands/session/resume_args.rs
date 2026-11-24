@@ -140,7 +140,7 @@ pub(crate) fn antigravity_tokens_have_resume(tokens: &[&str], start: usize) -> b
 }
 
 pub(crate) fn inject_antigravity_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
-    // #260/#1482 — resume token sourced from the CodingAgentProfile (single
+    // Resume token sourced from the CodingAgentProfile (single
     // source of truth). G6: slice-pattern destructure, never index — a future
     // <1-element slice degrades gracefully instead of panicking in release.
     let &[resume_token] = CodingAgentKind::Antigravity.profile().resume_tokens else {
@@ -201,7 +201,7 @@ pub(crate) fn inject_antigravity_resume(shell: &str, shell_args: &mut Vec<String
 }
 
 pub(crate) fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
-    // #260 — resume tokens sourced from the CodingAgentProfile (single source
+    // Resume tokens sourced from the CodingAgentProfile (single source
     // of truth). G6: slice-pattern destructure, never index — a future
     // <2-element slice degrades gracefully instead of panicking in release.
     let &[resume_subcmd, resume_flag] = CodingAgentKind::Codex.profile().resume_tokens else {
@@ -362,7 +362,7 @@ pub(crate) fn maybe_inject_pi_resume(
     inject_pi_resume(shell, shell_args)
 }
 
-/// #1873 - pure eligibility predicate for Muse workspace-latest auto-resume.
+/// Pure eligibility predicate for Muse workspace-latest auto-resume.
 /// True only when EVERY condition holds:
 /// - a resolved `AgentSpawnCommand` is present (configured-spawn provenance);
 /// - the actual `shell`/`shell_args` equal that resolved recipe exactly;
@@ -404,7 +404,7 @@ pub(crate) fn trusted_muse_auto_resume_spawn(
     shell_args.is_empty()
 }
 
-/// #1873 - append the Muse profile's resume tokens to the LOCAL effective vector
+/// Append the Muse profile's resume tokens to the LOCAL effective vector
 /// only. Requires detected Muse, resume intent (`skip_auto_resume == false`) and
 /// the trusted predicate above. Slice-destructures the profile tokens: a wrong
 /// arity, or a second call (the vector is no longer empty), fails closed with no
@@ -441,7 +441,7 @@ pub(crate) fn maybe_inject_muse_resume(
 ///   - No nested expansion: `%A%` whose value contains `%B%` is not re-expanded.
 ///   - No escape syntax (cmd's `^%`, PowerShell's backtick); wrappers don't use these.
 ///
-/// (#599 R2) Lifted to module scope (was nested in `resolve_claude_projects_dir`)
+/// Lifted to module scope (was nested in `resolve_claude_projects_dir`)
 /// so `claude_projects_dir_for_config_dir` can reuse it for the env-layer probe.
 pub(crate) fn expand_env_var_refs(input: &str) -> String {
     expand_powershell_env_refs(&expand_percent_refs(input))

@@ -18,7 +18,7 @@ html, body, #root {
 
 /* Layout
  * `position: relative` makes this the containing block for the Home overlay
- * (issue #164). Home is rendered as a direct child here and uses
+ *. Home is rendered as a direct child here and uses
  * `position: absolute` to cover the TASK / LAST PROMPT panels and the
  * terminal content area without unmounting them — keeping their height
  * stable so TerminalView's ResizeObserver never fires on Home toggle. */
@@ -224,7 +224,7 @@ html.light-theme .titlebar-version {
   opacity: 0.85;
 }
 
-/* Issue #162: TASK panel action buttons + inline title editor */
+/* TASK panel action buttons + inline title editor */
 .workgroup-task-header {
   display: flex;
   align-items: center;
@@ -319,7 +319,7 @@ html.light-theme .titlebar-version {
   margin-bottom: 4px;
 }
 
-/* Light-theme overrides for #162 controls */
+/* Light-theme overrides for TASK panel controls */
 html.light-theme .workgroup-task-action {
   border-color: rgba(0, 0, 0, 0.10);
 }
@@ -338,7 +338,7 @@ html.light-theme .workgroup-task-title-btn:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.10);
 }
 
-/* Issue #162 — modal CSS copied verbatim from src/main/styles/main.css.
+/* Modal CSS copied verbatim from src/main/styles/main.css.
  * Required because the detached terminal window mounts TerminalApp
  * without main.css. Keep these in sync if main.css's modal rules are
  * ever revised. */
@@ -443,7 +443,7 @@ html.light-theme .last-prompt-panel {
   border-bottom-color: rgba(0, 0, 0, 0.08);
 }
 
-/* #2579: xterm draws its own DOM slider over the viewport, so the global
+/* Xterm draws its own DOM slider over the viewport, so the global
    pseudo-element rules cannot reach it. xterm writes the bar and slider width
    inline, hence !important; colors come from the theme keys in
    terminal-options.ts. */
@@ -695,7 +695,7 @@ html.light-theme .last-prompt-panel {
   color: #ffaa00;
 }
 
-/* #2337 - typing-hold padlock. While closed it widens for the held count
+/* Typing-hold padlock. While closed it widens for the held count
    instead of clipping the digits. */
 .status-bar-btn-typing-hold.closed {
   width: auto;
@@ -705,7 +705,7 @@ html.light-theme .last-prompt-panel {
   color: var(--statusbar-accent);
 }
 
-/* #2379 - the padlock is a monochrome SVG (color-emoji glyphs ignore `color`),
+/* The padlock is a monochrome SVG (color-emoji glyphs ignore `color`),
    so the button color paints it: dimmed status-bar foreground while inactive,
    accent while the hold is closed. */
 .status-bar-btn-typing-hold .status-bar-typing-hold-icon {
@@ -727,7 +727,7 @@ html.light-theme .last-prompt-panel {
 
 /* Terminal content area. Lives between the context panels
  * (WorkgroupTask/LastPrompt) and StatusBar, and wraps the terminal/empty
- * Show block. The Home overlay (#164) is a sibling of this element inside
+ * Show block. The Home overlay is a sibling of this element inside
  * `.terminal-layout` — not nested here — so toggling Home does not affect
  * this element's size and TerminalView's ResizeObserver does not fire. */
 .terminal-content-area {
@@ -750,7 +750,7 @@ html.light-theme .last-prompt-panel {
   font-size: var(--font-size-md);
 }
 
-/* #2744 - status-bar literals picked for the dark surface. */
+/* Status-bar literals picked for the dark surface. */
 html.light-theme .status-bar-detached,
 html.light-theme .status-bar-error,
 html.light-theme .status-bar-btn-clear:hover {

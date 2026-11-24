@@ -1,5 +1,5 @@
 /**
- * #2236 phase 5 — pure parse and match functions for the configurable sidebar
+ * Pure parse and match functions for the configurable sidebar
  * compact toggle shortcut. The signal and the default live in
  * `./sidebar-compact` (D16a); this module declares neither.
  *

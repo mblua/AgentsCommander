@@ -1,6 +1,6 @@
 use super::*;
 
-// #2482 - the quota engine's registration and retirement at the two chokepoints. The
+// The quota engine's registration and retirement at the two chokepoints. The
 // watcher engine is built from three no-op fakes: these tests assert REGISTRATION, never
 // a tick, so the engine is never started and the fakes are never called.
 struct NoopWatcherBackends;

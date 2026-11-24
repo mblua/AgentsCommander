@@ -9,14 +9,14 @@ export type RepoBranchByPath = Record<string, string | null>;
 
 export type RepoDirtyByPath = Record<string, boolean | null>;
 
-/** #2064 — whether CI is running on this repo's exact HEAD. `unknown` is the
+/** Whether CI is running on this repo's exact HEAD. `unknown` is the
  *  majority case (no `gh`, feature off, or not yet swept) and is SILENT in the UI. */
 export type { CiState } from "./generated/remote-activity";
 
-/** #2064 — whether the repo's upstream base has moved ahead of HEAD. */
+/** Whether the repo's upstream base has moved ahead of HEAD. */
 export type { StalenessState } from "./generated/remote-activity";
 
-/** #2064 — one `ac_remote_activity_updated` payload, exactly as Phase A emits it:
+/** One `ac_remote_activity_updated` payload, exactly as Phase A emits it:
  *  four vectors of identical length, parallel by index. A misaligned payload is
  *  rejected by the store rather than zipped, because a misaligned zip paints the
  *  WRONG repo, which is worse than painting nothing. */
@@ -60,9 +60,9 @@ export interface Session {
   profileFallbackChain: string[];
   profileFallbackApplied: boolean;
   profileOutdated?: boolean;
-  /** #2434 - tier that matched the profile reference; absent and null are equal. */
+  /** Tier that matched the profile reference; absent and null are equal. */
   matchTier?: "hash" | "labelAndLetter" | "commandAndLetter" | null;
-  /** #2434 - source letter when known and different. Not rendered by the UI. */
+  /** Source letter when known and different. Not rendered by the UI. */
   originalProfileLetter?: string | null;
 }
 
@@ -142,7 +142,7 @@ export interface SessionContextPayload {
   percent: number | null;
 }
 
-/** #2482/#2566 - an agent's weekly (7-day) coding-agent quota reading.
+/** An agent's weekly (7-day) coding-agent quota reading.
  *  `weeklyUsedPercent` is the USED percentage, 0..100, or null when unavailable.
  *  Mirrors `AgentQuotaPayload` (`pty/agent_quota/mod.rs`) field for field.
  *  The value is shared by every agent whose command matches.
@@ -152,7 +152,7 @@ export interface AgentQuotaPayload {
   weeklyUsedPercent: number | null;
 }
 
-/** #1682 - the instant of the most recent busy->idle edge on `sessionId` that the
+/** The instant of the most recent busy->idle edge on `sessionId` that the
  *  backend judged an agent turn, RFC3339/UTC as it stored it. It is the backend's
  *  proxy for the agent having finished responding, not a proof of it: an armed
  *  session that submitted nothing still produces this event. */
@@ -161,14 +161,14 @@ export interface SessionAgentMessagePayload {
   at: string;
 }
 
-/** #1171 - what a watcher match means. Mirrors `WatcherMode` (`config/settings.rs`). */
+/** What a watcher match means. Mirrors `WatcherMode` (`config/settings.rs`). */
 export type WatcherMode = "state" | "occurrence";
 
-/** #1171 - what makes two `occurrence` matches the same one inside the dedupe window. */
+/** What makes two `occurrence` matches the same one inside the dedupe window. */
 export type WatcherDedupe = "row" | "capture" | "none";
 
 /**
- * #1171 - one watcher activation.
+ * One watcher activation.
  *
  * Mirrors `WatcherMatchPayload` (`pty/watchers/mod.rs`), pinned field for field by
  * `the_payload_serializes_to_the_exact_camel_case_contract`. **No field is ever absent**:
@@ -196,13 +196,13 @@ export interface WatcherMatchPayload {
   rowTruncated: boolean;
 }
 
-/** #1171 - one tick's matches for one session, coalesced. Payload of `watcher_matches`. */
+/** One tick's matches for one session, coalesced. Payload of `watcher_matches`. */
 export interface WatcherMatchBatch {
   sessionId: string;
   matches: WatcherMatchPayload[];
 }
 
-/** #1171 - one watcher's standing on one session. Present even when `count` is 0. */
+/** One watcher's standing on one session. Present even when `count` is 0. */
 export interface WatcherActivityCounter {
   watcherId: string;
   mode: WatcherMode;
@@ -211,7 +211,7 @@ export interface WatcherActivityCounter {
   degraded: boolean;
 }
 
-/** #1171 - everything `get_watcher_activity` answers with. */
+/** Everything `get_watcher_activity` answers with. */
 export interface WatcherActivitySnapshot {
   /** Oldest first. `limit` trims from the new end: the n most recent, still oldest first. */
   matches: WatcherMatchPayload[];
@@ -230,7 +230,7 @@ export interface WatcherActivitySnapshot {
   activeWatchers: WatcherActivityCounter[];
 }
 
-/** #1171 - what a candidate pattern does, before it is saved. */
+/** What a candidate pattern does, before it is saved. */
 export interface WatcherPatternPreview {
   compiles: boolean;
   error: string | null;
@@ -251,7 +251,7 @@ export interface WatcherPatternPreview {
 }
 
 /**
- * #1171 - one watcher row of the draft the Settings modal holds in memory.
+ * One watcher row of the draft the Settings modal holds in memory.
  *
  * Only the three fields `reaches` and the budget depend on. `pattern`, `mode`, `dedupe` and
  * `capturedAgainst` take part in neither and are deliberately not sent: the row already shows
@@ -265,7 +265,7 @@ export interface WatcherDraftEntry {
 }
 
 /**
- * #1171 - one agent row of the same draft.
+ * One agent row of the same draft.
  *
  * The modal edits agents and watchers in ONE store and one Save writes both, so resolving
  * against the SAVED agent list would answer about a state the user has already left. Two of
@@ -279,7 +279,7 @@ export interface WatcherAgentDraftEntry {
   command: string;
 }
 
-/** #1171 - one agent that a draft row's selector reaches. */
+/** One agent that a draft row's selector reaches. */
 export interface WatcherReachEntry {
   agentId: string;
   agentLabel: string;
@@ -296,7 +296,7 @@ export interface WatcherReachEntry {
 }
 
 /**
- * #1171 - the reach of one draft row.
+ * The reach of one draft row.
  *
  * Exactly one per requested row, in request order. It carries `id` back because the editor
  * filters unrecognised rows out of the request, so its table positions do not match the
@@ -313,7 +313,7 @@ export interface WatcherReachRow {
   entries: WatcherReachEntry[];
 }
 
-/** #1171 - one user-configured watcher. Mirrors `WatcherConfig` (`config/settings.rs`). */
+/** One user-configured watcher. Mirrors `WatcherConfig` (`config/settings.rs`). */
 export interface WatcherConfig {
   enabled: boolean;
   mode: WatcherMode;
@@ -331,7 +331,7 @@ export interface WatcherConfig {
 }
 
 /**
- * #1171 - one entry of the root `watchers` map, valid or not.
+ * One entry of the root `watchers` map, valid or not.
  *
  * Mirrors the untagged `WatcherEntry` (`config/settings.rs`), which exists so a hand-written
  * `"mode": "State"` skips one watcher instead of failing the whole `AppSettings` parse and
@@ -354,7 +354,7 @@ export type WatcherEntry = WatcherConfig | UnrecognizedWatcherEntry;
  */
 export type UnrecognizedWatcherEntry = JsonValue;
 
-/** #2482 - one configured weekly-quota source. Mirrors `QuotaSourceConfig`
+/** One configured weekly-quota source. Mirrors `QuotaSourceConfig`
  *  (`config/settings.rs`); `kind` is the discriminant and the extension point, so a
  *  second agent's source is a second member of this union. Capture group 1 is the USED
  *  percentage for `screenRegex` and the REMAINING percentage for `screenRegexRemaining`. */
@@ -364,7 +364,7 @@ export type QuotaSourceConfig = {
   enabled?: boolean;
 };
 
-/** #2482 - one entry of the root `quotaSources` map, valid or not. Mirrors
+/** One entry of the root `quotaSources` map, valid or not. Mirrors
  *  `QuotaSourceEntry`; same shape and same reason as `WatcherEntry`. An entry from a
  *  newer AC round-trips verbatim. The fallback arm is the existing `JsonValue` (`:848`),
  *  NOT `Record<string, unknown>`: p1's Rust arm is `Invalid(serde_json::Value)`, which
@@ -375,14 +375,14 @@ export type QuotaSourceEntry = QuotaSourceConfig | JsonValue;
 // ── terminal output wire payload ──────────────────────────────────────
 
 /**
- * #1363 - the flat `pty_output` payload, restored from the broadcast push
+ * The flat `pty_output` payload, restored from the broadcast push
  * architecture (`4de8e11`). `sequence` is a NUMBER, not a canonical decimal
  * string: the reconcile is `event.sequence <= snapshot.sequence`, and a string
  * comparison there is lexicographic, so `"9" <= "10"` would be false and the
  * watermark would silently break past sequence 9.
  *
  * The field is absent when the backend's parser is unavailable; such a chunk
- * is written live with no reconcile (PR #961: live PTY bytes are never gated).
+ * is written live with no reconcile (live PTY bytes are never gated).
  */
 export interface PtyOutputEvent {
   sessionId: string;
@@ -403,7 +403,7 @@ export interface PtyScreenSnapshot {
   sequence: number;
 }
 
-/** #2337 - the per-session typing-hold padlock snapshot returned by
+/** The per-session typing-hold padlock snapshot returned by
  *  `get_typing_hold` / `toggle_typing_hold`. `closed` is the EFFECTIVE hold
  *  (manual padlock or the natural typing window) and `heldCount` is the number of
  *  unique peer wake messages currently deferred for the session. The backend is
@@ -438,17 +438,17 @@ export interface AgentConfig {
   configSeed?: ConfigSeedConfig;
   contextRegex?: string;
   backend?: AgentBackendConfig;
-  /** #2306 - backend-owned zero-based position in the registered `agents` vector.
+  /** Backend-owned zero-based position in the registered `agents` vector.
    *  Read-only mirror of P1's serialized Rust field; the UI renders the vector
    *  order it receives and never writes ordinals itself. */
   order?: number;
-  /** #3516 - optional finite command run before every launch; omitted when unset. */
+  /** Optional finite command run before every launch; omitted when unset. */
   preflight?: string;
-  /** #3516 - positive whole seconds; omitted means the backend default (60). */
+  /** Positive whole seconds; omitted means the backend default (60). */
   preflightTimeoutSeconds?: number;
 }
 
-/** #2306 P3 - the one narrow move request both UI surfaces send. */
+/** The one narrow move request both UI surfaces send. */
 export type MoveCodingAgentDirection = "up" | "down";
 
 export interface MoveCodingAgentRequest {
@@ -457,7 +457,7 @@ export interface MoveCodingAgentRequest {
   direction: MoveCodingAgentDirection;
 }
 
-/** #2543 - reorder one coding agent to an absolute index (remove, then insert). */
+/** Reorder one coding agent to an absolute index (remove, then insert). */
 export interface ReorderCodingAgentRequest {
   id: string;
   expectedIds: string[];
@@ -484,16 +484,16 @@ export interface CodingAgentDefinition {
   isolatedHome: boolean;
   configSeed?: ConfigSeedConfig;
   removable: boolean;
-  /** #1318/#1323 - per-agent update-command sequence seeded by AC: an ORDERED
+  /** Per-agent update-command sequence seeded by AC: an ORDERED
    * array of COMPLETE command strings, each executed sequentially (e.g.
    * ["claude --update"] or ["claude --update", "npm i -g @scope/cli"]).
-   * NOT argv tokens. Empty = no update command. Consumed by the #1327 startup
-   * update pass (`build_update_plan`) and listed by the #1551 Settings
+   * NOT argv tokens. Empty = no update command. Consumed by the startup
+   * update pass (`build_update_plan`) and listed by the Settings
    * Auto-update table. */
   updateCommands: string[];
-  /** #1318 - stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdateByCommand. Inert: the runtime reads only `AppSettings.agentAutoUpdateByCommand`. */
+  /** Stable catalog default for auto-update; the per-user choice lives in AppSettings.agentAutoUpdateByCommand. Inert: the runtime reads only `AppSettings.agentAutoUpdateByCommand`. */
   autoUpdate: boolean;
-  /** #2124 - optional idle-burst filter for this agent's sessions. Catalog-only:
+  /** Optional idle-burst filter for this agent's sessions. Catalog-only:
    * it is never part of the `settings.agents[]` snapshot and is resolved from
    * the effective catalog at every spawn. Absent or `null` leaves the filter
    * off; an absent subfield takes AC's shipped default. */
@@ -502,7 +502,7 @@ export interface CodingAgentDefinition {
     maxSecs?: number;
     priorSilenceSecs?: number;
   } | null;
-  /** #2736 - optional per-OS install command; one COMPLETE shell command string
+  /** Optional per-OS install command; one COMPLETE shell command string
    *  per platform key. Catalog-only, local-patchable, and never part of the
    *  `settings.agents[]` snapshot. The Welcome screen reads the RESOLVED value
    *  from `CodingAgentWelcomeStatus`, not this object. */
@@ -511,7 +511,7 @@ export interface CodingAgentDefinition {
 
 export type CodingAgentTestedLevel = "high" | "medium" | "low";
 
-/** #2736 - Welcome-screen only. Computed per effective catalog entry by the
+/** Welcome-screen only. Computed per effective catalog entry by the
  *  backend: live PATH presence (never persisted, never cached), the static
  *  tested-confidence level (code, never read from a catalog file) and the
  *  install command already resolved for THIS OS. */
@@ -522,7 +522,7 @@ export interface CodingAgentWelcomeStatus {
   installCommand: string | null;
 }
 
-/** #2736 - one silent install finished. `ok` reports the command exit status;
+/** One silent install finished. `ok` reports the command exit status;
  *  the authoritative "is it installed now" answer is a fresh
  *  `get_coding_agent_welcome_status` read, which the Welcome screen performs on
  *  this event. */
@@ -574,9 +574,9 @@ export interface ProfileCellConfig {
   command: string;
   env: Record<string, string>;
   notes: string;
-  /** #3516 - optional profile preflight, run after the Coding Agent one. */
+  /** Optional profile preflight, run after the Coding Agent one. */
   preflight?: string;
-  /** #3516 - this profile's own timeout; never inherits the agent timeout. */
+  /** This profile's own timeout; never inherits the agent timeout. */
   preflightTimeoutSeconds?: number;
 }
 
@@ -669,7 +669,7 @@ export interface WindowGeometry {
   height: number;
 }
 
-/** #2349 - saved display state of the unified main window. Deliberately only the
+/** Saved display state of the unified main window. Deliberately only the
  *  two states Rust can persist (`normal`, `maximized`); minimized and fullscreen
  *  are transient and are never persisted as a placement. */
 export type MainWindowDisplayState = "normal" | "maximized";
@@ -724,7 +724,7 @@ export type WebServerOwnershipState =
   | "externalListening"
   | "stopped";
 
-/** #1453 - reason the last web server start failed. `bind` is ALWAYS the raw
+/** Reason the last web server start failed. `bind` is ALWAYS the raw
  *  settings string (never the canonical SocketAddr form), so a consumer that
  *  cross-checks it against `WebServerInterfaceInfo` must gate on an IPv4 shape
  *  first. `detail` is the verbatim OS error. */
@@ -734,7 +734,7 @@ export interface WebServerBindFailure {
   detail: string;
 }
 
-/** #1453 - one IPv4 address currently assigned to an adapter, offerable as a
+/** One IPv4 address currently assigned to an adapter, offerable as a
  *  bind. Loopback, link-local and unspecified are filtered out by the backend. */
 export interface WebServerInterfaceInfo {
   address: string;
@@ -790,13 +790,13 @@ export interface AppSettings {
   soundsEnabled: boolean;
   teamIdleBeepEnabled: boolean;
   roomIdleConfirmationSeconds?: number;
-  /** #4049 Record context history (desktop); omitted resolves to false. */
+  /** Record context history (desktop); omitted resolves to false. */
   contextHistoryEnabled?: boolean;
-  /** #4049 Days of context history to keep, 1..365; omitted resolves to 30. */
+  /** Days of context history to keep, 1..365; omitted resolves to 30. */
   contextHistoryRetentionDays?: number;
-  /** #4091 1..8 ascending unique session counts (1..10000); omitted resolves in Rust. */
+  /** 1..8 ascending unique session counts (1..10000); omitted resolves in Rust. */
   contextHistorySessionWindows?: number[];
-  /** #4091 Session count for the sidebar colour; falls back to the last window. */
+  /** Session count for the sidebar colour; falls back to the last window. */
   contextHistoryColorSessions?: number;
   voiceToTextEnabled: boolean;
   geminiApiKey: string;
@@ -809,7 +809,7 @@ export interface AppSettings {
   sidebarGeometry: WindowGeometry | null;
   terminalGeometry: WindowGeometry | null;
   mainGeometry: WindowGeometry | null;
-  /** #2349 - optional so existing AppSettings literals and the ui harness keep
+  /** Optional so existing AppSettings literals and the ui harness keep
    *  compiling; omission means `normal`. Rust always serializes the field. */
   mainWindowDisplayState?: MainWindowDisplayState;
   mainSidebarWidth: number;
@@ -841,7 +841,7 @@ export interface AppSettings {
   webBrowserEnabled: boolean;
   gitSweepConcurrency: number;
   gitSweepMinIntervalSecs: number;
-  // #2064 — remote-activity dials the Rust sweeper reads. OPTIONAL on purpose, like
+  // Remote-activity dials the Rust sweeper reads. OPTIONAL on purpose, like
   // `railCollapsedProjects?`: Rust always serializes all six, so loaded settings carry
   // them, and the seven tests building a COMPLETE AppSettings literal need no six new
   // lines for dials no UI reads. Round-tripping is unaffected either way.
@@ -869,17 +869,17 @@ export interface AppSettings {
   remoteBlockingMenusEnabled: boolean;
   autoSelfClearEnabled: boolean;
   autoSelfClearByAgent: Record<string, boolean>;
-  /** #1327 - per-command auto-update policy, keyed by the catalog COMMAND
+  /** Per-command auto-update policy, keyed by the catalog COMMAND
    * string (not the agent id: several profiles can share one command; the
    * software is the update unit). Absent = never asked (the startup dialog
    * asks once, default No); true = run this command's updateCommands at
-   * startup; false = never ask again. Replaces the two inert #1318
+   * startup; false = never ask again. Replaces the two inert
    * agent-id-keyed maps. */
   agentAutoUpdateByCommand: Record<string, boolean>;
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
   activityLogEnabled: boolean;
-  /** #2337 - seconds the automatic typing hold stays active after the last
+  /** Seconds the automatic typing hold stays active after the last
    *  qualifying keystroke in a session. The backend reads it live and clamps it
    *  to 1..3600; optional so a snapshot saved before the field reads as the
    *  backend default (30). */
@@ -887,26 +887,26 @@ export interface AppSettings {
   responseCloseEnabled?: boolean;
   responseCloseIdleSeconds?: number;
   screenshotCaptureHotkey?: string;
-  /** #2774 AC keeps its own key binding block in Omarchy's hypr/bindings.lua. */
+  /** AC keeps its own key binding block in Omarchy's hypr/bindings.lua. */
   screenshotHyprlandBind?: boolean;
-  /** #2281 Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E". Validated on save;
+  /** Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E". Validated on save;
    * an invalid value blocks the save. */
   sidebarCompactHotkey?: string;
-  /** #2507 Mask for numbering NEW room directories: one `#` per zero-padded digit.
+  /** Mask for numbering NEW room directories: one `#` per zero-padded digit.
    * Optional so a snapshot saved before the field reads as the backend default ("#"). */
   roomNumberMask?: string;
   /**
-   * #1171 - root-level watcher patterns, keyed by watcher id. Optional because the Rust
+   * Root-level watcher patterns, keyed by watcher id. Optional because the Rust
    * field skips serializing while the map is empty, so a user who configures nothing never
    * sees the key appear.
    */
   watchers?: Record<string, WatcherEntry>;
-  /** #2482 - root-level weekly-quota sources, keyed by agent id. Optional because the
+  /** Root-level weekly-quota sources, keyed by agent id. Optional because the
    *  Rust field skips serializing while the map is empty. */
   quotaSources?: Record<string, QuotaSourceEntry>;
-  /** #1171 - geometry of the watcher activity window; skipped while unset. */
+  /** Geometry of the watcher activity window; skipped while unset. */
   watchersGeometry?: WindowGeometry;
-  // #2232 phase 9 - OPTIONAL on purpose, following the #2064 block above: Rust
+  // OPTIONAL on purpose, following the remote-activity block above: Rust
   // serializes all six unconditionally, so a loaded settings object always carries
   // them, and no complete-literal builder outside this phase needs updating.
   jevApiKey?: string;
@@ -924,7 +924,7 @@ export interface AppSettings {
   containerOptionsEnabled?: boolean;
 }
 
-// ── #2265/#2232 Co-managed: the phase-2 command wire shapes ──────────────────
+// ── Co-managed: the command wire shapes ───────────────────────────────────────
 // Mirror `config::co_managed` (CoManagedConfig / CoManagedState / OffReason) in
 // src-tauri/src/config/co_managed.rs. Both enums use serde's default external
 // tagging with no rename, so the literals are `"Ready"`,
@@ -946,7 +946,7 @@ export type OffReason =
 
 export type CoManagedState = "Ready" | { Off: { reason: OffReason } };
 
-// ── #1077 Portable dual project paths: get_settings resolution report ────────
+// ── Portable dual project paths: get_settings resolution report ──────────────
 // These mirror the serialize-only Rust wire shapes in
 // `src-tauri/src/commands/config.rs` (SettingsSnapshot / ProjectPathIssue /
 // Raw{String,Json}FieldState / ProjectPathReconciliationError), all camelCase.
@@ -1050,23 +1050,23 @@ export interface ProjectPathResolution {
  *  the structured resolution report. */
 export interface SettingsSnapshot extends AppSettings {
   projectPathResolution: ProjectPathResolution;
-  /** #1347 - absolute path of the instance settings.30.instance.no-git.json this snapshot came
+  /** Absolute path of the instance settings.30.instance.no-git.json this snapshot came
    *  from, or null when the backend could not resolve its config dir. Read-only
    *  metadata: it is never edited, never part of a save payload. */
   settingsFilePath: string | null;
-  /** #2306 - read-only response metadata: true when the local settings overlay
+  /** Read-only response metadata: true when the local settings overlay
    *  owns top-level `agents`, so the backend refuses moves. Never part of
    *  AppSettings or a draft. */
   overlayOwnsAgents: boolean;
-  /** #2716 - read-only response metadata: true when the agents file could not
+  /** Read-only response metadata: true when the agents file could not
    *  be read, so no agent session may start. Never part of AppSettings or a
    *  draft. Optional so an older snapshot literal still type-checks. */
   agentsLayerUnreadable?: boolean;
-  /** #2716 - the unreadable agents file's path, or null. */
+  /** The unreadable agents file's path, or null. */
   agentsFilePath?: string | null;
 }
 
-/** #2716 - notice 2, shown where the agent list is. */
+/** Notice 2, shown where the agent list is. */
 export const agentsUnreadableNotice = (path: string | null | undefined): string =>
   `Unavailable: AgentsCommander could not read ${path ?? "the agents file"}. Fix or delete that file and restart AgentsCommander. While this file is unreadable, changes to your sessions are not saved.`;
 
@@ -1076,14 +1076,14 @@ export interface UpdateInfo {
   upgradeCommand: string;
 }
 
-/** #1691 - why a command's update sequence ended. `ok` stays for the legacy predicate;
+/** Why a command's update sequence ended. `ok` stays for the legacy predicate;
  *  `outcome` is the only truthful classification (a cancelled command has `ok=false`). */
 export type AgentUpdateOutcome = "succeeded" | "failed" | "cancelled";
 
-/** #1691 - what the post-update probe proved about the installed version. */
+/** What the post-update probe proved about the installed version. */
 export type AgentUpdateChange = "changed" | "unchanged" | "unknown";
 
-/** #1691 - what `agent_update_cancel` did with the request. */
+/** What `agent_update_cancel` did with the request. */
 export type AgentUpdateCancelDisposition =
   | "requested"
   | "already_requested"
@@ -1096,16 +1096,16 @@ export interface AgentUpdateResult {
   ok: boolean;
   outcome: AgentUpdateOutcome;
   error?: string | null;
-  /** #1691 - the pre-update probe, `null` when it never ran; the key is always present. */
+  /** The pre-update probe, `null` when it never ran; the key is always present. */
   installBefore: InstallState | null;
-  /** #1691 - the post-update probe, `null` when it never ran; the key is always present. */
+  /** The post-update probe, `null` when it never ran; the key is always present. */
   installAfter: InstallState | null;
   change: AgentUpdateChange;
-  /** #1691 - the post-update probe's own diagnostic; omitted when the probe succeeded. */
+  /** The post-update probe's own diagnostic; omitted when the probe succeeded. */
   verificationError?: string;
 }
 
-/** #1691 - a result as it may arrive from an older backend: the four #1691 keys may be absent.
+/** A result as it may arrive from an older backend: the four newer keys may be absent.
  *  `normalizeAgentUpdateResult` (sidebar/agent-update.ts) turns one of these into the canonical
  *  shape before any store fold or notification classification. */
 export type AgentUpdateResultWire = Omit<
@@ -1114,20 +1114,20 @@ export type AgentUpdateResultWire = Omit<
 > &
   Partial<Pick<AgentUpdateResult, "outcome" | "installBefore" | "installAfter" | "change">>;
 
-/** #1691 - the response of `agent_update_cancel` for one command. */
+/** The response of `agent_update_cancel` for one command. */
 export interface AgentUpdateCancelResponse {
   command: string;
   disposition: AgentUpdateCancelDisposition;
 }
 
-/** #1691 - the response of `agent_updates_cancel_all`, partitioned over the pass. */
+/** The response of `agent_updates_cancel_all`, partitioned over the pass. */
 export interface AgentUpdateCancelAllResponse {
   requested: AgentUpdateCommandRef[];
   alreadyRequested: AgentUpdateCommandRef[];
   alreadyTerminal: AgentUpdateCommandRef[];
 }
 
-/** #1691 - the full cancellation snapshot carried by `agent_update_cancellation_changed`. */
+/** The full cancellation snapshot carried by `agent_update_cancellation_changed`. */
 export interface AgentUpdateCancellationChanged {
   cancelRequested: AgentUpdateCommandRef[];
   cancelAllRequested: boolean;
@@ -1138,7 +1138,7 @@ export interface AgentUpdatePrompt {
   label: string;
 }
 
-/** #1551 - a command in the startup update pass (start order); also the payload of `agent_update_prompt_closed`. */
+/** A command in the startup update pass (start order); also the payload of `agent_update_prompt_closed`. */
 export interface AgentUpdateCommandRef {
   command: string;
   label: string;
@@ -1146,7 +1146,7 @@ export interface AgentUpdateCommandRef {
 
 export type InstallStatus = "checking" | "missing" | "installed" | "probeFailed" | "unprobed";
 
-/** #1551 - resolved install state of one catalog command; `path`/`detail` absent when the backend has none.
+/** Resolved install state of one catalog command; `path`/`detail` absent when the backend has none.
  *  `seq` is the backend cache's commit counter (0 = `checking`); a higher `seq` is always the newer state. */
 export interface InstallState {
   status: InstallStatus;
@@ -1156,7 +1156,7 @@ export interface InstallState {
   seq: number;
 }
 
-/** #1551 - one update-capable catalog entry (catalog order, duplicates kept). Configured/registered/live facts are FE-derived. */
+/** One update-capable catalog entry (catalog order, duplicates kept). Configured/registered/live facts are FE-derived. */
 export interface AgentUpdateOverviewRow {
   key: string;
   label: string;
@@ -1171,7 +1171,7 @@ export interface AgentInstallStateChanged {
   install: InstallState;
 }
 
-/** #1551 round 5 - one agent of this boot's startup pass, in pass (catalog) order; also the payload of `agent_update_command_started`.
+/** One agent of this boot's startup pass, in pass (catalog) order; also the payload of `agent_update_command_started`.
  *  `installBefore` is the pre-update probe result (absent until that probe ran; `seq` 0, never cached). */
 export interface AgentUpdateNode {
   command: string;
@@ -1186,17 +1186,17 @@ export interface AgentUpdateStatus {
    * restored from the snapshot by a late-mounting sidebar. */
   prompt: AgentUpdatePrompt | null;
   results: AgentUpdateResult[];
-  /** #1551 - commands whose update sequence is running, in start order. */
+  /** Commands whose update sequence is running, in start order. */
   running: AgentUpdateCommandRef[];
-  /** #1551 - policy recorded by the winning answer per prompted command this boot; absent on an older backend. */
+  /** Policy recorded by the winning answer per prompted command this boot; absent on an older backend. */
   answered?: Record<string, boolean>;
-  /** #1551 - the pass nodes in pass order; absent on an older backend. */
+  /** The pass nodes in pass order; absent on an older backend. */
   nodes?: AgentUpdateNode[];
-  /** #1691 - commands whose update sequence finished and whose post-update probe is running, in pass order. */
+  /** Commands whose update sequence finished and whose post-update probe is running, in pass order. */
   verifying: AgentUpdateCommandRef[];
-  /** #1691 - commands whose cancellation the backend has accepted, in pass order. */
+  /** Commands whose cancellation the backend has accepted, in pass order. */
   cancelRequested: AgentUpdateCommandRef[];
-  /** #1691 - a batch cancellation was accepted for this pass. */
+  /** A batch cancellation was accepted for this pass. */
   cancelAllRequested: boolean;
 }
 
@@ -1272,7 +1272,7 @@ export interface ResourceSnapshot {
   appWorkingSetBytes?: number | null;
   groups: ResourceAgentGroupSnapshot[];
   warnings: string[];
-  /** #2581 - per-agent memory warnings. Optional for older producers. */
+  /** Per-agent memory warnings. Optional for older producers. */
   groupWarnings?: ResourceGroupWarning[];
 }
 
@@ -1600,14 +1600,14 @@ export interface AcAgentReplica {
   lastUserMessageAt?: string;
   autoClosedAt?: string;
   manuallyClosedAt?: string;
-  /** #1942 - complete stored protected pair, or `null` when absent/invalid. An absent
+  /** Complete stored protected pair, or `null` when absent/invalid. An absent
    *  property is an older backend: unsupported/unknown, never proven unlocked. */
   savedPair?: SavedPair | null;
-  /** #1942 - strict protection state; absent means unsupported/unknown. */
+  /** Strict protection state; absent means unsupported/unknown. */
   selectionState?: SelectionState;
-  selectionError?: string | null; // #1942 - diagnostic when `selectionState` is invalid.
-  unleashed?: boolean; // #4752 - true when the user unleashed it; absent from older backends.
-  sessionName?: string; // #4805 - exact session name; only temp-room rows set it.
+  selectionError?: string | null; // Diagnostic when `selectionState` is invalid.
+  unleashed?: boolean; // True when the user unleashed it; absent from older backends.
+  sessionName?: string; // Exact session name; only temp-room rows set it.
 }
 
 export interface CoordinatorCloseOutcome {
@@ -1796,33 +1796,33 @@ export interface AcDiscoveryResult {
 
 export type ProfileAssignmentScope = "replica" | "kind" | "workgroup";
 
-/** #1942 - requested publication policy. Absent keeps the legacy ordinary
+/** Requested publication policy. Absent keeps the legacy ordinary
  *  semantics. */
 export type AssignmentMode = "ordinary" | "assignAndLock";
 
-/** #1942 - explicit review decision for a bulk assign-and-lock that found
+/** Explicit review decision for a bulk assign-and-lock that found
  *  protected replicas. There is deliberately no default. */
 export type ConflictDecision = "unlockedOnly" | "forceReviewed";
 
-/** #1942 - strict protection state read by #1939. `invalid` is a diagnostic,
+/** Strict protection state read by discovery. `invalid` is a diagnostic,
  *  never a permissive default. */
 export type SelectionState = "unlocked" | "locked" | "invalid";
 
-/** #1942 - the complete stored protected pair; both fields are `null` when no
+/** The complete stored protected pair; both fields are `null` when no
  *  complete pair is stored. */
 export interface SavedPair {
   codingAgentId: string | null;
   requestedProfile: string | null;
 }
 
-/** #1942 - the Matrix creation default (`tooling.replicaSelectionDefault`). */
+/** The Matrix creation default (`tooling.replicaSelectionDefault`). */
 export interface SelectionDefault {
   codingAgentId: string;
   requestedProfile: string;
   selectionLocked: boolean;
 }
 
-/** #1942 - one explicit conflict outcome as offered by a preview; the client
+/** One explicit conflict outcome as offered by a preview; the client
  *  echoes this fingerprint for the decision it reviewed. */
 export interface DecisionProjection {
   fingerprint: string;
@@ -1840,14 +1840,14 @@ export interface ProfileAssignmentTarget {
   identityPath: string;
   originProject: string | null;
   liveSessionIds: string[];
-  /** #1942 - complete stored pair or `null` when absent/invalid. An absent
+  /** Complete stored pair or `null` when absent/invalid. An absent
    *  property is an older backend: unsupported/unknown, never proven
    *  unlocked. */
   savedPair?: SavedPair | null;
-  /** #1942 - strict protection state; absent is unknown, never synthesized to
+  /** Strict protection state; absent is unknown, never synthesized to
    *  `unlocked`. */
   selectionState?: SelectionState;
-  /** #1942 - strict-read diagnostic when `selectionState` is invalid. */
+  /** Strict-read diagnostic when `selectionState` is invalid. */
   selectionError?: string | null;
 }
 
@@ -1857,7 +1857,7 @@ export interface PreviewCodingAgentProfileSelectionRequest {
   profile: string;
   scope: ProfileAssignmentScope;
   restartSessions: boolean;
-  /** #1942 - absent keeps the legacy ordinary semantics. */
+  /** Absent keeps the legacy ordinary semantics. */
   assignmentMode?: AssignmentMode;
 }
 
@@ -1869,16 +1869,16 @@ export interface PreviewCodingAgentProfileSelectionResult {
   requiresExplicitConfirmation: boolean;
   targets: ProfileAssignmentTarget[];
   warnings: string[];
-  /** #1942 - false when scoped membership could not be established from the
+  /** False when scoped membership could not be established from the
    *  directory walk. Optional for older producers. */
   countsComplete?: boolean;
   candidateCount?: number;
   protectedCount?: number;
   invalidCount?: number;
-  /** #1942 - valid protected candidates for a bulk assign-and-lock; zero for
+  /** Valid protected candidates for a bulk assign-and-lock; zero for
    *  every other mode. */
   conflictCount?: number;
-  /** #1942 - both reviewable outcomes; present only when a bulk
+  /** Both reviewable outcomes; present only when a bulk
    *  assign-and-lock preview found protected candidates. */
   decisions?: {
     unlockedOnly: DecisionProjection;
@@ -1894,9 +1894,9 @@ export interface ApplyCodingAgentProfileSelectionRequest {
   restartSessions: boolean;
   confirmedTargetFingerprint?: string | null;
   typedConfirmation?: string | null;
-  /** #1942 - absent keeps the legacy ordinary semantics. */
+  /** Absent keeps the legacy ordinary semantics. */
   assignmentMode?: AssignmentMode;
-  /** #1942 - required only for a bulk assign-and-lock that found protected
+  /** Required only for a bulk assign-and-lock that found protected
    *  candidates; rejected in every other mode/scope combination. */
   conflictDecision?: ConflictDecision | null;
 }
@@ -1908,7 +1908,7 @@ export interface ProfileAssignmentError {
   replicaPaths: string[];
 }
 
-/** #1942 - removal/default errors carry the same precise diagnostics as
+/** Removal/default errors carry the same precise diagnostics as
  *  assignment errors. */
 export type SelectionError = ProfileAssignmentError;
 
@@ -1922,28 +1922,28 @@ export interface ApplyCodingAgentProfileSelectionResult {
   targetFingerprint: string;
   warnings: string[];
   errors: ProfileAssignmentError[];
-  /** #1942 - false-to-true lock flips only. Optional for older producers. */
+  /** False-to-true lock flips only. Optional for older producers. */
   newlyProtectedPaths?: string[];
-  /** #1942 - valid protected replicas deliberately skipped by the policy. */
+  /** Valid protected replicas deliberately skipped by the policy. */
   skippedLockedPaths?: string[];
-  /** #1942 - candidates whose strict protection state is invalid. */
+  /** Candidates whose strict protection state is invalid. */
   invalidPaths?: string[];
-  /** #1942 - protected replicas left after the operation; `null` when the
+  /** Protected replicas left after the operation; `null` when the
    *  refresh cannot establish the total. */
   lockedAfterApplyCount?: number | null;
-  /** #1942 - true only when a reviewed force actually overwrote a protected
+  /** True only when a reviewed force actually overwrote a protected
    *  target, never merely because a decision was selected. */
   forceApplied?: boolean;
 }
 
-// ── #1942 selection-lock removal and Matrix default wire contract ──────────
+// ── Selection-lock removal and Matrix default wire contract ────────────────
 
 export interface PreviewSelectionLockRemovalRequest {
   targetReplicaPath: string;
   scope: ProfileAssignmentScope;
 }
 
-/** #2557 - why the scope walk could not count a replica or folder. */
+/** Why the scope walk could not count a replica or folder. */
 export type ScopeFaultCode =
   | "configUnreadable" | "configNotJson" | "configNotObject"
   | "identityMissing" | "identityMismatch" | "locationInvalid"
@@ -2180,7 +2180,7 @@ export interface ErrorLogEntry {
   level: string;
   target: string;
   message: string;
-  /** #3037 - backend emission-site identity (#3036); keys the popup mute. */
+  /** Backend emission-site identity; keys the popup mute. */
   typeId: string;
 }
 

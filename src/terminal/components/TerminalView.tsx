@@ -119,26 +119,26 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   let unlistenAgentMessage: UnlistenFn | null = null;
   let unlistenTerminalDetached: UnlistenFn | null = null;
   let unlistenCloseRequested: UnlistenFn | null = null;
-  // #1682 - set in `onCleanup`, read by `onMount`. The same fact
+  // Set in `onCleanup`, read by `onMount`. The same fact
   // `failListenerReady(new Error("TerminalView unmounted"))` records for the
   // attach gate, in the form the mount chain can test synchronously.
   let unmounted = false;
 
-  // #1363 - this window's single output attachment, and the serialization that
+  // This window's single output attachment, and the serialization that
   // keeps it honest. `attachedSessionId` is what the BACKEND holds for this
   // window; `desiredSessionId` is what the latest transition asked for. Attach
   // and detach are async invokes whose completion order is not their call
   // order, so a fast A -> B -> A switch could otherwise land the first
   // detach(A) after the final attach(A) and leave this window rendering a
   // session it is no longer attached to: a silent freeze indistinguishable
-  // from #1363 itself. Every transition therefore runs on one promise chain,
+  // from the fix itself. Every transition therefore runs on one promise chain,
   // re-checks the desired state after each await, and is the ONLY writer of
   // `attachedSessionId`.
   let attachedSessionId: string | null = null;
   let desiredSessionId: string | null = null;
   let attachChain: Promise<void> = Promise.resolve();
 
-  // #1363 - never ask the backend to start emitting to this window before this
+  // Never ask the backend to start emitting to this window before this
   // window is listening.
   //
   // Issuing the `listen` first is NOT enough to order the two. `plugin:event|
@@ -149,7 +149,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
   // trips the ingest-thread ceiling flush immediately, and that chunk's
   // sequence is ABOVE the seed's, so the watermark never replays it: the hole
   // is silent and permanent. It lands exactly on "attach a busy session",
-  // which is criterion C and #1364's scenario.
+  // which is criterion C and the race scenario.
   //
   // A FAILED registration rejects the gate, which correctly leaves this window
   // unattached: a window with no listener could not render the stream anyway,
@@ -203,14 +203,14 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.replayStatus.hidden = !message;
   };
 
-  // #1355 INVARIANT - every write of content to xterm goes through here, so
+  // INVARIANT - every write of content to xterm goes through here, so
   // `entry.terminal.write` has exactly one call site in the whole frontend
   // (the line below). Adding a direct `terminal.write` anywhere else (a
   // banner, a reconnect notice, an error message) breaks the seed watermark
   // and reintroduces cumulative history duplication on re-attach. Write
   // through this function instead. Both transports traverse it: the Tauri
-  // window and the browser/websocket fallback (#1363 criterion H').
-  // `onWritten` (#1489) is the xterm 6.0.0 parse-completion signal: it fires
+  // window and the browser/websocket fallback.
+  // `onWritten` is the xterm 6.0.0 parse-completion signal: it fires
   // only after the chunk was parsed and applied. Callers must wrap it so it
   // cannot throw — a throwing callback aborts xterm's parse loop and wedges
   // the remaining queue.
@@ -249,7 +249,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     replayStatus.dataset.acTestid = `terminal.replay-status.${sessionId}`;
     container.appendChild(replayStatus);
 
-    // #1682 - the top-right status strip. The stamp sits immediately LEFT of the
+    // The top-right status strip. The stamp sits immediately LEFT of the
     // COLS/ROWS chip, and the chip's width varies with its digit count, so a
     // second independently right-anchored sibling would drift: one flex row
     // right-anchored as a whole is what keeps the gap exact. The positioning,
@@ -337,7 +337,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     };
     const handleTerminalKeyEvent = (event: KeyboardEvent): boolean => {
       if (event.isComposing) return true;
-      // #2236 D9: veto only; no stopPropagation, so shortcuts.ts still toggles.
+      // Veto only; no stopPropagation, so shortcuts.ts still toggles.
       if (matchesHotkeyEvent(event, currentHotkey())) return false;
 
       const isCtrlShift = event.ctrlKey && event.shiftKey;
@@ -389,7 +389,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       void sendPtyResize(sessionId, entry, cols, rows);
     });
 
-    // #1489 user-scroll guard: an intentional wheel scroll in the
+    // User-scroll guard: an intentional wheel scroll in the
     // post-replay/pre-settle window must never be overridden by the one-shot
     // attach settlement. The marker is read by the settle and cleared by
     // `beginSeed`. The entry is resolved by session id here because the entry
@@ -430,7 +430,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     };
   };
 
-  // ── viewport / resize policy (unchanged #973 behavior) ────────────────────
+  // ── viewport / resize policy ────────────────────────────────────────────
 
   const reportSpawnSizeDrift = (
     sessionId: string,
@@ -530,7 +530,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     return completion;
   };
 
-  // #1489: ordinary callers preserve optimistic tuple dedup. Only the final
+  // Ordinary callers preserve optimistic tuple dedup. Only the final
   // attach confirmation below deliberately requires a real transport success.
   const sendPtyResize = async (
     sessionId: string,
@@ -721,7 +721,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
-  // ── #961 seed / reconcile (restored from 4de8e11) ─────────────────────────
+  // ── Seed / reconcile (restored from 4de8e11) ─────────────────────────
   //
   // Live PTY bytes are never gated. They reach xterm on arrival, whether the
   // seed settles late, fails, or never settles. The seed is a seed, not a
@@ -779,12 +779,12 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     if (shouldDropAlreadyAppliedEvent(entry, sequence)) {
       // A retained event dropped by the watermark never writes, so it must
-      // never count against the drain (#1489): counting it would hang the
+      // never count against the drain: counting it would hang the
       // drain and the replay with it.
       return;
     }
 
-    // #1489 write fence: while the reconcile window is open, every byte this
+    // Write fence: while the reconcile window is open, every byte this
     // entry queues in xterm is counted in the shared per-entry drain, so the
     // attach pipeline can prove that everything queued before the reset has
     // parsed before it replays. The drain always exists from `beginSeed`; the
@@ -822,7 +822,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     markAppliedSequence(entry, sequence);
   };
 
-  // #1489: closes the reconcile window (retention, budget, and the pending
+  // Closes the reconcile window (retention, budget, and the pending
   // flag). The drain is deliberately NOT deleted: it must keep fencing this
   // entry's queued writes for the next generation, and the write path's
   // `snapshotReplayPending` gate already prevents any post-close registration.
@@ -830,7 +830,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     abandonSnapshotReconcile(entry);
   };
 
-  // #1489: awaits parse completion of every live write queued since the
+  // Awaits parse completion of every live write queued since the
   // attach started. `reset()` does not discard xterm's pending queue, so the
   // fence must prove the queue is empty before the reset runs — otherwise
   // older bytes would parse into the fresh buffer and straddle the snapshot.
@@ -867,7 +867,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       (event) => !shouldDropAlreadyAppliedEvent(entry, eventSequence(event))
     );
 
-    // Wrapped per #1489 4.2: a callback passed to `write` must not throw into
+    // Wrapped: a callback passed to `write` must not throw into
     // xterm's parse loop. `beginAttachSettle` only registers an animation
     // frame, so this cannot throw in practice; the guard keeps the contract.
     const finalize = () => {
@@ -927,7 +927,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
-  // #1489 generation guard: every async continuation of the attach
+  // Generation guard: every async continuation of the attach
   // transaction (drain loop, write callbacks, flush finalize, settle frame,
   // resize continuation) validates that the capture that started it is still
   // the current one. A switch away, a superseding attach, a detach, an
@@ -1037,7 +1037,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     retainedEvents: PtyOutputEvent[];
   }
 
-  // #1489 attach state, keyed by the entry object: the generation counter
+  // Attach state, keyed by the entry object: the generation counter
   // (`attachGenerations`) and the shared write drain (`attachDrains`). The
   // drain is per-entry, never replaced and never deleted: `inFlight` counts
   // every byte still queued in this entry's xterm FIFO ACROSS generations,
@@ -1183,7 +1183,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
 
     clearSnapshotSettleTimer(entry);
 
-    // #1489: the window (pending flag, retention, byte budget) is no longer
+    // The window (pending flag, retention, byte budget) is no longer
     // cleared here — consumers close it explicitly via `closeSnapshotReconcile`
     // once the reset/close decision is made.
     const settle: SnapshotSettle = {
@@ -1210,13 +1210,13 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     console.debug(line);
   };
 
-  // #1363 plan 3.3 rule 2: the reset is load-bearing and must not be
+  // Plan 3.3 rule 2: the reset is load-bearing and must not be
   // "simplified" away. Live bytes are written BEFORE the seed arrives, so
   // writing the seed on top of them would leave the earlier bytes on screen
-  // twice; the reset is also what makes the #1355 history ring safe to replay
+  // twice; the reset is also what makes the history ring safe to replay
   // on every attach.
   //
-  // #1489 replaces `rebuildFromSnapshot`: the pipeline is now write-fenced and
+  // Replaces `rebuildFromSnapshot`: the pipeline is now write-fenced and
   // generation-scoped. Fire-and-forget (`void`) so the drain never blocks the
   // attach chain; a switch issued during a drain proceeds immediately and the
   // drain loop's own `isCurrentAttach` check aborts on the first interleaving.
@@ -1294,7 +1294,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     }
   };
 
-  // #1489 one-shot settle: one animation frame after the replay completed, so
+  // One-shot settle: one animation frame after the replay completed, so
   // the fitted grid is applied before the viewport bottoms.
   const beginAttachSettle = (
     sessionId: string,
@@ -1312,7 +1312,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     });
   };
 
-  // #1489: the attach settle sequence. Fit first, then the awaitable typed
+  // The attach settle sequence. Fit first, then the awaitable typed
   // resize, then (unless the user scrolled in the settle window) exactly one
   // `scrollToBottom` — the only bottoming call site in the frontend — and one
   // bounded, content-free instrumentation line covering the issue's in-scope
@@ -1389,7 +1389,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     snapshot: PtyScreenSnapshot | null,
     settle: SnapshotSettle
   ) => {
-    // #1439: a viewport sent before a detach must never dedup the
+    // A viewport sent before a detach must never dedup the
     // re-imposition after the re-attach; the other window may have driven the
     // PTY elsewhere while this key sat stale. Cleared once per attach settle
     // (this function's only caller); within an attached interval the dedup
@@ -1400,7 +1400,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // retention is meaningful only after `rebuildFromSnapshot`'s reset wiped
     // it off the screen. An attach can resolve without a snapshot either
     // because the parser is unavailable (every event unsequenced) or because
-    // the #1439 grid reconcile refused the seed (parser still Available, live
+    // the grid reconcile refused the seed (parser still Available, live
     // events still sequenced); replaying retention without a reset stays a
     // no-op for sequenced events (the watermark drops them) and a duplicate
     // write for unsequenced ones, which is why this branch replays nothing.
@@ -1409,7 +1409,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       if (!entry.hasRenderedOutput) {
         setReplayStatus(entry, SNAPSHOT_UNAVAILABLE_MESSAGE);
       }
-      // #1439: a seedless attach must still re-impose this window's grid on
+      // A seedless attach must still re-impose this window's grid on
       // the PTY; otherwise live bytes keep arriving for the other window's
       // grid and garble this xterm until the user resizes something.
       if (sessionId === visibleSessionId) {
@@ -1426,7 +1426,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       return;
     }
 
-    // #1489 invariant: capturing the generation here is equivalent to
+    // Invariant: capturing the generation here is equivalent to
     // capturing it at `beginSeed` time — `transitionAttachment` serializes
     // every continuation on `attachChain`, and this function runs
     // synchronously inside the seed's own continuation, so no later
@@ -1441,7 +1441,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       resizeTerminalForSnapshot(entry, snapshot.cols, snapshot.rows);
     }
 
-    // #1363 plan 3.4.2: EVERY attach re-seeds, reset first. Dropping the seed
+    // Plan 3.4.2: EVERY attach re-seeds, reset first. Dropping the seed
     // on re-attach would preserve the retained xterm's deeper scrollback but
     // hide everything the session produced while this window was detached —
     // a silent content gap, which is the worse failure. The settle sequence
@@ -1450,10 +1450,10 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     void replaySnapshotFenced(sessionId, entry, snapshot, generation);
   };
 
-  // ── #1363 attach / detach ─────────────────────────────────────────────────
+  // ── Attach / detach ─────────────────────────────────────────────────
 
   const beginSeed = (sessionId: string, entry: SessionTerminalEntry): number => {
-    // #1489: every attach bumps the generation (invalidating every async
+    // Every attach bumps the generation (invalidating every async
     // continuation of older attachments of this session) and resets the
     // attach-window user-scroll marker. The drain itself is created once and
     // reused across generations: it must keep fencing this entry's queued
@@ -1579,7 +1579,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
           return; // the entry went away while this transition was queued
         }
 
-        // #1528 - request the seed snapshot only after this window's fitted
+        // Request the seed snapshot only after this window's fitted
         // grid is imposed on the PTY. The snapshot then arrives at the fitted
         // grid, `resizeTerminalForSnapshot` no-ops, the settle `fit()` no-ops,
         // and replay never resizes a populated buffer: the initial attach
@@ -1588,7 +1588,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
         // now-visible container (ResizeObserver delivery precedes rAF
         // callbacks in the same frame); fit to that container; clear the
         // dedup key so this imposition can never be deduplicated away by a
-        // stale key (#1439) or by the fit's own fire-and-forget onResize
+        // stale key or by the fit's own fire-and-forget onResize
         // send; then await the typed resize so the backend parser grid is
         // updated before `attachOutput` captures the snapshot. The frame wait
         // is skipped while the document is hidden: Chromium/WebView2 suspend
@@ -1647,7 +1647,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       });
   };
 
-  // #1682 - the only writer of the stamp element. Monotonic: a value applies
+  // The only writer of the stamp element. Monotonic: a value applies
   // only when it parses AND is strictly newer than what is rendered, so a late
   // hydration can never overwrite a newer event that already landed on this
   // entry, and a null or unparseable value can never blank a good rendering.
@@ -1663,7 +1663,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     entry.agentMessageStatus.hidden = false;
   };
 
-  // #1682 - reconcile a newly visible session against disk, so a terminal that
+  // Reconcile a newly visible session against disk, so a terminal that
   // missed the event still shows the persisted value. Rejection is expected in
   // browser mode (no dispatcher entry): a blank chip is the correct degradation.
   // Both guards answer different questions: the identity guard drops a result
@@ -1698,8 +1698,8 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     transitionAttachment(sessionId);
   };
 
-  // One writer for both transports (#1363 criterion H'). The visibility filter
-  // is the #1283 fix F keeps: a retained but hidden terminal never receives a
+  // One writer for both transports. The visibility filter
+  // is the fix F keeps: a retained but hidden terminal never receives a
   // write. Browser events carry no `sequence` and never enter a seed, so they
   // are written straight through.
   const handlePtyOutput = (event: PtyOutputEvent): void => {
@@ -1754,7 +1754,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       registry.remove(id);
     });
 
-    // #1682 - the lookup is by the payload's `sessionId`, not by
+    // The lookup is by the payload's `sessionId`, not by
     // `visibleSessionId`: a retained but hidden terminal stays correct and shows
     // the right value the moment it is shown again.
     unlistenAgentMessage = await onSessionAgentMessage(({ sessionId, at }) => {
@@ -1763,7 +1763,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
       applyAgentMessage(entry, at);
     });
 
-    // #1682 - this chain can outlive the component. Unmount is frequent and
+    // This chain can outlive the component. Unmount is frequent and
     // needs no window close: `shouldMountTerminal` drops this component whenever
     // the selection leaves live mode. When that happens while the chain is
     // suspended, `onCleanup` has already run past every holder below, so a
@@ -1773,7 +1773,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     // the early return is what keeps the registrations below from leaking too.
     //
     // Deliberately partial. The registrations ABOVE this point carry the same
-    // race, it predates #1682, and closing it for them is tracked separately
+    // race, and closing it for them is tracked separately
     // rather than widened into the last phase of this delivery.
     if (unmounted) {
       unlistenAgentMessage?.();

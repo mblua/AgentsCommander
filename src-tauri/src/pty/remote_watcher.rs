@@ -1,4 +1,4 @@
-//! #2064 Phase A - the remote activity producer.
+//! The remote activity producer.
 //!
 //! One polling sweeper answers two questions per repo: is CI running on the
 //! repo's exact `HEAD`, and is the repository's default branch ahead of it. Both
@@ -113,13 +113,13 @@ const SECONDARY_BACKOFF_BASE: Duration = Duration::from_secs(60);
 /// notice is NEVER suppressed for want of it.
 const DEFAULT_BRANCH_LABEL: &str = "the default branch";
 
-/// #2129 - the rendered `%BASE%` for a branch-stale notice. The comparison is
+/// The rendered `%BASE%` for a branch-stale notice. The comparison is
 /// `repos/<nwo>/compare/HEAD...<sha>`, answered by GitHub, so the text says
 /// GitHub and never `origin/<x>`: a local remote may be named otherwise, be
 /// stale, or not exist. The branch name is never printed twice: an unresolved
 /// base keeps its sentinel prose, and a base equal to the branch is named by
 /// relation. The raw label is left untouched everywhere else, because the
-/// #2131 suppression compares it for identity.
+/// suppression compares it for identity.
 pub(crate) fn base_branch_display(branch: &str, base_label: &str) -> String {
     if base_label == DEFAULT_BRANCH_LABEL {
         format!("{DEFAULT_BRANCH_LABEL} on GitHub")
@@ -171,7 +171,7 @@ pub(crate) struct RemoteActivity {
     ci: CiState,
     staleness: StalenessState,
     behind_by: Option<u32>,
-    /// #2473 snapshot-only detail: in-progress run ids and their PR numbers
+    /// Snapshot-only detail: in-progress run ids and their PR numbers
     /// (non-empty only while `ci` is `Running`) and the failure behind an
     /// `Unknown` chip. Never part of `RemoteActivityPayload`.
     run_ids: Vec<u64>,

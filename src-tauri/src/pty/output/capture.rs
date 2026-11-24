@@ -3,7 +3,7 @@
 //! screen into the `terminal_snapshot_renderer` model.
 //! It does NOT feed bytes to the parser or answer screen queries; `delivery` and `screen` do.
 
-use super::{ParserAvailability, ReaderOperationGate, RegisteredPtyOutputTarget};
+use super::target::{ParserAvailability, ReaderOperationGate, RegisteredPtyOutputTarget};
 use crate::pty::backend_kind::SessionBackendKind;
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
@@ -29,15 +29,15 @@ pub(super) struct ScreenReplayState {
     /// for a ring that is still growing from the first byte the session emitted, and is
     /// corrected by `append_history` both when a trim moves the front and when an oversized
     /// chunk installs a truncated one. Conservative in one direction only: `false` never
-    /// means the front is definitely unsafe, it means nothing proved it safe (#1458).
+    /// means the front is definitely unsafe, it means nothing proved it safe.
     pub(super) history_aligned: bool,
     /// The last grid the `ConPTY` actually took (rows, cols): recorded by every
     /// follow call BEFORE the skippable steps, so a skipped or failed
-    /// `set_size` leaves a visible divergence for the attach reconcile (#1439).
+    /// `set_size` leaves a visible divergence for the attach reconcile.
     /// On transport backends (container) the follow runs after merely queuing
     /// the resize frame, so there this records the size last REQUESTED of the
     /// remote, not necessarily taken; the local backend's `if sent` gate is
-    /// what keeps the record honest where #1439 lives.
+    /// what keeps the record honest on the local backend.
     pub(super) conpty_size: (u16, u16),
 }
 

@@ -42,7 +42,7 @@ pub(crate) enum UpdaterStepOutcome {
     /// the `ContainedSpawnError::Containment` arm. On Unix `TargetProcessOwner::spawn` uses
     /// a plain spawn, which can fail but has no containment step to fail, so the variant is
     /// never produced and `dead_code` is correct to say so.
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(not(windows), allow(dead_code, reason = "only produced on Windows"))]
     ContainmentFailed,
 }
 
@@ -561,7 +561,7 @@ pub(crate) async fn wait_for_target_cancellation(cancel: &mut tokio::sync::watch
 /// no stdin, output tail-captured concurrently with the wait (a chatty command
 /// must never block on the 64KB pipe buffer). Per-step timeout kills the WHOLE
 /// tree (Windows `JobObject`, Unix process-group kill).
-/// #2589 - one updater step's process, with `search_path` as its PATH so a
+/// One updater step's process, with `search_path` as its PATH so a
 /// GUI-launched app finds agents installed in the user's bin dirs.
 fn build_update_step_command(
     cmd: &str,

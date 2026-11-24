@@ -1,4 +1,4 @@
-//! (#1001 PR1) The wake-consumption oracle: pure decision core.
+//! The wake-consumption oracle: pure decision core.
 //!
 //! Two dead oracles (dev-rust's bare `waiting_for_input` flip, §14.1's
 //! post-submit activity gate) both observed the PTY OUTPUT stream, and the echo
@@ -26,13 +26,25 @@ pub(crate) enum ConsumptionVerdict {
     /// Idle at inject AND the chosen consumed-signal was observed within the
     /// window: consumption confirmed.
     // Built only by the `cfg(test)` `consumption_verdict` until A (PR3) wires it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "built only by the cfg(test) consumption_verdict until PR3 wires it"
+        )
+    )]
     Observed,
     /// Idle at inject, no consumed-signal yet. Returned every tick the session
     /// stays idle-without-signal; the driver converts a `Pending` that survives
     /// to `elapsed >= window` into the not-consumed result.
     // Built only by the `cfg(test)` `consumption_verdict` until A (PR3) wires it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "built only by the cfg(test) consumption_verdict until PR3 wires it"
+        )
+    )]
     Pending,
     /// Not idle at inject (busy / mid-turn). Consumption cannot be attributed to
     /// this wake, so the write-receipt (bias-to-deliver) semantics are preserved

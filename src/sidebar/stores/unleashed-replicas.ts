@@ -5,7 +5,7 @@ import type { AcAgentReplica } from "../../shared/types";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 
 /**
- * #4752 - user overrides of the discovery `unleashed` flag, keyed by the
+ * User overrides of the discovery `unleashed` flag, keyed by the
  * normalized replica path. An override is written only after the backend
  * accepted the toggle, so the menu label never runs ahead of the stored flag.
  * It also owns the open confirmation prompt and its busy state.

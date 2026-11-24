@@ -14,7 +14,7 @@ import { projectStore } from "../stores/project";
 import { replicaVolatileStore } from "../stores/replica-volatile";
 import { automationIdPart as AP } from "./replica-repo-badges";
 
-// #1028/#1078 - the repo badge's letters go red when that repo has local work not
+// The repo badge's letters go red when that repo has local work not
 // confirmed by cached origin tracking: a dirty worktree, but also a clean local-ahead
 // commit, a missing/gone origin target, or a detached HEAD.
 //
@@ -96,7 +96,7 @@ async function renderDormantRepoRow(fake: FakeTransport, repoPaths: string[]) {
   return rendered;
 }
 
-describe("ProjectPanel dirty repo badge (#1028)", () => {
+describe("ProjectPanel dirty repo badge", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -175,7 +175,7 @@ describe("ProjectPanel dirty repo badge (#1028)", () => {
         expect(badge.textContent).toBe("AgentsCommander/main");
         expect(badge.classList.contains("dirty")).toBe(false);
         expect(badge.className).toBe("ac-discovery-badge branch");
-        // A detected-clean repo keeps the bare path, exactly as before #1028.
+        // A detected-clean repo keeps the bare path, exactly as before the badge.
         expect(badge.title).toBe(REPO_A);
       });
     } finally {

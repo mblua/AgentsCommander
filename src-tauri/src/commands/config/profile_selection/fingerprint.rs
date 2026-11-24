@@ -1,12 +1,13 @@
+//! Fingerprints for profile selection approvals (assign, remove, defaults),
+//! so a stale approval is rejected. Owns no state; it hashes inputs. Does not
+//! write selections.
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use crate::config::settings::SettingsState;
 use crate::session::session::SessionInfo;
-
-use super::read_agent_file_source_inner;
 
 use super::wire::{
     AssignmentMode, ConflictDecision, ProfileAssignmentScope, SelectionDecisionProjection,
@@ -15,7 +16,7 @@ use super::wire::{
 
 use super::target::{canonical_compare_key, target_pair, ProfileTargetEnumeration};
 
-// ── #1941 selection fingerprints ───────────────────────────────────────────
+// ── Selection fingerprints ─────────────────────────────────────────────────
 //
 // Fingerprints are lowercase SHA-256 of a typed serde tuple with a schema tag.
 // The complete candidate list (pair, flag, identity state and the live-session
@@ -261,7 +262,7 @@ pub(crate) fn assignment_fingerprint(
     sha256_hex(&tuple)
 }
 
-/// #1941 - a removal fingerprint binds only the operation, scope, anchor and
+/// A removal fingerprint binds only the operation, scope, anchor and
 /// each candidate's pair/flag/identity state; removal has no session operation.
 pub(crate) fn removal_fingerprint(
     enumeration: &ProfileTargetEnumeration,
@@ -304,96 +305,6 @@ pub(crate) fn source_selection_fingerprint(
     marker: Option<&str>,
 ) -> Result<String, String> {
     sha256_hex(&("source-selection-v1", target_fingerprint, ticket, marker))
-}
-
-/// Prepare a manual setter from a freshly authorized physical source. Publication
-/// remains a separate guarded step so no source IO enters the config layer.
-#[allow(dead_code, reason = "no caller; deleting it unuses code outside #3595")]
-pub(crate) async fn prepare_source_profile_override(
-    settings: &SettingsState,
-    replica_path: &Path,
-    profile: &str,
-) -> Result<
-    (
-        crate::config::coding_agent_profiles::ReplicaSelectionExpectation,
-        crate::config::coding_agent_profiles::PreparedSourceSelection,
-    ),
-    String,
-> {
-    use crate::config::coding_agent_profiles::{
-        read_replica_selection_state, resolve_profile, PreparedSourceSelection,
-        ProfileResolutionRequest, ReplicaSelectionPair,
-    };
-    use crate::config::settings::{agent_file_projection, configuration_identity, pair_identity};
-    let profile = crate::config::settings::normalize_profile_letter(profile)
-        .ok_or("Profile must be a single letter A through Z")?;
-    let host = settings
-        .current_snapshot()
-        .await
-        .map_err(|e| e.to_string())?;
-    let validated = crate::config::coding_agent_profiles::validate_profile_selection_agent_path(
-        &host,
-        replica_path,
-    )?;
-    let expected = read_replica_selection_state(&validated.launch_path).expectation()?;
-    let mut reference = expected
-        .configuration_ref
-        .clone()
-        .ok_or("source reference required")?;
-    let snapshot = read_agent_file_source_inner(settings, reference.source.clone()).await?;
-    let hint = reference
-        .legacy_entry_hint
-        .as_deref()
-        .ok_or("source hint required")?;
-    let matches: Vec<_> = snapshot
-        .rows
-        .iter()
-        .filter(|row| row.entry_hint == hint)
-        .collect();
-    if matches.len() != 1
-        || !matches[0].launchable
-        || matches[0].base_hash.as_deref() != Some(reference.calculated_id.as_str())
-    {
-        return Err("stored source selection is unavailable or changed".into());
-    }
-    let scoped = agent_file_projection(&snapshot)?;
-    let agents: Vec<_> = scoped
-        .agents
-        .iter()
-        .filter(|agent| agent.id == hint)
-        .collect();
-    if agents.len() != 1
-        || configuration_identity(&agents[0].command, &agents[0].envs) != reference.calculated_id
-    {
-        return Err("stored source identity is missing or ambiguous".into());
-    }
-    let resolution = resolve_profile(
-        &scoped,
-        ProfileResolutionRequest {
-            coding_agent_id: hint,
-            launch_path: None,
-            agent_matrix_name: None,
-            requested_profile: Some(&profile),
-            requested_profile_authoritative: true,
-        },
-    );
-    reference.profile_calculated_id = Some(pair_identity(
-        &agents[0].command,
-        &agents[0].envs,
-        &resolution.cell,
-    ));
-    if reference.requested_profile.is_some() {
-        reference.requested_profile = Some(profile.clone());
-    }
-    let prepared = PreparedSourceSelection {
-        pair: ReplicaSelectionPair {
-            coding_agent_id: hint.to_owned(),
-            requested_profile: profile,
-        },
-        configuration_ref: reference,
-        profile_override_source: Some("manual".into()),
-    };
-    Ok((expected, prepared))
 }
 
 pub(crate) struct AssignmentSnapshot {
@@ -593,7 +504,7 @@ pub(crate) fn assignment_write_intent(
     }
 }
 
-/// #1941 - classify a guarded-write error into the wire error vocabulary while
+/// Classify a guarded-write error into the wire error vocabulary while
 /// preserving the original message and paths.
 pub(crate) fn selection_error_code(message: &str) -> &'static str {
     if message.starts_with("stale replica selection") {
@@ -603,7 +514,7 @@ pub(crate) fn selection_error_code(message: &str) -> &'static str {
     } else if message.contains("configLockTimeout") {
         "configLockTimeout"
     } else if message.contains("'tooling' must be a JSON object in the tracked config file") {
-        // #2816 (C3) - the pair's cleanup rejects a malformed TRACKED `tooling`
+        // The pair's cleanup rejects a malformed TRACKED `tooling`
         // before the closure runs, so the pre-C3 `invalid replica selection ...`
         // text no longer reaches here. Same classification, new spelling. The
         // state-side text is deliberately NOT matched: see consequence 4.
@@ -613,7 +524,7 @@ pub(crate) fn selection_error_code(message: &str) -> &'static str {
     }
 }
 
-/// #1941 - count the protected replicas left after an operation. `None` means
+/// Count the protected replicas left after an operation. `None` means
 /// the total cannot be established (incomplete membership or an invalid state),
 /// never a false zero.
 pub(crate) fn refresh_locked_count(enumeration: &ProfileTargetEnumeration) -> Option<usize> {

@@ -15,11 +15,11 @@ import { sessionsStore } from "./stores/sessions";
 import type { AgentConfig, Session } from "../shared/types";
 import { automationIdPart as AP } from "./components/replica-repo-badges";
 
-// #1033 - the wiring, end to end, through the REAL App listener and the REAL
+// The wiring, end to end, through the REAL App listener and the REAL
 // mount-time hydration: backend event / snapshot -> ipc -> store -> projection -> DOM.
 //
 // This mounts SidebarApp rather than re-declaring the listener inside the test,
-// because the listener and its ordering ARE the thing under test. #1032's engine
+// because the listener and its ordering ARE the thing under test. The scrape engine
 // emits ONLY on change, so a listener alone leaves a reloaded sidebar reading N/A
 // forever against a session that is plainly sitting at 42%.
 
@@ -137,7 +137,7 @@ async function mounted(fake: FakeTransport) {
   return rendered;
 }
 
-describe("SidebarApp CTX badge workflow (#1033)", () => {
+describe("SidebarApp CTX badge workflow", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -378,10 +378,10 @@ describe("SidebarApp CTX badge workflow (#1033)", () => {
   });
 });
 
-// #2482 p6 - the weekly-quota fill on the ORIGIN agent chip, through the REAL
+// The weekly-quota fill on the ORIGIN agent chip, through the REAL
 // App listener and the REAL mount-time snapshot. Every case asserts the NodeList
 // length first: a missing chip must fail, never pass a "no quota-fill" check.
-describe("SidebarApp weekly-quota workflow (#2482)", () => {
+describe("SidebarApp weekly-quota workflow", () => {
   let cleanupDom: (() => void) | null = null;
 
   const originChip = (root: Element) =>
@@ -521,7 +521,7 @@ describe("SidebarApp weekly-quota workflow (#2482)", () => {
     }
   });
 
-  // #2482 p7 - the ROOM-REPLICA chip, the one in the user's screenshot.
+  // The ROOM-REPLICA chip, the one in the user's screenshot.
   const replicaChip = (root: Element) =>
     root.querySelectorAll<HTMLElement>(
       `[data-ac-testid="${quickRowId}"] .ac-discovery-badge.agent`,

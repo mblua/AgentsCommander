@@ -1,6 +1,6 @@
 use super::*;
 
-/// #2124 T14 - the pure launch resolver: session -> effective catalog entry
+/// The pure launch resolver: session -> effective catalog entry
 /// correspondence, then the burst subfields with the profile defaults.
 #[test]
 fn resolve_launch_idle_tuning_matches_the_effective_catalog_entry() {
@@ -49,7 +49,7 @@ fn resolve_launch_idle_tuning_matches_the_effective_catalog_entry() {
     assert_eq!(resolved.idle_threshold, per_kind.idle_threshold);
     assert_eq!(resolved.resize_grace, per_kind.resize_grace);
 
-    // #2156 - an entry with `idleBurst: null` means no override, so the
+    // An entry with `idleBurst: null` means no override, so the
     // per-kind filter stays ON.
     let off = catalog_rows(serde_json::json!([claude_entry(serde_json::Value::Null)]));
     let resolved = resolve_launch_idle_tuning(
@@ -61,7 +61,7 @@ fn resolve_launch_idle_tuning_matches_the_effective_catalog_entry() {
     assert_eq!(resolved, per_kind);
 
     // No agent id, no configured agent, or no matching command: the
-    // override is dropped. #2156 - the per-kind tuning then decides, so a
+    // override is dropped. The per-kind tuning then decides, so a
     // recognised kind keeps the filter ON and an unrecognised one is OFF.
     for (agent_id, command, agent_kind) in [
         (None, "claude", Some(CodingAgentKind::Claude)),
@@ -112,7 +112,7 @@ fn resolve_launch_idle_tuning_matches_the_effective_catalog_entry() {
     assert_eq!(resolved.burst_max_bytes, 222, "the identical command wins");
 }
 
-/// #2124 T15 - from the seeded files on disk to the resolved tuning: an
+/// From the seeded files on disk to the resolved tuning: an
 /// `agents.50.personal.no-git.json` edit applies at the next spawn without touching
 /// `settings.agents[]`.
 #[test]
@@ -488,7 +488,7 @@ fn cred_plan() -> ContainerCredentialPlan {
 
 #[test]
 fn injected_config_dir_defaults_to_copy_dir_and_maps_into_container() {
-    // #930 - host-login copy will happen (plan Some) and the user set no
+    // Host-login copy will happen (plan Some) and the user set no
     // CLAUDE_CONFIG_DIR -> inject the copy dir (host path), which the container
     // env translation maps to /workspace/.claude so the copied token is read.
     let plan = cred_plan();
@@ -515,7 +515,7 @@ fn injected_config_dir_defaults_to_copy_dir_and_maps_into_container() {
 
 #[test]
 fn injected_config_dir_respects_explicit_user_value() {
-    // #930 - the user already configured CLAUDE_CONFIG_DIR; never overwrite it,
+    // The user already configured CLAUDE_CONFIG_DIR; never overwrite it,
     // even though a copy plan exists.
     assert_eq!(
         injected_claude_config_dir_for_copy(Some(&cred_plan()), true),
@@ -525,7 +525,7 @@ fn injected_config_dir_respects_explicit_user_value() {
 
 #[test]
 fn injected_config_dir_none_without_copy_plan() {
-    // #930 - host-login-reuse off or no host creds => no plan => inject nothing,
+    // Host-login-reuse off or no host creds => no plan => inject nothing,
     // even when the user set no CLAUDE_CONFIG_DIR.
     assert_eq!(injected_claude_config_dir_for_copy(None, false), None);
 }
@@ -589,7 +589,7 @@ fn container_path_context_refuses_junction_targeting_workgroup_root() {
     let err = container_path_context_for_cwd(link.to_str().unwrap())
         .expect_err("junction to workgroup root must be refused");
 
-    // #1614 section 9.3 clause 1: the string this pins is produced in a
+    // Section 9.3 clause 1: the string this pins is produced in a
     // DIFFERENT file, pty/container_paths.rs, which section 5.3 renames
     // under Rule R. The fixture below stays a legacy `wg-*` directory
     // (Rule P2) precisely so this proves the refusal still fires for one.

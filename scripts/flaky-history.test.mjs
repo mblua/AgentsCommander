@@ -162,6 +162,59 @@ test('9: release_ready is a state from the pass streak', () => {
   assert.deepEqual(releaseIds(h), []);
 });
 
+test('4920 history cross-platform tie', () => {
+  const history = emptyHistory();
+  const candidates = [
+    { id: 'a', platform: 'Linux', flaky: 2, passes: 16 },
+    { id: 'A', platform: 'Windows-X64', flaky: 2, passes: 16 },
+    { id: 'é', platform: 'Linux', flaky: 3, passes: 14 },
+  ];
+  for (const { id, platform, flaky, passes } of candidates) {
+    for (let i = 0; i < flaky; i += 1) {
+      const sha = `flaky-${id}-${i}`;
+      ingest(history, { sha, outcomes: { [id]: 'fail' }, extra: { platform } });
+      ingest(history, { sha, outcomes: { [id]: 'pass' }, extra: { platform } });
+    }
+    for (let i = 0; i < passes; i += 1) {
+      ingest(history, {
+        sha: `pass-${id}-${i}`, outcomes: { [id]: 'pass' }, extra: { platform },
+      });
+    }
+  }
+
+  const report = buildReport(history, TODAY, {});
+  assert.deepEqual(report.quarantine_candidates, ['é', 'A', 'a']);
+  assert.equal(JSON.stringify(report.quarantine_candidates), '["é","A","a"]');
+
+  const serialized = JSON.parse(JSON.stringify(report));
+  assert.deepEqual(
+    serialized.tests.map(({ key, executed, flaky_shas }) => [key, executed, flaky_shas]),
+    [['cargo|Linux|a', 20, 2], ['cargo|Linux|é', 20, 3], ['cargo|Windows-X64|A', 20, 2]],
+  );
+  assert.deepEqual(Object.keys(serialized.candidates), ['é', 'A', 'a']);
+  assert.deepEqual(serialized.candidates['é'].evidence, [
+    { platform: 'Linux', sha: 'flaky-é-0', last_day: '2026-11-30' },
+    { platform: 'Linux', sha: 'flaky-é-1', last_day: '2026-11-30' },
+    { platform: 'Linux', sha: 'flaky-é-2', last_day: '2026-11-30' },
+  ]);
+});
+
+test('4920 release-ready pass streaks are ordered by code unit', () => {
+  const history = emptyHistory();
+  for (let i = 0; i < 50; i += 1) {
+    ingest(history, { sha: `streak-${i}`, outcomes: { z: 'pass', Z: 'pass' } });
+  }
+
+  const { release_ready } = buildReport(history, TODAY, {});
+  assert.deepEqual(release_ready, [
+    { test_id: 'Z', streak: 50, streak_since: '2026-11-30' },
+    { test_id: 'z', streak: 50, streak_since: '2026-11-30' },
+  ]);
+  assert.equal(JSON.stringify(release_ready),
+    '[{"test_id":"Z","streak":50,"streak_since":"2026-11-30"},' +
+    '{"test_id":"z","streak":50,"streak_since":"2026-11-30"}]');
+});
+
 function reportWith(ids) {
   const tests = ids.map((id, i) => ({
     key: `cargo|Linux|${id}`, suite: 'cargo', platform: 'Linux', test_id: id,

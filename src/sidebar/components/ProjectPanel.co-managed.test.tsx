@@ -18,7 +18,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { automationIdPart } from "./replica-repo-badges";
 import type { CoManagedConfig, CoManagedState, OffReason } from "../../shared/types";
 
-// #2232 phase 9 / #2408 - per-room Co-managed enablement is a check item in the
+// Per-room Co-managed enablement is a check item in the
 // orchestrator's replica context menu (active and inactive). Every test drives
 // the real panel against a FakeTransport, so a call the UI never makes fails
 // here rather than in a running app.
@@ -195,7 +195,7 @@ async function mountWithReason(reason: OffReason, config?: CoManagedConfig) {
   return mounted;
 }
 
-describe("ProjectPanel Co-managed menu entry (#2232 phase 9, #2408)", () => {
+describe("ProjectPanel Co-managed menu entry (phase 9)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

@@ -1,5 +1,7 @@
 //! Complete version-probe lifetime: bounded output, retained native ownership and settlement.
 
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Stdio;
@@ -27,7 +29,7 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Sanitized diagnostic length, in characters.
 pub const DETAIL_MAX_CHARS: usize = 160;
 
-/// #1551 - remove every ANSI CSI/OSC sequence, then every remaining control
+/// Remove every ANSI CSI/OSC sequence, then every remaining control
 /// character, then trim. A lone `ESC` or an unterminated sequence swallows the
 /// rest of the line (there is no cross-line state: each line stands alone).
 pub(crate) fn strip_ansi_and_controls(line: &str) -> String {
@@ -89,7 +91,7 @@ fn skip_osc_chars(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> bool 
     terminated
 }
 
-/// #1551 - every `\n` AND every `\r` is a line break (so `\r\n` yields an empty
+/// Every `\n` AND every `\r` is a line break (so `\r\n` yields an empty
 /// line between), each piece sanitized, empty results skipped, order preserved.
 pub fn text_lines(text: &str) -> impl Iterator<Item = String> + '_ {
     text.split(['\n', '\r'])
@@ -97,16 +99,20 @@ pub fn text_lines(text: &str) -> impl Iterator<Item = String> + '_ {
         .filter(|line| !line.is_empty())
 }
 
-/// #1551 - the first line that carries visible text after sanitizing.
+/// The first line that carries visible text after sanitizing.
 pub fn first_text_line(text: &str) -> Option<String> {
     text_lines(text).next()
 }
 
-/// #1551 - the version token of the FIRST text line only. A banner line before
+/// The version token of the FIRST text line only. A banner line before
 /// the version is reported as `no version in output: <that line>` by the caller;
 /// scanning further lines would trade that for false positives (plan section 10).
 pub fn parse_version_token(text: &str) -> Option<String> {
     static VERSION_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    #[allow(
+        clippy::expect_used,
+        reason = "the version regex is a fixed, valid literal"
+    )]
     let re = VERSION_RE
         .get_or_init(|| Regex::new(r"\bv?(\d+(?:\.\d+)+)").expect("version regex is valid"));
     let line = first_text_line(text)?;
@@ -115,7 +121,7 @@ pub fn parse_version_token(text: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
-/// #1551 - a bounded, single-line, ANSI-free diagnostic. Callers substitute
+/// A bounded, single-line, ANSI-free diagnostic. Callers substitute
 /// `<empty>` / `<no output>` when it is empty.
 pub fn sanitize_detail(raw: &[u8]) -> String {
     let text = String::from_utf8_lossy(raw);
@@ -176,7 +182,7 @@ fn parse_probe_completion(
     }
 }
 
-/// #1551 - run `<program> <args>` with a bound and read its version.
+/// Run `<program> <args>` with a bound and read its version.
 ///
 /// argv only, never a shell string; stdin closed; no console window on Windows;
 /// its own process group on Unix; the whole tree dies on timeout. The update
@@ -192,7 +198,7 @@ pub async fn probe_version(program: &Path, args: &[&str], timeout: Duration) -> 
     .await
 }
 
-/// #2589 - `probe_version` with an explicit PATH for the probe process, so an
+/// `probe_version` with an explicit PATH for the probe process, so an
 /// agent whose shebang is `#!/usr/bin/env node` finds its interpreter.
 pub async fn probe_version_in(
     program: &Path,
@@ -277,6 +283,10 @@ where
     debug_assert!(!owner_slot.is_some());
     owner_slot.owner = Some(owner);
     owner_installed();
+    #[allow(
+        clippy::expect_used,
+        reason = "the owner was stored in the slot two lines above"
+    )]
     let owner = owner_slot.owner.as_mut().expect("retained probe owner");
     let waited = owner.wait(timeout, cancel).await;
     let (settlement, cancellation_was_observed) = owner

@@ -1,4 +1,4 @@
-//! Backend quit gate (#2296).
+//! Backend quit gate.
 
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
-// #2296 — backend quit gate.
+// Backend quit gate.
 //
 // Closing the main window must not kill the app while another window still
 // holds unsaved work. Every window that owns such work registers as a *gate*;
@@ -165,7 +165,7 @@ pub trait QuitGateHost: Send + Sync + 'static {
     fn exit(&self, code: i32);
 }
 
-/// #2563 - closes detached terminal windows at the moment quit is decided,
+/// Closes detached terminal windows at the moment quit is decided,
 /// before the blocking `RunEvent::Exit` work, then exits.
 pub(crate) fn exit_closing_detached(host: &dyn QuitGateHost) {
     let closed = host.close_detached_terminals();

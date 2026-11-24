@@ -1,6 +1,6 @@
 use super::*;
 
-// ── #2348 - whole-settings writers inherit central placement preservation ──
+// ── whole-settings writers inherit central placement preservation ──
 
 fn placement_geometry(x: f64, y: f64) -> WindowGeometry {
     WindowGeometry {

@@ -24,7 +24,7 @@ const params = (token: string | null) =>
   new URLSearchParams(token === null ? "" : { [REMOTE_TOKEN_KEY]: token });
 const storage = (stored: string | null) => ({ getItem: () => stored });
 
-describe("remote token (#2646)", () => {
+describe("remote token", () => {
   it("accepts only a lowercase hyphenated UUID", () => {
     expect(isRemoteToken(VALID)).toBe(true);
     for (const value of [...INVALID, null, undefined]) {

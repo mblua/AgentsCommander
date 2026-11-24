@@ -40,7 +40,7 @@ async fn secondary_rate_limit_backs_off_one_minute() {
     );
 }
 
-/// #2329: a failing CI query on the resolved default branch keeps the chip
+/// A failing CI query on the resolved default branch keeps the chip
 /// idle instead of falling back to Unknown, but the failure itself is not
 /// swallowed: the per-key backoff and the round gate match the kind, and the
 /// early next round issues no call at all. `branchStalenessEnabled` is off

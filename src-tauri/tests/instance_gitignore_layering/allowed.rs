@@ -1,7 +1,7 @@
 /// Every `(file, child)` reference the guarded module is allowed to make under
 /// `crate::`, sorted.
 ///
-/// #3327 permits only `instance_gitignore` -> filesystem for physical ignore IO.
+/// Permits only `instance_gitignore` -> filesystem for physical ignore IO.
 /// The `instance_ignore` leaf uses std/OS bindings with no app path back.
 /// Equality still rejects every other crate reference.
 pub(crate) const ALLOWED_GUARDED_CRATE_REFERENCES: [(&str, &str); 1] =
@@ -385,7 +385,7 @@ pub(crate) const ALLOWED_GUARDED_SUPER_REFERENCES: [(&str, &str); 93] = [
 /// Every `(file, child)` reference the constant's home is allowed to make under
 /// `crate::`, sorted.
 ///
-/// #3534 permits only the configuration write probe leaf under filesystem.
+/// Permits only the configuration write probe leaf under filesystem.
 /// The host spelling guard and leaf observation prevent an app return path.
 pub(crate) const ALLOWED_HOST_CRATE_REFERENCES: [(&str, &str); 1] =
     [("src/config.rs", "filesystem")];
@@ -407,7 +407,7 @@ pub(crate) const ALLOWED_HOST_SUPER_REFERENCES: [(&str, &str); 0] = [];
 /// `x` name the same item, so this anchor is a second spelling of every path
 /// that begins at the module itself, and this module has no such path today.
 ///
-/// #1273 review, entry 17: before this table existed, `self::` was scanned under
+/// Review, entry 17: before this table existed, `self::` was scanned under
 /// no anchor anywhere in this file, so it was a free spelling for reaching
 /// anything in scope. An empty equality refuses the whole class rather than the
 /// one name `root_agent`.
@@ -420,7 +420,7 @@ pub(crate) const ALLOWED_GUARDED_SELF_REFERENCES: [(&str, &str); 0] = [];
 /// `src/config.rs`, `self::` means `crate::config`, so
 /// `use self::root_agent::...;` reaches a knot member from the module whose
 /// zero-outgoing-arc property the whole of #1273 Section 4.3 rests on. Measured
-/// during the #1273 review: that one line took the knot 87 to **91** and
+/// during the review: that one line took the knot 87 to **91** and
 /// `sccSize(config::instance_gitignore)` 1 to **91**, with the guard green,
 /// because no anchor here was reading `self::` at all. Unlike entry 13 the
 /// detector is **not** blind to it: `self::` resolves and the arc is recorded.
@@ -475,7 +475,7 @@ pub(crate) const FORBIDDEN_NAME: &str = "root_agent";
 pub(crate) const CRATE_ANCHOR: &str = "crate::";
 pub(crate) const SUPER_ANCHOR: &str = "super::";
 
-/// The third anchor, added by the #1273 review to close entry 17.
+/// The third anchor, added by the review to close entry 17.
 ///
 /// `self::` is a legal prefix on any path that starts at the current module, so
 /// leaving it unscanned left a spelling that reached every child of the module
@@ -506,7 +506,7 @@ pub(crate) const CONSTANT_HOME: &str = "src/config.rs";
 /// is this, taken **before** the observed set is deduplicated. See entry 9 of the
 /// uncovered list for why the count exists at all.
 ///
-/// #1273 review, entries 14 and 15: this count used to be the number of
+/// Review, entries 14 and 15: this count used to be the number of
 /// occurrences of the literal text `use super::*;`. Neither
 /// `use super::super::*;` nor `use super::{*};` contains that text, so both were
 /// measured slipping past a count whose whole purpose was to be exactly 1, while

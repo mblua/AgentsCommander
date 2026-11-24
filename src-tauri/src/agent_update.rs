@@ -1,4 +1,4 @@
-//! Issue #1327 - startup coding-agent update flow.
+//! Startup coding-agent update flow.
 //!
 //! At GUI startup a detached task (spawned in `lib.rs` setup, BEFORE the restore
 //! task is submitted) plans and runs the per-command `updateCommands` sequences
@@ -232,12 +232,12 @@ pub struct AgentUpdateStatus {
     /// `drop_pending`, `resolve_answer`, and `mark_finished` all clear it.
     pub prompt: Option<AgentUpdatePrompt>,
     pub results: Vec<AgentUpdateResult>,
-    /// #1551 - commands whose update sequence is running, in start order.
+    /// Commands whose update sequence is running, in start order.
     pub running: Vec<AgentUpdateCommandRef>,
-    /// #1551 - policy recorded by the winning answer per prompted command this boot (resolving or
+    /// Policy recorded by the winning answer per prompted command this boot (resolving or
     /// late).
     pub answered: BTreeMap<String, bool>,
-    /// #1551 - the agents of this boot's pass in pass order (catalog order); pruned of prompts
+    /// The agents of this boot's pass in pass order (catalog order); pruned of prompts
     /// answered No or expired; kept after the pass for the summary.
     pub nodes: Vec<AgentUpdateNode>,
     #[serde(default)]
@@ -258,7 +258,7 @@ pub struct AgentUpdatePrompt {
 
 pub use target::AgentUpdateCommandRef;
 
-/// #1551 - one agent of this boot's pass in pass order; `install_before` is the
+/// One agent of this boot's pass in pass order; `install_before` is the
 /// pre-update probe result once it ran (never cached, seq 0).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -270,7 +270,7 @@ pub struct AgentUpdateNode {
     pub install_before: Option<InstallState>,
 }
 
-/// #1551 - one prompt across every surface. One critical section per gate, serialized by
+/// One prompt across every surface. One critical section per gate, serialized by
 /// `gate.answer_serial` (tokio mutex, FIFO; held across the persist await; the std `state`
 /// lock is taken twice, briefly, never across an await): classify -> persist -> claim ->
 /// emit the closure -> release the loop. The prompt loop's expiry arm takes the SAME serial
@@ -345,7 +345,7 @@ where
     }
 }
 
-/// #1551 - every agent-update event reaches Tauri windows AND WebSocket clients.
+/// Every agent-update event reaches Tauri windows AND WebSocket clients.
 /// The broadcaster is managed by `lib.rs` before `setup`; the fallback keeps unit
 /// tests that build a bare mock app working. The scrape test
 /// `agent_update_emits_only_through_emit_all` pins that this is the only

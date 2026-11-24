@@ -5,7 +5,7 @@ mod enqueue;
 
 #[test]
 fn send_after_help_documents_enqueue_receipt() {
-    // #1596: the after_help must document the `Queued:` enqueue receipt so
+    // The after_help must document the `Queued:` enqueue receipt so
     // callers know a missing receipt line means NOT enqueued.
     use clap::CommandFactory;
     let cmd = crate::cli::Cli::command();
@@ -206,7 +206,7 @@ fn wait_for_delivery_confirmation_accepts_delivered_file() {
     assert!(result.is_ok());
 }
 
-/// #1635-2 D4: a minimal delivered message carrying the daemon's receipt
+/// A minimal delivered message carrying the daemon's receipt
 /// annotations (the shape `move_to_delivered` writes for a dispatch wake).
 fn annotated_delivered_message() -> OutboxMessage {
     OutboxMessage {
@@ -445,7 +445,7 @@ fn derive_root_project_dir_returns_none_when_one_level_too_high() {
         .is_none());
 }
 
-// ── clap parse smoke: #782 --confirm-timeout ──
+// ── clap parse smoke: --confirm-timeout ──
 
 fn parse_send_args(extra: &[&str]) -> SendArgs {
     use clap::Parser;
@@ -779,7 +779,7 @@ fn p04_pty_publication_rejects_replaced_outbox_identity() {
     );
 }
 
-// ── #4780 temp-room sender and target ──
+// ── temp-room sender and target ──
 
 const TEMP_ADDR: &str = "agentscommander://temp-room/tr01";
 const COORDINATOR: &str = "proj-a:wg-1-dev-team/tech-lead";

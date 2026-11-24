@@ -37,7 +37,7 @@ pub(crate) fn run(
     ui_automation_enabled: bool,
     owners: crate::AppOwners,
 ) -> Result<(), StartupError> {
-    // #1842: FIRST STATEMENT OF run(), deliberately. GTK's Wayland backend
+    // FIRST STATEMENT OF run(), deliberately. GTK's Wayland backend
     // calls wl_display_connect(), which unsetenv()s WAYLAND_SOCKET, so a
     // session identified only by an inherited fd loses its only signal the
     // moment GTK starts. Tao initialises GTK when it builds the event loop, in
@@ -53,21 +53,39 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")]
     let display_env = crate::screenshot::display_env_snapshot();
 
-    let l = prepare_launch(&owners, test_window_placement, ui_automation_enabled)?;
+    let (l, for_exit) = prepare_launch(&owners, test_window_placement, ui_automation_enabled)?;
     let exit_ctx = exit::ExitCtx {
         detached_set: l.rs.detached_sessions.clone(),
         spec_board_state: l.rs.spec_board_state.clone(),
         activity_for_exit: Arc::clone(&owners.activity),
         session_mgr_for_exit: Arc::clone(&l.session_mgr),
-        coordinator_clocks_for_exit: l.for_exit.coordinator_clocks_for_exit,
-        shutdown_for_exit: l.for_exit.shutdown_for_exit,
-        selection_coordinator_for_exit: l.for_exit.selection_coordinator_for_exit,
-        tg_mgr_for_exit: l.for_exit.tg_mgr_for_exit,
-        resource_monitor_for_exit: l.for_exit.resource_monitor_for_exit,
-        ui_automation_state_for_exit: l.for_exit.ui_automation_state_for_exit,
+        coordinator_clocks_for_exit: for_exit.coordinator_clocks_for_exit,
+        shutdown_for_exit: for_exit.shutdown_for_exit,
+        selection_coordinator_for_exit: for_exit.selection_coordinator_for_exit,
+        tg_mgr_for_exit: for_exit.tg_mgr_for_exit,
+        resource_monitor_for_exit: for_exit.resource_monitor_for_exit,
+        ui_automation_state_for_exit: for_exit.ui_automation_state_for_exit,
     };
 
-    // #714/#1842/#2079 clipboard + global-shortcut plugins are referenced ONLY
+    let builder = plugin_builder(
+        #[cfg(target_os = "linux")]
+        display_env,
+    );
+    manage_launch(builder, &owners, l)
+        .build(tauri::generate_context!())
+        .expect("error while building application")
+        .run(crate::exit_callback(
+            exit_ctx,
+            commands::spec_board::spec_board_close_all,
+        ));
+    Ok(())
+}
+
+/// Shared plugins plus the platform-gated ones, in the original order.
+fn plugin_builder(
+    #[cfg(target_os = "linux")] display_env: crate::screenshot::DisplayEnvSnapshot,
+) -> crate::AppBuilder {
+    // Clipboard + global-shortcut plugins are referenced ONLY
     // on Windows, Linux and macOS; every other target never links them. The
     // rest of the builder chain is shared. This predicate must match
     // `Cargo.toml` and `screenshot/mod.rs`.
@@ -89,8 +107,19 @@ pub(crate) fn run(
     #[cfg(target_os = "linux")]
     let builder = builder.manage(display_env);
 
-    let builder = crate::commands::session::selection_executor::install(builder);
+    crate::commands::session::selection_executor::install(builder)
+}
 
+/// Managed state, `.setup` and the invoke handler, in the original order.
+#[allow(
+    clippy::expect_used,
+    reason = "startup aborts by design if the shared network clients cannot be built"
+)]
+fn manage_launch(
+    builder: crate::AppBuilder,
+    owners: &crate::AppOwners,
+    l: Launch,
+) -> crate::AppBuilder {
     builder
         .manage(owners.clone())
         .manage(l.boot.master_token)
@@ -103,9 +132,9 @@ pub(crate) fn run(
         .manage(Arc::clone(&l.rs.resource_monitor_state))
         .manage(l.rs.voice_tracking)
         .manage(l.rs.settings)
-        .manage(l.idle_detector) // #552 managed type: Arc<IdleDetector>
-        .manage(l.rs.coordinator_clocks) // #552 managed type: CoordinatorClocksState
-        .manage(Arc::new(crate::session::purge_guard::PurgeGuard::default())) // #885
+        .manage(l.idle_detector) // Managed type: Arc<IdleDetector>
+        .manage(l.rs.coordinator_clocks) // Managed type: CoordinatorClocksState
+        .manage(Arc::new(crate::session::purge_guard::PurgeGuard::default()))
         .manage(l.rs.detached_sessions.clone())
         .manage(l.rs.spec_board_state.clone())
         .manage(l.rs.loop_scheduler.clone())
@@ -127,15 +156,15 @@ pub(crate) fn run(
         .manage(l.shutdown_signal)
         .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
         .manage(Arc::new(PendingSelfClear::default()))
-        .manage(l.rs.screenshot_capture_state) // #714
-        .manage(l.rs.screenshot_hotkey_state) // #714
-        .manage(crate::pty::input_activity::new_state()) // #871 substantive-input tracker
+        .manage(l.rs.screenshot_capture_state)
+        .manage(l.rs.screenshot_hotkey_state)
+        .manage(crate::pty::input_activity::new_state()) // Substantive-input tracker
         .manage(l.response_close.clone())
-        .manage(crate::pty::input_activity::new_typing_hold_state()) // #2336 typing hold
+        .manage(crate::pty::input_activity::new_typing_hold_state()) // Typing hold
         .manage(crate::session::warnings::new_session_warning_state())
-        .manage(Arc::new(QuitGate::new())) // #2296 managed type: Arc<QuitGate>
+        .manage(Arc::new(QuitGate::new())) // Managed type: Arc<QuitGate>
         .setup(move |app| setup::setup(app, l.setup_ctx))
-        // (#1652) Every invoke that reaches the app handler is stamped here,
+        // Every invoke that reaches the app handler is stamped here,
         // before dispatch: the only place in the process that sees the
         // frontend -> backend direction as a stream, which is what lets
         // `[ipc-observer] SILENCE` speak about the CHANNEL and not one command.
@@ -163,13 +192,6 @@ pub(crate) fn run(
         // entered" signal is produced. The `[ipc-blackbox] coverage:` line repeats
         // this in every record block.
         .invoke_handler(crate::invoke_handler(l.rs.ipc_observer_for_handler))
-        .build(tauri::generate_context!())
-        .expect("error while building application")
-        .run(crate::exit_callback(
-            exit_ctx,
-            commands::spec_board::spec_board_close_all,
-        ));
-    Ok(())
 }
 
 /// Session, idle and runtime state prepared before the Tauri builder chain.
@@ -185,7 +207,6 @@ struct Launch {
     shutdown_signal: ShutdownSignal,
     response_close: crate::pty::manager::ResponseCloseState,
     rs: ManagedRuntime,
-    for_exit: RuntimeExitParts,
     setup_ctx: setup::SetupCtx,
 }
 
@@ -193,7 +214,7 @@ fn prepare_launch(
     owners: &crate::AppOwners,
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
     ui_automation_enabled: bool,
-) -> Result<Launch, StartupError> {
+) -> Result<(Launch, RuntimeExitParts), StartupError> {
     let boot = prepare_boot(owners, ui_automation_enabled)?;
 
     // Create WS broadcaster (shared between Tauri commands and web server)
@@ -214,7 +235,7 @@ fn prepare_launch(
 
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
 
-    // #2232 phase 7: the Co-managed supervisor. Created before the idle
+    // Phase 7: the Co-managed supervisor. Created before the idle
     // detector so its callback can read the armed flag synchronously and hand
     // the edge over without touching settings, disk or a session lookup.
     let (co_managed_supervisor, co_managed_triggers) =
@@ -235,7 +256,7 @@ fn prepare_launch(
     );
     let output_senders_for_pty = output_senders.clone();
 
-    // #2232 phase 3 section 5.1 / phase 4 section 4.2: the **single**
+    // Phase 3 section 5.1 / phase 4 section 4.2: the **single**
     // `CaptureRegistry` of the app. It is stored in Tauri state below and
     // handed to the bridge manager, so the supervisor can open a session's
     // endpoints and pass the live sender into both watchers. Without this the
@@ -289,7 +310,7 @@ fn prepare_launch(
         resource_monitor_for_setup: for_setup.resource_monitor_for_setup,
         ui_automation_state_for_setup: for_setup.ui_automation_state_for_setup,
     };
-    Ok(Launch {
+    let launch = Launch {
         boot,
         session_mgr,
         selection_coordinator,
@@ -301,9 +322,9 @@ fn prepare_launch(
         shutdown_signal,
         response_close,
         rs,
-        for_exit,
         setup_ctx,
-    })
+    };
+    Ok((launch, for_exit))
 }
 
 struct BootPreamble {
@@ -342,7 +363,7 @@ fn prepare_boot(
         log::info!("[app-outbox] Cleaned stale instance directories");
     }
 
-    // #769 Phase 1 + #1318 - seed the externalized coding-agent catalog and the
+    // Phase 1 - seed the externalized coding-agent catalog and the
     // dest-keyed default config-folder masters once per registered project
     // (whole-file seed-once + create-if-absent, fail-soft; never aborts boot).
     // Must run before the frontend can call `get_coding_agent_catalog`. The
@@ -353,7 +374,7 @@ fn prepare_boot(
     let settings = config::settings::load_settings_for_cli();
     let registered_roots = config::coding_agents_catalog::registered_project_roots(&settings);
     if registered_roots.is_empty() {
-        // #2021: with no registered project, initialize or refresh the instance
+        // With no registered project, initialize or refresh the instance
         // catalog at <config_dir>/coding-agents so the Welcome surface lists
         // the built-in agents on first run. Fail-soft: log-only, never aborts
         // boot.
@@ -366,7 +387,7 @@ fn prepare_boot(
     }
 
     let instance_id = uuid::Uuid::new_v4().to_string();
-    // #1149 - open the activity run here, before the rest of boot: a panic in the
+    // Open the activity run here, before the rest of boot: a panic in the
     // remaining path then still leaves a run that had started and never stopped,
     // which the next startup reports as unclean. This is also the last point at
     // which `daemon.pid` still holds the PREVIOUS writer's PID, which is what
@@ -406,7 +427,7 @@ fn prepare_boot(
         let _ = crate::filesystem::app_outbox_pointer::publish(&dir, app_outbox.path());
     }
 
-    // Issue #231: write daemon.pid so CLI verbs can detect a dead daemon.
+    // Write daemon.pid so CLI verbs can detect a dead daemon.
     config::daemon_pid::write_pid_file();
 
     Ok(BootPreamble {
@@ -503,15 +524,15 @@ fn prepare_runtime_state(
         loaded_settings.response_close_idle_seconds,
         std::time::Instant::now(),
     );
-    // (#621) Snapshot registered project paths for the startup orphan-clock prune
+    // Snapshot registered project paths for the startup orphan-clock prune
     // below (taken before the value is moved into the RwLock).
     let startup_project_paths = loaded_settings.project_paths.clone();
     let settings: SettingsState = crate::config::settings::new_settings_state(loaded_settings);
-    // #552 persisted coordinator badge clock + auto-closed marker store (loaded
+    // Persisted coordinator badge clock + auto-closed marker store (loaded
     // once at startup; flushed by the auto-close tick and on app exit).
     let coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
         Arc::new(Mutex::new(crate::config::coordinator_clocks::load()));
-    // (#621) Conservative backstop: drop clock keys for workgroups confirmed gone
+    // Conservative backstop: drop clock keys for workgroups confirmed gone
     // on disk (historical orphans + CLI-removed wgs). Keep-on-any-doubt.
     crate::config::coordinator_clocks::prune_orphaned_workgroups_and_persist(
         &coordinator_clocks,
@@ -519,7 +540,7 @@ fn prepare_runtime_state(
     );
     let coordinator_clocks_for_exit = Arc::clone(&coordinator_clocks);
     let resource_monitor_state = prepare_resource_monitor_state(owners);
-    // #714 screenshot capture lifecycle + global-hotkey registration state.
+    // Screenshot capture lifecycle + global-hotkey registration state.
     let screenshot_capture_state: screenshot::ScreenshotCaptureState = Arc::new(
         tokio::sync::Mutex::new(screenshot::ScreenshotCaptureLifecycle::Idle),
     );
@@ -535,12 +556,12 @@ fn prepare_runtime_state(
     let loop_scheduler = Arc::new(loops::scheduler::LoopScheduler::new());
     let loop_scheduler_for_setup = Arc::clone(&loop_scheduler);
 
-    // (#777) Non-stop watchdog: timing + actuation state. Managed for the
+    // Non-stop watchdog: timing + actuation state. Managed for the
     // `non_stop_report` command; the background loop is started in setup.
     let non_stop_state = crate::loops::non_stop_watchdog::NonStopWatchdogState::new();
     let non_stop_state_for_setup = non_stop_state.clone();
 
-    // (#1652) IPC observer: the process-side view of the frontend -> backend
+    // IPC observer: the process-side view of the frontend -> backend
     // invoke stream. Managed for `ipc_blackbox_report`, stamped by the
     // `invoke_handler` wrapper below, and watched by the loop started in setup.
     let ipc_observer = crate::loops::ipc_observer::IpcObserver::new();
@@ -552,18 +573,18 @@ fn prepare_runtime_state(
     // in-flight seed scratch (see `ConfigSeedLockState`).
     let config_seed_lock: ConfigSeedLockState = Arc::new(tokio::sync::Mutex::new(()));
 
-    // Issue #609 - cached "npm update available" result, set ONCE by the
+    // Cached "npm update available" result, set ONCE by the
     // detached startup check below and read by `get_update_status`.
     let update_check_state: UpdateCheckState = Arc::new(std::sync::OnceLock::new());
     let update_check_state_for_setup = Arc::clone(&update_check_state);
 
-    // Issue #1327 - startup coding-agent update flow: blocks every session open
+    // Startup coding-agent update flow: blocks every session open
     // (via `create_session_inner_impl`) until the per-command update run
     // finishes or times out. Managed before the restore task is submitted.
     let agent_update_gate: Arc<agent_update::AgentUpdateGate> =
         Arc::new(agent_update::AgentUpdateGate::new());
     let agent_update_gate_for_setup = Arc::clone(&agent_update_gate);
-    // #1551 - process-lifetime install-state cache for the coding-agent version
+    // Process-lifetime install-state cache for the coding-agent version
     // probes (Settings overview, the pass's pre-update probes and the post-pass
     // re-probes all schedule through it).
     let agent_install_cache: Arc<crate::agent_version::AgentInstallCache> =

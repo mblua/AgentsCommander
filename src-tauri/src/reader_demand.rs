@@ -1,4 +1,4 @@
-//! Room reader-demand re-raise tick (#2456).
+//! Room reader-demand re-raise tick.
 
 #[cfg(test)]
 use std::collections::HashMap;
@@ -46,10 +46,10 @@ pub(crate) trait ReaderDemandHost: Sync {
     ) -> impl Future<Output = Result<CoManagedState, String>> + Send + 'a;
 }
 
-/// #2456 period of the Room reader-demand re-raise tick.
+/// Period of the Room reader-demand re-raise tick.
 pub(crate) const READER_DEMAND_TICK_SECS: u64 = 5;
 
-/// #2456 test-only count of the tick's calls into readiness resolution, per
+/// Test-only count of the tick's calls into readiness resolution, per
 /// session: a global counter would move under a concurrent test's tick.
 #[cfg(test)]
 pub(crate) static TICK_RAISE_CALLS: std::sync::LazyLock<Mutex<HashMap<uuid::Uuid, usize>>> =
@@ -65,7 +65,7 @@ pub(crate) fn tick_raise_calls(session_id: uuid::Uuid) -> usize {
         .unwrap_or(0)
 }
 
-/// #2456 D5-j test-only count of the tick's post-raise rechecks, per session.
+/// D5-j test-only count of the tick's post-raise rechecks, per session.
 #[cfg(test)]
 pub(crate) static RECHECK_CALLS: std::sync::LazyLock<Mutex<HashMap<uuid::Uuid, usize>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -80,8 +80,8 @@ pub(crate) fn tick_recheck_calls(session_id: uuid::Uuid) -> usize {
         .unwrap_or(0)
 }
 
-/// #2525 one reader-demand tick: sweep when Co-managed is unavailable
-/// globally, otherwise the unchanged #2456 re-raise pass.
+/// One reader-demand tick: sweep when Co-managed is unavailable
+/// globally, otherwise the unchanged re-raise pass.
 pub(crate) async fn reader_demand_pass<H: ReaderDemandHost + ?Sized>(app: &H) {
     if release_room_reader_demands_when_globally_off(app).await {
         return;
@@ -89,8 +89,8 @@ pub(crate) async fn reader_demand_pass<H: ReaderDemandHost + ?Sized>(app: &H) {
     reraise_room_reader_demands(app).await;
 }
 
-/// #2525 release the Room demand of every live session when the global switch
-/// is off; `true` iff it swept. #2756 U2a: an empty Jev API key no longer
+/// Release the Room demand of every live session when the global switch
+/// is off; `true` iff it swept. An empty Jev API key no longer
 /// sweeps, since the key is a `Ready` input, not a capture input. The release runs
 /// for sessions holding nothing too: it still bumps the Room `DemandEpoch`,
 /// which aborts a raise already in flight (D-e). Logs once per pass, and only
@@ -138,7 +138,7 @@ pub(crate) async fn release_room_reader_demands_when_globally_off<H: ReaderDeman
     true
 }
 
-/// #2456 raise the Room reader demand for every live session that lacks one.
+/// Raise the Room reader demand for every live session that lacks one.
 ///
 /// The create, restart and room-toggle raises each check readiness once, so a
 /// room that becomes Ready later (key set, catalog created, `config.json`
@@ -194,8 +194,8 @@ pub(crate) async fn reraise_room_reader_demands<H: ReaderDemandHost + ?Sized>(ap
     }
 }
 
-/// #2456 D5-h re-resolve the session's room and capturability after a raise
-/// (#2756 U2a: the same predicate the raise used).
+/// D5-h re-resolve the session's room and capturability after a raise
+/// (U2a: the same predicate the raise used).
 pub(crate) async fn room_still_capturable<H: ReaderDemandHost + ?Sized>(
     app: &H,
     session_id: uuid::Uuid,
@@ -220,7 +220,7 @@ pub(crate) async fn room_still_capturable<H: ReaderDemandHost + ?Sized>(
     )
 }
 
-/// #2756 U2a: re-offer every candidate a not-ready trigger left pending, once
+/// U2a: re-offer every candidate a not-ready trigger left pending, once
 /// its room is `Ready`. Only marked sessions are visited. A mark whose slot is
 /// gone, or whose `seq` or record no longer match the slot, is dropped; a
 /// matching mark in a not-yet-Ready room waits for the next pass. The trigger

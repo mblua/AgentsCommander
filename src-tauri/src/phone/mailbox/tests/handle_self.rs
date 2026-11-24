@@ -128,7 +128,7 @@ async fn handle_self_clear_valid_token_queues() {
     let cwd = temp.path().join("agent-cwd");
     std::fs::create_dir_all(&cwd).unwrap();
     let (session_id, token) = seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
-    // #626: SELF-HANDOFF.md must exist (existence gate) and SELF-FORGET.md is archived on queue.
+    // SELF-HANDOFF.md must exist (existence gate) and SELF-FORGET.md is archived on queue.
     seed_self_handoff(&cwd);
     let forget_content = "topic to forget\nwith full archive content";
     std::fs::write(cwd.join("SELF-FORGET.md"), forget_content).unwrap();
@@ -147,7 +147,7 @@ async fn handle_self_clear_valid_token_queues() {
     );
     assert!(pending_self_clear_contains(&app, session_id).await);
     assert_eq!(pending_self_clear_len(&app).await, 1);
-    // #626/#636: SELF-FORGET.md archived to exactly one self-clear/<ts>_SELF-FORGET.md, original
+    // SELF-FORGET.md archived to exactly one self-clear/<ts>_SELF-FORGET.md, original
     // gone.
     assert!(
         !cwd.join("SELF-FORGET.md").is_file(),
@@ -260,7 +260,7 @@ async fn handle_self_clear_second_request_is_already_queued() {
     );
 }
 
-/// #626 - the existence gate REFUSES when SELF-HANDOFF.md is absent: nothing is queued, the id is
+/// The existence gate REFUSES when SELF-HANDOFF.md is absent: nothing is queued, the id is
 /// NOT inserted, and no SELF-FORGET archive is created (the gate runs before the insert + archive).
 #[tokio::test]
 async fn handle_self_clear_missing_self_handoff_is_rejected() {
@@ -307,7 +307,7 @@ async fn handle_self_clear_missing_self_handoff_is_rejected() {
     assert_eq!(count_forget_archives(&cwd), 0);
 }
 
-/// #626 - SELF-HANDOFF.md present but no SELF-FORGET.md: queues normally, archive is a no-op (no
+/// SELF-HANDOFF.md present but no SELF-FORGET.md: queues normally, archive is a no-op (no
 /// error, no self-clear/<ts>_SELF-FORGET.md created).
 #[tokio::test]
 async fn handle_self_clear_no_forget_md_still_queues() {
@@ -413,7 +413,7 @@ async fn handle_self_clear_root_agent_is_allowed() {
     std::fs::create_dir_all(&cwd).unwrap();
     let (session_id, token) = seed_self_clear_session(&app, &cwd.to_string_lossy(), "claude").await;
     seed_self_handoff(&cwd); // #626 existence gate
-                             // #617 follow-up: the Root Agent exclusion was removed. A
+                             // Follow-up: the Root Agent exclusion was removed. A
                              // token-authorized self-clear from the Root must now queue like any
                              // other coding-agent session. Identity is still resolved solely by
                              // find_by_token, so this can only ever clear the session that owns the

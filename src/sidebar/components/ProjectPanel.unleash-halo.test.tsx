@@ -16,7 +16,7 @@ import {
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 
-// #4752 P06: the `unleashed` class on a room replica tile drives the halo.
+// The `unleashed` class on a room replica tile drives the halo.
 
 const projectPath = "C:\\Project";
 const wgPath = `${projectPath}\\.ac\\wg-1-dev-team`;
@@ -39,7 +39,7 @@ const agent = (name: string, path: string, unleashed: boolean) => ({
   unleashed,
 });
 
-describe("ProjectPanel unleashed halo class (#4752)", () => {
+describe("ProjectPanel unleashed halo class", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

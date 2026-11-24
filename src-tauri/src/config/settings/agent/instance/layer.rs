@@ -1,4 +1,4 @@
-//! Readability state of the agents file (#2716 B3, option C).
+//! Readability state of the agents file.
 //! Owns `AgentsLayerState`, the process-wide registry of directories whose agents file could not
 //! be read, its single setter `set_agents_layer_state`, and the user-facing CLI, startup and
 //! session error texts.
@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// #2716 (B3, option C) - whether the agents file could be read on this load.
+/// Whether the agents file could be read on this load.
 /// `Default` is "readable". Carried on `AppSettings` as a never-serialized field,
 /// like `local_overlay_state`, so no save can write it and no client can forge it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33,7 +33,7 @@ impl AgentsLayerState {
     }
 }
 
-/// #2716 (B3, option C) - the CLI's answer: the list is unknown, not empty.
+/// The CLI's answer: the list is unknown, not empty.
 pub(crate) fn agents_unreadable_cli_error(path: &Path) -> String {
     format!(
         "Coding agents are unavailable: AgentsCommander could not read {}. Fix or delete that file \
@@ -42,7 +42,7 @@ pub(crate) fn agents_unreadable_cli_error(path: &Path) -> String {
     )
 }
 
-/// #2716 (B3, option C) - notice 1: the startup dialog, raised by the error log.
+/// Notice 1: the startup dialog, raised by the error log.
 pub(crate) fn agents_unreadable_startup_notice(path: &Path) -> String {
     format!(
         "Coding agents are unavailable: AgentsCommander could not read {}. Agent sessions will not \
@@ -52,7 +52,7 @@ pub(crate) fn agents_unreadable_startup_notice(path: &Path) -> String {
     )
 }
 
-/// #2716 (B3, option C) - notice 3: the error every spawn entry point returns.
+/// Notice 3: the error every spawn entry point returns.
 pub(crate) fn agents_unreadable_session_error(path: &Path) -> String {
     format!(
         "Cannot start this coding agent: AgentsCommander could not read {}. Fix or delete that \
@@ -61,7 +61,7 @@ pub(crate) fn agents_unreadable_session_error(path: &Path) -> String {
     )
 }
 
-/// #2716 (B3, option C) - the directories whose agents file could not be read,
+/// The directories whose agents file could not be read,
 /// keyed by the settings file's parent. `save_sessions_to_dir` reads it with the
 /// directory it already receives, so a test in its own tempdir is isolated.
 fn agents_unreadable_dirs() -> &'static std::sync::Mutex<HashSet<PathBuf>> {
@@ -107,7 +107,7 @@ pub(crate) fn try_with_agents_layer_publication_state_in<R>(
     Ok(f(dirs.contains(dir)))
 }
 
-/// #2716 (B3, option C) - true while the agents file beside `dir`'s settings file
+/// (B3, option C) - true while the agents file beside `dir`'s settings file
 /// could not be read by the last full load of it.
 pub(crate) fn agents_layer_unreadable_for_dir(dir: &Path) -> bool {
     agents_unreadable_dirs()
@@ -116,7 +116,7 @@ pub(crate) fn agents_layer_unreadable_for_dir(dir: &Path) -> bool {
         .contains(dir)
 }
 
-/// #2716 (B3, option C) - the one setter: the field and the registry change in
+/// (B3, option C) - the one setter: the field and the registry change in
 /// the same statement, so they cannot diverge.
 pub(crate) fn set_agents_layer_state(
     settings: &mut AppSettings,
@@ -135,7 +135,7 @@ pub(crate) fn set_agents_layer_state(
     settings.agents_layer = state;
 }
 
-/// #2716 (B3, option C) - the agents layer's state from the file alone, for the
+/// (B3, option C) - the agents layer's state from the file alone, for the
 /// defaults fallback, where no merge result survives.
 pub(crate) fn agents_layer_state_at(settings_path: &Path) -> AgentsLayerState {
     agents_layer_state_at_labeled(settings_path, settings_path)

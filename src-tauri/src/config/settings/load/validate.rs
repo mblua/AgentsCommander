@@ -42,7 +42,7 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
 
 pub const ROOM_NUMBER_MASK_MAX_WIDTH: usize = 9;
 
-/// #2507 Returns the pad width. `Err` blocks the settings save.
+/// Returns the pad width. `Err` blocks the settings save.
 pub fn validate_room_number_mask(value: &str) -> Result<usize, String> {
     let reject = |reason: &str| Err(format!("Room number mask: {reason}"));
     if value.is_empty() {
@@ -59,7 +59,7 @@ pub fn validate_room_number_mask(value: &str) -> Result<usize, String> {
     Ok(value.len())
 }
 
-/// #2336 - reject a settings update whose typing-hold window is outside the
+/// Reject a settings update whose typing-hold window is outside the
 /// accepted range. Called on every save path, so the invalid candidate is
 /// discarded before `save_settings` and the persisted (and live) value stays
 /// untouched.
@@ -95,7 +95,7 @@ pub fn validate_api_server_settings(settings: &mut AppSettings) -> Result<(), St
     Ok(())
 }
 
-/// #714 Reject a screenshot hotkey that the native parser cannot accept. Syntax
+/// Reject a screenshot hotkey that the native parser cannot accept. Syntax
 /// errors block a settings save; OS-level registration conflicts do not (they are
 /// surfaced as runtime status by `screenshot::register_configured_hotkey`).
 pub fn validate_screenshot_hotkey(value: &str) -> Result<(), String> {
@@ -104,7 +104,7 @@ pub fn validate_screenshot_hotkey(value: &str) -> Result<(), String> {
         .map_err(|e| format!("Screenshot hotkey: {e}"))
 }
 
-/// #2281 Reject a sidebar compact hotkey that the settings contract cannot
+/// Reject a sidebar compact hotkey that the settings contract cannot
 /// accept. Unlike `validate_screenshot_hotkey` this is not an OS registration:
 /// it only enforces the shape `Ctrl|Control + Shift + <A-Z>` minus the reserved
 /// letters `W`, `R`, `C`, `V` (case-insensitive parts). Digits are rejected:
@@ -153,10 +153,10 @@ pub fn merge_protected_coding_agent_settings(
     incoming
 }
 
-/// #2162 - the OS suffix tokens a config-seed template folder may carry.
+/// The OS suffix tokens a config-seed template folder may carry.
 pub const CONFIG_SEED_OS_TOKENS: [&str; 3] = ["linux", "windows", "macos"];
 
-/// #2162 - `Some(stem)` when `dest` ends with an OS token, where `stem` is the
+/// `Some(stem)` when `dest` ends with an OS token, where `stem` is the
 /// dest it collides with. `stem` is empty when `dest` is exactly `".<token>"`.
 pub fn config_seed_dest_os_token_stem(dest: &str) -> Option<String> {
     let lower = dest.trim().to_ascii_lowercase();

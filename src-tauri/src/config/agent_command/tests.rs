@@ -156,7 +156,7 @@ fn labelled(id: &str, label: &str, command: &str) -> AgentConfig {
     }
 }
 
-/// The digest #2433 would have written for `agent_id`'s `letter` cell.
+/// The digest the cell writer would have written for `agent_id`'s `letter` cell.
 fn digest_of(settings: &AppSettings, agent_id: &str, letter: &str) -> String {
     let agent = settings.agents.iter().find(|a| a.id == agent_id).unwrap();
     let cell = &settings.coding_agent_profiles.profiles_by_agent[agent_id][letter];

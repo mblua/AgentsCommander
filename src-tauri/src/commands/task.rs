@@ -1,5 +1,5 @@
 //! Tauri commands wrapping `cli::task_ops::perform` for the TASK.md panel
-//! action buttons (issue #162).
+//! action buttons.
 //!
 //! Trust model: these commands run inside the GUI process under the
 //! user's authority, same model as `rename_session`, `destroy_session`,
@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::cli::task_ops::{self, TaskOp};
-use crate::config::ac_root::is_ac_root_name; // gate 5 (path-based clean, #545)
+use crate::config::ac_root::is_ac_root_name; // gate 5 (path-based clean)
 use crate::config::settings::SettingsState;
 use crate::filesystem::projects::{canonical_project_path, project_path_is_dir};
 use crate::session::manager::SessionManager;
@@ -64,7 +64,7 @@ async fn resolve_wg_root(
 }
 
 /// Validate a raw `wg-*` root path supplied by the frontend for the path-based
-/// clean (#545). The session-based commands derive the root from a real session
+/// clean. The session-based commands derive the root from a real session
 /// cwd; this one trusts a caller-supplied string, so it must prove the path is a
 /// real workgroup directory under a configured project root before any write, so
 /// it cannot be coerced into writing a TASK.md anywhere on disk.
@@ -79,7 +79,7 @@ async fn resolve_wg_root(
 /// would silently fail to update. (This is NOT about the `\\?\` prefix, which is
 /// already stripped both by backend `strip_unc` and by the frontend path
 /// normalizer.) Do not "fix" this by switching the write/emit to canonical.
-/// Gate T (#4805): a canonical `<config dir>/temp-room-trNN` folder passes after gate 2.
+/// Gate T: a canonical `<config dir>/temp-room-trNN` folder passes after gate 2.
 fn validate_wg_root(
     workgroup_root: &str,
     project_paths: &[String],
@@ -107,7 +107,7 @@ fn validate_wg_root_in(
         return Err(format!("room root is not a directory: {workgroup_root}"));
     }
 
-    // #4805 gate T: a real temp-room folder of this app's config dir. The CANONICAL
+    // Gate T: a real temp-room folder of this app's config dir. The CANONICAL
     // path must be `<canonical config dir>/temp-room-trNN`, so a link that resolves
     // elsewhere fails here and falls through to the project gates (which reject it).
     let is_temp_room = temp_base
@@ -188,7 +188,7 @@ fn strip_unc(p: &Path) -> String {
     raw.into_owned()
 }
 
-/// Stable error codes of the TASK.md mutation family (#4339).
+/// Stable error codes of the TASK.md mutation family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum TaskErrorCode {
     MutationCommitted,
@@ -354,7 +354,7 @@ pub async fn task_clean(
 }
 
 /// Clear the workgroup TASK.md addressed directly by its `wg-*` root path, for
-/// cold workgroups with no live/exited session to resolve from (#545). Mirrors
+/// cold workgroups with no live/exited session to resolve from. Mirrors
 /// `task_clean` after the root is resolved: same perform + emit + `TaskUpdateResult`.
 /// The raw path is validated by `validate_wg_root` before any write (see the
 /// helper docs for the threat model).
@@ -384,7 +384,7 @@ pub async fn task_clean_at(
 
 /// Set the YAML-frontmatter `title:` field of the workgroup TASK.md addressed
 /// directly by its `wg-*` root path, for cold workgroups with no live/exited
-/// session to resolve from (#1536). Mirrors `task_set_title` after validation:
+/// session to resolve from. Mirrors `task_set_title` after validation:
 /// same perform + emit + `TaskUpdateResult`. The raw path is validated by
 /// `validate_wg_root` before any write (see the helper docs for the threat
 /// model).

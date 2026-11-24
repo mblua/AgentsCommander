@@ -15,7 +15,7 @@ import {
   type AgentHelpTip,
 } from "./agent-help";
 
-// Transcribed in source order from src/guide/components/HintsTab.tsx, which #2412
+// Transcribed in source order from src/guide/components/HintsTab.tsx, which the change
 // deleted from main. Check it against the blob:
 //   git cat-file -p e3e3f1a6daac60fe13918d367d1e1966ceefc82e
 const EXPECTED_MOVED_HINTS: AgentHelpTip[] = [

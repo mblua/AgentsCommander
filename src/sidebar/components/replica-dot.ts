@@ -3,7 +3,7 @@ import { sessionDotClass, type SessionDotClass } from "./session-status";
 import { findReplicaSession } from "./room-session";
 
 /**
- * #882 Render-boundary helper. Lives outside room-session.ts so that the
+ * Render-boundary helper. Lives outside room-session.ts so that the
  * watchdog's import graph never reaches SessionDotClass. Consumers must be render
  * code only; anything asking "is this replica working?" calls isReplicaWorking.
  */

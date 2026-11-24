@@ -1,3 +1,6 @@
+//! Writes the decisions file and the state file as one guarded pair, under
+//! one lock. It owns no config keys; callers pass paths and keys.
+
 use super::pair_image::{
     prepared_pair_image, ConfigPairCleanup, ConfigPairFinish, ConfigPublisher, PhysicalState,
 };
@@ -18,7 +21,7 @@ use serde_json::Value;
 use std::cell::Cell;
 use std::path::Path;
 
-/// #2786 (C1) - write the decisions file and the state file as one guarded
+/// Write the decisions file and the state file as one guarded
 /// pair. `state` is the state file's path, `state_keys` the keys that live in
 /// it, and `on_stage` a named pause point (a no-op in production); all three
 /// are parameters so this module names no other module.

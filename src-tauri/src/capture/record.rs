@@ -1,4 +1,4 @@
-//! Per-record capture payload produced by the JSONL readers (#2232 phase 1).
+//! Per-record capture payload produced by the JSONL readers.
 //!
 //! Nothing consumes these records yet: the sink arrives in phase 3. The
 //! watchers build one record per accepted assistant record and deliver it to
@@ -58,8 +58,8 @@ pub struct CapturedRecord {
     pub provider_final: bool,
     pub turn_identified: bool,
     pub origin: RecordOrigin,
-    // #2232 phase 3: what the watcher already read, carried to the supervisor so the
-    // epoch predicate can run off the watcher thread. Round 2 left these unowned.
+    // What the watcher already read, carried to the supervisor so the
+    // epoch predicate can run off the watcher thread.
     pub observed_path: std::path::PathBuf,
     pub observed_len: u64,
     /// Capped at [`crate::capture::state::OBSERVED_PREFIX_CAP`] bytes.

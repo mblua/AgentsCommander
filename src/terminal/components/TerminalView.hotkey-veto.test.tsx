@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #2236 phase 5 — what a REAL xterm Terminal can prove. It does not assert
+// What a REAL xterm Terminal can prove. It does not assert
 // "no bytes for Ctrl+Shift+E": an unvetoed build produces no bytes either.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -37,7 +37,7 @@ function bytesFor(init: KeyboardEventInit): number[] {
   return bytes;
 }
 
-describe("real xterm keyboard facts (#2236 D8)", () => {
+describe("real xterm keyboard facts", () => {
   it("positive control: Ctrl+E writes 0x05", () => {
     expect(bytesFor({ key: "e", code: "KeyE", keyCode: 69, ctrlKey: true })).toEqual([0x05]);
   });

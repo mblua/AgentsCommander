@@ -1,4 +1,4 @@
-//! #4780 P04: temp-room mailbox route and payload validators.
+//! P04: temp-room mailbox route and payload validators.
 use super::*;
 use crate::config::root_agent::ROOT_AGENT_SENDER;
 use crate::config::temp_rooms::temp_room_dir_name;

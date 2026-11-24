@@ -1,4 +1,4 @@
-//! #2774 Wayland portal capture tests (no D-Bus: the pick result is injected).
+//! Wayland portal capture tests (no D-Bus: the pick result is injected).
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -260,7 +260,7 @@ async fn unreadable_sources_fail_and_focus() {
     png(&thin, 1, 5);
     let big = dir.join("big.png");
     png(&big, 4, 4);
-    // User-granted exception (#2774 P02 only): a symlink to a valid PNG.
+    // User-granted exception: a symlink to a valid PNG.
     let link = dir.join("link.png");
     std::os::unix::fs::symlink(&big, &link).unwrap();
 
@@ -335,7 +335,7 @@ fn host_record_is_reused_only_for_the_same_owner() {
     assert_eq!(cached_result(Some(&failed), ":1.9"), None);
 }
 
-// ── #2774 P03 shortcut registration ────────────────────────────────────────
+// ── P03 shortcut registration ────────────────────────────────────────
 
 #[derive(Clone, Default)]
 struct FakeBackend {
@@ -420,8 +420,7 @@ async fn register_enabled(host: &WaylandHost, backend: &FakeBackend, r#gen: u64,
 
 async fn binding(host: &WaylandHost) -> u64 {
     let portal = host.hotkey.lock().unwrap().wayland.clone();
-    let binding = portal.lock().await.binding;
-    binding
+    portal.lock().await.binding
 }
 
 fn status(host: &WaylandHost) -> ScreenshotHotkeyStatus {

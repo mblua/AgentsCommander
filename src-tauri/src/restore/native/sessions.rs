@@ -48,7 +48,7 @@ impl RestoreContext {
             return;
         }
 
-        // #248 — decide wake vs defer for this session.
+        // Decide wake vs defer for this session.
         // §DR2: use `agent_fqn_from_path` so WG replicas get project-precise
         // team membership and coordinator checks. Strict `is_coordinator`
         // (§AR2-strict) requires the FQN to avoid cross-project flag leaks.
@@ -141,7 +141,7 @@ impl RestoreContext {
             Ok(spawn) => spawn,
             Err(()) => return,
         };
-        // #1271 - rebuilt at restore time from the SAME settings
+        // Rebuilt at restore time from the SAME settings
         // snapshot that re-resolved the agent command (no
         // persistence, same rationale as the root-agent restore).
         let resolved_agent_host_shell = if resolved_spawn.is_some() {
@@ -183,11 +183,11 @@ impl RestoreContext {
             agent_label,
             false, // Persist tooling on restore
             ps.git_repos.clone(),
-            // (#630/#631) resume unless restarted fresh
+            // Resume unless restarted fresh
             skip_auto_resume_for_restore(ps.start_fresh_on_restore),
             resolved_spawn,
             resolved_agent_host_shell,
-            // #973 - headless caller: no terminal to measure, keep 120x30.
+            // Headless caller: no terminal to measure, keep 120x30.
             None,
             Some(ps.start_fresh_on_restore),
             is_coord
@@ -236,7 +236,7 @@ impl RestoreContext {
             progress.active_id = Some(info.id.clone());
         }
         progress.n_woken += 1;
-        // (#630/#631) Restore-decision trace (INFO during stabilization).
+        // Restore-decision trace (INFO during stabilization).
         log::info!(
             "[restore] woke '{}' (is_coord={}, live_is_coord={}, \
                     start_fresh_on_restore={})",
@@ -254,7 +254,7 @@ impl RestoreContext {
             .await;
         }
 
-        // (#1793) Pair the row with the session it just became;
+        // Pair the row with the session it just became;
         // both are in hand, so no correlation key is needed.
         collect_restart_resume_target(
             &info.id,

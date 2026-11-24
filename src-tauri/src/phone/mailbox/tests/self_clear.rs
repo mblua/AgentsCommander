@@ -331,7 +331,7 @@ async fn self_clear_driver_injects_first_captured_summary_not_later_file() {
         }
     };
 
-    // (#756) F8: record the boundary events the driver surfaces.
+    // F8: record the boundary events the driver surfaces.
     let boundary_events = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
     let events_seen = boundary_events.clone();
     let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
@@ -356,7 +356,7 @@ async fn self_clear_driver_injects_first_captured_summary_not_later_file() {
     )
     .await;
 
-    // (#756) happy path: exactly [Cleared, ContentInjected] in order, both
+    // Happy path: exactly [Cleared, ContentInjected] in order, both
     // on the stable session id (the PTY and id survive /clear).
     assert_eq!(
         *boundary_events.lock().unwrap(),
@@ -376,14 +376,14 @@ async fn self_clear_driver_injects_first_captured_summary_not_later_file() {
     assert!(injected[1].contains("active core information"));
     assert!(!injected[1].contains('\n'));
     assert!(!injected[1].contains('\u{2014}'));
-    // #749 - the handoff was archived at inject time and the prompt names the archived path.
+    // The handoff was archived at inject time and the prompt names the archived path.
     assert!(injected[1].contains("self-clear/"), "{}", injected[1]);
     assert!(injected[1].contains("_SELF-HANDOFF.md"), "{}", injected[1]);
     assert!(!temp.path().join("SELF-HANDOFF.md").exists());
     assert!(pending.is_empty());
 }
 
-/// #749 - the Phase-2 archive happens BEFORE the prompt inject, the prompt names the exact
+/// The Phase-2 archive happens BEFORE the prompt inject, the prompt names the exact
 /// archived relative path, and that path resolves to the file (original content) on disk.
 #[tokio::test]
 async fn self_clear_driver_archives_before_inject_and_prompt_names_exact_path() {
@@ -453,7 +453,7 @@ async fn self_clear_driver_archives_before_inject_and_prompt_names_exact_path() 
     assert!(pending.is_empty());
 }
 
-/// #749 - inject failure after a successful pre-inject archive renames the handoff back to the
+/// Inject failure after a successful pre-inject archive renames the handoff back to the
 /// root so a re-issue finds it at the canonical name (retry semantics preserved).
 #[tokio::test]
 async fn self_clear_driver_inject_failure_renames_handoff_back() {
@@ -486,7 +486,7 @@ async fn self_clear_driver_inject_failure_renames_handoff_back() {
         }
     };
 
-    // (#756) F8: a failed phase-2 inject must fire Cleared only (no drop).
+    // F8: a failed phase-2 inject must fire Cleared only (no drop).
     let boundary_events = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
     let events_seen = boundary_events.clone();
     let note_boundary = move |session_id: Uuid, boundary: SelfClearBoundary| {
@@ -538,7 +538,7 @@ async fn self_clear_driver_inject_failure_renames_handoff_back() {
     assert!(pending.is_empty());
 }
 
-/// (#756) F8: a failed phase-1 /clear inject abandons the flow and fires NO
+/// F8: a failed phase-1 /clear inject abandons the flow and fires NO
 /// boundary events (an un-injected /clear must not stamp).
 #[tokio::test]
 async fn self_clear_driver_phase1_inject_failure_fires_no_boundary_events() {
@@ -592,7 +592,7 @@ async fn self_clear_driver_phase1_inject_failure_fires_no_boundary_events() {
     assert!(pending.is_empty());
 }
 
-/// #749 - with no root handoff at Phase 2 (the agent moved its own notes), the prompt falls
+/// With no root handoff at Phase 2 (the agent moved its own notes), the prompt falls
 /// back to the root name and its missing-or-empty clause; nothing is archived.
 #[tokio::test]
 async fn self_clear_driver_without_root_handoff_prompts_root_name() {
@@ -657,7 +657,7 @@ fn assert_switch_resume_prompt(prompt: &str) {
     assert!(prompt.contains("active core information"));
     assert!(!prompt.contains('\n'));
     assert!(!prompt.contains('\u{2014}'));
-    // #749 - the prompt names the archived path.
+    // The prompt names the archived path.
     assert!(prompt.contains("self-clear/"), "{prompt}");
     assert!(prompt.contains("_SELF-HANDOFF.md"), "{prompt}");
 }
@@ -721,7 +721,7 @@ async fn self_switch_driver_restarts_uses_new_id_and_cleans_pending() {
 
     let cwd = temp.path().to_path_buf();
 
-    // (#756) F8: the switch driver must fire ONLY ContentInjected, on the
+    // F8: the switch driver must fire ONLY ContentInjected, on the
     // NEW session id (phase 1 is a restart; C3 stamps it, never this driver).
     let boundary_events = Arc::new(Mutex::new(Vec::<(Uuid, SelfClearBoundary)>::new()));
     let events_seen = boundary_events.clone();
@@ -764,7 +764,7 @@ async fn self_switch_driver_restarts_uses_new_id_and_cleans_pending() {
     );
     assert_eq!(*restart_calls.lock().unwrap(), vec![original_id]);
     assert_eq!(*inject_calls.lock().unwrap(), vec![new_id]);
-    // #749 - the handoff was archived (pre-inject) from the queue-time cwd.
+    // The handoff was archived (pre-inject) from the queue-time cwd.
     assert!(!temp.path().join("SELF-HANDOFF.md").exists());
     assert!(
         *alias_seen_at_inject.lock().unwrap(),

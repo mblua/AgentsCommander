@@ -3,7 +3,7 @@ import type { UnlistenFn } from "../shared/transport";
 import { centralViewStore } from "./stores/centralView";
 
 /**
- * Wires the #587 central-view event contract for the main window. Extracted
+ * Wires the central-view event contract for the main window. Extracted
  * into a helper (mirrors `wireHomeListeners`) so the `userInitiated`
  * discriminator on `session_switched` is unit-testable in isolation.
  *
@@ -17,8 +17,8 @@ import { centralViewStore } from "./stores/centralView";
  *   yank the RM view away mid-use. This mirrors the Home listener's discriminator
  *   (`listeners-home.ts`).
  * - `onSessionViewRequested`: covers the already-active user click, which
- *   commits without changing the selection and so emits no `session_switched`
- *   (issue #2222). The backend emits it only for an accepted user switch, so
+ *   commits without changing the selection and so emits no `session_switched`.
+ *   The backend emits it only for an accepted user switch, so
  *   there is no `userInitiated` filter here.
  * - `resource_monitor_attach`: the detached RM window asks the main window to
  *   pull RM back into the central pane.

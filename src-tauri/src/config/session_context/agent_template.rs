@@ -1,3 +1,6 @@
+//! Default agent and coordinator context templates and their rendering.
+//! It owns template text only; it does not write context files.
+
 use super::{
     classify_legacy_rendered_default_context, coarse_section_dedup_safe,
     default_context_dynamic_values, heal_stale_global_recorded, mandatory_placeholder_aliases,
@@ -194,7 +197,7 @@ pub(crate) fn render_agent_context_template_inner(
             // chain below fills it in place.
             continue;
         }
-        // #658: a legacy template wrote this section's prose without its coarse
+        // A legacy template wrote this section's prose without its coarse
         // token. Skip the append (dedup) only when the inline heading is present
         // AND deduping is SAFE for this agent/template shape (the per-token
         // dedup-safety invariant). coarse_section_dedup_safe is false for the
@@ -222,12 +225,12 @@ pub(crate) fn render_agent_context_template_inner(
     }
 
     let agent_repos = render_agent_repos_string(cwd_path, config, repo_mounts, is_root_agent);
-    // #1605: computed BEFORE the replace chain (like `agent_repos`): the value
+    // Computed BEFORE the replace chain (like `agent_repos`): the value
     // feeds the `{{HOST_PLATFORM_RULES}}` replace between `{{CLI_CONTEXT}}` and
     // `{{SESSION_CREDENTIALS}}`. Container sessions (repo_mounts.is_some())
     // render nothing.
     let host_platform_rules = render_host_platform_rules_block(agent_root, repo_mounts);
-    // #1369 (C4): a template may carry the current token, the frozen legacy
+    // A template may carry the current token, the frozen legacy
     // alias, or - pathologically, if a user pasted both - the two of them.
     // Exactly one block must be emitted, so the alias renders the block only
     // when the current token is absent. Computed AFTER the mandatory loop,
@@ -249,7 +252,7 @@ pub(crate) fn render_agent_context_template_inner(
     template
         .replace("{{AGENT_ROOT}}", agent_root)
         .replace("{{MATRIX_SECTION}}", &rendered.matrix_section)
-        // #1005 S3: the Allowed-bullet family is gone; a legacy hybrid template
+        // The Allowed-bullet family is gone; a legacy hybrid template
         // carrying this fine-grained token renders nothing there (the grant's
         // single carrier is entry 3 inside {{MATRIX_SECTION}}).
         .replace("{{MATRIX_ALLOWED}}", "")
@@ -338,7 +341,7 @@ pub(crate) fn resolve_agent_context_with_activation(
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
     restrictions: WorkspaceRestrictions,
 ) -> Result<String, String> {
-    // #979 load-bearing guard 2 of 2. This MUST remain the FIRST executable
+    // Load-bearing guard 2 of 2. This MUST remain the FIRST executable
     // statement of this function. It sits ahead of `read_or_create_context_template`
     // below, which SYNCS (`sync_project_context_template_for_read`) and CREATES
     // (`write_template_if_missing`) the resolved global, and ahead of the
@@ -367,7 +370,7 @@ pub(crate) fn resolve_agent_context_with_activation(
     )?
     .unwrap_or_else(|| get_default_agent_template().to_string());
 
-    // #1737 (D1, D3): the classification runs on the BASE template and keeps every
+    // (D1, D3): the classification runs on the BASE template and keeps every
     // one of its side effects, including the `StaleGenerated` self-heal of the base
     // file. Its value is bound rather than returned, and an override then decides the
     // content handed to the session, always as a NON-legacy template: an

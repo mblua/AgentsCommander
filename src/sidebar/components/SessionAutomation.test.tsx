@@ -150,11 +150,11 @@ describe("session workflow automation hooks", () => {
       expect(avatar?.getAttribute("alt")).toBe("");
       expect(rendered.root.querySelector(".root-agent-avatar svg")).toBeNull();
 
-      // #1896 - a live, quiet banner carries no row buttons; every action is
+      // A live, quiet banner carries no row buttons; every action is
       // menu-only. The banner itself is a div with role="button", so the count
       // is over descendants. Quiet: not recording, no auto-execute countdown,
       // profileOutdated unset (ProfileOutdatedBadge renders a <button>).
-      // #2236 - the two exceptions are chrome, not row actions: the compact
+      // The two exceptions are chrome, not row actions: the compact
       // toggle and the row's own activation button.
       expect(banner!.querySelectorAll("button:not(.root-agent-banner-toggle):not(.root-agent-banner-open)")).toHaveLength(0);
       expect(banner!.querySelectorAll(".root-agent-banner-toggle")).toHaveLength(1);
@@ -262,7 +262,7 @@ describe("session workflow automation hooks", () => {
       status: { exited: 137 },
     });
     sessionsStore.setSessions([root]);
-    // #1896 - a bridge still recorded for a dormant root must show no indicator:
+    // A bridge still recorded for a dormant root must show no indicator:
     // the span is live-gated exactly like the replica row's.
     bridgesStore.setBridges([bridge({ sessionId: "root-dormant" })]);
     const fake = new FakeTransport();
@@ -326,7 +326,7 @@ describe("session workflow automation hooks", () => {
     try {
       const banner = rendered.root.querySelector('[data-ac-testid="rootAgent.banner"]');
       const closeItem = () => document.querySelector('[data-ac-testid="rootAgent.close"]');
-      // #1896 - close is menu-only. An item dismisses the menu before it
+      // Close is menu-only. An item dismisses the menu before it
       // selects, so the second attempt needs its own open; handleContextMenu has
       // no busy gate, menuClose does.
       contextMenu(banner!);
@@ -349,7 +349,7 @@ describe("session workflow automation hooks", () => {
     }
   });
 
-  it("#592: surfaces the Root Agent drift reload badge and relaunches on click", async () => {
+  it("surfaces the Root Agent drift reload badge and relaunches on click", async () => {
     // The Root Agent can drift too (its loaded profile cell vs current config), and
     // its hash is persisted (a80a1a7). The banner must show the same reload badge as
     // SessionItem / replica rows, wired to the root restart path.
@@ -385,7 +385,7 @@ describe("session workflow automation hooks", () => {
     }
   });
 
-  it("#592: hides the Root Agent drift badge when the profile is current", async () => {
+  it("hides the Root Agent drift badge when the profile is current", async () => {
     const root = session({
       id: "root-1",
       name: "Agent's Commander",
@@ -406,7 +406,7 @@ describe("session workflow automation hooks", () => {
   });
 });
 
-describe("Telegram indicator after #1730", () => {
+describe("Telegram indicator placement", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -421,7 +421,7 @@ describe("Telegram indicator after #1730", () => {
     vi.restoreAllMocks();
   });
 
-  it("#1896: shows the button-less Telegram indicator on the root banner while a bridge is attached", async () => {
+  it("shows the button-less Telegram indicator on the root banner while a bridge is attached", async () => {
     sessionsStore.setSessions([session({ id: "root-1", isRootAgent: true, status: "running" })]);
     // A named colour: jsdom rewrites hex in style.color to rgb(), the replica
     // test (ProjectPanel.context-menu.test.tsx) uses "red" for the same reason.
@@ -448,7 +448,7 @@ describe("Telegram indicator after #1730", () => {
     }
   });
 
-  it("#1896: renders neither indicator nor Telegram button on the root banner with no bridge", async () => {
+  it("renders neither indicator nor Telegram button on the root banner with no bridge", async () => {
     sessionsStore.setSessions([session({ id: "root-1", isRootAgent: true, status: "running" })]);
     bridgesStore.setBridges([]);
 

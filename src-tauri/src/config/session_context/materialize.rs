@@ -1,3 +1,7 @@
+//! Resolves the final session context for an agent and writes it to the
+//! file name the launched coding agent needs, removing stale copies.
+//! It does not build the context text itself.
+
 use super::default_context::SELF_CLEAR_MANUAL_SECTION;
 use super::{
     build_direct_matrix_context, build_replica_context_with_activation,
@@ -65,7 +69,7 @@ pub(crate) fn resolve_session_context_content_with_activation(
     let mut content = crate::filesystem::session_context::read_context_source(&context_path)
         .map_err(|e| format!("Failed to read resolved session context {context_path}: {e}"))?;
 
-    // #979: never append coordinator prose to Root, and never let a Root cwd reach
+    // Never append coordinator prose to Root, and never let a Root cwd reach
     // `read_or_create_context_template`. That call resolves its directory through
     // `resolve_ac_root_context_dir`, so with a `.ac`-ancestor config dir (the dev
     // and workgroup layouts) a Root would CREATE and SYNC the *project's*
@@ -80,7 +84,7 @@ pub(crate) fn resolve_session_context_content_with_activation(
             activation,
         )?
         .unwrap_or_else(|| get_default_coordinator_template().to_string());
-        // #1737 (D1): consumer-side substitution. The base pipeline above has already
+        // D1: consumer-side substitution. The base pipeline above has already
         // synced, migrated and created the base file exactly as it does today; only
         // the bytes handed to the session change.
         let coordinator_body =
@@ -100,14 +104,14 @@ pub(crate) fn resolve_session_context_content_with_activation(
         }
     }
 
-    // #640 Single-source the self-maintenance directive. Strip any legacy block
+    // Single-source the self-maintenance directive. Strip any legacy block
     // (an existing workgroup may have one frozen in its persisted coordinator
     // template on disk), then append the canonical gated directive when ON.
     // Strip ALWAYS so an OFF setting truly removes the old always-on block.
     if !is_root {
         content = strip_legacy_self_maintenance(&content);
         content.push_str(SELF_CLEAR_MANUAL_SECTION);
-        // #4780: temp rooms have no skills, so no `self-handoff` directive.
+        // Temp rooms have no skills, so no `self-handoff` directive.
         if auto_self_clear && !crate::config::temp_rooms::is_temp_room_path(cwd) {
             content.push_str(SELF_MAINTENANCE_AUTO_SECTION);
         }
@@ -125,7 +129,7 @@ pub(crate) fn resolve_session_context_content_with_activation(
 ///
 /// G1 (symlink/junction-safe): cleanup uses `symlink_metadata` (not `exists`)
 /// so a link/reparse point is detected and the link ENTRY removed, never its
-/// target; and the writer refuses to write THROUGH a surviving link. #529
+/// target; and the writer refuses to write THROUGH a surviving link. It
 /// broadens the cleanup/write set from 3 fixed names to N configured + custom
 /// names, which is why this writer is hardened against a stray link at one of
 /// those names (an arbitrary-overwrite primitive, and a junction would brick
@@ -149,7 +153,7 @@ pub fn materialize_agent_context_file_with_filename(
     )
 }
 
-/// #1065 Stage F: same as [`materialize_agent_context_file_with_filename`] but
+/// Stage F: same as [`materialize_agent_context_file_with_filename`] but
 /// threads a production activation token so the session-spawn context read/sync
 /// and self-heal record their publications under the project gate. The session
 /// create chokepoint passes `Some(..)` from inside its blocking worker; every
@@ -303,7 +307,7 @@ pub fn materialize_agent_context_file(
     target: ManagedContextTarget,
     is_coordinator: bool,
 ) -> Result<Option<String>, String> {
-    // #640 test-only wrapper: the sole production caller is
+    // Test-only wrapper: the sole production caller is
     // materialize_agent_context_file_with_filename in session.rs, which resolves
     // and passes the real auto_self_clear flag. Pass false here so no production
     // path loses the gated directive.
@@ -317,9 +321,9 @@ pub fn materialize_agent_context_file(
     )
 }
 
-// ── Context-cache GC (#621) ───────────────────────────────────────────────
+// ── Context-cache GC ───────────────────────────────────────────────
 
-/// (#621) Retention window for generated context-cache files. A live agent
+/// Retention window for generated context-cache files. A live agent
 /// re-writes its cache on every launch (fresh mtime), so anything untouched this
 /// long is an orphan (removed workgroup / renamed replica dir). 30 days is
 /// generous enough never to drop the cache of an agent the user simply has not
@@ -327,7 +331,7 @@ pub fn materialize_agent_context_file(
 /// intentionally a const (not a user setting); promote to settings later if needed.
 pub(crate) const CONTEXT_CACHE_RETENTION: Duration = Duration::from_hours(720);
 
-/// (#621) Startup entry point: GC the context-cache dir with the default
+/// Startup entry point: GC the context-cache dir with the default
 /// retention. No-op (logs) when no config dir resolves. Never returns an error;
 /// housekeeping must not break startup. This pass is BOTH the orphan cleanup for
 /// removed workgroups (their cache ages out) AND the cap for the unbounded-growth
@@ -344,7 +348,7 @@ pub fn sweep_context_cache_at_startup() {
     }
 }
 
-/// (#621) Testable core: unlink every generated context file in `context_dir`
+/// Testable core: unlink every generated context file in `context_dir`
 /// whose mtime is older than `retention` relative to `now`. Returns the count
 /// removed. Only touches the three known generated prefixes ending in `.md`, so an
 /// unrelated file dropped in the dir is never deleted. A file whose mtime cannot be
@@ -388,7 +392,7 @@ pub fn sweep_context_cache_dir(context_dir: &Path, now: SystemTime, retention: D
     removed
 }
 
-/// (#621) True for the three generated context-cache filename shapes
+/// True for the three generated context-cache filename shapes
 /// (`ac-context-*.md`, `replica-context-*.md`, `matrix-context-*.md`).
 pub(crate) fn is_generated_context_filename(name: &str) -> bool {
     name.ends_with(".md")

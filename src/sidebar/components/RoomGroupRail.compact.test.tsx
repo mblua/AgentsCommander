@@ -22,7 +22,7 @@ import {
 import { projectCollapseStore } from "../stores/project-collapse";
 import { setSidebarCompactMode, sidebarCompact } from "../../shared/sidebar-compact";
 
-// #2236 phase 6 — rail autoexpansion. The rail needs the real tree around it,
+// Rail autoexpansion. The rail needs the real tree around it,
 // so every test mounts SidebarApp embedded and drives compact mode through the
 // phase-2 harness (D11: a mode change is a no-op without a registered host).
 // Width restoration is deliberately not asserted here: sidebarWidth() is a
@@ -95,7 +95,7 @@ async function mountRail() {
   return rendered;
 }
 
-describe("RoomGroupRail compact autoexpansion (#2236)", () => {
+describe("RoomGroupRail compact autoexpansion", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

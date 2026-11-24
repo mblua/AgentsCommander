@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4827 - two projects with equal room and replica names: the replica menu,
+// Two projects with equal room and replica names: the replica menu,
 // Add to Group flyout, Co-managed item and row ids stay unique in the window.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectPanel from "./ProjectPanel";
@@ -88,7 +88,7 @@ function textButton(root: ParentNode, label: string): HTMLButtonElement {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("#4827 sidebar replica ids are unique per window", () => {
+describe("sidebar replica ids are unique per window", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
@@ -239,7 +239,7 @@ describe("#4827 sidebar replica ids are unique per window", () => {
   });
 });
 
-// #4841 - row decorations and header blockedMenu badges, same two-project setup.
+// Row decorations and header blockedMenu badges, same two-project setup.
 const DECORATION = new RegExp(
   "^(replica\\.(badges|repoBadge|tierBadge|lockChip|orphanNotice|outdated|contextBadge"
     + "|micCancel)\\.|"
@@ -265,7 +265,7 @@ function decorationDiscovery(proj: string): AcDiscoveryResult {
   return result;
 }
 
-describe("#4841 row decorations and header badges are unique per window", () => {
+describe("row decorations and header badges are unique per window", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
@@ -365,7 +365,8 @@ describe("#4841 row decorations and header badges are unique per window", () => 
       for (const ctx of ["selected", "workgroups"]) {
         only(document, `workgroup.header.blockedMenu.${ctx}.${AP(wgPath(proj))}`);
       }
-      only(document, `project.header.${AP(proj)}.blockedMenu`);
+      const id = `project.header.${AP(proj)}.blockedMenu`;
+      expect(count(document, id), id).toBe(1);
       only(document, `coordinators.header.${AP(proj)}.blockedMenu`);
     }
   });

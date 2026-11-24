@@ -17,7 +17,7 @@ use super::{
 };
 
 // ---------------------------------------------------------------------------
-// #1963 P1 - persisted-only catalog report (read-only diagnostic view).
+// Persisted-only catalog report (read-only diagnostic view).
 //
 // `get_coding_agent_catalog_report` serves this report so the frontend can show
 // persisted catalog availability and warnings BEFORE the managed-catalog
@@ -27,8 +27,8 @@ use super::{
 // definitions after the same per-entry validation, duplicate-key and built-in
 // support filters the array endpoint applies, plus visible diagnostics.
 //
-// P5 (#1968) extends this same resolver to compose the local layer; the wire
-// shape below stays fixed. Since P4 (#1967) the array endpoints and the updater
+// P5 extends this same resolver to compose the local layer; the wire
+// shape below stays fixed. Since P4 the array endpoints and the updater
 // resolve through the SAME resolver via `CatalogReport::into_result`, so they
 // can never disagree with the report about availability.
 // ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ pub struct CatalogReport {
 }
 
 impl CatalogReport {
-    /// #1967 P4 - the array-shaped view of this report, shared by every array
+    /// The array-shaped view of this report, shared by every array
     /// consumer (CLI, Tauri command, WebSocket, updater). Every warning is
     /// logged (the report IPC carries the same records structurally), a readable
     /// catalog - including a valid empty one - becomes `Ok`, and `unavailable`
@@ -129,7 +129,7 @@ impl CatalogReport {
     }
 }
 
-/// #1967 P4 - the typed unavailability of an array-shaped catalog read: the
+/// The typed unavailability of an array-shaped catalog read: the
 /// report's diagnostic (stable code, affected path, sanitized reason) as an
 /// error. `Display` renders `catalog unavailable (code) at path: reason`; the
 /// CLI and IPC boundaries stringify it, so code/path/reason survive intact.
@@ -234,7 +234,7 @@ pub(crate) fn read_optional_regular_file(
 
 /// The instance legacy source is a REGULAR file or nothing at all: a directory,
 /// a link or a missing path means "no instance catalog" and the fresh managed
-/// default applies, exactly like the pre-#1968 seed rule. A regular file that
+/// default applies, exactly like the earlier seed rule. A regular file that
 /// cannot be read is an error, never a silent reset.
 pub(crate) fn read_instance_legacy_source(path: &Path) -> Result<Option<Vec<u8>>, String> {
     match config_seed::inspect_seed_destination(path) {
@@ -363,7 +363,7 @@ pub(crate) fn load_catalog_report_with_context(
 /// `<config_dir>/coding-agents/agents.json` is read (reads never write; the
 /// no-project boot path initializes or refreshes that file).
 /// A failure in the primary project is never retried against another project.
-/// P5 (#1968) extends this resolver to compose the local layer.
+/// P5 extends this resolver to compose the local layer.
 pub fn load_catalog_report_for_settings(settings: &AppSettings) -> CatalogReport {
     load_catalog_report_for_settings_with_config_dir(settings, crate::config::config_dir())
 }

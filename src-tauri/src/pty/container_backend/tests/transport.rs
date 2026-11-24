@@ -51,7 +51,7 @@ async fn canceled_handshake_stops_installed_runtime_handle_and_removes_pending_s
     panic!("canceled handshake leaked its runtime handle or pending state");
 }
 
-/// #2413 T16: the runtime path marks the launch witness before the start job,
+/// T16: the runtime path marks the launch witness before the start job,
 /// so a handshake timeout that removed the session state still reports a
 /// launch; a pre-start `Err` does not.
 #[tokio::test]
@@ -100,7 +100,7 @@ async fn runtime_spawn_marks_launch_witness_before_start_and_keeps_it_after_stat
     assert!(!witness.launched(), "pre-start Err: nothing launched");
 }
 
-// #930 plan section 9.a - a teardown funnel (kill -> remove_session_state ->
+// Plan section 9.a - a teardown funnel (kill -> remove_session_state ->
 // cleanup_removed_resources_async) must delete the copied host credential so
 // no live refresh token is left in the workspace tree.
 #[test]
@@ -139,7 +139,7 @@ fn teardown_deletes_copied_credential() {
     assert!(!dest.exists(), "teardown must delete the copied credential");
 }
 
-// #930 F1 - the teardown-during-spawn race: if the session is gone from the
+// F1 - the teardown-during-spawn race: if the session is gone from the
 // map at the post-copy_in recheck, the recheck deletes the orphaned file;
 // if it is still registered, the file survives for the container. Drives the
 // real `remove_credential_if_orphaned` (the extracted recheck).
@@ -599,7 +599,7 @@ async fn exit_and_disconnect_cleanup_remove_route_and_transport_state() {
     }
 }
 
-/// #1171, 9.1.4 (container half) - an id this backend has no parser for is `Gone`, not
+/// 9.1.4 (container half) - an id this backend has no parser for is `Gone`, not
 /// `Missing`.
 ///
 /// This backend tears down on a natural exit and `close_transport` drops the parser before
@@ -724,7 +724,7 @@ fn parses_versioned_frames_and_rejects_large_payloads() {
     assert!(b"x".repeat(MAX_TRANSPORT_FRAME_BYTES + 1).len() > MAX_TRANSPORT_FRAME_BYTES);
 }
 
-// #992 - the posture predicate. Never assert on the spawned thread; assert on the
+// The posture predicate. Never assert on the spawned thread; assert on the
 // decision it makes.
 fn token_manager_at(dir: &tempfile::TempDir) -> ContainerApiTokenManager {
     ContainerApiTokenManager::new_for_path(dir.path().join("api-clients.json"))

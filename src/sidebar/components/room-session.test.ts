@@ -29,7 +29,7 @@ function replica(roomName: string): AcAgentReplica {
   };
 }
 
-// #2202 - the CI half. `repoPaths` carries the EXACT string the remote-activity
+// The CI half. `repoPaths` carries the EXACT string the remote-activity
 // payload is keyed by, because the map applies no normalization.
 const ciRepoPath = (roomName: string): string => `${projectPath}\\.ac\\${roomName}\\repo-AgentsCommander`;
 
@@ -99,7 +99,7 @@ describe("room-session working predicates", () => {
 
   it("pins running plus pendingReview as not working", () => {
     const group = room("wg-1-dev-team");
-    // At-rest writers pair pendingReview with waitingForInput, but #882
+    // At-rest writers pair pendingReview with waitingForInput, but one fix
     // deliberately preserves the existing constructed-state behavior too.
     sessionsStore.setSessions([replicaSession(group.name, "running", { pendingReview: true })]);
 
@@ -149,7 +149,7 @@ describe("room-session working predicates", () => {
     expect(split.notWorking.map((group) => group.name)).toEqual(["wg-2-rust-team", "wg-4-qa-team"]);
   });
 
-  it("#2202 counts a coordinator's running CI as the room's CI, and a non-coordinator's not", () => {
+  it("counts a coordinator's running CI as the room's CI, and a non-coordinator's not", () => {
     const coordRoom = room("wg-1-dev-team", [ciReplica("wg-1-dev-team")]);
     const memberRoom = room("wg-2-rust-team", [
       ciReplica("wg-2-rust-team", { isCoordinator: false }),
@@ -166,7 +166,7 @@ describe("room-session working predicates", () => {
     expect(roomCiRunning(coordRoom)).toBe(false);
   });
 
-  it("#2202 reads session gitRepos first and the configured badges only as a fallback", () => {
+  it("reads session gitRepos first and the configured badges only as a fallback", () => {
     const group = room("wg-1-dev-team", [ciReplica("wg-1-dev-team")]);
     const rep = group.agents[0];
     const sessionRepoPath = `${projectPath}\\.ac\\wg-1-dev-team\\repo-Live`;
@@ -195,7 +195,7 @@ describe("room-session working predicates", () => {
     expect(roomCiRunning(group)).toBe(true);
   });
 
-  it("#2202 treats working-only, CI-only and both as active, and keeps working session-only", () => {
+  it("treats working-only, CI-only and both as active, and keeps working session-only", () => {
     const workingRoom = room("wg-1-dev-team", [ciReplica("wg-1-dev-team")]);
     const ciRoom = room("wg-2-rust-team", [ciReplica("wg-2-rust-team")]);
     const bothRoom = room("wg-3-docs-team", [ciReplica("wg-3-docs-team")]);

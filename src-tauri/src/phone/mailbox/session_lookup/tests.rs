@@ -312,9 +312,8 @@ fn empty_close_outcome() -> CloseSessionOutcome<'static> {
         session_ids: &[],
         closed_ids: Vec::new(),
         failure: None,
-        outcome_unknown: false,
+        certainty: CloseOutcomeCertainty::Known,
         actively_closed: false,
-        may_complete_later: false,
     }
 }
 
@@ -341,8 +340,7 @@ async fn close_response_is_written_before_sender_lookup_and_preserves_timeout_de
     let sender = root.path().join("sender");
     let mut outcome = empty_close_outcome();
     outcome.failure = Some("observer_timeout".into());
-    outcome.outcome_unknown = true;
-    outcome.may_complete_later = true;
+    outcome.certainty = CloseOutcomeCertainty::MayCompleteLater;
     outcome.closed_ids = vec!["already-confirmed".into()];
     write_close_session_response(
         &path,
@@ -372,6 +370,55 @@ async fn close_response_is_written_before_sender_lookup_and_preserves_timeout_de
         .join(crate::config::agent_local_dir_name())
         .join("responses/close-request.json");
     assert_eq!(std::fs::read_to_string(secondary).unwrap(), json);
+}
+
+#[tokio::test]
+async fn close_certainty_maps_uncertain_teardown_into_response_flags() {
+    // (reason, may_complete_later); None is the known empty outcome.
+    let rows: [Option<(&str, bool)>; 3] = [
+        None,
+        Some(("uncertain_settled", false)),
+        Some(("uncertain_pending", true)),
+    ];
+    for row in rows {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("outbox/close.json");
+        let primary = root.path().join("responses/certainty-request.json");
+        let mut outcome = empty_close_outcome();
+        if let Some((reason, pending)) = row {
+            let teardown = super::super::teardown::TeardownOutcome::Uncertain {
+                reason: reason.to_string(),
+                may_complete_later: pending,
+            };
+            assert!(!outcome.record_attempt(Uuid::new_v4(), teardown));
+        }
+        write_close_session_response(
+            &path,
+            &close_message(Some("certainty-request")),
+            false,
+            outcome,
+            async { None },
+        )
+        .await;
+        let response: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(primary).unwrap()).unwrap();
+        assert!(response["outcome_unknown"].is_boolean(), "{row:?}");
+        assert!(response["may_complete_later"].is_boolean(), "{row:?}");
+        match row {
+            Some((reason, pending)) => {
+                assert_eq!(response["status"], "timeout", "{row:?}");
+                assert_eq!(response["reason"], reason, "{row:?}");
+                assert_eq!(response["outcome_unknown"], true, "{row:?}");
+                assert_eq!(response["may_complete_later"], pending, "{row:?}");
+            }
+            None => {
+                assert_eq!(response["status"], "no_match");
+                assert!(response["reason"].is_null());
+                assert_eq!(response["outcome_unknown"], false);
+                assert_eq!(response["may_complete_later"], false);
+            }
+        }
+    }
 }
 
 #[tokio::test]

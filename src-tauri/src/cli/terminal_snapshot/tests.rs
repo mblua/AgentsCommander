@@ -142,7 +142,7 @@ fn rejection_line_names_each_invalid_request_cause() {
         lines.push(line);
     }
 
-    // The defect in #2223 is that these six were one indistinguishable
+    // The defect was that these six were one indistinguishable
     // line. Pairwise distinctness is the property that removes it.
     for left in 0..lines.len() {
         for right in (left + 1)..lines.len() {

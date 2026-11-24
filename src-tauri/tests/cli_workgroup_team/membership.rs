@@ -135,7 +135,7 @@ fn setup_room_with_dev_rust_member(
     (tmp, bin, config_dir, project, added)
 }
 
-/// #1939 - write through the same #1938 guarded funnel production uses.
+/// Write through the same guarded funnel production uses.
 fn guarded_update(
     config_path: &Path,
     mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<(), String>,
@@ -148,7 +148,7 @@ fn guarded_update(
     .expect("guarded config update");
 }
 
-/// #1939 - seed tooling, custom keys and context through the guarded writer.
+/// Seed tooling, custom keys and context through the guarded writer.
 fn seed_custom_replica_config(config_path: &Path) {
     guarded_update(config_path, |obj| {
         obj.insert(
@@ -180,7 +180,7 @@ fn assert_repeat_preserved_config(config_path: &Path, replica_dir: &Path) {
     assert_eq!(saved["tooling"]["profile"], "B");
     assert_eq!(saved["tooling"]["instanceProfileOverride"], "B");
     assert_eq!(saved["tooling"]["selectionLocked"], true);
-    // #2816 (C3) - the repeat add-member migrates the state key through site 6.
+    // (C3) - the repeat add-member migrates the state key through site 6.
     let state: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(replica_dir.join("config.state.no-git.json"))
             .expect("read replica state file"),
@@ -204,7 +204,7 @@ fn assert_repeat_preserved_config(config_path: &Path, replica_dir: &Path) {
 }
 
 fn assert_migration_journal_note(fixture_root: &Path, config_dir: &Path, config_path: &Path) {
-    // #2816 (C3) E9c - the migration's journal note is under the directory this
+    // (C3) E9c - the migration's journal note is under the directory this
     // fixture's own `AGENTSCOMMANDER_CONFIG_DIR` names, and nowhere else in the
     // fixture's tree.
     const JOURNAL_NAME: &str = "naming-migration.state.no-git.json";
@@ -245,7 +245,7 @@ fn assert_migration_journal_note(fixture_root: &Path, config_dir: &Path, config_
     );
 }
 
-/// #1939 - a repeated `team add-member` must merge into the existing replica
+/// A repeated `team add-member` must merge into the existing replica
 /// config instead of replacing it: the protected pair, its flag, tooling
 /// history, custom context and unknown keys survive, including a config write
 /// that runs through the same guarded writer while the repeat is in flight.
@@ -307,7 +307,7 @@ fn issue_1937_repeat_member_preserves_config() {
     assert_migration_journal_note(tmp.path(), &config_dir, &config_path);
 }
 
-// #1088: a live session whose name+cwd match a WG peer surfaces its context-usage
+// A live session whose name+cwd match a WG peer surfaces its context-usage
 // percent as `contextPercent` in both `list-peers` and `list-peers-lean` (read from
 // sessions.json on disk, no daemon), and peers without a matching reading omit it.
 #[test]
