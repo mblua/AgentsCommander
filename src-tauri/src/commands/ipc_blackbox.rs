@@ -1,6 +1,8 @@
-//! Tauri command `ipc_blackbox_report`: harvests renderer IPC black-box records.
-//! Holds no state of its own; it forwards records to the managed `IpcObserver` from
-//! `crate::loops::ipc_observer` and returns the localStorage keys the caller must delete.
+//! Tauri commands `ipc_blackbox_report` (harvests renderer IPC black-box records) and
+//! `ipc_blackbox_enabled` (#1707: whether the renderer instrument runs this process).
+//! Holds only the boot snapshot `IpcBlackBoxActivation`; the report command forwards
+//! records to the managed `IpcObserver` from `crate::loops::ipc_observer` and returns the
+//! localStorage keys the caller must delete.
 //! Parsing, logging into `app.log` and run filtering are done by `IpcObserver`, not here.
 
 use std::sync::Arc;
@@ -21,4 +23,17 @@ pub async fn ipc_blackbox_report(
     records: Vec<StoredRecord>,
 ) -> Result<Vec<String>, String> {
     Ok(observer.ingest_records(records))
+}
+
+/// The `ipcBlackBoxEnabled` value read once at boot (#1707). Never updated: a
+/// settings save takes effect on the next start only.
+pub struct IpcBlackBoxActivation {
+    pub enabled: bool,
+}
+
+/// Whether this process runs the renderer black box. Every window reads the
+/// same boot value, including windows opened after a settings save.
+#[tauri::command]
+pub fn ipc_blackbox_enabled(activation: State<'_, IpcBlackBoxActivation>) -> bool {
+    activation.enabled
 }
