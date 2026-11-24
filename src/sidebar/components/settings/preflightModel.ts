@@ -1,4 +1,4 @@
-// #3516 - pure preflight settings and test-panel logic. No Solid, no IPC.
+// Pure preflight settings and test-panel logic. No Solid, no IPC.
 import type {
   AppSettings,
   PreflightStageReport,
@@ -128,7 +128,7 @@ export const ALL_RUNNING_TEXT = "Stop one of these agents before testing.";
 
 type DraftSource = { preflight?: string; preflightTimeoutSeconds?: number } | undefined;
 
-/** #3832 - one stage of the draft payload: only the command and its timeout. */
+/** One stage of the draft payload: only the command and its timeout. */
 function draftStage(source: DraftSource): PreflightDraftStage {
   return {
     command: source?.preflight ?? null,
@@ -136,7 +136,7 @@ function draftStage(source: DraftSource): PreflightDraftStage {
   };
 }
 
-/** #3832 - the unsaved preflight commands and timeouts of one Coding Agent. */
+/** The unsaved preflight commands and timeouts of one Coding Agent. */
 export function buildPreflightDraft(settings: AppSettings, agentId: string): PreflightTestDraft {
   const row = settings.agents.find((agent) => agent.id === agentId);
   const cells = settings.codingAgentProfiles?.profilesByAgent?.[agentId] ?? {};
@@ -145,19 +145,19 @@ export function buildPreflightDraft(settings: AppSettings, agentId: string): Pre
   return { codingAgent: draftStage(row), profiles };
 }
 
-/** #3832 - stable text of a draft payload, to match a description to its request. */
+/** Stable text of a draft payload, to match a description to its request. */
 export function draftKey(draft: PreflightTestDraft): string {
   return JSON.stringify(draft);
 }
 
-/** #3832 - Profile-cell mode keeps rows that launch with `letter`; card mode keeps all. */
+/** Profile-cell mode keeps rows that launch with `letter`; card mode keeps all. */
 export function rowsForLetter(
   rows: readonly PreflightTestTarget[], letter: string | null,
 ): PreflightTestTarget[] {
   return letter === null ? [...rows] : rows.filter((row) => row.effectiveProfile === letter);
 }
 
-/** #3832 - why no row can be chosen (empty or all running), or null when one can. */
+/** Why no row can be chosen (empty or all running), or null when one can. */
 export function targetListText(
   rows: readonly PreflightTestTarget[], letter: string | null,
 ): string | null {

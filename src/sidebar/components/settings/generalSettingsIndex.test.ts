@@ -8,7 +8,7 @@ import {
 
 const keys = (q: string) => searchGeneralSettings(q).map((e) => e.key);
 
-describe("generalSettingsIndex (#2704)", () => {
+describe("generalSettingsIndex", () => {
   it("has unique keys and only known categories", () => {
     const all = GENERAL_SETTINGS_INDEX.map((e) => e.key);
     expect(new Set(all).size).toBe(all.length);
@@ -57,7 +57,7 @@ describe("generalSettingsIndex (#2704)", () => {
   });
 });
 
-describe("response close search (#2851)", () => {
+describe("response close search", () => {
   it("finds both labels in the terminal category", () => {
     expect(keys("close terminal after response")).toContain("responseCloseEnabled");
     expect(keys("idle seconds after response")).toEqual(["responseCloseIdleSeconds"]);
@@ -67,7 +67,7 @@ describe("response close search (#2851)", () => {
   });
 });
 
-describe("context history color moved out of General (#4049)", () => {
+describe("context history color moved out of General", () => {
   it("has no General entry or section for the color window", () => {
     expect(GENERAL_SETTINGS_INDEX.some((e) => e.key === "contextHistoryColorDays")).toBe(false);
     expect(GENERAL_SETTINGS_INDEX.some((e) => e.section === "Contexto en la barra lateral"))

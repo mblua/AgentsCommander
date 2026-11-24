@@ -16,7 +16,7 @@ import {
 // fails. In the exact scenario of the issue the modal therefore reported
 // `Running` and offered `Stop Server` for a server that never bound.
 
-describe("SettingsModal web server start (#1453)", () => {
+describe("SettingsModal web server start", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

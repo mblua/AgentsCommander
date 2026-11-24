@@ -1415,7 +1415,7 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
-    it("keeps assign enabled for a never-assigned replica on its preferred-agent hint (#551 FIX 2)", async () => {
+    it("keeps assign enabled for a never-assigned replica on its preferred-agent hint (FIX 2)", async () => {
       // Gray replica that was never assigned a coding agent (no currentCodingAgentId)
       // but carries a lastCodingAgent/preferredAgentId hint ("codex"). The picker
       // opens pre-selected on that hint, but with no EXPLICIT current agent the assign

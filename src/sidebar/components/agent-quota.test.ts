@@ -64,7 +64,7 @@ describe("quotaChipAttrs", () => {
   });
 });
 
-// #2681 - the "N% left" text next to agent names in the picker and Settings.
+// The "N% left" text next to agent names in the picker and Settings.
 describe("quotaRemainingLabel", () => {
   it("gives_remaining_for_a_valid_reading_and_null_otherwise", () => {
     const cases: [number | null | undefined, string | null][] = [
@@ -82,8 +82,8 @@ describe("quotaRemainingLabel", () => {
 
 // jsdom has no layout, so the one-line name + badge layout is guarded on the
 // stylesheet text itself.
-describe("#2681 quota name line CSS", () => {
-  // sidebar.css + the Agent Picker sheet split out of it (#4577), in load order.
+describe("quota name line CSS", () => {
+  // sidebar.css + the Agent Picker sheet split out of it, in load order.
   const css = ["../styles/sidebar.css", "../styles/agent-picker-modal.css"]
     .map((p) => readFileSync(new URL(p, import.meta.url), "utf8"))
     .join("")

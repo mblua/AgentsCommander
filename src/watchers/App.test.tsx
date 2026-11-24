@@ -124,7 +124,7 @@ async function flush(): Promise<void> {
  * The persistent startup notice, mirroring `errorBanner` below.
  *
  * Module-scoped rather than local to one `describe`, because the two suites that assert it --
- * the rewritten subscribe-failure test in the #1171 block and the whole #1196 block -- are
+ * the rewritten subscribe-failure test in the activity-window block and the whole mount-chain block -- are
  * different blocks and this is one helper, not two.
  */
 const startupBanner = (root: HTMLElement): HTMLElement | null =>
@@ -1303,7 +1303,7 @@ describe("the activity poll chain", () => {
  * promise that never settles never rejects and `refresh()` itself was gated on the arming. The
  * window sat on "Waiting for the first sample..." for as long as it was open.
  *
- * The remedy is #1188's, one level up: a deadline to turn "never settles" into "settles as a
+ * The remedy is the poll chain's, one level up: a deadline to turn "never settles" into "settles as a
  * failure", and a `finally` to make the arming unconditional once everything pending has been
  * made to settle. Neither half works alone.
  */
@@ -1323,10 +1323,10 @@ describe("the watcher window mount chain", () => {
   });
 
   /**
-   * The #1188 driver, at its post-#1196 count.
+   * The poll-chain driver, at its mount-chain count.
    *
    * Copied rather than shared because AC2 makes `flushMount()`'s turn count the ONLY permitted
-   * modification inside the #1188 block, and hoisting it to module scope would be a second
+   * modification inside the poll-chain block, and hoisting it to module scope would be a second
    * one. `waitFor` is still unusable here for the reason given in that block: it polls on
    * `Date.now()` and a real `setTimeout`, both of which `vi.useFakeTimers()` replaces.
    */
