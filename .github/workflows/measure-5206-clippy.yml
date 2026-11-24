@@ -1,0 +1,331 @@
+name: Medicion nativa Clippy 5206
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths: ['.github/workflows/measure-5206-clippy.yml']
+permissions:
+  contents: read
+env:
+  MEASURE_SOURCE: '6258ddabf3642be610ad64a5f8cbd61f03ba821e'
+  MEASURE_STAGE: inicial
+jobs:
+  censo:
+    if: github.event.pull_request.draft && github.head_ref == 'ci/5206-censo-nativo' && github.event.pull_request.head.repo.full_name == github.repository
+    name: censo-5206 (${{ matrix.host }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, host: windows}
+          - {os: macos-latest, host: macos}
+    env:
+      NATIVE_HOST: ${{ matrix.host }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+      PR_BASE: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+      - name: Fijar npm
+        run: npm install -g --ignore-scripts npm@12.2.3
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: '1.98.1'
+          components: clippy
+      - name: Medir el checkout
+        shell: python
+        run: |
+          import csv, hashlib, json, os, platform, re, shutil, subprocess, tempfile
+          from collections import defaultdict
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          def require(condition, message):
+              if not condition:
+                  raise ValueError(message)
+
+          def dump(path, data):
+              path.write_text(json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+          def packed(data):
+              return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+          def sha(path):
+              with path.open("rb") as f:
+                  h = hashlib.sha256()
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def read(cmd, cwd):
+              return subprocess.check_output(cmd, cwd=cwd, encoding="utf-8").strip()
+
+          def target_key(pid, target):
+              return (pid, target["name"], tuple(target["kind"]), target["src_path"])
+
+          def operations(raw, meta, prefix, cell, selector, op_csv, unit_csv):
+              root = Path(meta["workspace_root"])
+              members = {p["id"]: p for p in meta["packages"] if p["id"] in meta["workspace_members"]}
+              require({p["name"] for p in members.values()} == {
+                  "agentscommander","terminal-snapshot-renderer","rust-source-scrub","session-bridge"}, "miembros")
+              expected, test_units = set(), set()
+              for pid, pkg in members.items():
+                  for t in pkg["targets"]:
+                      require(not t.get("required-features"), ("revisar features de la fuente", t))
+                      if selector == "all" or set(t["kind"]) & {"lib","bin","example","custom-build","proc-macro"}:
+                          k = target_key(pid, t)
+                          expected.add(k)
+                          if selector == "all" and t["test"] and set(t["kind"]) & {"bin","lib","test"}:
+                              test_units.add(k)
+              def location(name, pkg):
+                  path = Path(name)
+                  options = ([path] if path.is_absolute() else
+                             [root / path, Path(pkg["manifest_path"]).parent / path])
+                  for candidate in options:
+                      if candidate.is_file():
+                          try:
+                              return candidate.resolve().relative_to(root.resolve()).as_posix()
+                          except ValueError:
+                              return candidate.as_posix()
+                  return name.replace("\\","/")
+              def span_id(s, pkg):
+                  return [location(s["file_name"], pkg), s["byte_start"], s["byte_end"]]
+              def frames(s, pkg):
+                  result = []
+                  while s.get("expansion"):
+                      e = s["expansion"]
+                      ds = e.get("def_site_span")
+                      s = e["span"]
+                      result.append([e["macro_decl_name"], span_id(s,pkg), span_id(ds,pkg) if ds else None])
+                  return result
+              seen, seen_test, pending = set(), set(), defaultdict(list)
+              embedded, profiles, rows = set(), set(), 0
+              with raw.open(encoding="utf-8") as f:
+                  last = None
+                  for line in f:
+                      last = a = json.loads(line)
+                      pid, t = a.get("package_id"), a.get("target")
+                      if pid not in members:
+                          continue
+                      pkg = members[pid]
+                      if a["reason"] == "build-script-executed" and pkg["name"] == "agentscommander":
+                          embedded.add("has_embedded_dist" in a["cfgs"])
+                      if not t:
+                          continue
+                      k = target_key(pid, t)
+                      if a["reason"] == "compiler-message" and op_csv is not None:
+                          m = a["message"]
+                          lint = (m.get("code") or {}).get("code")
+                          if lint in LINTS:
+                              spans = [s for s in m["spans"] if s["is_primary"]]
+                              require(spans, ("sin span",k,lint))
+                              for s in spans:
+                                  chain = frames(s,pkg)
+                                  pending[k].append([lint,*span_id(s,pkg),s["line_start"],s["line_end"],
+                                                     "expandida" if chain else "revisar-fuente",packed(chain)])
+                      elif a["reason"] == "compiler-artifact":
+                          seen.add(k)
+                          p = a["profile"]
+                          if p["test"]:
+                              seen_test.add(k)
+                          if pkg["name"] == "agentscommander" and "lib" in t["kind"]:
+                              profiles.add(p["debug_assertions"])
+                          unit = [*prefix,pkg["name"],pid,t["name"],packed(t["kind"]),
+                                  location(t["src_path"],pkg),p["test"],p["debug_assertions"],packed(a["features"])]
+                          if unit_csv is not None:
+                              unit_csv.writerow([*unit,a["fresh"]])
+                          for row in pending.pop(k, []):
+                              op_csv.writerow([*unit,*row])
+                              rows += 1
+              require(last and last["reason"] == "build-finished" and last["success"], "fin de Cargo")
+              require(not pending and expected <= seen and test_units <= seen_test,
+                      ("unidad incompleta",str(expected-seen),str(test_units-seen_test),str(pending.keys())))
+              require(embedded == {cell != "dev-sin-dist"} and profiles == {not cell.startswith("release")},
+                      ("cfg/perfil",cell,embedded,profiles))
+              return {"targets":len(seen),"unidades_test":len(seen_test),"spans":rows}
+
+          LINTS = ("clippy::panic","clippy::unwrap_used","clippy::expect_used")
+          OPTIONS = {"allow-panic-in-tests":True,"allow-unwrap-in-tests":True,"allow-expect-in-tests":True,
+                     "allow-unwrap-in-consts":False,"allow-expect-in-consts":False}
+          FIELDS = "sha host triple config celda selector crate package_id target kind src_path profile_test debug_assertions features".split()
+          CARGO = ["cargo","+1.98.1"]
+          CELLS = ("dev-sin-dist","dev-con-dist","release-con-dist")
+
+          def config_for(work, cfg):
+              from tomllib import loads
+              f = work / "clippy.toml"
+              text = f.read_text(encoding="utf-8")
+              original = loads(text)
+              if cfg == "cinco":
+                  for key, value in OPTIONS.items():
+                      # Conservar otras opciones, comentarios y cualquier tabla ya existente.
+                      literal = str(value).lower()
+                      if key in original:
+                          text, n = re.subn(r"(?m)^(\s*"+re.escape(key)+r"\s*=\s*)(?:true|false)([ \t]*(?:#[^\n]*)?)$",
+                                            lambda m: m[1]+literal+m[2],text)
+                          require(n == 1, key)
+                      else:
+                          text = key+" = "+literal+"\n"+text
+                  require(loads(text) == {**original,**OPTIONS}, "configuración efectiva")
+                  f.write_bytes(text.encode("utf-8"))
+              return sha(f)
+
+          def census(src, host, stage, out, receipt):
+              checkout = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+              nm = "mblua/AgentsCommander"
+              wf = ".github/workflows/measure-5206-clippy.yml"
+              ref = ".github/workflows/pr-regression-gates.yml"
+              git = lambda *args: read(["git",*args],checkout)
+              head, base = os.environ["PR_HEAD"], os.environ["PR_BASE"]
+              require(os.environ["GITHUB_REPOSITORY"] == nm and git("rev-parse","HEAD") == head, "PR head")
+              require(re.fullmatch("[a-f0-9]{40}",src) and stage in {"inicial","base-p07","integrada"}, "fuente")
+              require(stage != "inicial" or src == "6258ddabf3642be610ad64a5f8cbd61f03ba821e", "base inicial")
+              git("fetch","origin","+refs/heads/main:refs/remotes/origin/main")
+              git("merge-base","--is-ancestor",src,"origin/main")
+              require(git("diff","--name-status",base+"..."+head) == "A\t"+wf,"diff del PR")
+              workflow_sha = os.environ["GITHUB_WORKFLOW_SHA"]
+              git("fetch","origin",workflow_sha)
+              require(git("rev-parse",workflow_sha+":"+wf) == git("rev-parse",head+":"+wf), "bytes de workflow")
+              native_text = git("show",src+":"+ref)
+              job = "rust-regression-"+host
+              block = native_text.split("\\n  "+job+":\\n",1)[1]
+              block = re.split(r"(?m)^  [\\w-]+:\\s*$",block,maxsplit=1)[0]
+              pins = {"actions/checkout":"fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+                      "actions/setup-node":"a0853c24544627f65ddf259abe73b1d18a591444",
+                      "dtolnay/rust-toolchain":"4360b52568e2003a75bf9bc1d59f33a8e3fc893c",
+                      "actions/upload-artifact":"cf430e030ddbb5b0abf93d22962f4752f3646cd9"}
+              measured_yaml=git("show",workflow_sha+":"+wf)
+              for action,pin in pins.items():
+                  baseline=native_text if action=="actions/upload-artifact" else block
+                  assert_pin="uses: "+action+"@"+pin
+                  require(assert_pin in measured_yaml and assert_pin in baseline, action)
+              for token in ["runs-on: "+host+"-latest","node-version: 22","npm@12.2.3","toolchain: '1.98.1'",
+                            "components: clippy","npm ci --ignore-scripts","npm run build","cargo clippy --locked --workspace --all-targets"]:
+                  require(token in block, ("job de referencia",job,token))
+              receipt.update(job_referencia=job,acciones=pins,features_cli=[],python=platform.python_version())
+              receipt.update(issue=5206,stage=stage,source=src,host=host,pr=int(os.environ["PR_NUMBER"]),
+                             head=head,base=base,event_sha=os.environ["GITHUB_SHA"],workflow_sha=workflow_sha,
+                             workflow_blob=git("rev-parse",head+":"+wf),native_job_blob=git("rev-parse",src+":"+ref),
+                             run=os.environ["GITHUB_RUN_ID"],attempt=os.environ["GITHUB_RUN_ATTEMPT"],
+                             image=os.environ["ImageOS"],image_version=os.environ["ImageVersion"],arch=os.environ["RUNNER_ARCH"])
+              receipt["url"]="https://github.com/"+nm+"/actions/runs/"+receipt["run"]+"/attempts/"+receipt["attempt"]
+              require((host,platform.system()) in {("windows","Windows"),("macos","Darwin")}, "sistema nativo")
+              versions = {k:read(cmd,checkout) for k,cmd in {
+                  "rustc":["rustc","+1.98.1","-vV"],"clippy":CARGO+["clippy","--version"],
+                  "cargo":CARGO+["-Vv"],"node":["node","--version"],"npm":[shutil.which("npm.cmd" if os.name=="nt" else "npm"),"--version"],
+                  "cfg":["rustc","+1.98.1","--print","cfg"]}.items()}
+              rust = dict(line.split(": ",1) for line in versions["rustc"].splitlines() if ": " in line)
+              triple = rust["host"]
+              require(rust["release"]=="1.98.1" and ("clippy 0.1.98 ("+rust["commit-hash"][:9]) in versions["clippy"], "Rust/Clippy")
+              require(versions["node"].startswith("v22.") and versions["npm"]=="12.2.3","Node/npm")
+              require(triple.endswith({"windows":"-pc-windows-msvc","macos":"-apple-darwin"}[host]), triple)
+              require(triple.split("-")[0] == {"X64":"x86_64","ARM64":"aarch64"}[receipt["arch"]], "arquitectura")
+              opt_env = ["RUSTFLAGS","CARGO_ENCODED_RUSTFLAGS","CLIPPY_CONF_DIR","CARGO_BUILD_TARGET","BUILD_PROFILE","TAURI_CONFIG"]
+              require(not any(os.environ.get(k) for k in opt_env), "override de cfg")
+              receipt.update(versions=versions,triple=triple,runs=[],configs={},source_files={})
+              with (out/"operaciones.csv").open("x",newline="",encoding="utf-8") as ops, (out/"unidades.csv").open("x",newline="",encoding="utf-8") as units:
+                  ow,uw = csv.writer(ops),csv.writer(units)
+                  ow.writerow([*FIELDS,"lint","ruta","byte_start","byte_end","line_start","line_end","origen_provisional","expansion"])
+                  uw.writerow([*FIELDS,"fresh"])
+                  for cfg in ("actual","cinco"):
+                      with tempfile.TemporaryDirectory(prefix="ac52-",dir=os.environ["RUNNER_TEMP"]) as temp:
+                          w = Path(temp)/"src"
+                          git("clone","--no-hardlinks","--no-checkout","-c","core.autocrlf=false","-c","core.longpaths=true",str(checkout),str(w))
+                          g = lambda *args: read(["git",*args],w)
+                          g("checkout","--detach",src)
+                          require(g("rev-parse","HEAD")==src and not g("status","--porcelain"), "copia limpia")
+                          files = ["Cargo.toml","Cargo.lock","clippy.toml","rust-toolchain.toml",".cargo/config.toml",
+                                   "package.json","package-lock.json",ref,"src-tauri/build.rs","src-tauri/Cargo.toml",
+                                   *[str(p.relative_to(w)).replace("\\\\","/") for p in sorted((w/"crates").glob("*/Cargo.toml"))]]
+                          receipt["source_files"][cfg] = {name:sha(w/name) for name in files}
+                          receipt["configs"][cfg] = config_for(w,cfg)
+                          shutil.copyfile(w/"clippy.toml",out/(cfg+"-clippy.toml"))
+                          if stage == "integrada":
+                              from tomllib import loads
+                              declared=loads((w/"Cargo.toml").read_text(encoding="utf-8"))["workspace"]["lints"]["clippy"]
+                              require(all(declared.get(k.split("::")[1])=="deny" for k in LINTS),"deny de P07")
+                              require(all(loads((w/"clippy.toml").read_text(encoding="utf-8")).get(k)==v for k,v in OPTIONS.items()),"opciones integradas")
+                          for cell in CELLS:
+                              tag=cfg+"-"+cell
+                              if cell=="dev-con-dist":
+                                  npm=shutil.which("npm.cmd" if os.name=="nt" else "npm")
+                                  with (out/(tag+"-frontend.log")).open("wb") as log:
+                                      for args in (["ci","--ignore-scripts"],["run","build"]):
+                                          subprocess.run([npm,*args],cwd=w,stdout=log,stderr=subprocess.STDOUT,check=True)
+                              index=w/"dist/index.html"
+                              require((index.is_file() and index.stat().st_size>0) == (cell!="dev-sin-dist"),"frontend")
+                              metadata=json.loads(read(CARGO+["metadata","--locked","--no-deps","--format-version","1"],w))
+                              dump(out/(tag+"-metadata.json"),metadata)
+                              require(Path(metadata["target_directory"]).resolve().is_relative_to(w.resolve()),"target de la copia")
+                              if cell=="release-con-dist":
+                                  debug=Path(metadata["target_directory"])/"debug"
+                                  if debug.is_dir():
+                                      shutil.rmtree(debug)
+                              for selector,kinds in [("prod",["--lib","--bins","--examples"]),("all",["--all-targets"])]:
+                                  for mode,flags in [("inventario",["--force-warn="+k for k in LINTS]),("ordinario",[]),("estricto",["-D","warnings"])]:
+                                      args=CARGO+["clippy","--locked","--workspace",*kinds,"--no-deps","--keep-going","--message-format=json"]
+                                      if cell.startswith("release"):
+                                          args.append("--release")
+                                      if mode=="inventario":
+                                          args+=["--jobs","1"]
+                                      if flags:
+                                          args+=["--",*flags]
+                                      name="-".join((tag,selector,mode))
+                                      raw=out/(name+".jsonl")
+                                      with raw.open("wb") as stdout,(out/(name+".err")).open("wb") as stderr:
+                                          rc=subprocess.run(args,cwd=w,stdout=stdout,stderr=stderr).returncode
+                                      row=dict(config=cfg,cell=cell,selector=selector,mode=mode,cmd=args,exit=rc,
+                                               dist_sha256=sha(index) if index.exists() else None)
+                                      receipt["runs"].append(row)
+                                      if mode=="inventario":
+                                          require(rc==0, (name,rc))
+                                          row.update(operations(raw,metadata,[src,host,triple,cfg,cell,selector],cell,selector,ow,uw))
+                                      else:
+                                          errors=[]
+                                          last=None
+                                          with raw.open(encoding="utf-8") as f:
+                                              for line in f:
+                                                  last=json.loads(line)
+                                                  m=last.get("message")
+                                                  if isinstance(m,dict) and m["level"]=="error" and m.get("code"):
+                                                      errors.append(m["code"]["code"])
+                                          require(last and last.get("reason")=="build-finished" and
+                                                  ((rc==0 and last["success"]) or (stage!="integrada" and rc==101 and not last["success"] and errors)),
+                                                  (name,rc,errors[:3]))
+                                          row["errores"]=sorted(set(errors))
+                                          if rc==0:
+                                              row.update({k:v for k,v in operations(raw,metadata,[],cell,selector,None,None).items() if k!="spans"})
+                          require(not g("diff","--name-only","--",".",":(exclude)clippy.toml"),"deriva tracked")
+              require(len(receipt["runs"])==36 and receipt["source_files"]["actual"]==receipt["source_files"]["cinco"],"matriz o fuente")
+              receipt["completo"]=True
+
+          def main():
+              out=Path(os.environ["RUNNER_TEMP"])/"censo-5206"
+              out.mkdir()
+              receipt={"completo":False}
+              try:
+                  census(os.environ["MEASURE_SOURCE"],os.environ["NATIVE_HOST"],os.environ["MEASURE_STAGE"],out,receipt)
+              finally:
+                  receipt["utc"]=datetime.now(timezone.utc).isoformat()
+                  dump(out/"recibo.json",receipt)
+                  files=sorted(p for p in out.iterdir() if p.is_file())
+                  manifest=out/"SHA256SUMS"
+                  manifest.write_bytes("".join(sha(p)+"  "+p.name+"\n" for p in files).encode("utf-8"))
+                  print("SHA256SUMS",sha(manifest),flush=True)
+
+          if __name__=="__main__":
+              main()
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: clippy-5206-${{ matrix.host }}-${{ env.MEASURE_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/censo-5206
+          if-no-files-found: error
