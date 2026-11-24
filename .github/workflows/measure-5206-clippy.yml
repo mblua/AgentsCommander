@@ -9,6 +9,7 @@ permissions:
 env:
   MEASURE_SOURCE: '6258ddabf3642be610ad64a5f8cbd61f03ba821e'
   MEASURE_STAGE: inicial
+  MEASURE_PR: ''
 jobs:
   censo:
     if: github.event.pull_request.draft && github.head_ref == 'ci/5206-censo-nativo' && github.event.pull_request.head.repo.full_name == github.repository
@@ -178,6 +179,15 @@ jobs:
                   f.write_bytes(text.encode("utf-8"))
               return sha(f)
 
+          def native_job_block(text, host):
+              job = "rust-regression-" + host
+              header = re.search(r"(?m)^  " + re.escape(job) + r":[ \t]*$", text)
+              require(header is not None, ("job de referencia ausente", job))
+              return re.split(r"(?m)^  [\w-]+:[ \t]*$", text[header.end():], maxsplit=1)[0]
+
+          def relative_manifest(path):
+              return path.as_posix()
+
           def census(src, host, stage, out, receipt):
               checkout = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
               nm = "mblua/AgentsCommander"
@@ -186,18 +196,25 @@ jobs:
               git = lambda *args: read(["git",*args],checkout)
               head, base = os.environ["PR_HEAD"], os.environ["PR_BASE"]
               require(os.environ["GITHUB_REPOSITORY"] == nm and git("rev-parse","HEAD") == head, "PR head")
-              require(re.fullmatch("[a-f0-9]{40}",src) and stage in {"inicial","base-p07","integrada"}, "fuente")
+              require(re.fullmatch("[a-f0-9]{40}",src) and stage in {"inicial","base-p07","head-p07","integrada"}, "fuente")
               require(stage != "inicial" or src == "6258ddabf3642be610ad64a5f8cbd61f03ba821e", "base inicial")
               git("fetch","origin","+refs/heads/main:refs/remotes/origin/main")
-              git("merge-base","--is-ancestor",src,"origin/main")
+              if stage == "head-p07":
+                  product_pr = os.environ["MEASURE_PR"]
+                  require(re.fullmatch(r"[1-9][0-9]*", product_pr), "PR de producto")
+                  product_ref = "refs/heads/measure-source-5206"
+                  git("fetch", "origin", "+refs/pull/" + product_pr + "/head:" + product_ref)
+                  require(git("rev-parse", product_ref) == src, "HEAD de producto cambió")
+                  receipt["product_pr"] = int(product_pr)
+              else:
+                  git("merge-base","--is-ancestor",src,"origin/main")
               require(git("diff","--name-status",base+"..."+head) == "A\t"+wf,"diff del PR")
               workflow_sha = os.environ["GITHUB_WORKFLOW_SHA"]
               git("fetch","origin",workflow_sha)
               require(git("rev-parse",workflow_sha+":"+wf) == git("rev-parse",head+":"+wf), "bytes de workflow")
               native_text = git("show",src+":"+ref)
               job = "rust-regression-"+host
-              block = native_text.split("\\n  "+job+":\\n",1)[1]
-              block = re.split(r"(?m)^  [\\w-]+:\\s*$",block,maxsplit=1)[0]
+              block = native_job_block(native_text, host)
               pins = {"actions/checkout":"fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
                       "actions/setup-node":"a0853c24544627f65ddf259abe73b1d18a591444",
                       "dtolnay/rust-toolchain":"4360b52568e2003a75bf9bc1d59f33a8e3fc893c",
@@ -244,15 +261,15 @@ jobs:
                           require(g("rev-parse","HEAD")==src and not g("status","--porcelain"), "copia limpia")
                           files = ["Cargo.toml","Cargo.lock","clippy.toml","rust-toolchain.toml",".cargo/config.toml",
                                    "package.json","package-lock.json",ref,"src-tauri/build.rs","src-tauri/Cargo.toml",
-                                   *[str(p.relative_to(w)).replace("\\\\","/") for p in sorted((w/"crates").glob("*/Cargo.toml"))]]
+                                   *[relative_manifest(p.relative_to(w)) for p in sorted((w/"crates").glob("*/Cargo.toml"))]]
                           receipt["source_files"][cfg] = {name:sha(w/name) for name in files}
-                          receipt["configs"][cfg] = config_for(w,cfg)
-                          shutil.copyfile(w/"clippy.toml",out/(cfg+"-clippy.toml"))
-                          if stage == "integrada":
+                          if stage in {"head-p07","integrada"}:
                               from tomllib import loads
                               declared=loads((w/"Cargo.toml").read_text(encoding="utf-8"))["workspace"]["lints"]["clippy"]
                               require(all(declared.get(k.split("::")[1])=="deny" for k in LINTS),"deny de P07")
                               require(all(loads((w/"clippy.toml").read_text(encoding="utf-8")).get(k)==v for k,v in OPTIONS.items()),"opciones integradas")
+                          receipt["configs"][cfg] = config_for(w,cfg)
+                          shutil.copyfile(w/"clippy.toml",out/(cfg+"-clippy.toml"))
                           for cell in CELLS:
                               tag=cfg+"-"+cell
                               if cell=="dev-con-dist":
@@ -298,7 +315,7 @@ jobs:
                                                   if isinstance(m,dict) and m["level"]=="error" and m.get("code"):
                                                       errors.append(m["code"]["code"])
                                           require(last and last.get("reason")=="build-finished" and
-                                                  ((rc==0 and last["success"]) or (stage!="integrada" and rc==101 and not last["success"] and errors)),
+                                                  ((rc==0 and last["success"]) or (stage not in {"head-p07","integrada"} and rc==101 and not last["success"] and errors)),
                                                   (name,rc,errors[:3]))
                                           row["errores"]=sorted(set(errors))
                                           if rc==0:
