@@ -154,7 +154,7 @@ pub(crate) fn rename_task_artifact_with_retry(source: &Path, target: &Path) -> s
             Err(e) => return Err(e),
         }
     }
-    unreachable!()
+    unreachable!("the last rename attempt always returns")
 }
 
 pub(crate) fn read_task_artifact(path: &Path) -> std::io::Result<Vec<u8>> {
