@@ -144,7 +144,9 @@ fn production_route_remover_outer_poison_is_exact_structured_residue() {
         "outer mutex poison fixture must panic"
     );
 
-    let budget = Duration::from_millis(150);
+    // On the poison path the sweep retries until the budget ends, so this
+    // budget is also the test run time; 1 s leaves margin for a loaded runner.
+    let budget = Duration::from_secs(1);
     let started_at = Instant::now();
     let report = backend.stop_all_started_containers_blocking(budget);
     let elapsed = started_at.elapsed();
