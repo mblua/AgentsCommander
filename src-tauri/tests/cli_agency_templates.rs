@@ -90,6 +90,16 @@ fn run_git(repo: &Path, args: &[&str]) {
     );
 }
 
+/// Fails with the binary's stderr, so a flaky non-zero exit shows its cause.
+fn assert_success(output: &std::process::Output) {
+    assert!(
+        output.status.success(),
+        "binary failed: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn file_url(path: &Path) -> String {
     let path = path.to_string_lossy().replace('\\', "/");
     if cfg!(windows) {
@@ -209,7 +219,7 @@ fn agency_templates_update_prints_json_on_success_and_noop() {
     };
 
     let output = run_update();
-    assert!(output.status.success());
+    assert_success(&output);
     assert!(output.stderr.is_empty());
     assert!(!output.stdout.is_empty(), "update stdout must contain JSON");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
@@ -225,7 +235,7 @@ fn agency_templates_update_prints_json_on_success_and_noop() {
         .contains("agency-agents_templates"));
 
     let output = run_update();
-    assert!(output.status.success());
+    assert_success(&output);
     assert!(output.stderr.is_empty());
     assert!(
         !output.stdout.is_empty(),
@@ -253,7 +263,7 @@ fn agency_templates_status_missing_cache_returns_json() {
     };
     let output = child.wait_with_output().expect("collect status output");
 
-    assert!(output.status.success());
+    assert_success(&output);
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("status json");
@@ -277,7 +287,7 @@ fn agency_templates_list_missing_cache_returns_empty_array() {
     };
     let output = child.wait_with_output().expect("collect list output");
 
-    assert!(output.status.success());
+    assert_success(&output);
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("list json");
@@ -303,7 +313,7 @@ fn agency_templates_list_pretty_returns_cached_metadata() {
     };
     let output = child.wait_with_output().expect("collect list output");
 
-    assert!(output.status.success());
+    assert_success(&output);
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert!(stdout.trim_start().starts_with('['));
@@ -338,7 +348,7 @@ fn agency_templates_status_reports_locked_cache() {
     };
     let output = child.wait_with_output().expect("collect status output");
 
-    assert!(output.status.success());
+    assert_success(&output);
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("status json");
