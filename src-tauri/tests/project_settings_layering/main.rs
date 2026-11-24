@@ -184,6 +184,7 @@
 //!      specification, and appending here is what Section 9.3.5 contemplates.
 //!  14. (append here: one entry per spelling a reviewer proves still passes)
 
+#[path = "../support/module_sources.rs"]
 mod module_sources;
 mod source_text;
 
