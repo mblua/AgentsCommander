@@ -70,7 +70,7 @@ async function mount(temp: WorkgroupGroupsConfig, rooms: TempRoomInfo[] = [ROOM_
   return { fake, rendered };
 }
 
-describe("#4805 RoomGroupRail - Temporary Rooms section", () => {
+describe("RoomGroupRail - Temporary Rooms section", () => {
   let cleanup: (() => void) | null = null;
   beforeEach(() => {
     resetUiStoresForTests();

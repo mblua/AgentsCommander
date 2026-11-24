@@ -15,7 +15,7 @@ const replicaName = "dev-webpage-ui";
 const replicaPath = `${workgroupPath}\\__agent_${replicaName}`;
 const rowSelector = `[data-ac-testid="replica.row.quick.${automationIdPart(replicaPath)}"]`;
 
-describe("ProjectPanel wake-a-stopped-replica toast (#2573)", () => {
+describe("ProjectPanel wake-a-stopped-replica toast", () => {
   describeRestartToast({
     failName: "waking_a_stopped_replica_shows_the_plain_error_toast",
     okName: "a_successful_wake_shows_no_toast",

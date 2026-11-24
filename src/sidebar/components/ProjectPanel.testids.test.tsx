@@ -108,7 +108,7 @@ async function dismissMenus(): Promise<void> {
   await waitFor(() => expect(document.querySelector(".session-context-menu")).toBeNull());
 }
 
-describe("#4825 ProjectPanel sidebar menu test ids", () => {
+describe("ProjectPanel sidebar menu test ids", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

@@ -60,7 +60,7 @@ function coordDiscovery(taskTitle = "Row identity") {
   });
 }
 
-describe("ProjectPanel row identity across volatile events (#748)", () => {
+describe("ProjectPanel row identity across volatile events", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
