@@ -59,9 +59,13 @@ fn descendants_of(root: u32, map: &HashMap<u32, u32>) -> Vec<u32> {
 fn job_terminate_kills_child_and_grandchild() {
     // Assigned pid = outer cmd; it spawns an inner cmd (child) that spawns ping
     // (grandchild of the assigned pid). Proves tree-kill to depth 2 and that
-    // descendants spawned AFTER assignment are captured.
+    // descendants spawned AFTER assignment are captured. The outer cmd waits
+    // about 1 s before spawning, so `for_child` assigns the job first (#917).
     let mut child = Command::new("cmd.exe")
-        .args(["/C", "cmd /C ping -n 30 127.0.0.1 >NUL"])
+        .args([
+            "/C",
+            "ping -n 2 127.0.0.1 >NUL & cmd /C ping -n 30 127.0.0.1 >NUL",
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .expect("spawn outer cmd");
@@ -74,16 +78,20 @@ fn job_terminate_kills_child_and_grandchild() {
     // ceiling only matters under heavy load.
     let mut tree = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(10);
+    // Wait for a grandchild (parent is not root): the first `ping` is only a child.
+    let mut has_grandchild = false;
     while Instant::now() < deadline {
-        tree = descendants_of(root, &parent_map());
-        if !tree.is_empty() {
+        let map = parent_map();
+        tree = descendants_of(root, &map);
+        has_grandchild = tree.iter().any(|pid| map.get(pid) != Some(&root));
+        if has_grandchild {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(
-        !tree.is_empty(),
-        "expected at least one descendant before terminate"
+        has_grandchild,
+        "expected a grandchild before terminate (tree={tree:?})"
     );
 
     job.terminate();
