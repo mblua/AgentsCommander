@@ -560,7 +560,7 @@ function detachedSessionIds(fake: FakeTransport): string[] {
   return fake.callsFor("detach_terminal_output").map((call) => String(call.args.sessionId));
 }
 
-describe("TerminalView attachment (#1363)", () => {
+describe("TerminalView attachment", () => {
   let cleanupDom: (() => void) | null = null;
   let cleanupResizeObserver: (() => void) | null = null;
   let warn: ReturnType<typeof vi.spyOn>;

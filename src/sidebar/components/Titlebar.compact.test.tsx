@@ -72,7 +72,7 @@ async function flushMicrotasks(): Promise<void> {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
 }
 
-describe("Titlebar width presets vs compact (#2236)", () => {
+describe("Titlebar width presets vs compact", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

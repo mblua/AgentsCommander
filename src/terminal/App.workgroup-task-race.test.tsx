@@ -235,7 +235,7 @@ async function forceHydration(fake: FakeTransport, generation: number): Promise<
   await flush();
 }
 
-describe("#1455 TASK header write ordering", () => {
+describe("TASK header write ordering", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

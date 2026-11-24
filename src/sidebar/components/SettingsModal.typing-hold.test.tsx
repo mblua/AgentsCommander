@@ -19,7 +19,7 @@ const FIELD = '[data-ac-testid="settings.general.typingHoldSeconds"]';
 const ERROR = '[data-ac-testid="settings.general.typingHoldSeconds.error"]';
 const SAVE = '[data-ac-testid="settings.save"]';
 
-describe("SettingsModal typing hold (#2337)", () => {
+describe("SettingsModal typing hold", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

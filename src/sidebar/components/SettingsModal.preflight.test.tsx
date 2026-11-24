@@ -75,7 +75,7 @@ async function savedDraft(r: ReturnType<typeof render>) {
   return { row: draft.agents[0], cell: draft.codingAgentProfiles.profilesByAgent.codex.A };
 }
 
-describe("SettingsModal preflight blocks (#3516)", () => {
+describe("SettingsModal preflight blocks", () => {
   let cleanupDom: (() => void) | null = null;
   let cleanup: (() => void) | null = null;
 

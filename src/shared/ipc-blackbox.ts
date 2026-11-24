@@ -41,10 +41,11 @@ const CURRENT_PREFIX = "ac.ipc.bb.cur.";
 const ROTATED_PREFIX = "ac.ipc.bb.prev.";
 const SCAN_PREFIX = "ac.ipc.bb.";
 
-/** Four commands legitimately pend far past the 5 s threshold. Three are
+/** Six commands legitimately pend far past the 5 s threshold. Five are
  *  `rfd::AsyncFileDialog` file pickers (`agent_creator.rs:7-19`,
- *  `spec_board.rs:246-254`, `spec_board.rs:332`) that wait on the user; the
- *  fourth, `quit_application`, may await gate consent, a slow save or Force.
+ *  `spec_board.rs:246-254`, `spec_board.rs:332`, `coding_agents_transfer.rs`)
+ *  that wait on the user; the sixth, `quit_application`, may await gate
+ *  consent, a slow save or Force.
  *  They stay in `pending` with their real `ageMs` so the record is complete,
  *  but they are never marked `overdue` and never counted in `overdueTotal`, so
  *  the 5 s sweeper does not report a modal picker or a consenting quit as a
@@ -53,6 +54,8 @@ const NEVER_OVERDUE = new Set([
   "pick_folder",
   "spec_board_pick_open",
   "spec_board_pick_save",
+  "coding_agents_export_pick_save",
+  "coding_agents_import_pick_open",
   "quit_application",
 ]);
 

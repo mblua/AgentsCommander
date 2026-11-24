@@ -228,7 +228,7 @@ function flyoutNode(): HTMLElement | null {
   return document.querySelector<HTMLElement>(".session-context-flyout");
 }
 
-describe("ProjectPanel repo Browse submenu, driven through the automation bridge (#944)", () => {
+describe("ProjectPanel repo Browse submenu, driven through the automation bridge", () => {
   let cleanupDom: (() => void) | null = null;
   let restoreRects: (() => void) | null = null;
   let restoreClientRects: (() => void) | null = null;

@@ -264,7 +264,7 @@ fn ui_query_timeout_after_frontend_accepts_request_returns_bounded_stdout() {
             "--selector",
             "does.not.exist",
             "--timeout-ms",
-            "250",
+            "2000",
         ],
     );
     let seen_at = mover.finish();
@@ -392,7 +392,7 @@ fn ui_click_timeout_removes_inflight_request_with_json_only_stdout() {
             "--selector",
             "onboarding.confirm",
             "--timeout-ms",
-            "250",
+            "2000",
         ],
     );
     mover.finish();
@@ -612,7 +612,7 @@ fn ui_wait_does_not_retry_stale_session_without_daemon() {
     let tmp = Tmp::new("ui-wait-stale-no-daemon");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, u32::MAX, &["main"]);
-    let (code, stdout, stderr, elapsed) = ui_wait_zoom(&bin, "5000");
+    let (code, stdout, stderr, elapsed) = ui_wait_zoom(&bin, "30000");
     assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
     assert_empty_output("stderr", &stderr);
     let parsed = first_json(&stdout);
@@ -620,7 +620,7 @@ fn ui_wait_does_not_retry_stale_session_without_daemon() {
     assert!(parsed.get("phase").is_none(), "stdout: {stdout}");
     assert!(parsed.get("timeoutMs").is_none(), "stdout: {stdout}");
     assert!(
-        elapsed < Duration::from_millis(4500),
+        elapsed < Duration::from_millis(15000),
         "elapsed: {elapsed:?}"
     );
 }

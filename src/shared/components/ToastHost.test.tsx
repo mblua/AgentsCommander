@@ -24,7 +24,7 @@ function renderHost(): () => void {
   };
 }
 
-describe("ToastHost (#574)", () => {
+describe("ToastHost", () => {
   let dispose: (() => void) | null = null;
 
   afterEach(() => {

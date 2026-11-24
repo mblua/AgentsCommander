@@ -80,7 +80,7 @@ function px(value: string, context: string): number {
 
 const COMPACT_ACTION_BAR = ".sidebar-compact .action-bar";
 
-describe("#2236 phase 6 compact toolbar CSS bytes", () => {
+describe("phase 6 compact toolbar CSS bytes", () => {
   it("declares the compact inline padding and gap and no block padding or shorthand", () => {
     const declared = declarations(ruleBodyLines(CSS_LINES, COMPACT_ACTION_BAR));
 

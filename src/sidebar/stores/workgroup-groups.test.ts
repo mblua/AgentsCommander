@@ -313,7 +313,7 @@ describe("workgroup group validation helpers", () => {
   });
 });
 
-describe("#777 Non-stop group", () => {
+describe("Non-stop group", () => {
   let restoreTransport: (() => void) | null = null;
 
   beforeEach(() => {
@@ -390,7 +390,7 @@ describe("#777 Non-stop group", () => {
     expect(isUngroupedWorkgroup(compiled, { ...nonStop, regex: "(" }, wg("wg-2-rust-team"))).toBe(true);
   });
 
-  it("groupMatchesWorkgroup and isUngroupedWorkgroup cap at 160 CODE POINTS (#2036 D2)", () => {
+  it("groupMatchesWorkgroup and isUngroupedWorkgroup cap at 160 CODE POINTS", () => {
     // 160 astral code points are 320 UTF-16 units: the store's charLength guards
     // accept them, so matching must accept them too (the old `.length` cap did not).
     const atCap = "𝕨".repeat(160);
@@ -499,7 +499,7 @@ describe("#777 Non-stop group", () => {
     );
   });
 
-  it("keeps the nonStop favorite flag through load and through an unrelated save (#1257)", async () => {
+  it("keeps the nonStop favorite flag through load and through an unrelated save", async () => {
     const fake = new FakeTransport();
     restoreTransport?.();
     restoreTransport = __setTransportForTests(fake);
@@ -551,7 +551,7 @@ describe("#777 Non-stop group", () => {
   });
 });
 
-describe("#4805 Temporary Rooms group set routing and forgetWorkgroup", () => {
+describe("Temporary Rooms group set routing and forgetWorkgroup", () => {
   const KEY = TEMP_ROOMS_GROUPS_KEY;
   let fake: FakeTransport;
   let restore: () => void;

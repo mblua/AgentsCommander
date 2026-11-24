@@ -76,7 +76,7 @@ function loadSheets(): Sheet[] {
   return CSS_PATHS.map((path) => ({ path, text: readFileSync(new URL(path, ROOT), "utf8") }));
 }
 
-describe("token fallback parity (#2744 phase C)", () => {
+describe("token fallback parity (phase C)", () => {
   const sheets = loadSheets();
   const variablesCss = sheets.find((s) => s.path === VARIABLES_PATH)?.text ?? "";
 

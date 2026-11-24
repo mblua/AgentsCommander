@@ -96,7 +96,7 @@ describe('computeTrailingText', () => {
 // unrewired F1 renders no badge at all for a Room, silently. The legacy cases
 // above are deliberately kept (Rule P2): the badge is an IDENTITY, so a Room
 // and a legacy Workgroup must stay distinguishable in the mixed root.
-describe('path-extractors, Room (#1614 F1)', () => {
+describe('path-extractors, Room', () => {
   it('agent_in_room_returns_all_three', () => {
     const w = 'C:\\foo\\.ac\\room-19-dev-team\\__agent_tech-lead';
     expect(extractProjectName(w)).toBe('foo');
@@ -128,7 +128,7 @@ describe('path-extractors, Room (#1614 F1)', () => {
   });
 });
 
-describe('trailing separator trim (#4456 S8786)', () => {
+describe('trailing separator trim', () => {
   const samples = [
     '', '/', '///', 'a', 'a//', '//a//', 'a\\/\\', 'C:\\x\\', 'a/\\/', '/a/b/',
   ];

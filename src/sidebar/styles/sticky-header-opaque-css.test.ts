@@ -39,7 +39,7 @@ const HEADERS: Array<[string, string[]]> = [
   [`${lt}${nc} .project-header`, ["rgba(255, 0, 180, 0.04)"]],
 ];
 
-describe("#4821 sticky project header opaque", () => {
+describe("sticky project header opaque", () => {
   it.each(HEADERS)("%s background ends in var(--sidebar-bg) and keeps its stops", (sel, stops) => {
     const bg = declValue(block(sel).body, "background");
     expect(bg).toMatch(/var\(--sidebar-bg\)$/);

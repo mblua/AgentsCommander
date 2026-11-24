@@ -7,7 +7,7 @@ import { describeRestartToast } from "./restart-toast-harness";
 const sessionId = "sess-1";
 const restartSelector = `[data-ac-testid="session.${sessionId}.restart"]`;
 
-describe("SessionItem Restart Session toast (#2573)", () => {
+describe("SessionItem Restart Session toast", () => {
   describeRestartToast({
     failName: "restarting_a_session_row_shows_the_plain_error_toast",
     okName: "a_successful_session_row_restart_shows_no_toast",

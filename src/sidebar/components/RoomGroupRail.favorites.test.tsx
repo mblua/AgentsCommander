@@ -232,7 +232,7 @@ async function prepareReorderTargets() {
   return { rail, ui, rust, docs };
 }
 
-describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
+describe("RoomGroupRail favorites + collapsible rail", () => {
   beforeEach(() => {
     resetUiStoresForTests();
   });
@@ -444,7 +444,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
     });
   });
 
-  describe("the Non-stop pseudo-group is favoritable (#1257)", () => {
+  describe("the Non-stop pseudo-group is favoritable", () => {
     it("offers Favorite on the Non-stop entry, renders it in Favorites, and KEEPS it in its project section", async () => {
       const fake = railFake(groupsConfig({ nonStop: { ...defaultNonStop(), show: true } }));
       const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
@@ -731,7 +731,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
     });
   });
 
-  describe("the D2 match cap reaches the Favorites call site (#2036)", () => {
+  describe("the D2 match cap reaches the Favorites call site", () => {
     it("counts a 160-code-point astral room in a favorited group's counter", async () => {
       // 160 code points but 320 UTF-16 units: legal under the store's charLength
       // cap, so the shared groupMatchesWorkgroup must use the same reading at this

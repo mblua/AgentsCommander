@@ -70,7 +70,7 @@ async function seed() {
 const stampOf = (sessionId: string): number | undefined =>
   sessionsStore.lastActivityBySessionId[sessionId];
 
-describe("#2202 CI-stop activity stamp", () => {
+describe("CI-stop activity stamp", () => {
   let restore: (() => void) | null = null;
   let dispose: (() => void) | null = null;
 

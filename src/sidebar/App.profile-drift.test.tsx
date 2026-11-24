@@ -57,7 +57,7 @@ function setupTransport(fake: FakeTransport, isOutdated: () => boolean): void {
   fake.resolve("telegram_list_bridges", []);
 }
 
-describe("SidebarApp profile-drift surfacing (#592)", () => {
+describe("SidebarApp profile-drift surfacing", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

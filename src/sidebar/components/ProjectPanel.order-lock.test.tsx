@@ -114,7 +114,7 @@ function mouse(el: Element, type: "mouseenter" | "mouseleave"): void {
  *  without flushing first would hit a menu that is not yet listening. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("ProjectPanel sidebar order lock (#1624)", () => {
+describe("ProjectPanel sidebar order lock", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

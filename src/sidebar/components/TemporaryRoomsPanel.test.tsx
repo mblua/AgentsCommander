@@ -156,7 +156,7 @@ const liveSession = (overrides: Partial<Session> = {}) =>
 
 const SAVED: TempRoomAgentChoice = { agentId: "claude", requestedProfile: null };
 
-describe("#4779 TemporaryRoomsPanel", () => {
+describe("TemporaryRoomsPanel", () => {
   let cleanupDom: (() => void) | null = null;
   let cleanups: (() => void)[] = [];
 
@@ -257,7 +257,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(second.fake.callsFor("create_session")).toHaveLength(0);
   });
 
-  it("4c. #4786 a saved agent using %AC_MATRIX_ROOT% shows the red warning", async () => {
+  it("4c. a saved agent using %AC_MATRIX_ROOT% shows the red warning", async () => {
     track(setup({ saved: SAVED, agents: [agent("claude", "claude %AC_MATRIX_ROOT%")] }));
     await waitFor(() => expect(byId("tempRooms.placeholderWarning")).not.toBeNull());
     const warning = byId("tempRooms.placeholderWarning")!;
@@ -265,14 +265,14 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(warning.textContent).toBe(tempRoomPlaceholderWarning("%AC_MATRIX_ROOT%"));
   });
 
-  it("4d. #4786 a clean saved agent shows no warning", async () => {
+  it("4d. a clean saved agent shows no warning", async () => {
     const { fake } = track(setup({ saved: SAVED }));
     await waitFor(() => expect(fake.callsFor("get_settings").length).toBeGreaterThan(0));
     await waitFor(() => expect(roomRow()).not.toBeNull());
     expect(byId("tempRooms.placeholderWarning")).toBeNull();
   });
 
-  it("4e. #4786 chosen agent with %AC_MATRIX_ROOT%: warning and exactly one toast", async () => {
+  it("4e. chosen agent with %AC_MATRIX_ROOT%: warning and exactly one toast", async () => {
     const matrixErr = "%AC_MATRIX_ROOT% does not apply to Temporary Rooms: they have no Agent Matrix";
     const { fake } = track(
       setup({ rooms: [], agents: [agent("claude", "claude %AC_MATRIX_ROOT%")] }),
@@ -317,7 +317,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(roomRow()).not.toBeNull();
   });
 
-  it("6. live agent-row menu: catalogue order, room folder, #4805 items enabled", async () => {
+  it("6. live agent-row menu: catalogue order, room folder, items enabled", async () => {
     const { fake } = track(setup({ sessions: [liveSession()] }));
     const menu = await openAgentMenu();
     const p = `tempRoom.${ROOM_1.name}`;
@@ -473,7 +473,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(roomRow()).not.toBeNull();
   });
 
-  it("8c. #4838 the task title label carries the full title as tooltip", async () => {
+  it("8c. the task title label carries the full title as tooltip", async () => {
     const full = "A very long temporary room task title that the sidebar ellipsizes";
     const { fake } = track(setup({
       rooms: [{ ...ROOM_1, taskTitle: `  ${full}  ` }],
@@ -510,7 +510,7 @@ describe("#4779 TemporaryRoomsPanel", () => {
     expect(label.getAttribute("data-ac-state")).toBe("task");
   });
 
-  it("8b. #4825 the header collapse button carries tempRooms.header.toggle", async () => {
+  it("8b. the header collapse button carries tempRooms.header.toggle", async () => {
     track(setup());
     await waitFor(() => expect(byId("tempRooms.header.toggle")).not.toBeNull());
     expect(document.querySelectorAll('[data-ac-testid="tempRooms.header.toggle"]')).toHaveLength(1);

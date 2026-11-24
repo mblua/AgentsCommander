@@ -96,7 +96,7 @@ async function renderDormantRepoRow(fake: FakeTransport, repoPaths: string[]) {
   return rendered;
 }
 
-describe("ProjectPanel dirty repo badge (#1028)", () => {
+describe("ProjectPanel dirty repo badge", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

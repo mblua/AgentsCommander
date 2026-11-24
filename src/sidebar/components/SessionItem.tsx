@@ -106,7 +106,7 @@ export function sessionDisplayName(
   return session.name;
 }
 
-// #1730 - the bare identity for agent-name-chip: exactly the non-dim text the
+// The bare identity for agent-name-chip: exactly the non-dim text the
 // deleted .session-item-name div rendered, minus the "@project" suffix that
 // sessionDisplayName() appends in its extractProjectName branch (the only branch
 // that appends one). Split on "/" first: the fallback branch returns
@@ -135,7 +135,7 @@ const SessionItem: Component<{
   isActive: boolean;
   originProject?: string;
   extraContextAction?: SessionContextExtraAction;
-  /** #3532 P11 - project whose context history colors the CTX badge. */
+  /** Project whose context history colors the CTX badge. */
   historyProjectPath?: string;
 }> = (props) => {
   const [showBotMenu, setShowBotMenu] = createSignal(false);
@@ -177,7 +177,7 @@ const SessionItem: Component<{
   const isProcessing = () => voiceRecorder.processingSessionId() === props.session.id;
   const isAutoExecuting = () => voiceRecorder.autoExecuteSessionId() === props.session.id;
   const isTypingWarning = () => voiceRecorder.typingWarnSessionId() === props.session.id;
-  // #1730 - the voice indicators replace the status chips, but never the identity.
+  // The voice indicators replace the status chips, but never the identity.
   const voiceQuiet = () =>
     !isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() &&
     !voiceRecorder.micError();
@@ -309,7 +309,7 @@ const SessionItem: Component<{
     await toggleDetach("context detach/attach toggle failed:");
   };
 
-  // #2568 - keyed by agent, so a dismissal outlives a relaunch of the agent.
+  // Keyed by agent, so a dismissal outlives a relaunch of the agent.
   const orphanNotice = () => {
     const key = orphanNoticeKey(props.session);
     if (!key || sessionsStore.orphanNoticeDismissedByAgentKey[key]) return null;
@@ -400,13 +400,13 @@ const SessionItem: Component<{
 
   const isInactive = () => props.session.id.startsWith("inactive-");
 
-  // #2271 - the Co-managed sidecar is keyed by session id and deliberately
+  // The Co-managed sidecar is keyed by session id and deliberately
   // outside Session, so a list refresh cannot wipe it.
   const isComanaged = () =>
     sessionsStore.comanagedBySessionId[props.session.id] ?? false;
 
   const displayName = () => sessionDisplayName(props.session, () => props.originProject);
-  // #1730 - sessionChipName mirrors sessionDisplayName; keep the pair together.
+  // sessionChipName mirrors sessionDisplayName; keep the pair together.
   const chipName = () =>
     sessionChipName(displayName(), props.session.workingDirectory, () => props.originProject);
   const chipTitle = () => `${displayName()}\n${props.session.workingDirectory}`;
@@ -479,7 +479,7 @@ const SessionItem: Component<{
             {chipName()}
           </span>
           <Show when={voiceQuiet()}>
-            {/* #1167 - one constant coding-agent style for every sidebar row.
+            {/* One constant coding-agent style for every sidebar row.
                 This emits the same class pair the workgroup/Coordinator rows
                 emit (ProjectPanel.tsx:2271), so the two cannot drift apart
                 again. No data-agent and no `running`: the badge must not vary

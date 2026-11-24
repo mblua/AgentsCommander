@@ -119,7 +119,7 @@ async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-describe("wireAgentUpdateListeners (#1327)", () => {
+describe("wireAgentUpdateListeners", () => {
   let fake: FakeTransport;
   let restore: () => void;
 
@@ -195,7 +195,7 @@ describe("wireAgentUpdateListeners (#1327)", () => {
   });
 });
 
-describe("agent-update store: per-command events and the monotonic snapshot merge (#1551)", () => {
+describe("agent-update store: per-command events and the monotonic snapshot merge", () => {
   let fake: FakeTransport;
   let restore: () => void;
 
@@ -652,7 +652,7 @@ describe("agent-update store: per-command events and the monotonic snapshot merg
   });
 });
 
-describe("#1691 - verification, cancellation folds and terminal first-winner", () => {
+describe("verification, cancellation folds and terminal first-winner", () => {
   let fake: FakeTransport;
   let restore: () => void;
   let errorSpy: ReturnType<typeof vi.spyOn>;

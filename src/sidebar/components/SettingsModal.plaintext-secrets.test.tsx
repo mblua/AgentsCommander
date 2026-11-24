@@ -14,7 +14,7 @@ import {
 // saying the value is persisted unencrypted, naming the instance settings.30.instance.no-git.json.
 // The notice is informational only: it never blocks saving.
 
-describe("SettingsModal plaintext-secret notices (#1347)", () => {
+describe("SettingsModal plaintext-secret notices", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

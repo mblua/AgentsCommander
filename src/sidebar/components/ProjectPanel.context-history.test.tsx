@@ -59,7 +59,7 @@ const settings = (): AppSettings =>
 const badges = () =>
   Array.from(document.querySelectorAll<HTMLElement>(".ctx-badge.ctx-history"));
 
-describe("ProjectPanel CTX history scope (#3532 P11)", () => {
+describe("ProjectPanel CTX history scope", () => {
   let cleanupDom: (() => void) | null = null;
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
