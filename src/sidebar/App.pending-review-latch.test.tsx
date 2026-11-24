@@ -99,7 +99,7 @@ function badge(root: HTMLElement, id: string): Element | null {
   return row(root, id).querySelector(".profile-outdated-badge");
 }
 
-describe("SidebarApp pending-review latch reconciliation (#1779)", () => {
+describe("SidebarApp pending-review latch reconciliation", () => {
   let cleanupDom: (() => void) | null = null;
   let reconcileIntervals: ReconcileIntervalSpy;
 

@@ -271,7 +271,7 @@ async function driveToRestartPrompt(root: HTMLElement): Promise<void> {
   await waitFor(() => expect(q("restartPrompt.modal")).toBeTruthy());
 }
 
-describe("ProjectPanel post-assign restart prompt (#537)", () => {
+describe("ProjectPanel post-assign restart prompt", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

@@ -42,7 +42,7 @@ function holdCount(root: HTMLElement): HTMLSpanElement | null {
 // These tests pin the states it must show, the session it must target, the
 // 500 ms poll (retry + cleanup), and the web-client absence.
 
-describe("the StatusBar typing-hold padlock (#2337)", () => {
+describe("the StatusBar typing-hold padlock", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

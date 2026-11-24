@@ -72,7 +72,7 @@ function roomsCount(root: HTMLElement): string | null {
   return header?.querySelector(".ac-team-count")?.textContent ?? null;
 }
 
-describe("SidebarApp Ungrouped counter (#2036)", () => {
+describe("SidebarApp Ungrouped counter", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

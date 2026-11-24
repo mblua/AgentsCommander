@@ -97,7 +97,7 @@ function mountRail(sessions: Session[]) {
   );
 }
 
-describe("RoomGroupRail blocked-menu rollup (#1859)", () => {
+describe("RoomGroupRail blocked-menu rollup", () => {
   beforeEach(() => resetUiStoresForTests());
   afterEach(() => {
     resetUiStoresForTests();

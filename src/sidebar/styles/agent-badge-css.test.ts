@@ -208,7 +208,7 @@ function declarationsOf(source: string, wanted: string): string | null {
   return null;
 }
 
-describe("coding-agent badge CSS (#1167)", () => {
+describe("coding-agent badge CSS", () => {
   // Guards the guard, and runs first on purpose: an empty source set makes every
   // assertion below pass vacuously, which is exactly how the CSS-stubbing trap hid
   // itself the first time this file was written. The compound count covers the second
@@ -369,7 +369,7 @@ function baseChip(): { tint: Rgba; text: Rgb } {
 
 const round2 = (ratio: number) => Number(ratio.toFixed(2));
 
-describe("weekly-quota fill on the agent chip (#2482)", () => {
+describe("weekly-quota fill on the agent chip", () => {
   it("the_quota_rule_declares_only_background_image", () => {
     expect(declProps(ruleBody(".ac-discovery-badge.agent.quota-fill"))).toEqual(["background-image"]);
   });
@@ -445,7 +445,7 @@ function lightChip(): { tint: Rgba; text: Rgb; used: Rgba } {
   };
 }
 
-describe("light-theme agent chip (#2512)", () => {
+describe("light-theme agent chip", () => {
   it("the_light_rule_sets_only_the_colour_longhands_and_the_used_tint", () => {
     expect(declProps(ruleBody(LIGHT_RULE))).toEqual(["background-color", "color", "--ac-quota-used-tint"]);
     expect(lightChip().used.alpha).toBe(0.22);

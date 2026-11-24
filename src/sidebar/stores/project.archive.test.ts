@@ -19,7 +19,7 @@ function discovery() {
   };
 }
 
-describe("projectStore archive operations (#881)", () => {
+describe("projectStore archive operations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     projectStore.clear();

@@ -24,7 +24,7 @@ function keydown(key: string, code: string, init: KeyboardEventInit = {}): Keybo
     repeat: false, isComposing: false, ...init } as KeyboardEvent;
 }
 
-describe("app-hotkey (#2236 phase 5)", () => {
+describe("app-hotkey", () => {
   it("accepts all 26 PARITY_ACCEPTED entries", () => {
     expect(PARITY_ACCEPTED).toHaveLength(26);
     for (const value of PARITY_ACCEPTED) expect(parseAppHotkey(value), value).not.toBeNull();

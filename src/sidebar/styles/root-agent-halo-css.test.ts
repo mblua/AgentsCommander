@@ -162,7 +162,7 @@ function marginWidths(body: string): BoxWidths {
   return out;
 }
 
-describe("#2277 root agent halo CSS bytes", () => {
+describe("root agent halo CSS bytes", () => {
   it("1. .root-agent-banner.active is one rule adding position and isolation", () => {
     expect(hits(CSS, BANNER_ACTIVE)).toBe(1);
     const body = one(CSS, BANNER_ACTIVE).body;

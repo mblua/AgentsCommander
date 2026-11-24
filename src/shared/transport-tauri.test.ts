@@ -44,7 +44,7 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 
 import { TauriTransport } from "./transport-tauri";
 
-describe("TauriTransport listener scoping (#1363)", () => {
+describe("TauriTransport listener scoping", () => {
   beforeEach(() => {
     tauri.listenCalls.length = 0;
     tauri.labelThrows = false;

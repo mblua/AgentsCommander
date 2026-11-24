@@ -74,7 +74,7 @@ function violations(sources: Record<string, string>): string[] {
   return found;
 }
 
-describe("#4300 raw-HTML sinks", () => {
+describe("raw-HTML sinks", () => {
   it("S1 scan sanity", () => {
     expect(Object.keys(SOURCES).sort()).toEqual(WALKED);
     expect(Object.keys(SOURCES).length).toBeGreaterThan(100);

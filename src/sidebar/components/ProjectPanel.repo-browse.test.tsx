@@ -221,7 +221,7 @@ function flyoutLabels(): string[] {
   return Array.from(panel.querySelectorAll("button")).map((b) => (b.textContent ?? "").trim());
 }
 
-describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
+describe("ProjectPanel coordinator repo Browse submenu", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

@@ -191,7 +191,7 @@ const SidebarHarness: Component = () => {
   );
 };
 
-describe("RoomGroupRail selection focus (#810/#941)", () => {
+describe("RoomGroupRail selection focus", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
