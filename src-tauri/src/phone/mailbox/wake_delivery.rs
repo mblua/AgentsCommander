@@ -889,16 +889,9 @@ impl MailboxPoller {
             drop(execution);
             source.returned(result.is_err());
             drop(source);
-            if let Ok((OwnedPeerWakeStep::Retained(_), binding)) = &result {
-                let claimed =
-                    binding.is_none_or(|binding| completion.arrive_wake_reply_loss(binding, None));
-                if claimed {
-                    completion
-                        .settle_wake_pre_input(&manager, &pty, binding.is_some())
-                        .await;
-                }
+            if matches!(&result, Ok(OwnedPeerWakeStep::Retained(_))) {
+                completion.settle_wake_pre_input(&manager, &pty).await;
             }
-            let result = result.map(|(step, _)| step);
             let result = owned_peer_completion(result, &completion, &manager, &pty).await;
             log_core_end(&result, &id, &to, previous);
             result

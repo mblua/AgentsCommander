@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -64,43 +64,23 @@ async fn wake_owner_competing_admission_preserves_nonrollbackable_owner() {
     }
 
     let (poller, control) = rollback_poller(scenario != "partial-commit");
-    let probe = OwnedReplacementContinuation::install_wake_rollback_fixture();
-    let capture = Arc::new(CapturedCore::default());
-    let events = record_publication_events(app);
-    let mut reply = None;
+    OwnedReplacementContinuation::install_wake_rollback_fixture();
     let cut = match scenario.as_str() {
         "queued" => Cut::TicketSubmitted,
         "partial-commit" => {
             add_action(&control, Action::CommitBeforeDisarmPanicOnce);
             Cut::WorkerUnwound
         }
-        "reply-lost" => {
-            let cut = Cut::AfterReleaseBeforeSend;
-            let (drop_reply, signal) = tokio::sync::oneshot::channel();
-            *control.live_receiver_drop.lock().unwrap() = Some(signal);
-            reply = Some((
-                drop_reply,
-                pause_at(&control, cut),
-                probe.before_return.arm(),
-            ));
-            cut
-        }
+        "reply-lost" => Cut::AfterReleaseBeforeSend,
         _ => unreachable!(),
     };
     let wake = wake_message_to_target();
-    let first = WAKE_CORE_CAPTURE.scope(capture.clone(), poller.deliver_wake(app, &wake));
+    let first = poller.deliver_wake(app, &wake);
     tokio::pin!(first);
-    let receipt = at_recorded_cut(first.as_mut(), &control, cut).await;
-    let release_source = if let Some((drop_reply, release_reply, release_source)) = reply {
-        drop_reply.send(()).unwrap();
-        completes(probe.before_return.entered.notified()).await;
-        release_reply.send(()).unwrap();
-        at_recorded_cut(first.as_mut(), &control, Cut::ReceiverLost).await;
-        completes(coordinator.snapshot()).await.unwrap();
-        assert_worker_first_receipts(&control, &coordinator, receipt, &captured_owner(&capture));
-        Some(release_source)
+    let receipt = if scenario == "reply-lost" {
+        observe_detached_reply_loss(app, &coordinator, &poller, &control, &wake).await
     } else {
-        None
+        at_recorded_cut(first.as_mut(), &control, cut).await
     };
     assert_competing_probe_retains_owner(
         app,
@@ -112,46 +92,57 @@ async fn wake_owner_competing_admission_preserves_nonrollbackable_owner() {
         &scenario,
     )
     .await;
-    if let Some(release_source) = release_source {
-        release_source.send(()).unwrap();
-        assert!(completes(first)
-            .await
-            .unwrap_err()
-            .contains("create_retained"));
-        let owner = captured_owner(&capture);
-        assert!(owner.fixture_observe_publication().reply_loss_claimed());
-        assert_no_input_release(app, &coordinator, &control, &owner, previous, &events).await;
-        let manager = app.pty_sessions().read().await.clone();
-        reuse_live_replacement(app, &manager, &wake, receipt.binding.unwrap().session_id()).await;
-    }
     coordinator.shutdown_token().cancel();
     let _ = release_blocker.send(());
     close_coordinator(&coordinator).await;
 }
 
-fn assert_worker_first_receipts(
+async fn assert_worker_first_receipts(
+    app: &AppHandle<MockRuntime>,
     control: &Control,
     coordinator: &SelectionCoordinator,
     receipt: ReplacementFixtureReceipt,
     owner: &OwnedReplacementContinuation,
 ) {
-    let receipts = control.receipts.lock().unwrap();
-    let exact = receipts
-        .iter()
-        .filter(|r| r.operation == receipt.operation && r.binding == receipt.binding);
-    let losses = exact.clone().filter(|r| r.cut == Cut::ReceiverLost);
-    assert_eq!(losses.count(), 1, "actual worker send failure");
-    assert!(exact.clone().any(|r| r.cut == Cut::AdmissionReleased
-        && r.outcome == Some(ReplacementFixtureOutcome::Finalized)));
-    assert!(!exact.clone().any(|r| r.cut == Cut::SourceReceived));
-    drop(receipts);
+    {
+        let receipts = control.receipts.lock().unwrap();
+        let mut exact = receipts
+            .iter()
+            .filter(|r| r.operation == receipt.operation && r.binding == receipt.binding);
+        assert_eq!(
+            exact.clone().filter(|r| r.cut == Cut::ReceiverLost).count(),
+            1
+        );
+        assert!(exact.any(|r| r.cut == Cut::AdmissionReleased
+            && r.outcome == Some(ReplacementFixtureOutcome::Finalized)));
+        assert!(exact.any(|r| r.cut == Cut::ReceiverLost));
+    }
     assert_eq!(
         control.observe_retained(coordinator),
         Some((true, true, false, false, 0))
     );
-    let waiting = owner.fixture_observe_publication();
-    assert!(waiting.publication && waiting.worker_arrived() && !waiting.source_arrived());
-    assert_eq!(waiting.holds, (true, true));
+    let retained = owner.fixture_observe_publication();
+    assert_eq!(retained.operation, receipt.operation);
+    assert_eq!(Some(retained.binding), receipt.binding);
+    assert!(retained.publication && !retained.terminal && !retained.work_transferred);
+    assert_eq!(retained.holds, (true, true));
+    assert!(!retained.not_started() && retained.no_input_attempt().is_none());
+    assert!(retained.work_attempt.is_none() && owner.fixture_wake_source_observation().stopped);
+    let id = retained.binding.session_id();
+    let manager = app.pty_sessions().read().await.clone();
+    assert!(manager.get_session(id).await.is_some());
+    assert!(app
+        .pty_routes()
+        .lock()
+        .unwrap()
+        .route_identities(id)
+        .is_some());
+    let backend = rollback_backend(app);
+    let backend = mock_backend(&backend);
+    assert!(backend.live.lock().unwrap().contains(&id));
+    assert_eq!(backend.spawn_attempts(id), 1);
+    assert_eq!(backend.write_attempts.load(Ordering::SeqCst), 0);
+    assert!(backend.writes_for(id).is_empty());
 }
 
 async fn assert_competing_probe_retains_owner(
@@ -177,11 +168,6 @@ async fn assert_competing_probe_retains_owner(
         manager.get_pending_session(binding).await.is_some(),
         scenario == "queued"
     );
-    if scenario == "reply-lost" {
-        assert!(manager.get_session(id).await.is_some());
-        let pty = app.pty_routes().lock().unwrap();
-        assert!(pty.route_identities(id).is_some());
-    }
     let roots = coordinator.fixture_root_count();
     let mut competing_wake = wake.clone();
     competing_wake.id = format!("competitor-{}", Uuid::new_v4());
@@ -274,75 +260,76 @@ async fn reuse_live_replacement(
     assert!(!backend.writes_for(id).is_empty(), "retry wrote to exact B");
 }
 
+async fn observe_detached_reply_loss(
+    app: &AppHandle<MockRuntime>,
+    coordinator: &SelectionCoordinator,
+    poller: &MailboxPoller,
+    control: &Control,
+    wake: &OutboxMessage,
+) -> ReplacementFixtureReceipt {
+    let capture = Arc::new(CapturedCore::default());
+    let mut waiter =
+        Box::pin(WAKE_CORE_CAPTURE.scope(capture.clone(), poller.deliver_wake(app, wake)));
+    let publication = OwnedReplacementContinuation::install_wake_publication_fixture();
+    *publication.before_disposal.lock().unwrap() =
+        Some(Box::new(|| panic!("reply loss must retain reservations")));
+    let resume_worker = pause_at(control, Cut::AfterReleaseBeforeSend);
+    let (stop_source, signal) = tokio::sync::oneshot::channel();
+    *control.source_panic.lock().unwrap() = Some(signal);
+    let submitted = at_recorded_cut(waiter.as_mut(), control, Cut::TicketSubmitted).await;
+    let published = at_recorded_cut(waiter.as_mut(), control, Cut::AfterReleaseBeforeSend).await;
+    assert_eq!(submitted.operation, published.operation);
+    assert_eq!(submitted.binding, published.binding);
+    super::at_cut(waiter.as_mut(), async {
+        while control.source_panic.lock().unwrap().is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    drop(waiter);
+
+    let owner = captured_owner(&capture);
+    assert!(!stop_source.is_closed());
+    assert!(owner.fixture_wake_source_observation().active);
+    let active = owner.fixture_observe_publication();
+    assert!(active.publication && !active.terminal);
+    assert_eq!(active.holds, (true, true));
+    assert!(publication.before_disposal.lock().unwrap().is_some());
+
+    stop_source.send(()).unwrap();
+    completes(async {
+        while !owner.fixture_wake_source_observation().stopped {
+            tokio::task::yield_now().await;
+        }
+        super::reacquire_lexical_guards(app, &wake.to).await;
+    })
+    .await;
+    let stopped = owner.fixture_observe_publication();
+    assert!(!stopped.not_started() && stopped.no_input_attempt().is_none());
+    assert_eq!(
+        control.observe_retained(coordinator),
+        Some((true, true, false, false, 0))
+    );
+
+    resume_worker.send(()).unwrap();
+    completes(coordinator.snapshot()).await.unwrap();
+    assert_worker_first_receipts(app, control, coordinator, published, &owner).await;
+    assert!(publication.before_disposal.lock().unwrap().is_some());
+    published
+}
+
 #[tokio::test]
 async fn wake_owner_real_finalizer_reply_loss_and_unwind() {
     let test = "wake_owner_real_finalizer_reply_loss_and_unwind";
-    let cases = ["source-first", "source-unwind"];
-    let Some(scenario) = run_child_cases(module_path!(), test, &cases).await else {
+    let Some(_) = run_child_cases(module_path!(), test, &["source-unwind"]).await else {
         return;
     };
     let fixture = make_mailbox_fixture();
-    let (coordinator, _, _, previous) = prepare_retained_exited_respawn(&fixture).await;
+    let (coordinator, _, _, _) = prepare_retained_exited_respawn(&fixture).await;
     let app = fixture.app.handle();
     let (poller, control) = rollback_poller(true);
-    let resume_worker = pause_at(&control, Cut::AdapterReturned);
-    let (stop_source, signal) = tokio::sync::oneshot::channel();
-    if scenario == "source-first" {
-        *control.live_receiver_drop.lock().unwrap() = Some(signal);
-    } else {
-        *control.source_panic.lock().unwrap() = Some(signal);
-    }
-    let events = record_publication_events(app);
-    let capture = Arc::new(CapturedCore::default());
     let wake = wake_message_to_target();
-    let first = WAKE_CORE_CAPTURE.scope(capture.clone(), poller.deliver_wake(app, &wake));
-    tokio::pin!(first);
-    let cut = at_recorded_cut(first.as_mut(), &control, Cut::AdapterReturned).await;
-    let owner = captured_owner(&capture);
-    let id = cut.binding.unwrap().session_id();
-    stop_source.send(()).unwrap();
-    if scenario == "source-first" {
-        assert!(completes(first.as_mut())
-            .await
-            .unwrap_err()
-            .contains("create_retained"));
-    } else {
-        // An unwound producer leaves its waiter pending. Observe the lexical
-        // guard's actual drop before resuming the worker.
-        super::at_cut(first.as_mut(), async {
-            while !owner.fixture_wake_source_observation().stopped {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
-    }
-    let arrival = owner.fixture_observe_publication();
-    assert_eq!(arrival.operation, cut.operation);
-    assert!(!arrival.worker_arrived() && !arrival.publication && !arrival.terminal);
-    assert_eq!(arrival.holds, (true, true));
-    if scenario == "source-first" {
-        assert!(arrival.source_arrived());
-    } else {
-        assert!(owner.fixture_wake_source_observation().stopped);
-        assert!(!arrival.source_arrived());
-    }
-    resume_worker.send(()).unwrap();
-    completes(coordinator.snapshot()).await.unwrap();
-    let final_state = owner.fixture_observe_publication();
-    assert!(final_state.publication && final_state.worker_arrived());
-    if scenario == "source-first" {
-        assert!(final_state.reply_loss_claimed());
-        assert_no_input_release(app, &coordinator, &control, &owner, previous, &events).await;
-        let manager = app.pty_sessions().read().await.clone();
-        reuse_live_replacement(app, &manager, &wake, id).await;
-    } else {
-        assert!(!final_state.terminal && !final_state.reply_loss_claimed());
-        assert_eq!(final_state.holds, (true, true));
-        assert!(control.observe_owner(&coordinator).is_some());
-        assert!(mock_backend(&rollback_backend(app))
-            .writes_for(id)
-            .is_empty());
-    }
+    observe_detached_reply_loss(app, &coordinator, &poller, &control, &wake).await;
     close_coordinator(&coordinator).await;
 }
 
@@ -368,6 +355,11 @@ async fn wake_owner_real_refresh_pre_input_receipts() {
     let gates = OwnedReplacementContinuation::install_wake_rollback_fixture();
     let publication = OwnedReplacementContinuation::install_wake_publication_fixture();
     let release = gates.before_return.arm();
+    let disposals = Arc::new(AtomicUsize::new(0));
+    let observed_disposals = disposals.clone();
+    *publication.after_disposal.lock().unwrap() = Some(Box::new(move || {
+        observed_disposals.fetch_add(1, Ordering::Relaxed);
+    }));
     let refresh = match scenario.as_str() {
         "r7" => 1,
         "input-attempt" | "received" => 0,
@@ -388,7 +380,7 @@ async fn wake_owner_real_refresh_pre_input_receipts() {
     let owner = captured_owner(&capture);
     let observation = owner.fixture_observe_publication();
     let id = observation.binding.session_id();
-    assert!(observation.publication && !observation.reply_loss_claimed());
+    assert!(observation.publication);
     match scenario.as_str() {
         "received" => {
             assert!(observation.terminal && observation.work_transferred);
@@ -399,8 +391,14 @@ async fn wake_owner_real_refresh_pre_input_receipts() {
             assert!(backend.writes_for(id).is_empty());
         }
         "r7" => {
-            assert!(observation.not_started());
-            assert!(observation.work_attempt.is_none());
+            assert!(control.receipts.lock().unwrap().iter().any(|receipt| {
+                receipt.cut == Cut::AdmissionReleased
+                    && receipt.outcome == Some(ReplacementFixtureOutcome::Finalized)
+                    && receipt.operation == observation.operation
+                    && receipt.binding == Some(observation.binding)
+            }));
+            assert!(observation.not_started() && observation.work_attempt.is_none());
+            publication.refuse_refresh.store(0, Ordering::Relaxed);
         }
         scenario => {
             assert!(observation.no_input_attempt().is_some());
@@ -422,6 +420,7 @@ async fn wake_owner_real_refresh_pre_input_receipts() {
             "completion_info_lost"
         };
         assert!(result.unwrap_err().contains(reason));
+        assert_eq!(disposals.load(Ordering::Relaxed), 1);
         assert_no_input_release(app, &coordinator, &control, &owner, previous, &events).await;
         let manager = app.pty_sessions().read().await.clone();
         reuse_live_replacement(app, &manager, &wake, id).await;

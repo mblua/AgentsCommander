@@ -249,19 +249,9 @@ pub(super) enum PreInputReceipt {
     NoInput(Uuid),
 }
 
-#[derive(Clone, Copy, Default)]
-pub(super) enum ReplyLoss {
-    #[default]
-    Empty,
-    SourceArrived,
-    FailedReplyArrived,
-    SettlerClaimed,
-}
-
 #[derive(Default)]
 pub(super) struct PreInputProgress {
     pub(super) receipt: Option<PreInputReceipt>,
-    pub(super) reply_loss: ReplyLoss,
 }
 
 pub(super) struct ReplacementProgress {
@@ -712,16 +702,11 @@ pub(super) struct ReplacementState {
 }
 
 impl ReplacementState {
-    pub(super) fn successful_publication_for(
-        &self,
-        binding: PendingCreateBinding,
-        failed_reply: Option<&str>,
-    ) -> bool {
+    pub(super) fn successful_publication_for(&self, binding: PendingCreateBinding) -> bool {
         self.publication_observed
             && self.envelope_released
             && matches!(self.completion.as_ref(), Some(Ok(info))
                 if info.id == binding.session_id().to_string()
-                && failed_reply.is_none_or(|id| id == info.id)
                 && matches!(&self.effects[LifecycleEffectSlot::Publication as usize],
                     OwnedEffectState::Completed { outcome: Ok(Some(id)), .. } if *id == info.id))
     }

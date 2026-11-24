@@ -480,9 +480,8 @@ impl OwnedReplacementContinuation {
         &self,
         manager: &SessionManager,
         pty: &Arc<Mutex<PtyManager>>,
-        lost_reply: bool,
     ) {
-        if !self.wake_pre_input_is_ready(lost_reply) {
+        if !self.wake_pre_input_is_ready() {
             return;
         }
         let permit = acquire_carrier_mutation_permit().await;
@@ -491,7 +490,7 @@ impl OwnedReplacementContinuation {
                 let Ok(guard) = pty.try_lock() else {
                     return false;
                 };
-                self.dispose_wake_pre_input(&permit, current, &guard, lost_reply)
+                self.dispose_wake_pre_input(&permit, current, &guard)
                     .is_some()
             })
             .await;

@@ -56,10 +56,8 @@ async fn prepare_replacement_context(
     Ok(true)
 }
 
-type PeerReplacementResult = Result<(OwnedPeerWakeStep, Option<PendingCreateBinding>), String>;
-
-fn retained(stage: &'static str, session: Option<Uuid>) -> PeerReplacementResult {
-    Ok((RetainedExit::step(stage, session), None))
+fn retained(stage: &'static str, session: Option<Uuid>) -> Result<OwnedPeerWakeStep, String> {
+    Ok(RetainedExit::step(stage, session))
 }
 
 /// #3263 - Admitted-stage exit before any create call: roll the owner back so a
@@ -69,7 +67,7 @@ async fn end_before_publish(
     manager: &SessionManager,
     pty: &Arc<Mutex<PtyManager>>,
     stage: &'static str,
-) -> PeerReplacementResult {
+) -> Result<OwnedPeerWakeStep, String> {
     let base = format!("{ERR_WAKE_RETAINED}: stage={stage}");
     let done = continuation
         .rollback_failed_create(manager, pty, &base)
@@ -236,7 +234,7 @@ impl MailboxPoller {
         app: &S,
         pty: &Arc<Mutex<PtyManager>>,
         execution: &mut OwnedPeerWakeExecution,
-    ) -> PeerReplacementResult {
+    ) -> Result<OwnedPeerWakeStep, String> {
         #[cfg(test)]
         let (fixture, fixture_continuation) = self.peer_replacement_fixture_context(execution);
 
@@ -269,24 +267,18 @@ impl MailboxPoller {
             };
         #[cfg(not(test))]
         let fixture_created = None;
-        let real_create = fixture_created.is_none();
-        let created = match fixture_created {
-            Some(created) => created,
-            None => {
-                let proof = replacement_target_ownership(execution)?;
-                app.create_owned_response_replacement(
-                    execution.request.clone(),
-                    continuation.clone(),
-                    &proof,
-                )
+        let created = if let Some(created) = fixture_created {
+            created
+        } else {
+            let proof = replacement_target_ownership(execution)?;
+            let request = execution.request.clone();
+            app.create_owned_response_replacement(request, continuation.clone(), &proof)
                 .await
-            }
         };
 
         if let crate::session::create_contracts::OwnedReplacementCreateStep::Retained = created? {
             continuation.relay_pending_source_refusal();
-            let binding = real_create.then(|| continuation.binding()).flatten();
-            return retained("create_retained", None).map(|(step, _)| (step, binding));
+            return retained("create_retained", None);
         }
         let Some((info, id, effect)) =
             begin_replacement_work_transfer(continuation, &manager, pty).await
@@ -332,10 +324,8 @@ impl MailboxPoller {
         continuation
             .finish_observed_work_transfer(&manager, pty, effect, true)
             .await;
-        Ok((
-            OwnedPeerWakeStep::Delivered(replacement_delivery(execution)),
-            None,
-        ))
+        let delivered = replacement_delivery(execution);
+        Ok(OwnedPeerWakeStep::Delivered(delivered))
     }
 
     async fn try_inject_peer_candidate<S: MailboxHost>(

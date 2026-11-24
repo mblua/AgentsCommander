@@ -32,7 +32,7 @@ use super::replacement_fixture::{
 
 #[cfg(test)]
 use super::replacement::{
-    LifecycleEffectSlot, OwnedEffectState, OwnedReplacementContinuation, PreInputReceipt, ReplyLoss,
+    LifecycleEffectSlot, OwnedEffectState, OwnedReplacementContinuation, PreInputReceipt,
 };
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -63,7 +63,6 @@ pub(crate) struct WakePublicationObservation {
     pub(crate) holds: (bool, bool),
     pub(crate) work_attempt: Option<uuid::Uuid>,
     receipt: Option<PreInputReceipt>,
-    reply_loss: ReplyLoss,
 }
 
 #[cfg(test)]
@@ -77,24 +76,6 @@ impl WakePublicationObservation {
             Some(PreInputReceipt::NoInput(attempt)) => Some(attempt),
             _ => None,
         }
-    }
-
-    pub(crate) fn source_arrived(&self) -> bool {
-        matches!(
-            self.reply_loss,
-            ReplyLoss::SourceArrived | ReplyLoss::SettlerClaimed
-        )
-    }
-
-    pub(crate) fn worker_arrived(&self) -> bool {
-        matches!(
-            self.reply_loss,
-            ReplyLoss::FailedReplyArrived | ReplyLoss::SettlerClaimed
-        )
-    }
-
-    pub(crate) fn reply_loss_claimed(&self) -> bool {
-        matches!(self.reply_loss, ReplyLoss::SettlerClaimed)
     }
 }
 
@@ -146,7 +127,7 @@ impl OwnedReplacementContinuation {
         WakePublicationObservation {
             operation: self.owner.operation,
             binding: progress.binding,
-            publication: state.successful_publication_for(progress.binding, None),
+            publication: state.successful_publication_for(progress.binding),
             terminal: state.replacement_terminal_is_verified(),
             work_transferred: progress.work_transferred,
             holds: (
@@ -158,7 +139,6 @@ impl OwnedReplacementContinuation {
                 _ => None,
             },
             receipt: progress.pre_input.receipt,
-            reply_loss: progress.pre_input.reply_loss,
         }
     }
 
@@ -687,20 +667,20 @@ impl<C: SelectionContext> SelectionTransaction<C> {
                 }
                 if let Err(undelivered) = response.send(result) {
                     log::debug!("[selection] create finalizer caller dropped session={session_id}");
-                    if let (Some(owned), Ok(info)) = (owned, undelivered) {
-                        let claimed = owned.arrive_wake_reply_loss(binding, Some(&info.id));
-                        #[cfg(test)]
-                        if let Some(control) = &owned.fixture {
-                            control.record(&owned, ReplacementFixtureCut::ReceiverLost);
+                    #[cfg(test)]
+                    if let (Some(owned), Ok(info)) = (&owned, &undelivered)
+                        && let Some(control) = &owned.fixture
+                    {
+                        assert_eq!(info.id, binding.session_id().to_string());
+                        {
+                            let state = owned.owner.state.lock().unwrap();
+                            assert!(state.successful_publication_for(binding));
+                            assert!(matches!(&state.completion, Some(Ok(stored))
+                                if stored.id == info.id));
                         }
-                        if claimed {
-                            if let Some(pty) = transaction.host().pty_optional().cloned() {
-                                owned
-                                    .settle_wake_pre_input(&transaction.manager().await, &pty, true)
-                                    .await;
-                            }
-                        }
+                        control.record(owned, ReplacementFixtureCut::ReceiverLost);
                     }
+                    drop(undelivered);
                 }
             }
             None => {
