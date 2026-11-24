@@ -176,7 +176,7 @@ pub(crate) struct SourceResumeExpectation {
 /// Reload is synchronous backend-local work only. It must not wait for IPC or
 /// frontend acknowledgement, await, dispatch a worker, or reacquire coordination
 /// leases. Any future activated caller must be reviewed against this contract.
-// Inactive entry point (#2897): no production caller until the source protocol is
+// Inactive entry point: no production caller until the source protocol is
 // activated; the rest of the transition is reached only from here and from resume.
 #[allow(
     dead_code,
@@ -436,7 +436,7 @@ fn continue_candidate_intent(
 /// fresh observation. It never receives new paths, candidate bytes or roles.
 /// Reload obeys the same synchronous backend-local, nonblocking contract as Save;
 /// the Fn signature itself does not prove that an arbitrary callback is safe.
-// Inactive entry point (#2897): see `commit_source_candidate`.
+// Inactive entry point: see `commit_source_candidate`.
 #[allow(
     dead_code,
     reason = "inactive entry point until the source protocol is activated (#2897)"

@@ -308,7 +308,7 @@ where
 
 /// Start the API server on a socket the caller already bound. The caller owns the port from the
 /// moment it binds until the server owns the same socket, so there is no reserve-then-rebind
-/// window (#1768). Test-only; production always goes through `start_server`.
+/// window. Test-only; production always goes through `start_server`.
 #[cfg(test)]
 pub(crate) fn start_server_on_listener<H>(
     listener: std::net::TcpListener,
@@ -514,7 +514,7 @@ restricts this port to the Docker/WSL subnet."
 }
 
 /// Turn a caller-owned blocking listener into the tokio listener the server serves on, without
-/// ever releasing the port (#1768).
+/// ever releasing the port.
 #[cfg(test)]
 fn adopt_prebound_listener(
     prebound: std::net::TcpListener,

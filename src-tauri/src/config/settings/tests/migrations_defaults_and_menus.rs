@@ -1,6 +1,6 @@
 use super::*;
 
-// ── Issue #248 — legacy startOnlyCoordinators → restoreCoordinatorWakeState ──
+// ── legacy startOnlyCoordinators → restoreCoordinatorWakeState ──
 //
 // The minimal JSON below carries the three fields without serde defaults
 // (`defaultShell`, `defaultShellArgs`, `agents`) plus whichever issue-#248
@@ -84,7 +84,7 @@ fn issue_248_migration_conflict_keeps_new_value_and_drops_legacy() {
     assert!(s.legacy_start_only_coordinators.is_none()); // dropped
 }
 
-// ── Issue #1793 — restart-resume settings contract ─────────────────────
+// ── restart-resume settings contract ─────────────────────
 
 #[test]
 fn restart_resume_defaults_are_the_decided_strings() {
@@ -396,7 +396,7 @@ fn co_managed_enabled_round_trips_under_its_camel_case_key() {
     );
 }
 
-// ---- #548: per-(agent, letter) profile label overrides ----
+// ---- Per-(agent, letter) profile label overrides ----
 
 #[test]
 fn profile_labels_override_survives_serde_round_trip() {
@@ -538,7 +538,7 @@ fn resource_monitor_settings_default_when_missing_from_json() {
     assert!(validate_resource_settings(&s).is_ok());
 }
 
-// ---- #1032: the per-agent context regex ---------------------------------------
+// ---- The per-agent context regex ---------------------------------------
 
 /// Criterion 6. Every settings file that exists today predates this field, so the one
 /// thing this field must never do is make an existing config fail to load.
@@ -583,11 +583,11 @@ fn context_regex_round_trips_as_camel_case() {
     );
 }
 
-// ---- #1646 / #1647: blocking menus and menu guard -----------------------------
+// ---- Blocking menus and menu guard -----------------------------
 
 #[test]
 fn shipped_defaults_serve_pi_and_codex_only() {
-    // The shipped patterns, not any per-agent materialization: the #1905 export
+    // The shipped patterns, not any per-agent materialization: the export
     // drops pristine arrays and the store serves these defaults for `None`.
 
     // Pi
@@ -738,7 +738,7 @@ fn test_menu_guard_master_switch() {
     assert!(serialized.contains("\"menuGuardEnabled\":false"));
 }
 
-// ---- #1757: the Codex hooks-review blocking menu -----------------------
+// ---- The Codex hooks-review blocking menu -----------------------
 
 /// One agent carrying exactly the `blocking_menus` state under test.
 pub(super) fn agent_1757(
