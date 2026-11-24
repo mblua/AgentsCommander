@@ -318,6 +318,27 @@ fn poll_shutdown_workers_until_zero(registry: &ContainerShutdownWorkRegistry, co
     }
 }
 
+fn poll_worker_threads_finished(registry: &ContainerShutdownWorkRegistry, context: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let unfinished = registry
+            .workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|worker| !worker.is_finished())
+            .count();
+        if unfinished == 0 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "shutdown worker threads stayed alive after {context}: unfinished={unfinished}"
+        );
+        std::thread::sleep(CONTAINER_SHUTDOWN_POLL);
+    }
+}
+
 #[test]
 fn drain_overrun_reclaims_workers_after_busy_item_is_released() {
     let registry = Arc::new(ContainerShutdownWorkRegistry::default());
@@ -647,6 +668,9 @@ fn ensure_workers_does_not_spawn_or_spin_while_terminating() {
         registry.shared.state_changed.notify_all();
     }
     poll_shutdown_workers_until_zero(&registry, "terminating registry");
+    // A worker lowers `worker_count` before its thread ends, and `ensure_workers`
+    // reaps only finished threads, so also wait for every thread to end.
+    poll_worker_threads_finished(&registry, "terminating registry");
 
     let (returned, returned_rx) = std::sync::mpsc::channel();
     let ensure_registry = Arc::clone(&registry);
