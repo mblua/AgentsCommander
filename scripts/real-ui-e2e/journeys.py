@@ -211,6 +211,16 @@ class Run:
         except dk.DesktopError as exc:
             raise Failure(exc.code, exc.stage) from exc
 
+    def report_agent_list(self, agents, listing):
+        """Diagnostics only: print the ids and commands `coding-agent list` returned."""
+        if isinstance(agents, list):
+            rows = [{"id": a.get("id"), "command": a.get("command")} if isinstance(a, dict)
+                    else {"type": type(a).__name__} for a in agents]
+        else:
+            rows = {"listingType": type(listing).__name__}
+        expected = {"id": "e2e-probe", "command": f"{PYTHON} {self.probe}"}
+        print(json.dumps({"agentList": rows, "expected": expected}), file=sys.stderr)
+
     def register_agent(self):
         self.at("agent")
         self.cli("coding-agent", "add", "--id", "e2e-probe", "--label", "E2EProbe",
@@ -218,9 +228,11 @@ class Run:
         _, listing = self.cli("coding-agent", "list")
         agents = listing.get("agents") if isinstance(listing, dict) else listing
         if not isinstance(agents, list) or len(agents) != 1:
+            self.report_agent_list(agents, listing)
             raise Failure("agent_list_mismatch", self.stage)
         agent = agents[0]
         if agent.get("id") != "e2e-probe" or agent.get("command") != f"{PYTHON} {self.probe}":
+            self.report_agent_list(agents, listing)
             raise Failure("agent_list_mismatch", self.stage)
 
     def launch_app(self):
