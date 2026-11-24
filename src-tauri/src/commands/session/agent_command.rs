@@ -470,6 +470,8 @@ pub(crate) fn matched_selection(
             None
         }
     };
+    let view = crate::config::settings::agent::launch_view_with(settings, dir, config.as_ref());
+    let settings = &*view.settings;
     let current = config
         .as_ref()
         .and_then(|value| value.get("tooling")?.get("currentCodingAgent")?.as_str())

@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 pub(crate) mod inventory;
 pub(crate) mod last_used;
+pub(crate) mod launch_chain;
 pub(crate) mod locator;
 #[cfg(test)]
 mod tests;

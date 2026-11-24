@@ -15,6 +15,7 @@ use super::{default_true, AppSettings, CodingAgentProfilesConfig, ConfigSeedConf
 use crate::config::coding_agent_files::last_used::{
     matches_source, recorded_sources, FileAgentKey, RecordedSource,
 };
+use crate::config::coding_agent_files::launch_chain::{pick_launch_file, LaunchPick};
 use crate::config::coding_agent_files::locator::{context_for_cwd, context_key};
 use crate::config::coding_agent_files::{active_locator, ConfigContext, ConfigFileLocator};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
@@ -116,6 +117,7 @@ pub use profile::{
 pub(crate) use profile::{bootstrap_identity_revision, is_profile_gap, validate_profile_orphans};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -692,7 +694,6 @@ pub(crate) struct LaunchPaths {
 }
 
 impl LaunchPaths {
-    #[allow(dead_code, reason = "I4845 staged; removed in P03")]
     pub(crate) fn current() -> Option<LaunchPaths> {
         Some(LaunchPaths {
             settings_path: crate::config::settings::settings_path()?,
@@ -831,4 +832,110 @@ pub(crate) fn last_used_at(
         first.get_or_insert(state);
     }
     (ctx, first.unwrap_or(LastUsed::None))
+}
+
+/// #4845 - the settings one launch uses: agents and profiles of exactly one file (D3).
+pub(crate) struct LaunchView<'a> {
+    pub settings: Cow<'a, AppSettings>,
+    pub locator: ConfigFileLocator,
+    pub pick: LaunchPick,
+}
+
+/// #4845 - the process-wide paths; loads `config.json` once. None -> the input settings.
+pub(crate) fn launch_view<'a>(settings: &'a AppSettings, cwd: &Path) -> LaunchView<'a> {
+    match LaunchPaths::current() {
+        Some(paths) => launch_view_at(settings, &paths, cwd),
+        None => borrowed_view(settings, LaunchPick::Active),
+    }
+}
+
+/// #4845 - `launch_view` with the caller's already loaded `config.json` (no second load).
+pub(crate) fn launch_view_with<'a>(
+    settings: &'a AppSettings,
+    cwd: &Path,
+    config: Option<&Value>,
+) -> LaunchView<'a> {
+    match LaunchPaths::current() {
+        Some(paths) => view_from(settings, &paths, cwd, config),
+        None => borrowed_view(settings, LaunchPick::Active),
+    }
+}
+
+/// #4845 - test seam: explicit paths; loads `config.json` once.
+pub(crate) fn launch_view_at<'a>(
+    settings: &'a AppSettings,
+    paths: &LaunchPaths,
+    cwd: &Path,
+) -> LaunchView<'a> {
+    let config = crate::config::agent_config::read_agent_local_config_json(cwd)
+        .ok()
+        .flatten();
+    view_from(settings, paths, cwd, config.as_ref())
+}
+
+fn borrowed_view(settings: &AppSettings, pick: LaunchPick) -> LaunchView<'_> {
+    LaunchView {
+        settings: Cow::Borrowed(settings),
+        locator: ConfigFileLocator::RegisteredInstance {},
+        pick,
+    }
+}
+
+/// #4845 - D3 chain for an agent at `cwd`; reads no `config.json`; idempotent.
+fn view_from<'a>(
+    settings: &'a AppSettings,
+    paths: &LaunchPaths,
+    cwd: &Path,
+    config: Option<&Value>,
+) -> LaunchView<'a> {
+    let rec = config.map(crate::config::agent_config::recorded_launch);
+    let has_source = rec
+        .as_ref()
+        .is_some_and(|r| r.last_source.is_some() || r.choice_file.is_some());
+    let sel = settings.coding_agent_config_files.as_ref();
+    if sel.is_none() && !has_source {
+        return borrowed_view(settings, LaunchPick::Active);
+    }
+    let ctx = launch_context(settings, paths.root_agent_dir.as_deref(), cwd);
+    let rec = rec.as_ref();
+    let sources = recorded_sources(
+        rec.and_then(|r| r.choice_agent.as_deref().zip(r.choice_file.as_ref())),
+        rec.and_then(|r| {
+            r.last_agent
+                .as_deref()
+                .map(|id| (id, r.last_source.as_ref()))
+        }),
+        rec.and_then(|r| r.profile.as_deref()),
+    );
+    let mut keys_of = |loc: &ConfigFileLocator| match loc {
+        ConfigFileLocator::RegisteredInstance {} => Some(file_agent_keys(
+            &settings.agents,
+            &settings.coding_agent_profiles,
+        )),
+        _ => file::agents_of(settings, &paths.settings_path, &ctx, loc)
+            .ok()
+            .map(|(agents, profiles)| file_agent_keys(&agents, &profiles)),
+    };
+    let (locator, pick) = pick_launch_file(&sources, &active_locator(sel, &ctx), &mut keys_of);
+    let scoped = match locator {
+        ConfigFileLocator::RegisteredInstance {} => None,
+        _ => file::scoped_agent_settings(settings, &paths.settings_path, &ctx, &locator).ok(),
+    };
+    let view = match scoped {
+        Some(scoped) => LaunchView {
+            settings: Cow::Owned(scoped),
+            locator,
+            pick,
+        },
+        None => borrowed_view(settings, pick),
+    };
+    if let LaunchPick::Fallback30 { wanted } = &view.pick {
+        log::warn!(
+            "[config-file] active file {} of '{}' is unavailable; launching from the \
+             registered instance file",
+            serde_json::to_string(wanted).unwrap_or_default(),
+            cwd.display()
+        );
+    }
+    view
 }

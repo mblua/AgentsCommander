@@ -19,6 +19,7 @@ use crate::config::placeholders::{
     placeholder_context_for_launch_root, reject_unexpanded_markers, value_contains_ac_placeholder,
     PlaceholderContext,
 };
+use crate::config::settings::agent::launch_view;
 use crate::config::settings::{
     is_codex_home_key, is_opencode_config_dir_key, normalize_env_key_for_platform,
     validate_expanded_codex_home_value, validate_user_env_key, AgentBackendConfig, AgentConfig,
@@ -65,6 +66,9 @@ pub(crate) fn resolve_configured_agent_spawn_for_cwd(
     requested_profile: Option<&str>,
     requested_profile_authoritative: bool,
 ) -> Result<Option<AgentSpawnCommand>, String> {
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
+    let view = launch_view(settings, Path::new(&cwd));
+    let settings = &*view.settings;
     // #2716 (B3, option C): the agents layer could not be read, so the list is not
     // the user's; refuse rather than fall through to a plain terminal.
     if let Some(path) = settings.agents_layer.unreadable_path() {
@@ -75,7 +79,6 @@ pub(crate) fn resolve_configured_agent_spawn_for_cwd(
     if !settings.agents.iter().any(|agent| agent.id == agent_id) {
         return Ok(None);
     }
-    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
     crate::config::agent_command::resolve_agent_spawn_command(
         settings,
         agent_id,
@@ -92,6 +95,9 @@ pub(crate) fn build_configured_agent_spawn_for_cwd(
     cwd: &str,
     requested_profile: Option<&str>,
 ) -> Result<Option<AgentSpawnCommand>, String> {
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
+    let view = launch_view(settings, Path::new(&cwd));
+    let settings = &*view.settings;
     // #2716 (B3, option C): the same refusal as the resolver above; each builder
     // carries its own, so no entry point can reach a spawn past either one.
     if let Some(path) = settings.agents_layer.unreadable_path() {
@@ -102,8 +108,7 @@ pub(crate) fn build_configured_agent_spawn_for_cwd(
     if !settings.agents.iter().any(|agent| agent.id == agent_id) {
         return Ok(None);
     }
-    let cwd = crate::path_utils::normalize_windows_verbatim_path(cwd);
-    crate::config::agent_command::build_agent_spawn_command(
+    build_agent_spawn_command_scoped(
         settings,
         agent_id,
         Some(std::path::Path::new(&cwd)),
@@ -958,6 +963,17 @@ pub(crate) fn prepare_agent_spawn_command(command: &AgentSpawnCommand) -> Result
 }
 
 pub fn build_agent_spawn_command(
+    settings: &AppSettings,
+    agent_id: &str,
+    launch_path: Option<&Path>,
+    requested_profile: Option<&str>,
+) -> Result<AgentSpawnCommand, String> {
+    let view = launch_path.map(|dir| launch_view(settings, dir));
+    let settings = view.as_ref().map_or(settings, |view| &*view.settings);
+    build_agent_spawn_command_scoped(settings, agent_id, launch_path, requested_profile)
+}
+
+fn build_agent_spawn_command_scoped(
     settings: &AppSettings,
     agent_id: &str,
     launch_path: Option<&Path>,
