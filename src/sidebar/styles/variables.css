@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   /* Sidebar colors — Noir theme default */
   --sidebar-bg: #0a0a0f;
   --sidebar-fg: #d0d0d8;
@@ -79,6 +80,7 @@
 }
 
 html.light-theme {
+  color-scheme: light;
   /* The rail is white for the dark surface; on the light selected row
      (--sidebar-active #dcdce4) white reaches 1.36 and the bar disappears.
      #1A1A2E is the accepted light "primary text" value and reaches 12.51.
