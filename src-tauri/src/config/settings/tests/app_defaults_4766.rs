@@ -94,3 +94,24 @@ fn app_settings_default_overrides_differ_from_missing_keys() {
         DEFAULT_SESSION_WINDOWS.last().copied()
     );
 }
+
+/// #5178 A file without `screenshotCopyPath` loads image mode; `true` round-trips.
+#[test]
+fn app_settings_screenshot_copy_path_defaults_off_and_round_trips() {
+    let mut value = serde_json::to_value(AppSettings::default()).expect("serialize default");
+    let object = value
+        .as_object_mut()
+        .expect("default serializes to an object");
+    assert!(object.remove("screenshotCopyPath").is_some());
+    let settings: AppSettings = serde_json::from_value(value).expect("load without the field");
+    assert!(!settings.screenshot_copy_path);
+
+    let settings = AppSettings {
+        screenshot_copy_path: true,
+        ..AppSettings::default()
+    };
+    let value = serde_json::to_value(&settings).expect("serialize copy-path mode");
+    assert_eq!(value["screenshotCopyPath"], Value::Bool(true));
+    let reloaded: AppSettings = serde_json::from_value(value).expect("reload copy-path mode");
+    assert!(reloaded.screenshot_copy_path);
+}

@@ -147,7 +147,15 @@ impl ScreenshotHost for WaylandHost {
         0
     }
 
+    async fn copy_path_preferred(&self) -> bool {
+        false
+    }
+
     fn copy_path(&self, _path: String) -> Result<(), String> {
+        panic!("wayland test uses image mode")
+    }
+
+    fn copy_image(&self, _path: String) -> Result<(), String> {
         self.push("clipboard");
         Ok(())
     }

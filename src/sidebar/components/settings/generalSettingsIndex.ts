@@ -1,7 +1,7 @@
 // Static search index for Settings > General. One entry per user-visible
 // control, in display order (category, then section, then field). Each `key` matches a
-// `data-ac-setting` attribute on the control's wrapper in SettingsModal.tsx; the
-// general-nav test fails if the two drift apart.
+// `data-ac-setting` attribute on the control's wrapper in SettingsModal.tsx or a settings
+// component it mounts; the general-nav test fails if the two drift apart.
 
 export type GeneralCategoryId = "appearance" | "terminal" | "agents" | "network" | "system";
 
@@ -31,6 +31,7 @@ export const GENERAL_SETTINGS_INDEX: GeneralSettingEntry[] = [
   { key: "roomNumberMask", category: "appearance", section: "Window", label: "Room number mask", keywords: "format digits padding" },
   { key: "screenshotCaptureHotkey", category: "appearance", section: "Hotkeys", label: "Screenshot hotkey", keywords: "shortcut keyboard capture" },
   { key: "screenshotHyprlandBind", category: "appearance", section: "Hotkeys", label: "Add screenshot shortcut to Hyprland", keywords: "wayland omarchy hyprland bind shortcut" },
+  { key: "screenshotCopyPath", category: "appearance", section: "Hotkeys", label: "Paste image path instead of image", keywords: "screenshot clipboard path image paste" },
   { key: "sidebarCompactHotkey", category: "appearance", section: "Hotkeys", label: "Compact sidebar hotkey", keywords: "shortcut keyboard collapse" },
   { key: "soundsEnabled", category: "appearance", section: "Notifications", label: "Enable app sounds (master switch)", keywords: "audio mute volume" },
   { key: "teamIdleBeepEnabled", category: "appearance", section: "Notifications", label: "Beep when a team finishes working (all agents idle)", keywords: "sound audio alert done" },

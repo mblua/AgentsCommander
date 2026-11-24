@@ -52,12 +52,19 @@ struct ConfirmationHost {
     finishing: uuid::Uuid,
     order: Arc<std::sync::Mutex<Vec<&'static str>>>,
     fail_clipboard: bool,
+    copy_path_mode: bool,
+    clipboard_calls: Arc<std::sync::Mutex<Vec<&'static str>>>,
     partial: Option<std::path::PathBuf>,
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 impl ConfirmationHost {
-    fn new(capture_id: uuid::Uuid, finishing: uuid::Uuid, fail_clipboard: bool) -> Self {
+    fn new(
+        capture_id: uuid::Uuid,
+        finishing: uuid::Uuid,
+        fail_clipboard: bool,
+        copy_path_mode: bool,
+    ) -> Self {
         Self {
             state: Arc::new(tokio::sync::Mutex::new(
                 ScreenshotCaptureLifecycle::Finishing(finishing),
@@ -66,6 +73,8 @@ impl ConfirmationHost {
             finishing,
             order: Arc::new(std::sync::Mutex::new(Vec::new())),
             fail_clipboard,
+            copy_path_mode,
+            clipboard_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
             partial: None,
         }
     }
@@ -152,9 +161,25 @@ impl ScreenshotHost for ConfirmationHost {
         1
     }
 
+    async fn copy_path_preferred(&self) -> bool {
+        self.copy_path_mode
+    }
+
     fn copy_path(&self, path: String) -> Result<(), String> {
         assert_eq!(path, "synthetic.png");
         self.record("clipboard");
+        self.clipboard_calls.lock().unwrap().push("path");
+        if self.fail_clipboard {
+            Err("synthetic clipboard failure".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn copy_image(&self, path: String) -> Result<(), String> {
+        assert_eq!(path, "synthetic.png");
+        self.record("clipboard");
+        self.clipboard_calls.lock().unwrap().push("image");
         if self.fail_clipboard {
             Err("synthetic clipboard failure".into())
         } else {
@@ -177,9 +202,11 @@ impl ScreenshotHost for ConfirmationHost {
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn confirmation_success_keeps_finishing_through_teardown() {
-    for fail_clipboard in [false, true] {
+    for (copy_path_mode, fail_clipboard) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
         let id = uuid::Uuid::new_v4();
-        let host = ConfirmationHost::new(id, id, fail_clipboard);
+        let host = ConfirmationHost::new(id, id, fail_clipboard, copy_path_mode);
         let saved = ScreenshotCaptureResult {
             path: "synthetic.png".into(),
             session_id: "synthetic-session".into(),
@@ -193,6 +220,8 @@ async fn confirmation_success_keeps_finishing_through_teardown() {
             *host.order.lock().unwrap(),
             ["clipboard", "saved", "destroy"]
         );
+        let expected_call = if copy_path_mode { "path" } else { "image" };
+        assert_eq!(*host.clipboard_calls.lock().unwrap(), [expected_call]);
         assert!(matches!(
             &*host.state.lock().await,
             ScreenshotCaptureLifecycle::Idle
@@ -207,7 +236,7 @@ async fn confirmation_failure_keeps_finishing_through_teardown() {
     let partial = temp.path().join("partial.tmp");
     std::fs::write(&partial, "synthetic partial").expect("synthetic partial file");
     let id = uuid::Uuid::new_v4();
-    let mut host = ConfirmationHost::new(id, id, false);
+    let mut host = ConfirmationHost::new(id, id, false, false);
     host.partial = Some(partial.clone());
     let result = super::native::complete_confirmation(
         &host,
@@ -229,7 +258,7 @@ async fn confirmation_failure_keeps_finishing_through_teardown() {
 async fn confirmation_stale_id_preserves_other_finishing_capture() {
     let id = uuid::Uuid::new_v4();
     let other = uuid::Uuid::new_v4();
-    let host = ConfirmationHost::new(id, other, false);
+    let host = ConfirmationHost::new(id, other, false, false);
     let saved = ScreenshotCaptureResult {
         path: "synthetic.png".into(),
         session_id: "synthetic-session".into(),

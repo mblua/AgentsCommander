@@ -12,8 +12,8 @@ export const SCREENSHOT_TOAST_DURATION_MS = 30_000;
 
 /**
  * Wire the sidebar's screenshot-capture notifications:
- *  - `screenshot_capture_saved` → a success toast carrying the saved PNG path
- *    (which is also on the clipboard), auto-dismissing after 30s.
+ *  - `screenshot_capture_saved` → a success toast carrying the saved PNG path,
+ *    auto-dismissing after 30s.
  *  - `screenshot_capture_failed` → a sticky error toast (the global hotkey often
  *    fires while another app is focused, so failures must be un-missable).
  *  - a startup check plus `screenshot_hotkey_status_changed` events: if
@@ -41,7 +41,7 @@ export async function wireScreenshotListeners(): Promise<UnlistenFn[]> {
 
   unlisteners.push(
     await onScreenshotCaptureSaved((result) => {
-      toastStore.success(`Screenshot saved. Path copied: ${result.path}`, {
+      toastStore.success(`Screenshot saved: ${result.path}`, {
         durationMs: SCREENSHOT_TOAST_DURATION_MS,
       });
     }),

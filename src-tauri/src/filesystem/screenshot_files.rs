@@ -103,6 +103,11 @@ pub(crate) fn read_portal_screenshot(path: &Path, max_bytes: u64) -> Result<Vec<
     std::fs::read(path).map_err(|e| format!("could not read the portal screenshot: {e}"))
 }
 
+/// Read a saved screenshot PNG for the clipboard. Never writes it.
+pub(crate) fn read_saved_screenshot(path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("could not read the saved screenshot: {e}"))
+}
+
 /// Remove only the supplied partial screenshot.
 pub(crate) fn remove_partial_screenshot(path: &Path) -> std::io::Result<()> {
     std::fs::remove_file(path)
