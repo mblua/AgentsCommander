@@ -76,11 +76,39 @@ pub(crate) type WakeCreateEvents = tokio::sync::mpsc::UnboundedReceiver<(
 )>;
 
 #[cfg(test)]
+struct WakeDeadlineWarnings(Mutex<Vec<String>>);
+
+#[cfg(test)]
+static WAKE_DEADLINE_WARNINGS: WakeDeadlineWarnings = WakeDeadlineWarnings(Mutex::new(Vec::new()));
+
+#[cfg(test)]
+impl log::Log for WakeDeadlineWarnings {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() == log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            let message = record.args().to_string();
+            if message.contains("#3263 wake ended without input")
+                && message.contains("stage=deadline")
+            {
+                self.0.lock().unwrap().push(message);
+            }
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+#[cfg(test)]
 impl WakeCreateProbe {
     pub(crate) fn pause_at(
         budget: std::time::Duration,
         cuts: &[(&'static str, usize)],
     ) -> (Self, WakeCreateEvents) {
+        log::set_logger(&WAKE_DEADLINE_WARNINGS).unwrap();
+        log::set_max_level(log::LevelFilter::Warn);
         let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
         let cuts = Mutex::new(std::collections::VecDeque::from(cuts.to_vec()));
         let observe = Arc::new(move |stage, binding| -> BoxFuture<'static, bool> {
@@ -106,6 +134,13 @@ impl WakeCreateProbe {
             })
         });
         (Self { budget, observe }, receiver)
+    }
+
+    pub(crate) fn assert_deadline_warning(reason: &str, diagnostic: &str) {
+        assert!(reason.contains(diagnostic), "{reason}");
+        let warnings = std::mem::take(&mut *WAKE_DEADLINE_WARNINGS.0.lock().unwrap());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].ends_with(reason), "{warnings:?}");
     }
 }
 

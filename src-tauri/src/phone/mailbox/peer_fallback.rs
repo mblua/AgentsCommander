@@ -615,6 +615,9 @@ impl MailboxPoller {
             )
             .await
             .map_err(|e| {
+                if e == super::poller::ERR_WAKE_DELIVERY_TIMEOUT {
+                    return e;
+                }
                 format!(
                     "Failed to spawn session for '{}': command from {} resolved raw_command={:?}, \
                     shell={:?}, args={:?}: {}",

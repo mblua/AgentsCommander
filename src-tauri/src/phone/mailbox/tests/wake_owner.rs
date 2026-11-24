@@ -646,7 +646,7 @@ async fn deadline_claim(
 fn assert_deadline(result: Result<(), String>, dispatch: &str) {
     let error = result.unwrap_err();
     let diagnostic = format!("stage=deadline last_dispatch={dispatch} settlement=unknown");
-    assert!(error.contains(&diagnostic), "{error}");
+    WakeCreateProbe::assert_deadline_warning(&error, &diagnostic);
 }
 
 async fn generic_wake_conflict(fixture: &MailboxFixture) -> PublishedCarrier {
@@ -755,7 +755,7 @@ async fn wake_owner_generic_deadline_and_retained_controls() {
     let wake = wake_message_to_target();
     match case.as_str() {
         "generic" | "live" => {
-            check_unowned_input(app, &coordinator, &wake, case == "generic").await
+            check_unowned_input(app, &coordinator, &wake, case == "generic").await;
         }
         "retained" => {
             check_generic_retained(app, &wake).await;
@@ -817,16 +817,16 @@ async fn exercise_generic_conflict(fixture: &MailboxFixture, wake: &OutboxMessag
         let awaited = tokio::time::timeout(Duration::from_millis(300), events.recv());
         assert!(awaited.await.is_err(), "bound producer remains owned");
         assert_eq!(pending_ids(app).await, ids);
-    } else {
-        if archive {
-            resume_deadline_event(&mut events, "archive_exit").await;
-            let settings = app.pty_settings().read().await;
-            assert_eq!(settings.archived_project_paths, archived);
-        }
-        resume_deadline_event(&mut events, "generic_exit").await;
-        assert_generic_conflict(fixture, &wake.to).await;
-        assert!(pending_ids(app).await.is_empty());
+        return;
     }
+    if archive {
+        resume_deadline_event(&mut events, "archive_exit").await;
+        let settings = app.pty_settings().read().await;
+        assert_eq!(settings.archived_project_paths, archived);
+    }
+    resume_deadline_event(&mut events, "generic_exit").await;
+    assert_generic_conflict(fixture, &wake.to).await;
+    assert!(pending_ids(app).await.is_empty());
 }
 
 async fn check_unowned_input(
