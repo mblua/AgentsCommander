@@ -8,6 +8,10 @@ use crate::session::session::Session;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::error::Elapsed;
 
+// Ceiling, not a wait: the sweep returns once terminal. 1 s missed it on a
+// loaded machine (#1248).
+const GLOBAL_SWEEP_CEILING: Duration = Duration::from_secs(10);
+
 type Joined<T> = Result<Result<T, JoinError>, Elapsed>;
 
 pub(super) fn build_selection_test_app(
@@ -262,7 +266,7 @@ async fn observe_pending_container_sweep(
     let global_report = pty
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .stop_all_started_containers_blocking(Duration::from_secs(1));
+        .stop_all_started_containers_blocking(GLOBAL_SWEEP_CEILING);
     let stopped_signal = tokio::time::timeout(Duration::from_secs(1), stop_started_rx).await;
     await_retained_stop_sweep(runtime, container_backend).await;
     PendingSweepObservation {
@@ -858,7 +862,7 @@ async fn assert_real_container_cleanup(
     let global_report = pty
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .stop_all_started_containers_blocking(Duration::from_secs(1));
+        .stop_all_started_containers_blocking(GLOBAL_SWEEP_CEILING);
     assert!(
         global_report.terminal,
         "retained={:?}",

@@ -118,7 +118,7 @@ fn strict_wg_replica_anchor_from_cwd_deeper_cwd_inside_own_replica_regression() 
 /// plus a nested project with its own full workgroup inside
 /// `__agent_dev-one`: `nested-proj/.ac/{_team_team, _agent_lead2,
 /// _agent_inner2, wg-2-team/{__agent_lead2, __agent_inner2}}` and an
-/// origin-only dir `_agent_phase0` (the #1535 bug shape). The nested
+/// origin-only dir `_agent_phase0` (the bug shape). The nested
 /// replica `config.json` identity is `../../_agent_inner2`; the nested
 /// team config names the nested origin matrices.
 fn nested_strict_target_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -196,7 +196,7 @@ fn verify_pty_input_replica_cwd_nested_replica_resolves_own_fqn() {
     assert_eq!(identity.agent, "inner2");
 }
 
-/// T6: the #1535 bug-shaped cwd (an origin matrix dir, not a
+/// T6: the bug-shaped cwd (an origin matrix dir, not a
 /// replica) resolves to `Err("sender_identity_invalid")` — and never to
 /// the outer workgroup.
 #[test]
@@ -223,7 +223,7 @@ fn pty_input_create_gate_key_from_cwd_nested_replica_uses_own_fqn_and_nested_ori
     );
 }
 
-// ── #2228 phase 2: fail-soft snapshot-target discovery (RED-FIRST FORM) ──
+// ── Fail-soft snapshot-target discovery (RED-FIRST FORM) ──
 
 /// Unix-only: a child directory that passes `DirEntry::metadata().is_dir()`
 /// (so it reaches `teams.rs:322`) but cannot be opened, so `verify_directory`

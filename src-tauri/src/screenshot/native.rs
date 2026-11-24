@@ -156,15 +156,15 @@ pub struct CapturedMonitor {
 pub struct ScreenshotHotkeyRuntime {
     pub status: ScreenshotHotkeyStatus,
     pub registered_shortcut: Option<Shortcut>,
-    /// #2774 Result of the one portal host registration of this process (ashpd's shared
+    /// Result of the one portal host registration of this process (ashpd's shared
     /// D-Bus connection accepts one app id, before any other portal call on it).
     #[cfg(target_os = "linux")]
     pub(crate) portal_host: std::sync::Arc<portal::HostRegistration>,
-    /// #2774 Bumped by every Wayland registration request; only the latest one may write
+    /// Bumped by every Wayland registration request; only the latest one may write
     /// the status or (P04) bindings.lua.
     #[cfg(target_os = "linux")]
     pub wayland_generation: u64,
-    /// #2774 Serializes Wayland registrations end to end (portal bind + P04 Hyprland apply +
+    /// Serializes Wayland registrations end to end (portal bind + P04 Hyprland apply +
     /// status write). tokio mutex: held across awaits.
     #[cfg(target_os = "linux")]
     pub wayland: std::sync::Arc<tokio::sync::Mutex<WaylandPortalState>>,
@@ -194,7 +194,7 @@ pub fn register_configured_hotkey<H: ScreenshotHost>(
     hyprland_bind: bool,
 ) -> Result<(), String> {
     #[cfg(not(target_os = "linux"))]
-    let _ = hyprland_bind; // #2774 read on Wayland only
+    let _ = hyprland_bind; // Read on Wayland only
     let parsed = super::parse_screenshot_hotkey(configured)?;
     let shortcut = parsed_to_shortcut(&parsed)?;
 
@@ -296,11 +296,11 @@ fn hotkey_status_after_attempt(
 ///     later press it never observed.
 ///
 /// Naming the capture instead of passing `None` is what stops the Linux
-/// second-press cancel from destroying an unrelated capture (#1842).
+/// second-press cancel from destroying an unrelated capture.
 pub enum BeginOutcome {
     Started,
     Busy(Option<Uuid>),
-    /// #2774 The portal selector was dismissed; silent.
+    /// The portal selector was dismissed; silent.
     #[cfg_attr(
         not(target_os = "linux"),
         allow(dead_code, reason = "Linux portal only")
@@ -541,7 +541,7 @@ async fn busy_pregate(state: &ScreenshotCaptureState) -> Option<BeginOutcome> {
     }
 }
 
-// ── Wayland portal capture (#2774) ─────────────────────────────────────────
+// ── Wayland portal capture ─────────────────────────────────────────
 
 /// The snapshot is READ here and TAKEN in run() during builder assembly
 /// (§3.5.1). Do not replace this with a call to display_env_snapshot(): by the
@@ -626,7 +626,7 @@ fn system_wayland<H: ScreenshotHost>(app: &H) -> SystemWayland {
     SystemWayland { host }
 }
 
-// ── Wayland shortcut registration (#2774) ──────────────────────────────────
+// ── Wayland shortcut registration ──────────────────────────────────
 
 /// Start a Wayland registration request: it supersedes every earlier one.
 #[cfg(target_os = "linux")]

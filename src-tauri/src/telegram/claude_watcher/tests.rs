@@ -397,7 +397,7 @@ fn sidechain_assistant_records_are_captured_today() {
     assert_eq!(records[0].text, "sidechain body");
 }
 
-// ── #2454: the pinned first attach ──
+// ── The pinned first attach ──
 
 const PIN_ID: &str = "16045f91-7d59-4c75-acdb-11ebfcb9aa68";
 

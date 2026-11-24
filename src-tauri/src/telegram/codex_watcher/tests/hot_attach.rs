@@ -1,6 +1,6 @@
 use super::*;
 
-// ── #2232 phase 4: hot attach, re-anchor and the local preamble (tests 4,
+// ── Hot attach, re-anchor and the local preamble (tests 4,
 // 9-codex and 18) ───────────────────────────────────────────────────────
 
 /// Append one fresh `final_answer` line whose timestamp is `now - 1s`, so
@@ -15,11 +15,12 @@ fn append_final(path: &Path, body: &str) -> std::io::Result<()> {
 
 async fn recv_record(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<Arc<CapturedRecord>>,
+    step: &str,
 ) -> Arc<CapturedRecord> {
     tokio::time::timeout(Duration::from_secs(20), rx.recv())
         .await
-        .expect("a record must reach the sink")
-        .expect("the sink stays open")
+        .unwrap_or_else(|elapsed| panic!("{step}: a record must reach the sink: {elapsed:?}"))
+        .unwrap_or_else(|| panic!("{step}: the sink stays open"))
 }
 
 fn message_permits(network: &OutboundNetwork) -> usize {
@@ -99,6 +100,9 @@ async fn a_codex_hot_attach_sends_once_and_a_detach_stops_without_restarting() {
     let _logs = lock_global_diagnostic_files().await;
     let work = tempfile::tempdir().unwrap();
     let cwd = work.path().to_string_lossy().replace('\\', "\\\\");
+    // Taken before the fixture so its tail record (fixture time - 1 s) stays
+    // inside the preamble grace window however slow the fixture setup is.
+    let attach_time = Utc::now();
     let (fixture, path) = room_only_fixture(&cwd);
     let search_root = fixture.path().to_path_buf();
 
@@ -111,7 +115,7 @@ async fn a_codex_hot_attach_sends_once_and_a_detach_stops_without_restarting() {
     let task = spawn_watch_task(
         search_root,
         work.path().to_string_lossy().to_string(),
-        Utc::now(),
+        attach_time,
         network.clone(),
         dest_rx,
         "hot-attach-session".to_string(),
@@ -121,7 +125,7 @@ async fn a_codex_hot_attach_sends_once_and_a_detach_stops_without_restarting() {
     );
 
     // Room-only first bind: the tail record is captured, nothing is sent.
-    let first = recv_record(&mut rx).await;
+    let first = recv_record(&mut rx, "room-only preamble").await;
     assert_eq!(first.origin, RecordOrigin::Preamble);
     assert_eq!(message_permits(&network), 0);
 
@@ -137,7 +141,7 @@ async fn a_codex_hot_attach_sends_once_and_a_detach_stops_without_restarting() {
 
     // A line appended after the attach is sent exactly once.
     append_final(&path, "live after attach").unwrap();
-    let live = recv_record(&mut rx).await;
+    let live = recv_record(&mut rx, "live after attach").await;
     assert_eq!(live.text, "live after attach");
     assert_eq!(live.origin, RecordOrigin::Live);
     wait_for_message_permits(&network, 1).await;
@@ -145,11 +149,11 @@ async fn a_codex_hot_attach_sends_once_and_a_detach_stops_without_restarting() {
     // Detach while the reader keeps capturing. A record buffered around the
     // detach must never be flushed to the detached reader.
     append_final(&path, "buffered before detach").unwrap();
-    let buffered = recv_record(&mut rx).await;
+    let buffered = recv_record(&mut rx, "buffered before detach").await;
     assert_eq!(buffered.text, "buffered before detach");
     dest_tx.send(None).expect("the reader watch stays open");
     append_final(&path, "after detach").unwrap();
-    let after = recv_record(&mut rx).await;
+    let after = recv_record(&mut rx, "after detach").await;
     assert_eq!(after.text, "after detach");
 
     tokio::time::sleep(Duration::from_millis(FLUSH_DELAY_MS * 2)).await;

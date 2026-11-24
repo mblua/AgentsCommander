@@ -1,7 +1,7 @@
 use super::resolve::Observation;
 use super::*;
 
-/// #1273: `config::instance_gitignore` used to name
+/// `config::instance_gitignore` used to name
 /// `super::root_agent::ROOT_AGENT_DIR_NAME`, which made a 413-line filesystem
 /// utility depend on a 3711-line module inside the crate's cyclic SCC
 /// and held it inside that SCC. The constant moved down into `crate::config`, so
@@ -21,7 +21,7 @@ fn instance_gitignore_names_nothing_that_reaches_the_knot() {
     assert_guarded_reference_sets(&seen);
 }
 
-/// #3534 permits one std-only probe leaf instead of a host with zero outgoing arcs.
+/// Permits one std-only probe leaf instead of a host with zero outgoing arcs.
 /// Exact host spelling and a leaf with no app references prevent an app return path.
 /// Only the host file is observed; config children are separate graph modules.
 #[test]

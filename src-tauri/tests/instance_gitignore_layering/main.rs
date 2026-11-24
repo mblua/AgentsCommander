@@ -76,7 +76,7 @@
 //! Widening the net is the only thing a text scan can do, so this file is
 //! written to be widened: the six `ALLOWED_*` tables are the whole contract,
 //! and the spellings the scan is known to miss are listed below instead of being
-//! left unsaid. It was widened once already, by the #1273 review, which is what
+//! left unsaid. It was widened once already, by the review, which is what
 //! the CLOSED notes on entries 14 to 17 record.
 //!
 //! KNOWN UNCOVERED SPELLINGS.
@@ -173,7 +173,7 @@
 //!
 //!      **This entry used to claim the module's fourteen behavioural tests hold
 //!      the production references up. They do not, and the claim is struck.**
-//!      Measured during the #1273 review: replacing both production references
+//!      Measured during the review: replacing both production references
 //!      with the literal `"ac-root-agent"` leaves this guard at 3 passed AND
 //!      `cargo test --lib config::instance_gitignore` at 15 passed, because
 //!      those tests pin the emitted `.gitignore` bytes, not the path the name is
@@ -286,7 +286,7 @@
 //!      not a matcher change: either the two `injected_messages` imports move
 //!      out of the target's test module, or the allowed row is dropped and the
 //!      pair forbidden. Both are design decisions the frozen plan does not
-//!      cover, so neither was taken during the #1273 review. It is reported
+//!      cover, so neither was taken during the review. It is reported
 //!      upward as a follow-up. Until then, treat every allowed row that names a
 //!      knot member as one line of production code away from a regression.
 //!  19. **Entry 12 is live and its stated mitigation does not hold.** That entry
@@ -307,7 +307,7 @@
 //!      is a value, not a path, and this file matches paths. Closing it would
 //!      need a different assertion, that the literal appears exactly once under
 //!      `src/`, which is a separate decision and was not taken here. What the
-//!      #1273 review did do is strike the false mitigation from entry 12: the
+//!      Review did do is strike the false mitigation from entry 12: the
 //!      behavioural tests do NOT hold those references up. The blind spot stands
 //!      as the honest record.
 //!  20. **The `mod root_agent;` exemption does not check what precedes `mod `,
@@ -472,7 +472,7 @@
 //!      boundary; it is inside 'n-tilde'". Rust identifiers may be non-ASCII, so
 //!      this is reachable from ordinary code rather than only from a hostile
 //!      file. It fails loud, which is the safe direction, but it replaces the
-//!      #1273 message with a slicing panic that names nothing useful.
+//!      Message with a slicing panic that names nothing useful.
 //!      **Fix: make it lazy.** Move the computation behind
 //!      `body[..at].ends_with("mod ")` in the `&&` chain -- when that holds,
 //!      `at - 4` is guaranteed to be a boundary, because `"mod "` is four ASCII
@@ -489,8 +489,7 @@
 //!      that reaches the predicate is a space.
 //!  26. (append here: one entry per spelling a reviewer proves still passes)
 
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // Resolving what the compiler compiles
@@ -502,6 +501,8 @@ use std::path::{Path, PathBuf};
 
 mod allowed;
 mod knot;
+#[path = "../support/module_sources.rs"]
+mod module_sources;
 mod registry;
 mod resolve;
 mod scan;
@@ -514,10 +515,10 @@ use allowed::{
     CONSTANT_NAME, CRATE_ANCHOR, FORBIDDEN_NAME, GLOB_CHILD, GUARDED_MODULE, HOST_MODULE,
     REGISTRY_MODULE, SELF_ANCHOR, SUPER_ANCHOR,
 };
-use resolve::{
-    crate_sources, every_file_under, expected, files_of, manifest_dir, observe, relative_of,
-    scrubbed,
+use module_sources::{
+    crate_sources, every_file_under, manifest_dir, own_files_of, relative_of, scrubbed, sources_of,
 };
+use resolve::{expected, files_of, observe};
 use rust_source_scrub::{scrub, Literals};
 use scan::{
     aliases_a_module_group, children_under, defines_the_constant, names_the_replaced_module,

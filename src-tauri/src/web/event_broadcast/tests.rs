@@ -8,7 +8,7 @@ fn broadcast_all_sends_to_explicit_websocket_broadcaster() {
     let explicit = WsBroadcaster::new();
     let mut receiver = explicit.subscribe();
     // Deliberately NOT `crate::test_support::test_builder()`. This file is
-    // the #1265 emitter home, and `the_emitter_home_names_nothing_but_the_
+    // the emitter home, and `the_emitter_home_names_nothing_but_the_
     // websocket_fan_out` pins the exact set of crate modules it may name.
     // Tauri declares `Builder::any_thread` only for Windows and Linux, so
     // the predicate is written out here rather than imported.

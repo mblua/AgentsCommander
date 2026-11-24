@@ -189,7 +189,7 @@ const TASK_SET_BODY_RULE_DELTA_BYTES: usize = 17;
 
 // P01: entry 6 keeps this sentence; it no longer ends the task rules.
 const MOVED_PEER_ACCESS: &str = " No peer-memory/other-room access.";
-// #4752 P01: 20 + "C:/fake/.ac/wg-1-team/TASK.md".len()
+// 20 + "C:/fake/.ac/wg-1-team/TASK.md".len()
 const ROOM_TASK_RULES_GLUE_BYTES: usize = 49;
 // P01: 79 + messaging (31) + task (29)
 const INTEGRITY_SPLIT_CURRENT_DELTA_BYTES: usize = 139;
