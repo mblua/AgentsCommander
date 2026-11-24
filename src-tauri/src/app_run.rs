@@ -140,6 +140,9 @@ fn manage_launch(
         .manage(l.rs.loop_scheduler.clone())
         .manage(l.rs.non_stop_state)
         .manage(l.rs.ipc_observer)
+        .manage(crate::commands::ipc_blackbox::IpcBlackBoxActivation {
+            enabled: config::settings::read_ipc_blackbox_enabled_only(),
+        })
         .manage(l.boot.web_access_token.clone())
         .manage(l.broadcaster.clone())
         .manage(WebServerHandle::default())

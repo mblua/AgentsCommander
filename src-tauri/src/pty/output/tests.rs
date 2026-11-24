@@ -3,6 +3,7 @@ use super::*;
 mod attachments;
 mod gate;
 mod history;
+mod markers;
 mod screen;
 
 fn fanout() -> SessionIoFanout {

@@ -682,6 +682,7 @@ See [Menu guard](../features/menu-guard.md).
 |---|---|---|---|
 | `logLevel` | string \| null | `null` | One of `error`, `warn`, `info`, `debug`, `trace`. Applied live, no restart. An invalid value, a legacy filter string, or `null` falls back to `info`. The `RUST_LOG` env var, if set, overrides this and freezes the live selector until restart. |
 | `activityLogEnabled` | bool | `false` | Enable the activity log. |
+| `ipcBlackBoxEnabled` | bool | `false` | Run the renderer IPC black box (#1652) in every window. Read once at start: a change applies on the next restart. The backend IPC observer runs regardless. |
 
 See [Activity log](../features/activity-log.md).
 
