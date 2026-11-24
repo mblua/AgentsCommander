@@ -98,7 +98,7 @@ describe("SettingsModal coding agents export/import (#5071)", () => {
   it("exports all agents and warns about env values", async () => {
     const fake = makeFake([agent("a1", "Claude", "secret"), agent("a2", "Codex")]);
     fake.resolve(EXPORT_CMD, "/tmp/out.json");
-    const info = vi.spyOn(toastStore, "info");
+    const error = vi.spyOn(toastStore, "error");
     const r = render(fake);
     try {
       await waitFor(() => expect(labels(r.root)).toHaveLength(2));
@@ -110,9 +110,12 @@ describe("SettingsModal coding agents export/import (#5071)", () => {
         "Claude", "Codex",
       ]);
       expect(args.defaultFileName).toMatch(/^ac-coding-agents-exports_\d{8}_\d{6}\.json$/);
-      expect(toastStore.items[0].kind).toBe("info");
-      expect(toastStore.items[0].message).toContain("environment variable values");
-      expect(info).toHaveBeenCalledWith(expect.any(String), { durationMs: null });
+      expect(toastStore.items[0].kind).toBe("error");
+      expect(toastStore.items[0].message).toBe(
+        "Exported 2 coding agents to /tmp/out.json." +
+          " The file contains environment variable values; share it carefully.",
+      );
+      expect(error).toHaveBeenCalledWith(toastStore.items[0].message);
     } finally {
       r.cleanup();
     }
@@ -127,6 +130,7 @@ describe("SettingsModal coding agents export/import (#5071)", () => {
       btn(r.root, "export")?.click();
       await waitFor(() => expect(toastStore.items).toHaveLength(1));
       expect(toastStore.items[0].kind).toBe("success");
+      expect(toastStore.items[0].message).toBe("Exported 1 coding agents to /tmp/out.json.");
     } finally {
       r.cleanup();
     }

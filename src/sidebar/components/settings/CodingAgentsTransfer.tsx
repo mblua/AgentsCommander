@@ -43,7 +43,7 @@ export const CodingAgentsTransfer: Component<{
       if (!transferHasEnvValues(file)) toastStore.success(done);
       else {
         const warn = " The file contains environment variable values; share it carefully.";
-        toastStore.info(done + warn, { durationMs: null });
+        toastStore.error(done + warn);
       }
     } catch (e) {
       if (!disposed) toastStore.error(`Export failed: ${errorText(e)}`);
