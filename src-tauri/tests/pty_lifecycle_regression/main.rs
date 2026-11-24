@@ -2,6 +2,9 @@
 
 mod fixture;
 mod process;
+#[allow(dead_code)]
+#[path = "../support/pty_fixture.rs"]
+mod pty_fixture;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

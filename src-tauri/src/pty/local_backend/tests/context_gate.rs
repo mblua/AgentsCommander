@@ -66,7 +66,7 @@ fn paint(fanout: &SessionIoFanout, id: Uuid) {
     let token = fanout
         .register_session_for_test(id, IdleTuning::DEFAULT, 30, 120)
         .expect("register test session");
-    fanout.handle_output(&token, &id.to_string(), ROW.as_bytes().to_vec());
+    fanout.handle_output(&token, &id.to_string(), ROW.as_bytes());
 }
 
 /// Kill the child and wait until it is REALLY gone - which is NOT what
