@@ -20,6 +20,8 @@ use crate::session::create_contracts::{
     PtyTargetCreateStep,
 };
 use crate::session::maintenance::PendingSelfClear;
+#[cfg(test)]
+use crate::session::manager::PendingCreateBinding;
 use crate::session::manager::SessionManager;
 use crate::session::purge_guard::PurgeGuard;
 use crate::session::selection::{
@@ -66,6 +68,7 @@ pub(crate) struct WakeCreateProbe {
     pub(crate) budget: std::time::Duration,
     pub(crate) observe:
         Arc<dyn Fn(&'static str, Option<Uuid>) -> BoxFuture<'static, bool> + Send + Sync>,
+    pub(crate) prepared: Arc<Mutex<Option<PendingCreateBinding>>>,
 }
 
 #[cfg(test)]
@@ -133,7 +136,32 @@ impl WakeCreateProbe {
                 wait.await.unwrap_or(false)
             })
         });
-        (Self { budget, observe }, receiver)
+        let prepared = Arc::new(Mutex::new(None));
+        (
+            Self {
+                budget,
+                observe,
+                prepared,
+            },
+            receiver,
+        )
+    }
+
+    pub(crate) async fn assert_bound_conflict(
+        &self,
+        app: &impl MailboxHost,
+        pending_before: &std::collections::HashSet<Uuid>,
+    ) {
+        let binding = self.prepared.lock().unwrap().unwrap();
+        let manager = app.pty_sessions().read().await.clone();
+        assert!(pending_before.contains(&binding.session_id()));
+        assert!(manager.get_pending_session(binding).await.is_some());
+        let capacity = app.selection_opt().unwrap().port_test_state();
+        assert_eq!(capacity.queue_capacity, capacity.expected_queue_capacity);
+        assert_eq!(
+            capacity.admission_available,
+            capacity.expected_admission_capacity
+        );
     }
 
     pub(crate) fn assert_deadline_warning(reason: &str, diagnostic: &str) {

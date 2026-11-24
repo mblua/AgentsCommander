@@ -1,6 +1,5 @@
 //! Admission state for one session create: target lease, carrier reservation and resources.
-//! Owns the create publication region and restores coordinator close markers when a
-//! create fails before any PTY may exist.
+//! Owns the publication region and restores close markers after early create failures.
 
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 #[cfg(test)]
@@ -35,6 +34,8 @@ pub(super) struct WakeCreateScope {
     pub(super) deadline: Option<Instant>,
     #[cfg(test)]
     pub(super) probe: Option<Arc<WakeCreateObserver>>,
+    #[cfg(test)]
+    pub(super) prepared: Option<Arc<Mutex<Option<PendingCreateBinding>>>>,
 }
 
 tokio::task_local! {
@@ -869,12 +870,11 @@ pub(crate) async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
     let session_label = session_label.to_owned();
     let mut scope = wake_create_scope();
     // The later archive recheck owns a resource region and may already be bound.
-    let first_archive_probe = create_owner
-        .lock()
-        .is_ok_and(|owner| owner.resource.is_none());
-    if !first_archive_probe {
-        scope.deadline = None;
-    }
+    scope.deadline = scope.deadline.filter(|_| {
+        create_owner
+            .lock()
+            .is_ok_and(|owner| owner.resource.is_none())
+    });
     let archive = Box::pin(async move {
         let result = crate::config::archive_gate::enforce_unarchived_for_spawn(
             &app,

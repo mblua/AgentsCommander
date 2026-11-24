@@ -729,10 +729,6 @@ async fn pending_ids(app: &impl MailboxHost) -> std::collections::HashSet<Uuid> 
         .await
 }
 
-async fn resume_deadline_event(events: &mut WakeCreateEvents, stage: &str) {
-    deadline_event(events, stage).await.1.send(false).unwrap();
-}
-
 #[tokio::test]
 async fn wake_owner_generic_deadline_and_retained_controls() {
     const NAME: &str = "wake_owner_generic_deadline_and_retained_controls";
@@ -810,21 +806,24 @@ async fn exercise_generic_conflict(fixture: &MailboxFixture, wake: &OutboxMessag
         resume.send(false).unwrap();
     }
     let (_, resume) = at_cut(actor.as_mut(), deadline_event(&mut events, refusal)).await;
-    assert_generic_conflict(fixture, &wake.to).await;
     assert_deadline(completes(actor).await, "generic_create");
     resume.send(false).unwrap();
     if bound {
         let awaited = tokio::time::timeout(Duration::from_millis(300), events.recv());
         assert!(awaited.await.is_err(), "bound producer remains owned");
-        assert_eq!(pending_ids(app).await, ids);
+        app.state::<WakeCreateProbe>()
+            .assert_bound_conflict(app, &ids)
+            .await;
         return;
     }
     if archive {
-        resume_deadline_event(&mut events, "archive_exit").await;
+        let (_, resume) = deadline_event(&mut events, "archive_exit").await;
+        resume.send(false).unwrap();
         let settings = app.pty_settings().read().await;
         assert_eq!(settings.archived_project_paths, archived);
     }
-    resume_deadline_event(&mut events, "generic_exit").await;
+    let (_, resume) = deadline_event(&mut events, "generic_exit").await;
+    resume.send(false).unwrap();
     assert_generic_conflict(fixture, &wake.to).await;
     assert!(pending_ids(app).await.is_empty());
 }

@@ -187,12 +187,14 @@ pub(crate) async fn create_session_inner_for_wake<R: tauri::Runtime>(
     request: MailboxSessionCreate<'_>,
     deadline: Option<tokio::time::Instant>,
 ) -> Result<SessionInfo, String> {
+    #[cfg(test)]
+    let probe = app.try_state::<WakeCreateProbe>();
     let scope = admission::WakeCreateScope {
         deadline,
         #[cfg(test)]
-        probe: app
-            .try_state::<WakeCreateProbe>()
-            .map(|probe| probe.observe.clone()),
+        probe: probe.as_ref().map(|probe| probe.observe.clone()),
+        #[cfg(test)]
+        prepared: probe.map(|probe| probe.prepared.clone()),
     };
     let MailboxSessionCreate {
         session_mgr,

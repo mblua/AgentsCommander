@@ -344,8 +344,12 @@ pub(crate) async fn reserve_launch<R: tauri::Runtime>(
 
 #[cfg(test)]
 async fn force_unreadable_create_owner(owner: &Mutex<super::admission::OwnedCreateAdmission>) {
-    let binding = owner.lock().ok().map(|owner| owner.binding.session_id());
-    if super::admission::observe_wake_create("pending_mutex", binding).await {
+    let binding = owner.lock().ok().map(|owner| owner.binding);
+    if let Some(prepared) = super::admission::wake_create_scope().prepared {
+        *prepared.lock().unwrap() = binding;
+    }
+    let id = binding.map(crate::session::manager::PendingCreateBinding::session_id);
+    if super::admission::observe_wake_create("pending_mutex", id).await {
         let unwind = std::panic::catch_unwind(|| {
             let _guard = owner.lock().unwrap();
             panic!("force exact pre-Pending create-owner refusal");
