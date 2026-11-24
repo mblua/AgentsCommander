@@ -226,7 +226,7 @@ fn terminal_snapshot_output_is_absolute_png_create_new() {
     assert!(validate_terminal_snapshot_output_path(&directory.path().join("wrong.txt")).is_err());
 }
 
-// ── #2228 phase 2: named path rules ──
+// ── Named path rules ──
 
 #[test]
 fn verify_directory_reason_names_the_failing_rule() {

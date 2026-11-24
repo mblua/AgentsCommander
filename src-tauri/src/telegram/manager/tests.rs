@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-// ── #2232 phase 4 section 5: the demand registry ──────────────────────
+// ── The demand registry ──────────────────────
 
 /// A reader whose task parks forever, so cancellation is observable and
 /// nothing races the assertions.
@@ -397,7 +397,7 @@ async fn a_repeated_bot_transition_is_not_a_watch_update() {
     );
 }
 
-// ── #3317: the bridge-stop proof of `wait_until_stopped` ──────────────
+// ── The bridge-stop proof of `wait_until_stopped` ──────────────
 
 fn shutdown_of(tasks: Vec<JoinHandle<()>>) -> BridgeShutdown {
     BridgeShutdown {

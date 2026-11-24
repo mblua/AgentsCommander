@@ -504,7 +504,7 @@ pub(crate) fn assignment_write_intent(
     }
 }
 
-/// #1941 - classify a guarded-write error into the wire error vocabulary while
+/// Classify a guarded-write error into the wire error vocabulary while
 /// preserving the original message and paths.
 pub(crate) fn selection_error_code(message: &str) -> &'static str {
     if message.starts_with("stale replica selection") {
@@ -514,7 +514,7 @@ pub(crate) fn selection_error_code(message: &str) -> &'static str {
     } else if message.contains("configLockTimeout") {
         "configLockTimeout"
     } else if message.contains("'tooling' must be a JSON object in the tracked config file") {
-        // #2816 (C3) - the pair's cleanup rejects a malformed TRACKED `tooling`
+        // The pair's cleanup rejects a malformed TRACKED `tooling`
         // before the closure runs, so the pre-C3 `invalid replica selection ...`
         // text no longer reaches here. Same classification, new spelling. The
         // state-side text is deliberately NOT matched: see consequence 4.
@@ -524,7 +524,7 @@ pub(crate) fn selection_error_code(message: &str) -> &'static str {
     }
 }
 
-/// #1941 - count the protected replicas left after an operation. `None` means
+/// Count the protected replicas left after an operation. `None` means
 /// the total cannot be established (incomplete membership or an invalid state),
 /// never a false zero.
 pub(crate) fn refresh_locked_count(enumeration: &ProfileTargetEnumeration) -> Option<usize> {

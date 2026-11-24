@@ -37,7 +37,7 @@ fn issue_2868_project_skills_missing_ordinary_and_file_are_not_clobbered() {
     assert_eq!(std::fs::read_to_string(&source).unwrap(), "OCCUPIED");
 }
 
-/// #1795 `T5`. The four names are asserted as LITERALS and the constant's
+/// `T5`. The four names are asserted as LITERALS and the constant's
 /// length is asserted separately. Iterating `PROJECT_SHARED_DIRS` to build the
 /// expectation would make the oracle move with the constant, so control `C5`
 /// (`"errors"` -> `"error"`) would leave this test green.
@@ -57,7 +57,7 @@ fn create_project_shared_dirs_creates_all_four_and_is_idempotent() {
     }
 }
 
-/// #1795 `T6a`. Same shape as `T5`, on the single room-level name.
+/// `T6a`. Same shape as `T5`, on the single room-level name.
 #[test]
 fn create_room_shared_dir_creates_and_is_idempotent() {
     let temp = tempfile::tempdir().expect("tempdir");
