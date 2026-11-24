@@ -230,8 +230,6 @@ P0-identifier	src/sidebar/components/ProjectPanel.tsx	const [wgCtxMenu, setWgCtx
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	| { kind: "active"; sessionId: string; sessionName: string; wg: AcWorkgroup; replica: AcAgentReplica; exited: boolean; x: number; y: number }
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	| { kind: "inactive"; wg: AcWorkgroup; replica: AcAgentReplica; x: number; y: number }
 P1-comment	src/sidebar/components/ProjectPanel.tsx	// only one menu is ever open). titleEdit pins the raw wg.path + the
-P1-comment	src/sidebar/components/ProjectPanel.tsx	// never menu/wg object identity (positionReplicaCtxMenu rewrites the
-P1-comment	src/sidebar/components/ProjectPanel.tsx	// menu object on every reclamp; store events replace wg objects).
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const [deletingWg, setDeletingWg] = createSignal<AcWorkgroup | null>(null);
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const [workgroupsHeaderCtxMenu, setWorkgroupsHeaderCtxMenu] = createSignal<{ x: number; y: number } | null>(null);
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const wg = deletingWg();
@@ -320,10 +318,8 @@ P0-identifier	src/sidebar/components/ProjectPanel.tsx	const startReplicaTitleEdi
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	const sessionId = resolveLiveWorkgroupSessionId(wg);
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	setTitleDraft(wg.taskTitle ?? "");
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	setTitleEdit({ wgPath: wg.path, sessionId });
-P1-comment	src/sidebar/components/ProjectPanel.tsx	// with zero microtask window - including same-wg-same-session
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	titleEdit()!.wgPath === wg.path &&
 P1-comment	src/sidebar/components/ProjectPanel.tsx	// Close only if the same workgroup's menu is still open (raw path
-P1-comment	src/sidebar/components/ProjectPanel.tsx	// equality - store events replace wg objects, so reference identity
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	if (replicaCtxMenu() && replicaCtxMenu()!.wg.path === target.wgPath) {
 P0-identifier	src/sidebar/components/ProjectPanel.tsx	setWorkgroupsHeaderCtxMenu(null);
 P0-key	src/sidebar/components/ProjectPanel.tsx	const selectedWorkgroupCollapsedKey = projectPanelCollapseKey(proj.path, "selected-workgroup");
