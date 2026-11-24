@@ -23,9 +23,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "paths": {
-      "@shared/*": ["./src/shared/*"],
-      "@sidebar/*": ["./src/sidebar/*"],
-      "@terminal/*": ["./src/terminal/*"]
+      "@shared/*": ["./src/shared/*"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"]

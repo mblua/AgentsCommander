@@ -327,7 +327,7 @@ describe("projectStore", () => {
 
   // The get_settings resolution report drives conflict toasts, fail-
   // closed handling of a malformed report, and actionable active-load status.
-  describe("initFromSettings resolution report (#1077)", () => {
+  describe("initFromSettings resolution report", () => {
     const CONFLICT_ID_A = "a".repeat(64);
     const CONFLICT_ID_B = "b".repeat(64);
 
@@ -527,10 +527,10 @@ describe("projectStore", () => {
 
   // Identity preservation. Object references drive ProjectPanel's
   // reference-keyed <For>s: every reference these methods preserve is a DOM row
-  // NOT disposed/re-created (and a click over it NOT lost). The #552 event
+  // NOT disposed/re-created (and a click over it NOT lost). The badge event
   // patch semantics (normalized-path match, set/clear) moved to
   // replicaVolatileStore — see replica-volatile.test.ts.
-  describe("identity preservation (#748)", () => {
+  describe("identity preservation", () => {
     const WG_1 = `${PROJECT_PATH}\\.ac\\wg-1-team`;
     const COORD_A = `${WG_1}\\__agent_coord-a`;
     const COORD_B = `${PROJECT_PATH}\\.ac\\wg-2-team\\__agent_coord-b`;
@@ -584,7 +584,7 @@ describe("projectStore", () => {
       expect(after.workgroups[1]).toBe(before.workgroups[1]);
     });
 
-    it("a dedup-discarded duplicate load does NOT wipe live volatile overrides (#748 review fix)", async () => {
+    it("a dedup-discarded duplicate load does NOT wipe live volatile overrides (review fix)", async () => {
       await loadProjectWith(twoWorkgroups());
       const before = projectStore.projects;
       // A live event lands after the initial load.
@@ -723,7 +723,7 @@ describe("projectStore", () => {
   // Project removal routes through the dedicated disk-authoritative
   // remove_project command, NOT a whole-object settings save (which under
   // Design S preserves the on-disk list and would no longer remove anything).
-  describe("removeProject (#778)", () => {
+  describe("removeProject", () => {
     it("routes removal through remove_project and never whole-object saves", async () => {
       await loadProjectWith([]);
       expect(projectStore.projects).toHaveLength(1);

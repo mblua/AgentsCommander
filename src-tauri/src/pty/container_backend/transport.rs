@@ -174,7 +174,7 @@ impl ContainerTransportBackend {
             .ok_or_else(|| AppError::SessionNotFound(session_id.to_string()))?;
 
         let session_id_str = session_id.to_string();
-        self.fanout.handle_output(&token, &session_id_str, data);
+        self.fanout.handle_output(&token, &session_id_str, &data);
         Ok(())
     }
 
@@ -323,7 +323,7 @@ impl ContainerTransportBackend {
         Ok(removed.map(|state| resources_from_state(session_id, state)))
     }
 
-    /// #930 F1 - after copy-in, if a concurrent teardown already removed the
+    /// F1 - after copy-in, if a concurrent teardown already removed the
     /// session from the map, that teardown's `remove_copied` ran before the file
     /// physically existed (idempotent no-op), so delete the now-orphaned file
     /// here. The shared `sessions` mutex serializes this check against teardown,
@@ -372,7 +372,7 @@ impl ContainerTransportBackend {
     }
 }
 
-/// #2158 - `try_send` and `try_reserve` failures normalized without their payload.
+/// `try_send` and `try_reserve` failures normalized without their payload.
 enum QueueFailure {
     Full,
     Closed,

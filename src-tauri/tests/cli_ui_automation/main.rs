@@ -4,13 +4,19 @@ use serde_json::{json, Value};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-static TEST_LOCK: Mutex<()> = Mutex::new(());
+/// Each test has its own temp dir, binary copy and config dir, so tests run in
+/// parallel. Only copying a binary and spawning one is serialized: `spawn` forks,
+/// and the child inherits a write descriptor another thread still holds on *its*
+/// copy; exec'ing a binary that any process holds open for writing fails with
+/// `ETXTBSY`. The lock is released before output is collected, so the runs overlap.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+static TMP_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 fn command_for_binary(bin: &Path) -> Command {
     let mut command = Command::new(bin);
@@ -21,8 +27,15 @@ fn command_for_binary(bin: &Path) -> Command {
     command
 }
 
-fn test_lock() -> MutexGuard<'static, ()> {
-    TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+fn spawn_lock() -> MutexGuard<'static, ()> {
+    // A test that panics elsewhere must not disable the guard for the rest.
+    SPAWN_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Spawns under [`spawn_lock`] and releases it before the caller waits.
+fn spawn_child(command: &mut Command) -> std::process::Child {
+    let _guard = spawn_lock();
+    command.spawn().expect("spawn binary")
 }
 
 struct Tmp(PathBuf);
@@ -36,9 +49,10 @@ impl Drop for Tmp {
 impl Tmp {
     fn new(prefix: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "ac-{}-{}-{}",
+            "ac-{}-{}-{}-{}",
             prefix,
             std::process::id(),
+            TMP_SEQ.fetch_add(1, Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())
@@ -55,6 +69,7 @@ impl Tmp {
 fn copy_binary_as(tmp: &Path, name: &str) -> PathBuf {
     let src = Path::new(env!("CARGO_BIN_EXE_agentscommander"));
     let dst = tmp.join(name);
+    let _guard = spawn_lock();
     std::fs::copy(src, &dst).expect("copy binary");
     dst
 }
@@ -76,10 +91,14 @@ fn default_capability_allows_resource_monitor_window() {
 }
 
 fn run(bin: &Path, args: &[&str]) -> (Option<i32>, String, String) {
-    let out = command_for_binary(bin)
-        .args(args)
-        .output()
-        .expect("spawn binary");
+    let out = spawn_child(
+        command_for_binary(bin)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .wait_with_output()
+    .expect("wait binary");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -93,11 +112,15 @@ fn run_with_env(
     env_value: &str,
     args: &[&str],
 ) -> (Option<i32>, String, String) {
-    let out = command_for_binary(bin)
-        .env(env_name, env_value)
-        .args(args)
-        .output()
-        .expect("spawn binary");
+    let out = spawn_child(
+        command_for_binary(bin)
+            .env(env_name, env_value)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .wait_with_output()
+    .expect("wait binary");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -123,14 +146,12 @@ fn run_without_draining_output_until_exit(
     args: &[&str],
     timeout: Duration,
 ) -> (Option<i32>, String, String, bool) {
-    let mut guard = ReapOnDrop(
+    let mut guard = ReapOnDrop(spawn_child(
         command_for_binary(bin)
             .args(args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn binary"),
-    );
+            .stderr(Stdio::piped()),
+    ));
     let child = &mut guard.0;
     let deadline = Instant::now() + timeout;
     loop {
@@ -323,11 +344,11 @@ where
     spawn_request_watcher(automation_dir.join("requests"), move |_path, request| {
         let request_id = request["requestId"].as_str().unwrap().to_string();
         let response = make_response(request);
-        std::fs::write(
-            responses_dir.join(format!("{request_id}.json")),
-            serde_json::to_string(&response).unwrap(),
-        )
-        .unwrap();
+        // Stage then rename, as the app's own writer does: the CLI parses the
+        // response as soon as `<id>.json` exists, so it must never see it half written.
+        let staged = responses_dir.join(format!("{request_id}.tmp"));
+        std::fs::write(&staged, serde_json::to_string(&response).unwrap()).unwrap();
+        std::fs::rename(&staged, responses_dir.join(format!("{request_id}.json"))).unwrap();
     })
 }
 
@@ -372,7 +393,6 @@ fn fake_live_pid() -> Option<u32> {
 
 #[test]
 fn normal_binary_refuses_ui_click_with_json_only_stdout() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-non-testable");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(
@@ -393,7 +413,6 @@ fn normal_binary_refuses_ui_click_with_json_only_stdout() {
 
 #[test]
 fn normal_binary_refuses_ui_context_click_with_json_only_stdout() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-context-click-non-testable");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(
@@ -414,7 +433,6 @@ fn normal_binary_refuses_ui_context_click_with_json_only_stdout() {
 
 #[test]
 fn normal_binary_refuses_ui_terminal_with_bounded_json_and_silent_stderr() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-terminal-non-testable");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(
@@ -436,7 +454,6 @@ fn normal_binary_refuses_ui_terminal_with_bounded_json_and_silent_stderr() {
 
 #[test]
 fn fake_response_makes_ui_terminal_succeed_with_exact_request_and_target() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -535,7 +552,6 @@ fn fake_response_makes_ui_terminal_succeed_with_exact_request_and_target() {
 
 #[test]
 fn ui_terminal_invalid_session_and_operation_create_no_request_file() {
-    let _guard = test_lock();
     for (label, session_id, operation, expected) in [
         ("session", "", "query", "invalid_terminal_session_id"),
         (
@@ -571,7 +587,6 @@ fn ui_terminal_invalid_session_and_operation_create_no_request_file() {
 
 #[test]
 fn ui_terminal_passes_frontend_failures_through_as_bounded_json() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -622,7 +637,6 @@ fn ui_terminal_passes_frontend_failures_through_as_bounded_json() {
 
 #[test]
 fn ui_terminal_timeout_is_bounded_and_cleans_the_request() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -658,7 +672,6 @@ fn ui_terminal_timeout_is_bounded_and_cleans_the_request() {
 
 #[test]
 fn workgroup_binary_refuses_ui_click() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-workgroup-refuse");
     let bin = copy_binary_as(tmp.path(), "agentscommander_wg1-dev-team.exe");
     let (code, stdout, stderr) = run(
@@ -681,7 +694,6 @@ fn workgroup_binary_refuses_ui_click() {
 
 #[test]
 fn normal_gui_binary_refuses_ui_automation_flag() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-gui-flag-refuse");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run(&bin, &["--app", "--ui-automation"]);
@@ -695,7 +707,6 @@ fn normal_gui_binary_refuses_ui_automation_flag() {
 
 #[test]
 fn normal_gui_binary_refuses_ui_automation_env() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-gui-env-refuse");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run_with_env(&bin, "AC_UI_AUTOMATION", "1", &[]);
@@ -709,7 +720,6 @@ fn normal_gui_binary_refuses_ui_automation_env() {
 
 #[test]
 fn ui_automation_env_does_not_affect_cli_subcommands() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-env-cli-subcommand");
     let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
     let (code, stdout, stderr) = run_with_env(&bin, "AC_UI_AUTOMATION", "1", &["list-sessions"]);
@@ -723,7 +733,6 @@ fn ui_automation_env_does_not_affect_cli_subcommands() {
 
 #[test]
 fn missing_session_file_reports_automation_session_missing() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-missing-session");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     let (code, stdout, stderr) = run(
@@ -743,7 +752,6 @@ fn missing_session_file_reports_automation_session_missing() {
 
 #[test]
 fn dead_session_pid_reports_stale_session() {
-    let _guard = test_lock();
     let tmp = Tmp::new("ui-stale-session");
     let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
     write_session(&bin, u32::MAX, &["main"]);
@@ -764,7 +772,6 @@ fn dead_session_pid_reports_stale_session() {
 
 #[test]
 fn fake_response_makes_ui_query_succeed() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;
@@ -822,7 +829,6 @@ fn fake_response_makes_ui_query_succeed() {
 
 #[test]
 fn fake_response_makes_ui_context_click_succeed() {
-    let _guard = test_lock();
     let Some(pid) = fake_live_pid() else {
         eprintln!("skip: no fake live pid available");
         return;

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Assembles the Windows portable zip asset, for issue #1589.
+// Assembles the Windows portable zip asset.
 //
 // The published raw binary is named agentscommander-windows-x86_64.exe so
 // npm/install.js can resolve it by URL. That name is NOT safe to run as-is:

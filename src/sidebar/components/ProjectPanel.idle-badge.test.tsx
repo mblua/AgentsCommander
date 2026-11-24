@@ -62,7 +62,7 @@ function coordDiscovery(coord: Partial<AcAgentReplica>) {
   });
 }
 
-describe("ProjectPanel coordinator idle badge (#580 XOR gate + conditional tooltip)", () => {
+describe("ProjectPanel coordinator idle badge (XOR gate + conditional tooltip)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

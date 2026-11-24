@@ -334,9 +334,9 @@ const ActionBar: Component = () => {
           >
             &#x1F3E0;
           </button>
-          {/* #3367 — native window over the pane; desktop app only. */}
+          {/* Native window over the pane; desktop app only. */}
           <Show when={!isBrowser}>
-          {/* #4751 — opt-in via webBrowserEnabled in settings.json; off by default. */}
+          {/* Opt-in via webBrowserEnabled in settings.json; off by default. */}
           <Show when={settingsStore.current?.webBrowserEnabled === true}>
             <button
               class={`toolbar-gear-btn web-browser-toggle-btn ${activeClass(centralViewStore.isBrowser)}`}
@@ -351,8 +351,8 @@ const ActionBar: Component = () => {
               WWW
             </button>
           </Show>
-            {/* #3532 — context history in the central pane; desktop app only. */}
-            {/* #4049 — only while recording is on; hiding never closes an open pane. */}
+            {/* Context history in the central pane; desktop app only. */}
+            {/* Only while recording is on; hiding never closes an open pane. */}
             <Show when={settingsStore.current?.contextHistoryEnabled === true}>
               <button
                 class={`toolbar-gear-btn ${activeClass(centralViewStore.isContextHistory)}`}
@@ -465,6 +465,10 @@ const ActionBar: Component = () => {
       <Show when={showBrowserCreateProjectNotice()}>
         <div
           class="modal-overlay"
+          role="none"
+          onClick={(e) => {
+            if (e.target !== e.currentTarget) e.stopPropagation();
+          }}
           data-ac-testid="project.browserCreateNotice.overlay"
           data-ac-role="overlay"
         >
@@ -474,7 +478,6 @@ const ActionBar: Component = () => {
             aria-modal="true"
             aria-labelledby="projectBrowserCreateNoticeTitle"
             style={{ "max-width": "380px" }}
-            onClick={(e) => e.stopPropagation()}
             data-ac-testid="project.browserCreateNotice.dialog"
             data-ac-role="dialog"
           >
@@ -505,12 +508,15 @@ const ActionBar: Component = () => {
       <Show when={confirmPath()}>
         <div
           class="confirm-overlay"
+          role="none"
+          onClick={(e) => {
+            if (e.target !== e.currentTarget) e.stopPropagation();
+          }}
           data-ac-testid="project.createConfirm.overlay"
           data-ac-role="overlay"
         >
           <div
             class="confirm-dialog"
-            onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
             data-ac-testid="project.createConfirm.dialog"

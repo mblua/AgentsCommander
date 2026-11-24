@@ -204,7 +204,7 @@ fn retain_swept_paths_evicts_dropped_paths_from_both_maps() {
     assert_eq!(remember_dirty(dropped, None, &owner), None);
 }
 
-// --- #1078: cached-origin parser semantics ---
+// --- Cached-origin parser semantics ---
 
 fn parse(stdout: &str) -> GitStatus {
     parse_status_porcelain_branch(stdout).expect("header should parse")
@@ -332,7 +332,7 @@ fn parse_missing_or_garbage_first_header_returns_none() {
     );
 }
 
-// --- #1078: real temporary repositories ---
+// --- Real temporary repositories ---
 
 struct TestRepository {
     repo: std::path::PathBuf,
@@ -570,7 +570,7 @@ async fn detect_git_status_handles_cached_history_matrix() {
     assert!(detached.dirty, "detached HEAD is red");
 }
 
-// --- #1028: remember_dirty ---
+// --- Remember_dirty ---
 // Process-global state: use unique-per-test path strings to avoid collisions,
 // exactly as `note_timeout_counts_per_path` above documents.
 

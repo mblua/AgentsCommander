@@ -67,7 +67,7 @@ export async function requestCoordinatorCloseById(id: string): Promise<void> {
         // webview's keyboard shortcut): fall back to closing JUST the coordinator
         // (plain destroy, no cascade) so the user is never left with a silent
         // no-op. The backend refused to cascade busy members without confirmation;
-        // destroying only the coordinator restores the pre-#588 behavior here.
+        // destroying only the coordinator restores the earlier behavior here.
         await SessionAPI.destroy(id);
       }
     }

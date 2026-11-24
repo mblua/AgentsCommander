@@ -22,7 +22,7 @@ fn feed(fanout: &SessionIoFanout, id: Uuid, chunk: &[u8]) {
     let token = fanout
         .registration_token_for_session(id)
         .expect("registered watcher fixture");
-    fanout.handle_output(&token, &id.to_string(), chunk.to_vec());
+    fanout.handle_output(&token, &id.to_string(), chunk);
 }
 
 /// Section 7.3: the three numbers recorded in this module's doc comment.

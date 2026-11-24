@@ -8,7 +8,7 @@
   background: var(--terminal-bg, #0a0a0f);
 }
 
-/* #840 — sidebar on the right (default). row-reverse flips the fixed DOM order
+/* Sidebar on the right (default). row-reverse flips the fixed DOM order
    (sidebar | divider | terminal) so the sidebar renders against the right edge
    and the terminal fills the left, without reordering the markup. */
 .browser-layout.browser-sidebar-right {
@@ -86,11 +86,11 @@
   height: 100%;
   min-width: 0;
   overflow: hidden;
-  /* #840 — positioning context for the sidebar-side toggle. */
+  /* Positioning context for the sidebar-side toggle. */
   position: relative;
 }
 
-/* #840 — compact control to move the sidebar left/right in the web view
+/* Compact control to move the sidebar left/right in the web view
    (no desktop titlebar here to host the existing preset). Pinned to the
    terminal pane's top-right corner so it never overlaps the sidebar ActionBar,
    which spans the sidebar's full top edge. */
@@ -169,7 +169,7 @@
 
 /* Mobile: stack vertically with horizontal divider */
 @media (max-width: 600px) {
-  /* #840 — the side preference is a horizontal concept; on narrow screens both
+  /* The side preference is a horizontal concept; on narrow screens both
      sides collapse to the same vertical stack (sidebar on top). Listing the
      higher-specificity right-side selector here keeps row-reverse from leaking
      into the stacked layout. */
@@ -207,7 +207,7 @@
   }
 }
 
-/* #2744 - these two read --text-muted and --text-primary, undefined and left
+/* These two read --text-muted and --text-primary, undefined and left
    undefined because spec-board.css reads both with no fallback at all. */
 html.light-theme .browser-side-toggle {
   color: #5a6172;

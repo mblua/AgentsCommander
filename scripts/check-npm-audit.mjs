@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// npm audit PR gate for issue #4490: fails only on advisories not in the baseline.
+// npm audit PR gate: fails only on advisories not in the baseline.
 //
 // Runs `npm audit` over every dependency type and compares each advisory key
 // (`<GHSA-id>@<package>`) with the reviewed npm-audit.baseline.json. A key that
@@ -234,7 +234,7 @@ export function runAudit() {
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
-// --- self-test (§6 of the #4490 plan): in-memory only, never spawns npm ----------------
+// --- self-test (§6 of the npm-audit plan): in-memory only, never spawns npm ----------------
 
 const GHSA = 'https://github.com/advisories/';
 const advisory = (id, name, severity) => ({ url: GHSA + id, name, severity });

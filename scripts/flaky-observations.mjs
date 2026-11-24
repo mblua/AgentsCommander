@@ -1,4 +1,4 @@
-// Flaky-test observation records (#4527). Turns one CI test report into a
+// Flaky-test observation records. Turns one CI test report into a
 // JSONL record: a header line, then one {test_id, outcome} line per test.
 // Outcomes are pass | fail | skip | not_run. Anything that is not a complete,
 // trusted report is written as not_run, never as pass.

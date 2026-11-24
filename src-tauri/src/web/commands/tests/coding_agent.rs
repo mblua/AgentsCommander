@@ -407,4 +407,4 @@ async fn apply_coding_agent_profile_selection_web_dispatch_broadcasts() {
     assert_eq!(event["payload"]["updatedCount"], json!(1));
 }
 
-// ── #1941 scoped selection-lock transport parity ────────────────────
+// ── Scoped selection-lock transport parity ────────────────────

@@ -596,7 +596,7 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
-  it("does not match an exited replica by stale waiting/pending flags (#689)", async () => {
+  it("does not match an exited replica by stale waiting/pending flags", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve("discover_project", projectDiscovery());
@@ -829,7 +829,7 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
-  it("matches an agent row by its coding-agent badge resolved from agentId, per row (#515)", async () => {
+  it("matches an agent row by its coding-agent badge resolved from agentId, per row", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve(
@@ -907,7 +907,7 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
-  it("matches an agent row by its visible profile letter when the meta badge is shown (#515)", async () => {
+  it("matches an agent row by its visible profile letter when the meta badge is shown", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve(
@@ -962,7 +962,7 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
-  it("matches a coordinator quick-access row by its visible task title (#515)", async () => {
+  it("matches a coordinator quick-access row by its visible task title", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve(
@@ -1010,7 +1010,7 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
-  it("matches a shut-down replica by its persisted Coding Agent label and Profile letter (#733/#515)", async () => {
+  it("matches a shut-down replica by its persisted Coding Agent label and Profile letter", async () => {
     // One change makes a gray replica show its persisted Coding Agent + Profile badges;
     // another requires the filter to match what is visible. Both rows are dormant
     // members (no session): dev-webpage-ui carries a persisted codex/Z, dev-rust

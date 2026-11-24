@@ -69,7 +69,7 @@ fn fanout_characterization_preserves_raw_order_and_ui_is_last() {
     assert!(fanout.take_trace_for_test().is_empty());
 
     let bytes = b"characterized raw bytes".to_vec();
-    fanout.handle_output(&token, &id.to_string(), bytes.clone());
+    fanout.handle_output(&token, &id.to_string(), &bytes);
 
     assert_eq!(
         fanout.take_trace_for_test(),
@@ -137,7 +137,7 @@ fn t12_handle_output_applies_the_burst_filter() {
     detector.set_auto_close_ages_for_test(id, Duration::from_mins(30), Duration::from_mins(31));
     detector.set_pty_input_ready_for_test(id);
 
-    fanout.handle_output(&token, &id.to_string(), vec![b'a'; 64]);
+    fanout.handle_output(&token, &id.to_string(), &[b'a'; 64]);
     assert_eq!(busy_calls.load(Ordering::SeqCst), 0);
     assert!(
         detector.silence_age(id).unwrap() >= Duration::from_mins(30),
@@ -156,7 +156,7 @@ fn t12_handle_output_applies_the_burst_filter() {
         Duration::from_mins(31),
     );
     detector.set_pty_input_ready_for_test(control_id);
-    fanout.handle_output(&control_token, &control_id.to_string(), vec![b'a'; 1024]);
+    fanout.handle_output(&control_token, &control_id.to_string(), &[b'a'; 1024]);
     assert_eq!(busy_calls.load(Ordering::SeqCst), 1);
     assert!(detector.silence_age(control_id).unwrap() < Duration::from_secs(1));
 }
@@ -204,7 +204,7 @@ fn attachments_are_counted_by_window_label() {
     );
 
     fanout.detach_terminal_output(id, SECOND_WINDOW);
-    fanout.handle_output(&token, &id.to_string(), b"still watched".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"still watched");
     flush(&fanout, id);
     let emitted = events(&sink);
     assert_eq!(emitted.len(), 1);
@@ -212,7 +212,7 @@ fn attachments_are_counted_by_window_label() {
 
     fanout.detach_terminal_output(id, WINDOW);
     assert!(fanout.attached_labels_for_test(id).is_empty());
-    fanout.handle_output(&token, &id.to_string(), b"unwatched".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"unwatched");
     flush(&fanout, id);
     assert_eq!(events(&sink).len(), 1);
 }
@@ -232,8 +232,8 @@ fn two_windows_on_two_sessions_both_emit() {
 
     attach(&fanout, a, WINDOW);
     attach(&fanout, b, SECOND_WINDOW);
-    fanout.handle_output(&token_a, &a.to_string(), b"from a".to_vec());
-    fanout.handle_output(&token_b, &b.to_string(), b"from b".to_vec());
+    fanout.handle_output(&token_a, &a.to_string(), b"from a");
+    fanout.handle_output(&token_b, &b.to_string(), b"from b");
     flush(&fanout, a);
     flush(&fanout, b);
 
@@ -260,7 +260,7 @@ fn only_attached_sessions_emit_and_sequences_stay_monotonic() {
 
     attach(&fanout, watched, WINDOW);
     for chunk in [b"one".as_slice(), b"two".as_slice(), b"three".as_slice()] {
-        fanout.handle_output(&watched_token, &watched.to_string(), chunk.to_vec());
+        fanout.handle_output(&watched_token, &watched.to_string(), chunk);
         flush(&fanout, watched);
     }
     let emitted = events(&watched_sink);
@@ -276,7 +276,7 @@ fn only_attached_sessions_emit_and_sequences_stay_monotonic() {
         ]
     );
 
-    fanout.handle_output(&hidden_token, &hidden.to_string(), b"unseen".to_vec());
+    fanout.handle_output(&hidden_token, &hidden.to_string(), b"unseen");
     flush(&fanout, hidden);
     assert!(events(&hidden_sink).is_empty());
     assert_eq!(fanout.pending_output_bytes_for_test(hidden), None);
@@ -302,7 +302,7 @@ fn detach_is_idempotent_and_never_crosses_windows() {
     fanout.detach_terminal_output(b, SECOND_WINDOW);
 
     assert_eq!(fanout.attached_labels_for_test(a), vec![WINDOW.to_string()]);
-    fanout.handle_output(&token_a, &a.to_string(), b"a keeps delivering".to_vec());
+    fanout.handle_output(&token_a, &a.to_string(), b"a keeps delivering");
     flush(&fanout, a);
     assert_eq!(events(&sink).len(), 1);
 }
@@ -326,7 +326,7 @@ fn an_unavailable_parser_still_attaches_and_emits_unsequenced() {
         )
         .expect("register one-cell session");
     // A wide grapheme in a one-column grid removes this session's parser for good.
-    fanout.handle_output(&token, &id.to_string(), "界".as_bytes().to_vec());
+    fanout.handle_output(&token, &id.to_string(), "界".as_bytes());
 
     assert!(matches!(
         fanout.activate_terminal_output(id, WINDOW, true),
@@ -337,7 +337,7 @@ fn an_unavailable_parser_still_attaches_and_emits_unsequenced() {
         vec![WINDOW.to_string()]
     );
 
-    fanout.handle_output(&token, &id.to_string(), b"after the fault".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"after the fault");
     flush(&fanout, id);
     let emitted = events(&sink);
     assert_eq!(emitted.len(), 1);
@@ -363,7 +363,7 @@ fn destroying_a_session_releases_its_attachments_and_pending_bytes() {
     let token = fanout.registration_token_for_test(id);
 
     attach(&fanout, id, WINDOW);
-    fanout.handle_output(&token, &id.to_string(), b"pending".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"pending");
     assert_eq!(
         fanout.pending_output_bytes_for_test(id),
         Some(b"pending".len())
@@ -373,7 +373,7 @@ fn destroying_a_session_releases_its_attachments_and_pending_bytes() {
     assert!(fanout.attached_labels_for_test(id).is_empty());
     assert_eq!(fanout.pending_output_bytes_for_test(id), None);
     flush(&fanout, id);
-    fanout.handle_output(&token, &id.to_string(), b"after destroy".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"after destroy");
     assert!(events(&sink).is_empty());
 }
 
@@ -401,8 +401,8 @@ fn destroying_a_window_releases_only_its_own_attachments() {
     );
     assert!(fanout.attached_labels_for_test(solo).is_empty());
 
-    fanout.handle_output(&shared_token, &shared.to_string(), b"survives".to_vec());
-    fanout.handle_output(&solo_token, &solo.to_string(), b"silenced".to_vec());
+    fanout.handle_output(&shared_token, &shared.to_string(), b"survives");
+    fanout.handle_output(&solo_token, &solo.to_string(), b"silenced");
     flush(&fanout, shared);
     flush(&fanout, solo);
     assert_eq!(events(&shared_sink).len(), 1);
@@ -420,7 +420,7 @@ fn a_flush_after_detach_emits_nothing_and_drops_the_bytes() {
     let token = fanout.registration_token_for_test(id);
 
     attach(&fanout, id, WINDOW);
-    fanout.handle_output(&token, &id.to_string(), b"never delivered".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"never delivered");
     fanout.detach_terminal_output(id, WINDOW);
     assert_eq!(fanout.pending_output_bytes_for_test(id), None);
 
@@ -442,7 +442,7 @@ fn attach_cuts_the_batch_exactly_at_the_snapshot_boundary() {
     let token = fanout.registration_token_for_test(id);
 
     attach(&fanout, id, WINDOW);
-    fanout.handle_output(&token, &id.to_string(), b"before\r\n".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"before\r\n");
 
     let snapshot = attach(&fanout, id, SECOND_WINDOW).expect("snapshot on attach");
     assert_eq!(snapshot.sequence, 1);
@@ -457,7 +457,7 @@ fn attach_cuts_the_batch_exactly_at_the_snapshot_boundary() {
     assert_eq!(seeded[0].1, b"before\r\n");
     assert_eq!(seeded[0].2, Some(1));
 
-    fanout.handle_output(&token, &id.to_string(), b"after".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"after");
     flush(&fanout, id);
     let emitted = events(&sink);
     assert_eq!(emitted.len(), 2);
@@ -473,7 +473,7 @@ fn attach_cuts_the_batch_exactly_at_the_snapshot_boundary() {
 /// follow A=24x80, desync B=50x132 are pairwise distinct, each asymmetric, and no pair is
 /// a transposition of another. With A != R0, an implementation that never writes
 /// `conpty_size` converges onto R0 and the final grid assertion turns red; asymmetric,
-/// non-transposed grids make a rows/cols argument swap fail loudly (the #973 bug class).
+/// non-transposed grids make a rows/cols argument swap fail loudly (the bug class).
 #[test]
 fn a_grid_divergence_yields_no_seed_and_the_next_attach_seeds_clean() {
     let fanout = fanout();
@@ -483,7 +483,7 @@ fn a_grid_divergence_yields_no_seed_and_the_next_attach_seeds_clean() {
 
     // One follow the ConPTY took: parser and record both move to A = 24 rows x 80 cols.
     fanout.resize_screen_and_broadcast(id, 80, 24);
-    fanout.handle_output(&token, &id.to_string(), b"seed me\r\n".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"seed me\r\n");
 
     // The divergence class: the parser grid moves, the record does not.
     fanout.desync_screen_size_for_test(id, 50, 132);
@@ -495,7 +495,7 @@ fn a_grid_divergence_yields_no_seed_and_the_next_attach_seeds_clean() {
     assert_eq!(fanout.pending_output_bytes_for_test(id), None);
 
     // The seedless window still attached: live bytes keep flowing to it, sequenced.
-    fanout.handle_output(&token, &id.to_string(), b"after divergence".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"after divergence");
     flush(&fanout, id);
     let emitted = events(&sink);
     assert_eq!(
@@ -529,13 +529,13 @@ fn a_parser_fault_flushes_at_the_transition_and_unsequences_everything_after() {
     let token = fanout.registration_token_for_test(id);
 
     attach(&fanout, id, WINDOW);
-    fanout.handle_output(&token, &id.to_string(), b"ok".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"ok");
     // One step from overflow, so the next chunk cannot be sequenced and the parser goes
     // `Unavailable` for good.
     fanout.exhaust_output_sequence_for_test(id);
-    fanout.handle_output(&token, &id.to_string(), b"faulting".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"faulting");
     flush(&fanout, id);
-    fanout.handle_output(&token, &id.to_string(), b"later".to_vec());
+    fanout.handle_output(&token, &id.to_string(), b"later");
     flush(&fanout, id);
 
     let emitted = events(&sink);
@@ -568,7 +568,7 @@ fn the_batch_flushes_on_the_reader_thread_at_its_ceiling() {
 
     let chunk = vec![b'.'; 4_096];
     for _ in 0..(UI_BATCH_LIMIT_BYTES / chunk.len()) {
-        fanout.handle_output(&token, &id.to_string(), chunk.clone());
+        fanout.handle_output(&token, &id.to_string(), &chunk);
     }
 
     let emitted = events(&sink);
@@ -705,7 +705,7 @@ fn retired_reader_tokens_cannot_target_a_same_uuid_replacement() {
     assert!(fanout.observe_raw_read_for_reader(&new_token, 1, Instant::now()));
     assert_eq!(notices.lock().unwrap().len(), 1);
 
-    fanout.handle_output(&old_token, &id.to_string(), b"old output".to_vec());
+    fanout.handle_output(&old_token, &id.to_string(), b"old output");
     assert_eq!(
         notices.lock().unwrap().len(),
         1,
@@ -719,7 +719,7 @@ fn retired_reader_tokens_cannot_target_a_same_uuid_replacement() {
     assert!(events(&old_sink).is_empty());
 
     attach(&fanout, id, WINDOW);
-    fanout.handle_output(&new_token, &id.to_string(), b"replacement output".to_vec());
+    fanout.handle_output(&new_token, &id.to_string(), b"replacement output");
     flush(&fanout, id);
     let emitted = events(&new_sink_events);
     assert_eq!(emitted.len(), 1);

@@ -67,7 +67,7 @@ async function mount() {
   return { fake, rendered };
 }
 
-describe("ProjectPanel Agent Matrix row notice (#2046)", () => {
+describe("ProjectPanel Agent Matrix row notice", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

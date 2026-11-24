@@ -272,7 +272,7 @@ fn notice_for(transition: &RemoteTransition) -> Result<InternalSystemNotice, Str
         transition.nwo.clone(),
         transition.branch.clone(),
         sha7,
-        // #2129 - branch-stale text only. CI kinds carry an empty base branch,
+        // Branch-stale text only. CI kinds carry an empty base branch,
         // which `for_remote_activity` requires to stay empty (mailbox.rs:319).
         if matches!(kind, RemoteNoticeKind::BranchStale) {
             base_branch_display(&transition.branch, &transition.base_branch)

@@ -380,7 +380,7 @@ describe("ActionBar selected workgroup visibility toggle", () => {
   });
 });
 
-describe("ActionBar helpers (#2611)", () => {
+describe("ActionBar helpers", () => {
   type Monitor = Parameters<typeof computeResourceBadgeState>[1];
   function snap(overrides: Record<string, unknown> = {}): Monitor {
     return {
@@ -427,7 +427,7 @@ describe("ActionBar helpers (#2611)", () => {
 });
 
 
-describe("ActionBar pending mount cleanup (#4441)", () => {
+describe("ActionBar pending mount cleanup", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -470,7 +470,7 @@ describe("ActionBar pending mount cleanup (#4441)", () => {
   });
 });
 
-describe("ActionBar theme toggle document class (#4499)", () => {
+describe("ActionBar theme toggle document class", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     document.documentElement.classList.remove("light-theme");
@@ -521,7 +521,7 @@ describe("ActionBar theme toggle document class (#4499)", () => {
   });
 });
 
-describe("ActionBar toggle button labels (#4693)", () => {
+describe("ActionBar toggle button labels", () => {
   afterEach(async () => {
     const { homeStore } = await import("../../main/stores/home");
     (homeStore as { visible: boolean }).visible = false;
@@ -583,7 +583,7 @@ describe("ActionBar toggle button labels (#4693)", () => {
   });
 });
 
-describe("ActionBar sound sink alert (#4843)", () => {
+describe("ActionBar sound sink alert", () => {
   const ALERT_LABEL = "Sound alerts cannot play. Click for details and to mute.";
   const MESSAGE =
     "Sound alerts cannot play: the GStreamer element autoaudiosink is missing. Install GStreamer good plugins, then restart AgentsCommander:\n" +

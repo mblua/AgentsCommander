@@ -141,7 +141,7 @@ function resolveSidebarTransport(fake: FakeTransport, projectPaths: string[]): v
   }));
 }
 
-describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
+describe("SidebarApp primary-project catalog invalidation", () => {
   let cleanupDom: (() => void) | null = null;
   let fake!: FakeTransport;
   let setPrimary!: MockInstance<typeof codingAgentsStore.setPrimaryProject>;

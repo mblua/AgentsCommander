@@ -66,7 +66,7 @@ fn paint(fanout: &SessionIoFanout, id: Uuid) {
     let token = fanout
         .register_session_for_test(id, IdleTuning::DEFAULT, 30, 120)
         .expect("register test session");
-    fanout.handle_output(&token, &id.to_string(), ROW.as_bytes().to_vec());
+    fanout.handle_output(&token, &id.to_string(), ROW.as_bytes());
 }
 
 /// Kill the child and wait until it is REALLY gone - which is NOT what
@@ -178,7 +178,7 @@ fn a_live_child_with_no_parser_is_unavailable_not_over() {
     );
 }
 
-/// #1171, 9.1.4 (local half) - an unknown id is `Missing` here, where the container
+/// 9.1.4 (local half) - an unknown id is `Missing` here, where the container
 /// backend answers `Gone` to the identical question.
 ///
 /// Asserted against the fanout call the `screen_rows_since` override delegates to, and not

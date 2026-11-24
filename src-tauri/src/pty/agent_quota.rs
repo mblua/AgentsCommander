@@ -224,7 +224,7 @@ impl AgentQuotaEngine {
     }
 
     /// Stop sampling a session. Idempotent. Emits nothing: the account value outlives
-    /// the terminal (#2566 D4).
+    /// the terminal (D4).
     pub fn retire_session(&self, id: Uuid) {
         let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
         self.registered
@@ -241,7 +241,7 @@ impl AgentQuotaEngine {
             .contains_key(&id)
     }
 
-    /// #2566 - every value last emitted, by agent id. A `None` value and an absent key both
+    /// Every value last emitted, by agent id. A `None` value and an absent key both
     /// mean unavailable.
     pub fn published(&self) -> HashMap<String, Option<u8>> {
         self.published
@@ -281,7 +281,7 @@ impl AgentQuotaEngine {
     }
 
     /// Drop every cached source whose agent is not configured, so the cache is bounded by
-    /// the configured agent set rather than by every agent ever seen. #2566 - keyed by
+    /// the configured agent set rather than by every agent ever seen. Keyed by
     /// configured agents, not registered sessions: closing a terminal must not discard a
     /// pattern other sessions and the published value still need.
     fn prune_resolved(&self, configured: &HashMap<String, AgentQuotaSource>) {
@@ -427,7 +427,7 @@ impl AgentQuotaEngine {
     }
 }
 
-/// #2482 - the engine's own fakes, shared with the call-site tests in
+/// The engine's own fakes, shared with the call-site tests in
 /// `commands::session` and `commands::pty` (phase 2). `#[cfg(test)]`, so nothing
 /// here is compiled into a shipped binary; `pub(crate)`, because the two call
 /// sites that need an engine live in other modules and this file is frozen once

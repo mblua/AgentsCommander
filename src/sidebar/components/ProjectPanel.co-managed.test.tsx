@@ -195,7 +195,7 @@ async function mountWithReason(reason: OffReason, config?: CoManagedConfig) {
   return mounted;
 }
 
-describe("ProjectPanel Co-managed menu entry (#2232 phase 9, #2408)", () => {
+describe("ProjectPanel Co-managed menu entry (phase 9)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

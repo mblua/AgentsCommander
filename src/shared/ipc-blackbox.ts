@@ -28,6 +28,9 @@
  * residual on every record block rather than closing it by wrapping
  * `window.__TAURI_INTERNALS__.invoke`, which would put a diagnostic in the path
  * of every IPC call the app makes.
+ *
+ * ACTIVATION (#1707). `main.tsx` passes `BlackBoxAPI.enabled`, the backend's boot snapshot of
+ * `ipcBlackBoxEnabled`. Off (the default) leaves the instrument inert; the harvest still runs.
  */
 
 const SCHEMA_VERSION = 1;
@@ -41,10 +44,11 @@ const CURRENT_PREFIX = "ac.ipc.bb.cur.";
 const ROTATED_PREFIX = "ac.ipc.bb.prev.";
 const SCAN_PREFIX = "ac.ipc.bb.";
 
-/** Four commands legitimately pend far past the 5 s threshold. Three are
+/** Six commands legitimately pend far past the 5 s threshold. Five are
  *  `rfd::AsyncFileDialog` file pickers (`agent_creator.rs:7-19`,
- *  `spec_board.rs:246-254`, `spec_board.rs:332`) that wait on the user; the
- *  fourth, `quit_application`, may await gate consent, a slow save or Force.
+ *  `spec_board.rs:246-254`, `spec_board.rs:332`, `coding_agents_transfer.rs`)
+ *  that wait on the user; the sixth, `quit_application`, may await gate
+ *  consent, a slow save or Force.
  *  They stay in `pending` with their real `ageMs` so the record is complete,
  *  but they are never marked `overdue` and never counted in `overdueTotal`, so
  *  the 5 s sweeper does not report a modal picker or a consenting quit as a
@@ -53,6 +57,8 @@ const NEVER_OVERDUE = new Set([
   "pick_folder",
   "spec_board_pick_open",
   "spec_board_pick_save",
+  "coding_agents_export_pick_save",
+  "coding_agents_import_pick_open",
   "quit_application",
 ]);
 
@@ -108,6 +114,10 @@ let lastSentAtMs = 0;       // stamped by noteInvokeStart, BEFORE the call reach
  *  deterministic. */
 let installed: Promise<void> | null = null;
 let teardown: Array<() => void> = [];
+/** #1707. `true` until the install decides, so a call issued before the
+ *  decision is registered exactly as before. An "off" decision clears the
+ *  registry and sets it `false` for the rest of the run. */
+let recording = true;
 
 /**
  * Assign an id to an outgoing call and stamp the send-side evidence.
@@ -120,11 +130,12 @@ let teardown: Array<() => void> = [];
  * the silence probe is emitted unscoped to every window and a probe alone
  * proves only that RECEIVE worked.
  *
- * Always active, whether or not `installIpcBlackBox` ran: a call issued before
- * install is still in the registry, and a test that never installs simply never
- * writes storage. Pure in-memory, no I/O.
+ * Active until the install decides and, after that, only when the black box is
+ * enabled. When disabled it returns `0` after one boolean check;
+ * `noteInvokeSettle(0)` then misses the map. Pure in-memory, no I/O.
  */
 export function noteInvokeStart(cmd: string): number {
+  if (!recording) return 0;
   const now = Date.now();
   const id = nextId++;
   pending.set(id, { cmd, startedAtMs: now });
@@ -156,6 +167,7 @@ export function noteInvokeSettle(id: number): void {
 
 /** The backend -> frontend liveness leg. `pty_output` is what keeps it warm. */
 export function noteEvent(name: string): void {
+  if (!recording) return;
   lastEventAtMs = Date.now();
   lastEventName = name;
 }
@@ -250,17 +262,31 @@ function tick(): void {
 /**
  * Idempotent in the STORED-PROMISE form: a second call, including the one
  * inside `harvestIpcBlackBox`, awaits the first install rather than starting a
- * second one or returning early. Never rejects: every step is individually
- * try/catch-ed.
+ * second one or returning early. The on/off decision is made once per page
+ * load by the first caller's `readEnabled`; a later argument is ignored. Never
+ * rejects: every step is individually try/catch-ed.
  */
-export function installIpcBlackBox(): Promise<void> {
+export function installIpcBlackBox(readEnabled: () => Promise<boolean>): Promise<void> {
   if (installed) return installed;
-  installed = runInstall();
+  installed = runInstall(readEnabled);
   return installed;
 }
 
-async function runInstall(): Promise<void> {
+async function runInstall(readEnabled: () => Promise<boolean>): Promise<void> {
   startedAtMs = Date.now();
+
+  let enabled = false;
+  try {
+    enabled = (await readEnabled()) === true;
+  } catch {
+    /* old backend, browser client or IPC failure - stay inert */
+  }
+  if (!enabled) {
+    recording = false;
+    pending = new Map();
+    perCommand = new Map();
+    return;
+  }
 
   try {
     const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
@@ -390,8 +416,9 @@ async function runInstall(): Promise<void> {
  * Hand every OTHER window's stored record to `send` and delete exactly the keys
  * it asks for.
  *
- * Step 0 - awaiting the install - is what makes the payload deterministic: this
- * window's own key is resolved and already rotated by the time the scan runs.
+ * Step 0 awaits the install started by `main.tsx`, so when enabled this window's
+ * own key is resolved and already rotated; when disabled `storageKey` is empty
+ * and every stored record is offered.
  * The whole body is caught: a rejected `send` (old backend, command
  * unavailable) must leave the records in place for the next start and must not
  * break startup.
@@ -405,8 +432,8 @@ export async function harvestIpcBlackBox(
   send: (records: StoredBlackBox[]) => Promise<string[]>
 ): Promise<void> {
   try {
-    await installIpcBlackBox();
-    const ownKey = CURRENT_PREFIX + label;
+    await installed;
+    const ownKey = storageKey;
     const rotated: StoredBlackBox[] = [];
     const current: StoredBlackBox[] = [];
     for (let i = 0; i < localStorage.length; i += 1) {
@@ -440,6 +467,7 @@ export function __resetIpcBlackBoxForTests(): void {
   }
   teardown = [];
   installed = null;
+  recording = true;
   nextId = 1;
   pending = new Map();
   perCommand = new Map();

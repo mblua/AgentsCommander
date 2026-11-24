@@ -52,7 +52,7 @@ fn classify_other_falls_through() {
     );
 }
 
-// ── #280 G-MED-3 / LOW-3 — call-site redaction tests ────────
+// ── G-MED-3 / LOW-3 — call-site redaction tests ────────
 //
 // The redact() helper has its own thorough tests (15+ cases in
 // telegram::redact::tests). These tests cover the INVOCATIONS at the

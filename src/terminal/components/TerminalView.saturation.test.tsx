@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// #1283's two VERIFIED frontend defects, and only those. The delivery contract
-// that PR #1312 built on top of them is gone; what remains here is the
+// The two VERIFIED frontend defects, and only those. The delivery contract
+// that a later PR built on top of them is gone; what remains here is the
 // pair of fixes that attacked real bugs and that F keeps untouched:
 //
 //   1. unbounded Xterm/WebGL retention  -> the four-entry LRU registry,
@@ -252,7 +252,7 @@ async function waitForFake(condition: () => boolean): Promise<void> {
   throw new Error("condition not reached within fake time");
 }
 
-describe("TerminalView retention and visibility (#1283 fixes kept by #1363)", () => {
+describe("TerminalView retention and visibility", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

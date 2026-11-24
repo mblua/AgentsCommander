@@ -1,4 +1,4 @@
-// Gate 06 receiver-precision fixtures (#4017). Registered by sanitizing_tests.mjs, which
+// Gate 06 receiver-precision fixtures. Registered by sanitizing_tests.mjs, which
 // injects its private `trees` and `control` helpers; importing this file registers nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -406,7 +406,7 @@ export function registerTauriEdgeTests({ trees, control }) {
     assert.equal(warnings[0].reason, 'emit receiver not proved: unresolved type path: X');
   });
 
-  // #4201: classifier over a fixture crate with fresh scans; optional throw on a file's first scan.
+  // Classifier over a fixture crate with fresh scans; optional throw on a file's first scan.
   const classifyEmit = (files, throwOnce = null) => {
     let calls = 0;
     const tree = new Map(Object.keys(files).map(p => [p, { path: p }]));

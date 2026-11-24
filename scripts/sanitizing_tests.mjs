@@ -496,6 +496,22 @@ test('05 every independent counter: PASS → FAIL with diagnostic → restored P
     } else control(layoutGate,rule,p,clean,bad);
   }
 });
+test('05 path: test-local #[path] between src-tauri/tests/ crates is not debt', () => {
+  const shared = {'src-tauri/tests/support/shared.rs': 'fn helper() {}'};
+  const head = (p, text) => trees(shared, {...shared, [p]: text});
+  const mainRs = 'src-tauri/tests/a/main.rs';
+  assert.equal(layoutGate(head(mainRs, '#[path = "../support/shared.rs"] mod s;')).exit, 0);
+  assert.equal(layoutGate(head('src-tauri/tests/b.rs', '#[path = "support/shared.rs"] mod s;'))
+    .exit, 0);
+  for (const [p, text] of [[mainRs, '#[path = "../../src/h.rs"] mod h;'],
+    [mainRs, '#[path = "../support/missing.rs"] mod m;'],
+    [mainRs, '#[cfg_attr(unix, path = "../support/shared.rs")] mod m;'],
+    [rustRoot + 'x.rs', '#[path = "../tests/support/shared.rs"] mod s;']]) {
+    const r = layoutGate(head(p, text));
+    assert.equal(r.exit, 1, text);
+    assert.ok(r.diagnostics.some(d => d.rule === 'path' && d.path === p), text);
+  }
+});
 test('05 grouped globs, test/path cfg_attr, async aliases, integration and visibility boundaries', (
   ) => {
   for(const attr of ['#[tokio::test]','#[async_std::test]','use tokio::test as check; #[check]',
@@ -828,7 +844,7 @@ test('P02 explicit aliases obey local shadowing and grouped imports', () => {
       'x.rs']:'// mod a {} #[test]\nfn f(){ let x="use a::*;"; }'})).exit,0);
 });
 
-// #3182: sanitizing.allowlist.json turns listed FAILs into ACCEPTED; an unused entry only warns.
+// Sanitizing.allowlist.json turns listed FAILs into ACCEPTED; an unused entry only warns.
 const allow = (gate, rule, file) => ({ gate, rule, path: file, reason: 'moved code', issue: 3182,
     since: '2026-10-23' });
 test('allowlist: accepted, stale entry and unlisted finding', () => {

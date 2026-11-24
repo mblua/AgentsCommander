@@ -1,4 +1,4 @@
-// Isolated build for the #4248 WebKitGTK renderer fixture. Test-only; never shipped.
+// Isolated build for the WebKitGTK renderer fixture. Test-only; never shipped.
 // Usage: npx --no-install vite build --config scripts/ac4248-fixture.vite.mjs
 import path from "node:path";
 import { fileURLToPath } from "node:url";

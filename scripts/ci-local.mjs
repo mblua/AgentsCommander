@@ -5,7 +5,7 @@
 // clippy-linux and rust-regression-macos). It runs every check, even after a
 // failure, so one run lists every problem; it exits 1 if any check failed. The
 // complexity check only warns, because CI runs it with continue-on-error, except
-// for exit 3 (an unused cog allowlist entry), which CI blocks on (#4166).
+// for exit 3 (an unused cog allowlist entry), which CI blocks on.
 //
 // The test-debt commands are read from the workflow on each run, so this list
 // cannot drift from CI. Clippy uses the toolchain pinned in
@@ -117,7 +117,7 @@ function rustChecks(results) {
   results.push([`cargo +${pin} clippy`, clippyResult], complexityEntry(cogResult));
 }
 
-// As in CI (#4166): exit 3, an unused cog allowlist entry, fails; any other red
+// As in CI: exit 3, an unused cog allowlist entry, fails; any other red
 // complexity result only warns, because CI runs that step with continue-on-error.
 export function complexityEntry(cogResult) {
   return ['complexity check (fails only on a stale allowlist entry, as in CI)',

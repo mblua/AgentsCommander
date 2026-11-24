@@ -442,30 +442,27 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("renders the activity log checkbox and persists the toggle", async () => {
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {} }),
-      root,
-    );
-    await settle();
-
-    const toggle = byTestId<HTMLInputElement>("settings.general.activityLogEnabled");
-    expect(toggle.checked).toBe(false);
-
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event("change", { bubbles: true }));
-    await settle();
-
-    byTestId<HTMLButtonElement>("settings.save").click();
-    await settle();
-
-    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
-    expect(saved?.activityLogEnabled).toBe(true);
-
-    dispose();
-  });
+  it.each(["activityLogEnabled", "ipcBlackBoxEnabled"] as const)(
+    "renders the %s checkbox off with a next-start hint and persists the toggle",
+    async (key) => {
+      const root = document.createElement("div");
+      document.body.append(root);
+      const dispose = render(() => SettingsModal({ onClose: () => {} }), root);
+      await settle();
+      const toggle = byTestId<HTMLInputElement>(`settings.general.${key}`);
+      expect(toggle.checked).toBe(false);
+      const hint = byTestId(`settings.general.${key}.hint`).textContent ?? "";
+      expect(hint).toMatch(/Applies on the next (launch|restart)/);
+      toggle.checked = true;
+      toggle.dispatchEvent(new Event("change", { bubbles: true }));
+      await settle();
+      byTestId<HTMLButtonElement>("settings.save").click();
+      await settle();
+      const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+      expect(saved?.[key]).toBe(true);
+      dispose();
+    },
+  );
 
   it("stops the API server, refreshes live status, and persists the disabled preference", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({ apiServerEnabled: true }));
@@ -1321,7 +1318,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("#614: typing in a profile env value keeps the same input focused (no <For> recreate)", async () => {
+  it("typing in a profile env value keeps the same input focused (no <For> recreate)", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
       codingAgentProfiles: {
         schemaVersion: 2,
@@ -1348,7 +1345,7 @@ describe("SettingsModal automation hooks", () => {
     valueInput.focus();
     expect(document.activeElement).toBe(valueInput);
 
-    // Two keystrokes. Pre-#614 (reference-keyed <For>), updateCellEnvRow replaced
+    // Two keystrokes. Before the fix (reference-keyed <For>), updateCellEnvRow replaced
     // the row object on each input, disposing this <input> and mounting a new
     // node — so focus reverted to <body> and a re-query returned a DIFFERENT
     // element. With <Index> the node is stable, so identity + focus survive.
@@ -1367,7 +1364,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("#614: typing in an agent-level env value also keeps focus (in-place store update)", async () => {
+  it("typing in an agent-level env value also keeps focus (in-place store update)", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -1431,7 +1428,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  describe("#2597 profile params textbox", () => {
+  describe("profile params textbox", () => {
     async function mountProfiles() {
       vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings());
       const root = document.createElement("div");
@@ -1622,7 +1619,7 @@ describe("SettingsModal automation hooks", () => {
   // A force-enabled click reaches removeProfileLetter, and the early return must
   // still refuse to delete. The Clear/Delete control afterwards proves the click
   // path is live in this harness.
-  it("#2061: a force-enabled Delete Profile click cannot delete a held slot", async () => {
+  it("a force-enabled Delete Profile click cannot delete a held slot", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(profileGuardSettings({
       profilesByAgent: {
         codex: {
@@ -1899,7 +1896,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("exposes the OpenCode quick-add preset and the instructions-file input (#529)", async () => {
+  it("exposes the OpenCode quick-add preset and the instructions-file input", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -1927,7 +1924,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("disables the OpenCode preset when an opencode agent already exists (#529)", async () => {
+  it("disables the OpenCode preset when an opencode agent already exists", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
       agents: [
         {
@@ -1956,7 +1953,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("round-trips a typed instructions filename through save (#529)", async () => {
+  it("round-trips a typed instructions filename through save", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -1981,7 +1978,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("omits a cleared instructions filename from the saved draft (#529 G3)", async () => {
+  it("omits a cleared instructions filename from the saved draft", async () => {
     vi.mocked(SettingsAPI.get).mockResolvedValueOnce(settings({
       agents: [
         {
@@ -2315,7 +2312,7 @@ describe("SettingsModal automation hooks", () => {
   // along in the same Save used to lose its restart. The draft (including the new
   // bind) is already persisted at that point, so skipping the restart leaves the
   // modal reporting loopback as running while the server still listens on 0.0.0.0.
-  it("still restarts the API server when an endpoint change rides along with a snapshot CAS conflict (#1173)", async () => {
+  it("still restarts the API server when an endpoint change rides along with a snapshot CAS conflict", async () => {
     const runningSettings = settings({
       apiServerEnabled: true,
       apiServerBind: "0.0.0.0",
@@ -2397,7 +2394,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("round-trips coordinatorCascadeCloseEnabled through the General cascade checkbox (#588)", async () => {
+  it("round-trips coordinatorCascadeCloseEnabled through the General cascade checkbox", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -2429,7 +2426,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("round-trips coordinatorAutoCloseSkipTelegramAssigned through the General auto-close checkbox (#817)", async () => {
+  it("round-trips coordinatorAutoCloseSkipTelegramAssigned through the General auto-close checkbox", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -2473,7 +2470,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("round-trips npmUpdateNotificationsEnabled through the General update-notify checkbox (#609)", async () => {
+  it("round-trips npmUpdateNotificationsEnabled through the General update-notify checkbox", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -2504,7 +2501,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("round-trips remoteBlockingMenusEnabled through the General download checkbox (#1925)", async () => {
+  it("round-trips remoteBlockingMenusEnabled through the General download checkbox", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -2626,7 +2623,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("round-trips autoSelfClearEnabled through the General auto-self-clear checkbox (#640)", async () => {
+  it("round-trips autoSelfClearEnabled through the General auto-self-clear checkbox", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -2657,7 +2654,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("round-trips containerCredentialsFromHost through the General reuse checkbox (#930)", async () => {
+  it("round-trips containerCredentialsFromHost through the General reuse checkbox", async () => {
     vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
@@ -2671,7 +2668,7 @@ describe("SettingsModal automation hooks", () => {
     expect(checkbox.closest("label")?.textContent).toContain(
       "Reuse host login for container coding agents",
     );
-    // Loaded default is true (copy-in is the default auth path for #930).
+    // Loaded default is true (copy-in is the default auth path).
     expect(checkbox.checked).toBe(true);
 
     // Toggle OFF and save -> the persisted draft carries the new value, proving
@@ -2689,7 +2686,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("shows the host-login-on hint when Container runtime is selected (default #930)", async () => {
+  it("shows the host-login-on hint when Container runtime is selected (default)", async () => {
     vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
@@ -2754,7 +2751,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("shows the host-login-off hint when reuse is disabled and Container is selected (#930)", async () => {
+  it("shows the host-login-off hint when reuse is disabled and Container is selected", async () => {
     vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
@@ -2802,7 +2799,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("discloses the container first-run stamping in the General hint (#930)", async () => {
+  it("discloses the container first-run stamping in the General hint", async () => {
     vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
@@ -2972,7 +2969,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("renders the read-only Auto-update table in the Coding Agents screen (#1551)", async () => {
+  it("renders the read-only Auto-update table in the Coding Agents screen", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -3008,7 +3005,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("the Auto-update table's configured cell follows the dropdown draft (ask -> yes -> no) before Save (#1551)", async () => {
+  it("the Auto-update table's configured cell follows the dropdown draft (ask -> yes -> no) before Save", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -3042,7 +3039,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("mounts against a mocked PtyAPI so the debounced reach preview cannot throw into the timer queue (#1797)", async () => {
+  it("mounts against a mocked PtyAPI so the debounced reach preview cannot throw into the timer queue", async () => {
     // The wait must exceed WATCHER_PREVIEW_DEBOUNCE_MS (300, SettingsModal.tsx:224). That
     // constant is not exported and SettingsModal.tsx must stay byte-identical to HEAD, so the
     // wait is a local literal with margin. Raising the debounce well past this wait fails the
@@ -3063,7 +3060,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("moves the wake-orchestrators checkbox into the On app restart section (#1793)", async () => {
+  it("moves the wake-orchestrators checkbox into the On app restart section", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -3090,7 +3087,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("round-trips restartResumeWakeWorkingAgents through the On app restart checkbox (#1793)", async () => {
+  it("round-trips restartResumeWakeWorkingAgents through the On app restart checkbox", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -3126,7 +3123,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("round-trips both restart prompts through the On app restart text inputs (#1793)", async () => {
+  it("round-trips both restart prompts through the On app restart text inputs", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -3165,7 +3162,7 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  describe("#2306 P3 coding-agent moves", () => {
+  describe("P3 coding-agent moves", () => {
     const ORDER_AGENTS: AgentConfig[] = [
       { id: "codex", label: "Codex", command: "codex", color: "#10b981", envs: [], isolatedHome: false },
       { id: "claude", label: "Claude Code", command: "claude", color: "#d97706", envs: [], isolatedHome: false },
@@ -4278,7 +4275,7 @@ describe("SettingsModal automation hooks", () => {
       expect(unlisten).toHaveBeenCalledTimes(1);
     });
 
-    describe("#2539 chevron expand selects the rail", () => {
+    describe("chevron expand selects the rail", () => {
       const editorShown = (index: number) =>
         document.querySelector(`[data-ac-testid="settings.agentRow.${index}.editor"]`) !== null;
       // Rows only: in 2-rail mode the rails also carry data-ac-agent-id.
@@ -4379,7 +4376,7 @@ describe("SettingsModal automation hooks", () => {
 
 // The compact-hotkey capture control. Every leg dispatches on a
 // focused element (the production path), never on `document`.
-describe("SettingsModal compact hotkey capture (#2236)", () => {
+describe("SettingsModal compact hotkey capture", () => {
   let release: (() => void) | null = null;
   let shortcutHandler: ((e: KeyboardEvent) => void) | null = null;
   let probe: ReturnType<typeof vi.fn<(e: Event) => void>> | null = null;
@@ -4577,7 +4574,7 @@ describe("SettingsModal compact hotkey capture (#2236)", () => {
 
 // The quota-source shape predicate, bound to the normative
 // malformed-entry table of the p5a plan. p5b binds the rendering to the same rows.
-describe("isQuotaSource (#2482, #2687)", () => {
+describe("isQuotaSource", () => {
   it("is_screen_regex_source_accepts_a_minimal_entry_and_one_with_enabled_true_and_false", () => {
     expect(isQuotaSource({ kind: "screenRegex", pattern: "7d (\\d+)%" })).toBe(true);
     expect(isQuotaSource({ kind: "screenRegex", pattern: "7d (\\d+)%", enabled: true })).toBe(true);
@@ -4611,7 +4608,7 @@ describe("isQuotaSource (#2482, #2687)", () => {
 // The per-agent "Weekly quota pattern" field. The store draft is read
 // through `quotaSources` on the saveDraft argument, which is the store node itself
 // (the save merge spreads the draft shallowly); the wire view is its JSON round-trip.
-describe("SettingsModal weekly quota pattern (#2482)", () => {
+describe("SettingsModal weekly quota pattern", () => {
   const QUOTA_AGENTS: AgentConfig[] = [
     { id: "a1", label: "Claude Code", command: "claude", color: "#d97706", envs: [], isolatedHome: false },
     { id: "b2", label: "Codex", command: "codex", color: "#10b981", envs: [], isolatedHome: false },

@@ -11,12 +11,12 @@ import {
   type SessionSummary,
 } from "../shared/context-history";
 
-// #3532 P06 - per-instance state of the history view. Every request is
+// Per-instance state of the history view. Every request is
 // stamped with a generation; changing project, filters or selection bumps it
 // so a late response of an older request is ignored (there is no IPC cancel;
 // the backend bounds each read). Nothing is aggregated or persisted here: the
 // view shows the backend's counts and means as served.
-// #4091 Count mode: the newest `sessionCount` sessions per scope before a
+// Count mode: the newest `sessionCount` sessions per scope before a
 // cutoff pinned at refresh. Counts come only from the loaded settings list.
 
 export interface HistoryFilters {

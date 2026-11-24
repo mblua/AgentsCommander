@@ -162,7 +162,7 @@ function measuredMatrix(): Measured[] {
   return out;
 }
 
-describe("Co-managed ring CSS (#2408)", () => {
+describe("Co-managed ring CSS", () => {
   it("all three selectors share exactly the non-layout outline declarations", () => {
     for (const selector of RING_SELECTORS) {
       const rule = ruleFor(selector);
@@ -216,7 +216,7 @@ describe("Co-managed ring CSS (#2408)", () => {
   });
 });
 
-describe("Co-managed ring contrast (#2408)", () => {
+describe("Co-managed ring contrast", () => {
   it("arithmetic controls: 21:1, ~4.48:1, and a ~2.32:1 pair the >= 3 validator rejects", () => {
     const white = parseHex("#ffffff");
     const black = contrast(parseHex("#000000"), white);

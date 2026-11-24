@@ -11,7 +11,7 @@ function info(latestVersion: string): UpdateInfo {
   };
 }
 
-describe("createUpdateToaster (#609)", () => {
+describe("createUpdateToaster", () => {
   beforeEach(() => toastStore.clear());
 
   it("shows one sticky info toast carrying the version + upgrade command", () => {
@@ -52,7 +52,7 @@ describe("createUpdateToaster (#609)", () => {
   });
 });
 
-describe("update toast Copy action (#2135)", () => {
+describe("update toast Copy action", () => {
   const COMMAND = "npm i -g @mblua/agentscommander";
   let hadClipboard: boolean;
   let originalClipboard: unknown;

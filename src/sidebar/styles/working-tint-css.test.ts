@@ -25,7 +25,7 @@ const VARS = readFileSync(new URL("./variables.css", import.meta.url), "utf8");
 
 // Blank out comment spans, preserving length and line breaks so byte indices
 // stay comparable between the raw and the scanned copy. Required for
-// correctness, not hygiene: the #1755 block's own comment names
+// correctness, not hygiene: the working-tint block's own comment names
 // `.ac-wg-subgroup.working` in prose, so an unstripped count for assertion 8
 // returns 4 instead of 3, and sidebar.css already carries a comment mentioning
 // `var(--sidebar-active)` that would pollute a token scan.
@@ -36,7 +36,7 @@ function stripComments(css: string): string {
 const CSS_SCAN = stripComments(CSS);
 const VARS_SCAN = stripComments(VARS);
 
-// Variadic on purpose, not as a flourish: the #1755 group rule is a two-selector
+// Variadic on purpose, not as a flourish: the working-tint group rule is a two-selector
 // list, so a single-selector helper cannot capture it at all, and under the
 // throw-on-miss rule that failure would land on correct CSS rather than on a
 // defect. Joining with `,\s*` rather than a literal newline is what keeps this
@@ -112,7 +112,7 @@ const DARK_VARS = varsBlock(":root");
 const LIGHT_VARS = varsBlock("html.light-theme");
 
 // ---------------------------------------------------------------------------
-// The #1755 block, read out of the bytes.
+// The working-tint block, read out of the bytes.
 // ---------------------------------------------------------------------------
 
 const OVERLAY_BASE = ".replica-item::after";
@@ -203,7 +203,7 @@ const declaresGround = (rule: ScannedRule): boolean => {
 
 const COMPETITOR_RULES = OTHER_SUBGROUP_RULES.filter(declaresGround);
 
-describe("#1755 working-tint CSS bytes (leg 1)", () => {
+describe("working-tint CSS bytes (leg 1)", () => {
   it("1. declares the base .replica-item::after overlay in full", () => {
     const body = ruleBody(OVERLAY_BASE);
     expect(declValue(body, "content")).toBe('""');
@@ -260,7 +260,7 @@ describe("#1755 working-tint CSS bytes (leg 1)", () => {
 
   describe("7. cascade dominance on .ac-wg-subgroup, by computed specificity", () => {
     it("7a. the scan finds exactly 13 rules whose subject is .ac-wg-subgroup", () => {
-      // 11 pre-existing plus BOTH rules the #1755 block contributes: the bare
+      // 11 pre-existing plus BOTH rules the working-tint block contributes: the bare
       // `.ac-wg-subgroup { transition: ... }` and the two-selector `.working`
       // list. Both meet the criterion the scan itself states. The count is
       // pinned so that a drift fails rather than silently narrowing the
@@ -465,7 +465,7 @@ function groundsFor(theme: Theme, room: Rgba): Array<[string, Rgba]> {
   ];
 }
 
-describe("#1755 composite arithmetic and the signal ladder (leg 3)", () => {
+describe("composite arithmetic and the signal ladder (leg 3)", () => {
   it("3a. the row wash is visible on all six grounds in both themes", () => {
     // The loop must prove that it ran. Without the pinned count and
     // expect.hasAssertions(), a reader that returned an empty list instead of

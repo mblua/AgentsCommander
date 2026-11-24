@@ -82,7 +82,7 @@ function activity(id: string) {
   });
 }
 
-describe("SidebarApp Co-managed idle edge (#2271)", () => {
+describe("SidebarApp Co-managed idle edge", () => {
   let cleanupDom: (() => void) | null = null;
   let reconcileIntervals: ReconcileIntervalSpy;
 
@@ -109,7 +109,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     resetUiStoresForTests();
   });
 
-  it("the idle edge arms Co-managed, still paints Co-managed, and records waiting underneath (test 8, #2453)", async () => {
+  it("the idle edge arms Co-managed, still paints Co-managed, and records waiting underneath (test 8)", async () => {
     const fake = new FakeTransport();
     setupTransport(fake);
     const waitingSpy = vi.spyOn(sessionsStore, "setSessionWaiting");
@@ -226,7 +226,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     fake.emitFromBackend("session_comanaged_state", { id, active: false, reason: null });
   }
 
-  it("the Co-managed cycle ends in waitingForInput on the active session (#2453 test 1)", async () => {
+  it("the Co-managed cycle ends in waitingForInput on the active session (test 1)", async () => {
     const { fake, cleanup } = await mountApp();
     try {
       runCycle(fake, SESSION_A, []);
@@ -236,7 +236,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     }
   });
 
-  it("the Co-managed cycle ends in pendingReview on a non-active session (#2453 test 2)", async () => {
+  it("the Co-managed cycle ends in pendingReview on a non-active session (test 2)", async () => {
     const { fake, cleanup } = await mountApp();
     try {
       runCycle(fake, SESSION_B, []);
@@ -246,7 +246,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     }
   });
 
-  it("paints exactly comanaged during the armed window on both legs (#2453 test 3)", async () => {
+  it("paints exactly comanaged during the armed window on both legs (test 3)", async () => {
     const { fake, cleanup } = await mountApp();
     try {
       const during: string[] = [];
@@ -258,7 +258,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     }
   });
 
-  it("a plain idle edge never paints comanaged (#2453 test 4)", async () => {
+  it("a plain idle edge never paints comanaged (test 4)", async () => {
     const { fake, cleanup } = await mountApp();
     try {
       fake.emitFromBackend("session_busy", { id: SESSION_A });
@@ -272,7 +272,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     }
   });
 
-  it("the 250 ms reconciler keeps the waiting recorded by the armed idle edge (#2453 test 5)", async () => {
+  it("the 250 ms reconciler keeps the waiting recorded by the armed idle edge (test 5)", async () => {
     const { fake, cleanup } = await mountApp();
     try {
       fake.emitFromBackend("session_busy", { id: SESSION_B });

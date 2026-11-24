@@ -23,13 +23,13 @@ impl SessionIoFanout {
         &self,
         token: &PtyOutputRegistrationToken,
         session_id_str: &str,
-        data: Vec<u8>,
+        data: &[u8],
     ) {
         let Some(lease) = self.acquire_reader_lease(token) else {
             return;
         };
         let id = token.identity.session_id;
-        self.notify_output_observers(id, &data);
+        self.notify_output_observers(id, data);
 
         let (accumulated, registration) = {
             let Ok(mut parsers) = self.screen_parsers.lock() else {
@@ -58,7 +58,7 @@ impl SessionIoFanout {
                 ParserAvailability::Unavailable => (None, false),
                 ParserAvailability::Available => {
                     let processed = crate::logging::catch_payload_unwind(|| {
-                        state.parser.process(&data);
+                        state.parser.process(data);
                         let sequence = state.output_sequence.checked_add(1).ok_or(())?;
                         state.output_sequence = sequence;
                         // Order matters, and these two lines must stay contiguous. The ring
@@ -69,7 +69,7 @@ impl SessionIoFanout {
                         // watermark and only skips what is at or below the snapshot sequence,
                         // so those bytes would be seeded and then written again when they
                         // arrive live: a duplicated block of history.
-                        append_history(&mut state.history, &mut state.history_aligned, &data);
+                        append_history(&mut state.history, &mut state.history_aligned, data);
                         Ok::<u64, ()>(sequence)
                     });
                     match processed {
@@ -93,7 +93,7 @@ impl SessionIoFanout {
             // The emit it may ask for is run below, after the lock is dropped.
             let accumulated = if ui_open {
                 self.attachments
-                    .accumulate(&registration, sequence, &data, parser_fault)
+                    .accumulate(&registration, sequence, data, parser_fault)
             } else {
                 Accumulated::Unattached
             };
@@ -103,7 +103,7 @@ impl SessionIoFanout {
         if let Some(ref broadcaster) = self.ws_broadcaster {
             #[cfg(test)]
             self.trace(FanoutTraceEvent::Websocket);
-            broadcaster.broadcast_pty_output(session_id_str, &data);
+            broadcaster.broadcast_pty_output(session_id_str, data);
         }
 
         // The UI EMIT is still the last thing this function does, which is what keeps a slow
@@ -380,7 +380,7 @@ fn copy_attach_snapshot(
                 // No line start with content behind it. The ring cannot be
                 // replayed from any offset, and in the observed incident it holds
                 // nothing but spinner frames anyway. The mirror is a consistent
-                // full repaint on a grid the #1439 branch above already validated.
+                // full repaint on a grid the branch above already validated.
                 None => screen.contents_formatted(),
             };
             Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {

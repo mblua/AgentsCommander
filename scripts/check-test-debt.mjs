@@ -456,7 +456,7 @@ function scanRustFile(root, filePath) {
   const warnings = [];
   for (const match of rustAttributedFnMatches(masked)) {
     const attrs = match.attrs;
-    if (!/#\s*\[\s*test\b/.test(attrs)) continue;
+    if (!/#\s*\[\s*(?:tokio\s*::\s*)?test\b/.test(attrs)) continue;
     const fnName = match.name;
     const fnStart = match.index + masked.slice(match.index, match.end).lastIndexOf('fn ');
     const bodyOpen = masked.indexOf('{', match.end);
@@ -901,7 +901,7 @@ describe("clean suite", () => {
 });
 `);
     writeFile(path.join(root, 'src/expressions.test.ts'), `
-describe("formatDuration (#3516)", () => {
+describe("formatDuration", () => {
   it.each([[0, "0 ms"], [1250, "1.3 s"]])(
     "formats %d", (ms, text) => expect(formatDuration(ms)).toBe(text));
 });
@@ -955,6 +955,18 @@ fn assignment_only_placeholder() {
 #[test]
 #[ignore = "manual placeholder"]
 fn ignored_empty_case() {}
+
+#[tokio::test]
+#[ignore = "manual async"]
+async fn ignored_tokio_case() {
+    assert!(true);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "manual async flavor"]
+async fn ignored_tokio_flavor_case() {
+    assert!(true);
+}
 `);
     writeFile(path.join(root, 'src/frontend/example.test.ts'), `
 import { describe, expect, it, test } from "vitest";
@@ -984,6 +996,10 @@ fn real_test() {
     assertSelf(result.code === 1, 'debt fixture without allowlist should fail');
     assertSelf(result.findings.some((f) => f.category === 'ignored-rust-test' && f.id.endsWith(
       'ignored.rs::ignored_case')), 'ignored Rust finding missing');
+    assertSelf(result.findings.some((f) => f.category === 'ignored-rust-test' && f.id.endsWith(
+      'ignored.rs::ignored_tokio_case')), 'ignored tokio Rust finding missing');
+    assertSelf(result.findings.some((f) => f.category === 'ignored-rust-test' && f.id.endsWith(
+      'ignored.rs::ignored_tokio_flavor_case')), 'ignored tokio flavor Rust finding missing');
     assertSelf(result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith(
       'ignored.rs::empty_case')), 'empty Rust finding missing');
     assertSelf(result.findings.some((f) => f.category === 'placeholder-rust-test' && f.id.endsWith(

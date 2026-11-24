@@ -155,7 +155,7 @@ function stripOf(root: ParentNode, rowContext: string, replicaName: string): HTM
   return strip;
 }
 
-describe("ProjectPanel replica chip strip order (#1730)", () => {
+describe("ProjectPanel replica chip strip order", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: Awaited<ReturnType<typeof mountProject>> | null = null;
 

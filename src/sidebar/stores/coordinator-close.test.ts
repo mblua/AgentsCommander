@@ -21,7 +21,7 @@ import {
 
 const COORD_NAME = "wg-2-dev-team/dev-webpage-ui";
 
-describe("coordinator-close helper (#588)", () => {
+describe("coordinator-close helper", () => {
   let fake: FakeTransport;
   let restoreTransport: () => void;
   // Tests that expect the confirm modal must register a host (a window with a

@@ -487,7 +487,7 @@ pub(crate) fn prune_replica_config_scope(
 }
 
 /// Activation-gated prune of every replica config scope under one workgroup `.ac/<workgroup>`
-/// (#1063, plan section 5.4 "AC removes a workgroup"). Used by GUI/CLI workgroup deletion.
+/// (plan section 5.4 "AC removes a workgroup"). Used by GUI/CLI workgroup deletion.
 pub(crate) fn prune_workgroup_config_scope(
     gate: Option<&mut ProjectSeedManifestGuard>,
     activation: Option<&ManifestActivationToken>,
@@ -501,7 +501,7 @@ pub(crate) fn prune_workgroup_config_scope(
     });
 }
 
-/// Activation-gated prune of every replica config scope for a set of workgroups (#1063, plan
+/// Activation-gated prune of every replica config scope for a set of workgroups (plan
 /// section 5.4 "AC deletes a team"). Used by GUI team deletion for the committed
 /// intent: successfully removed workgroups plus valid matching team workgroup
 /// identities that were already absent at the explicit delete event.
@@ -519,7 +519,7 @@ pub(crate) fn prune_team_workgroups_scope(
 }
 
 /// Activation-gated prune of every replica config scope for one exact agent component
-/// `__agent_<name>` across all workgroups (#1063, plan section 5.4 "AC deletes an
+/// `__agent_<name>` across all workgroups (plan section 5.4 "AC deletes an
 /// Agent Matrix and cascaded replicas"). Used by Agent Matrix deletion.
 pub(crate) fn prune_agent_component_scope(
     gate: Option<&mut ProjectSeedManifestGuard>,

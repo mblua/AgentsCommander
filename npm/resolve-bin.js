@@ -1,6 +1,6 @@
 // Shared, platform-aware locator for the AgentsCommander executable inside the
 // installed package. run.js (launch) and install.js (post-extraction validation)
-// both use it so the two files agree on one on-disk contract. Issue #2016.
+// both use it so the two files agree on one on-disk contract.
 const fs = require('node:fs');
 const path = require('node:path');
 

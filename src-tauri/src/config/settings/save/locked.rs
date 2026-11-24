@@ -118,7 +118,7 @@ pub(crate) fn save_settings_value_locked_with_startup(
     // Last writer over `out`, so no earlier stage can leak an overlay value
     // into the base file. Runs in both project write modes: Reconcile seeds `out`
     // from the live settings when the file is absent. The overlay-ineligible sets
-    // (D7a, D7b) already exclude every key the #1077 and #1173 stages touch.
+    // (D7a, D7b) already exclude every key the and #1173 stages touch.
     if matches!(mode, ProjectWriteMode::Preserve) {
         write_identity_rows(&mut out, &settings.local_overlay_state);
     }

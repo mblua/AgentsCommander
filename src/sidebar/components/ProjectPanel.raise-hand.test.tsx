@@ -88,7 +88,7 @@ async function mountProject(workgroups: AcWorkgroup[], sessions: Session[]) {
   return rendered;
 }
 
-describe("ProjectPanel raise-hand communication slot (#676)", () => {
+describe("ProjectPanel raise-hand communication slot", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -199,7 +199,7 @@ describe("ProjectPanel raise-hand communication slot (#676)", () => {
     }
   });
 
-  it("renders for a dormant (exited) coordinator session with restored raise-hand communication (#747)", async () => {
+  it("renders for a dormant (exited) coordinator session with restored raise-hand communication", async () => {
     const exited = await mountProject(
       [workgroup("wg-4-dev-team", "dev-webpage-ui", "Exited task")],
       [

@@ -6,7 +6,7 @@ import { unleashedReplicasStore } from "./unleashed-replicas";
 // Path-keyed overrides of the discovery `unleashed` flag.
 const path = "C:\\Project\\.ac\\room-1-dev\\__agent_dev-rust";
 
-describe("unleashedReplicasStore (#4752)", () => {
+describe("unleashedReplicasStore", () => {
   let fake: FakeTransport;
   let restore: () => void;
 

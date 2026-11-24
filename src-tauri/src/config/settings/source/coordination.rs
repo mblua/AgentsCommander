@@ -116,7 +116,7 @@ impl IdentityWriteLease {
             sha256: instance_id,
         } = source_bytes_revision(spelling.as_bytes())
         else {
-            unreachable!()
+            unreachable!("source_bytes_revision always returns SourceRevision::Bytes")
         };
         let lock = crate::config::local_config_io::acquire_sidecar_write_lock(
             &canonical.join(crate::config::instance_artifacts::IDENTITY_TRANSITION_LOCK_NAME),
@@ -272,7 +272,7 @@ pub(crate) fn coordination_key(
     let bytes = serde_json::to_vec(&(object.volume, object.file, name))
         .map_err(|_| SourceCoordinationError::Invalid)?;
     let SourceRevision::Bytes { sha256 } = source_bytes_revision(&bytes) else {
-        unreachable!()
+        unreachable!("source_bytes_revision always returns SourceRevision::Bytes")
     };
     Ok(sha256)
 }
@@ -721,7 +721,7 @@ pub(crate) fn read_own_source_journal(
     };
     let own_revision = source_bytes_revision(spelling.as_bytes());
     let SourceRevision::Bytes { sha256: own_id } = own_revision else {
-        unreachable!()
+        unreachable!("source_bytes_revision always returns SourceRevision::Bytes")
     };
     if journal
         .intents

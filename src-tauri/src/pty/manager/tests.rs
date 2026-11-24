@@ -314,7 +314,7 @@ fn context_liveness_uses_backend_default_and_missing_route_is_over() {
     );
 }
 
-/// #1171, 9.1.9 - a session with no route is `Gone`, not `Missing`.
+/// 9.1.9 - a session with no route is `Gone`, not `Missing`.
 ///
 /// Same reading `get_screen_rows` already gives a routeless id (`:573-580`): every route
 /// removal is preceded by parser removal, so the session really is over. The engine
@@ -343,7 +343,7 @@ fn pty_backend_default_reports_rendered() {
     assert!(backend.has_rendered_visible_content(Uuid::new_v4()));
 }
 
-/// #1171, 9.1.8 - a backend that never heard of the seam keeps working through the trait
+/// 9.1.8 - a backend that never heard of the seam keeps working through the trait
 /// default: it reports a frame with NO stamp, and it never reports `Unchanged`, whatever
 /// stamp it is handed. That is the property that lets `stamp` be an `Option` instead of a
 /// fabricated value, and it is what keeps the two `PtyBackend` test fakes compiling.

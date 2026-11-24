@@ -6,7 +6,7 @@ import UnleashConfirmModal from "./UnleashConfirmModal";
 // The Unleash confirmation dialog.
 const byTestId = (id: string) => document.querySelector<HTMLElement>(`[data-ac-testid="${id}"]`);
 
-describe("UnleashConfirmModal (#4752)", () => {
+describe("UnleashConfirmModal", () => {
   let dispose: (() => void) | null = null;
 
   function mount(busy = false) {

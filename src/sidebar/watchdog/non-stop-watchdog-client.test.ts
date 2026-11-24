@@ -3,7 +3,7 @@
 // Non-stop watchdog client. Tests the pure detection (buildSnapshot) against
 // seeded stores: the disparity signal is computed with the exact rail code
 // (roomIsWorking + projectStore.projects), so this proves counter parity and
-// the onset/clear flip. The #2180 alarm listener wiring in
+// the onset/clear flip. The alarm listener wiring in
 // startNonStopWatchdogClient is driven below inside a Solid root with the
 // FakeTransport seam; the createEffect + 10s keepalive path stays audited by
 // review (team-idle-watcher convention).
@@ -95,7 +95,7 @@ const activeNonStop = (): NonStopGroupConfig => ({
   telegram: { enabled: true, botId: null },
 });
 
-describe("#777 nonStopWatchdogClient buildSnapshot", () => {
+describe("nonStopWatchdogClient buildSnapshot", () => {
   let restore: (() => void) | null = null;
 
   beforeEach(() => {
@@ -154,10 +154,10 @@ describe("#777 nonStopWatchdogClient buildSnapshot", () => {
     expect(JSON.stringify(buildSnapshot())).toBe(JSON.stringify(buildSnapshot()));
   });
 
-  it("#2202 a room waiting on CI is working: no disparity, no alert", async () => {
+  it("a room waiting on CI is working: no disparity, no alert", async () => {
     restore = await seed(activeNonStop());
 
-    // wg-1 has a working session, wg-2 only runs CI. Before #2202 this reported
+    // wg-1 has a working session, wg-2 only runs CI. Before the fix this reported
     // disparity: true / working: 1 / ["wg-2-dev-team"] and fired Telegram + beep.
     sessionsStore.setSessions([workingSession("wg-1-dev-team")]);
     publishCi([[ciRepoPath("wg-2-dev-team"), "running"]]);
@@ -178,7 +178,7 @@ describe("#777 nonStopWatchdogClient buildSnapshot", () => {
     });
   });
 
-  it("#2202 a single CI-only room reports no disparity, and a wholly idle group still does", async () => {
+  it("a single CI-only room reports no disparity, and a wholly idle group still does", async () => {
     restore = await seed(activeNonStop(), ["wg-1-dev-team"]);
 
     publishCi([[ciRepoPath("wg-1-dev-team"), "running"]]);
@@ -199,7 +199,7 @@ describe("#777 nonStopWatchdogClient buildSnapshot", () => {
   });
 });
 
-describe("#2180 nonStopWatchdogClient alarm listener", () => {
+describe("nonStopWatchdogClient alarm listener", () => {
   let restore: (() => void) | null = null;
 
   beforeEach(() => {
@@ -352,7 +352,7 @@ describe("confirmed activity report effect", () => {
 });
 
 // The Temporary Rooms group set feeds the watchdog like a project.
-describe("#4805 buildSnapshot - temp rooms", () => {
+describe("buildSnapshot - temp rooms", () => {
   const TEMP_PATH = "agentscommander://temp-rooms";
   const ROOM = { name: "temp-room-tr01", path: "/cfg/temp-room-tr01", unleashed: false };
   let restore: (() => void) | null = null;
