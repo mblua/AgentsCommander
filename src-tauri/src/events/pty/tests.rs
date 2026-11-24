@@ -77,11 +77,7 @@ fn pty_output_reaches_only_the_attached_webview() {
     fanout
         .activate_terminal_output(id, WINDOW, true)
         .expect("attach");
-    fanout.handle_output(
-        &token,
-        &id.to_string(),
-        b"only the attached window".to_vec(),
-    );
+    fanout.handle_output(&token, &id.to_string(), b"only the attached window");
     fanout.flush_terminal_output_for_test(id);
 
     assert_eq!(attached_events.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -141,7 +137,7 @@ fn the_armed_timer_emits_with_no_explicit_flush() {
         .expect("attach");
 
     std::thread::spawn(move || {
-        fanout.handle_output(&token, &id.to_string(), b"armed by the ingest".to_vec());
+        fanout.handle_output(&token, &id.to_string(), b"armed by the ingest");
     })
     .join()
     .expect("PTY reader thread");
