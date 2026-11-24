@@ -736,7 +736,7 @@ describe("#4945 SessionRowMenu surface propagation baseline", () => {
     expect(q(GROUP_TEST_IDS.flyout)).not.toBeNull();
   });
 
-  it("Add to Group: the local flyout shield stops clicks before the outer menu shield", async () => {
+  it("Add to Group: the local flyout shield stops clicks before the outer shield", async () => {
     const h = mountHost();
     await openMenu({ caps: { addToGroup: groupSpec() } });
     mouseEnter(q(GROUP_TEST_IDS.trigger)!);
@@ -748,5 +748,29 @@ describe("#4945 SessionRowMenu surface propagation baseline", () => {
     outer.stop();
     expect(h.onDismiss).not.toHaveBeenCalled();
     expect(q(GROUP_TEST_IDS.flyout)).not.toBeNull();
+  });
+
+  it("Edit TASK title: the local editor shield stops clicks before the outer shield", async () => {
+    const h = mountHost();
+    const editTaskTitle = {
+      editing: true,
+      draft: "Title",
+      busy: false,
+      error: null,
+      onDraft: noop,
+      onStart: noop,
+      onSave: noop,
+      onCancel: noop,
+    };
+    await openMenu({ caps: { editTaskTitle } });
+    const shell = document.querySelector<HTMLElement>(".session-context-title-edit")!;
+    const outer = armOuterShield();
+    click(shell.querySelector("input")!);
+    click(shell);
+    expect(outer.entries()).toBe(0);
+    click(menuEl());
+    expect(outer.entries()).toBe(1);
+    outer.stop();
+    expect(h.onDismiss).not.toHaveBeenCalled();
   });
 });

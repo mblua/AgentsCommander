@@ -495,7 +495,7 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
       expect(selections(r.fake)).toBe(0);
     });
 
-    it("9f. a stale Telegram settings response after a reopen leaves the new menu unchanged", async () => {
+    it("9f. a stale Telegram settings response after a reopen keeps the new menu", async () => {
       const fake = bannerFake();
       let release: (v: unknown) => void = () => {};
       fake.onInvoke("get_settings", () => new Promise((res) => (release = res)));

@@ -10,22 +10,6 @@ import { click, input, installBrowserDomStubs } from "../../../shared/testing/ui
 
 const PREFIX = "tempRoom.r1";
 
-// Counts entries into the outer ContextMenuSurface click shield: Solid
-// delegates onClick through the element's $$click slot, so wrapping it
-// observes exactly the clicks whose bubbling reached the outer handler.
-function armOuterShield(): { entries: () => number; stop: () => void } {
-  type Delegated = HTMLElement & { $$click?: (this: HTMLElement, e: Event) => unknown };
-  const menu = document.querySelector<Delegated>(".session-context-menu");
-  const original = menu?.$$click;
-  if (!menu || !original) throw new Error("outer shield not registered");
-  let entries = 0;
-  menu.$$click = function (this: HTMLElement, e: Event) {
-    entries += 1;
-    return original.call(this, e);
-  };
-  return { entries: () => entries, stop: () => (menu.$$click = original) };
-}
-
 function byId<T extends HTMLElement = HTMLElement>(id: string): T {
   const all = document.querySelectorAll<T>(`[data-ac-testid="${id}"]`);
   expect(all).toHaveLength(1);
@@ -165,19 +149,6 @@ describe("#4825 SessionRowMenu TASK title editor test ids", () => {
     click(field().parentElement!);
     win.stop();
     expect(win.seen).toHaveLength(0);
-    expect(onDismiss).not.toHaveBeenCalled();
-  });
-
-  it("#4945 the local editor shield stops clicks before the outer menu shield", async () => {
-    const { onDismiss } = mountEditor();
-    await openEditor();
-    const outer = armOuterShield();
-    click(field());
-    click(field().parentElement!);
-    expect(outer.entries()).toBe(0);
-    click(document.querySelector(".session-context-menu")!);
-    expect(outer.entries()).toBe(1);
-    outer.stop();
     expect(onDismiss).not.toHaveBeenCalled();
   });
 
