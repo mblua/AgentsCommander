@@ -683,6 +683,100 @@ fn stage_args(probe: &FixtureProbe) -> (Option<Instant>, Option<Instant>) {
     (begin_arg, drain_arg)
 }
 
+fn close_budget(capped: bool) -> Duration {
+    if capped {
+        ms(200)
+    } else {
+        Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS)
+    }
+}
+
+fn new_probe(wait: Option<SiteWait>, wake: &Arc<WakeFlag>) -> Arc<FixtureProbe> {
+    Arc::new_cyclic(|me| FixtureProbe {
+        me: me.clone(),
+        log: Mutex::default(),
+        external: AtomicBool::new(false),
+        child_timers: std::sync::atomic::AtomicUsize::new(0),
+        seq: AtomicU64::new(0),
+        t0: Mutex::new(None),
+        wait,
+        wake: Arc::clone(wake),
+        watchdog: Mutex::new(None),
+    })
+}
+
+fn install_stage_observer(
+    backend: &ContainerTransportBackend,
+    probe: &Arc<FixtureProbe>,
+    gate: Option<Arc<Gate>>,
+) {
+    let observer_probe = Arc::clone(probe);
+    backend.set_shutdown_stage_observer_for_test(Arc::new(move |stage| {
+        observer_probe.stage(stage);
+        if let (ShutdownStage::Drain(_), Some(gate)) = (stage, gate.as_ref()) {
+            gate.wait();
+        }
+    }));
+}
+
+/// Start the watchdog thread; the receiver fires once it is watching.
+fn start_watchdog(
+    probe: &FixtureProbe,
+    drain_gate: &Arc<Gate>,
+    wake: &Arc<WakeFlag>,
+    case: String,
+) -> (
+    Arc<Watchdog>,
+    (tokio::task::JoinHandle<()>, oneshot::Receiver<()>),
+) {
+    let watchdog = Arc::new(Watchdog {
+        state: Mutex::default(),
+        changed: Condvar::new(),
+        gates: vec![Arc::clone(drain_gate)],
+        wake: Arc::clone(wake),
+        case,
+    });
+    *probe.watchdog.lock().unwrap() = Some(Arc::clone(&watchdog));
+    let (started, started_rx) = oneshot::channel();
+    let watch = Arc::clone(&watchdog);
+    let watcher = tokio::task::spawn_blocking(move || watch.watch(started));
+    (watchdog, (watcher, started_rx))
+}
+
+type Attribution = (
+    Result<Duration, String>,
+    Vec<(&'static str, tokio::task::Id)>,
+);
+
+fn attribution(
+    probe: &FixtureProbe,
+    worker_phase: Duration,
+    budget: Duration,
+    ready_seq: u64,
+) -> Attribution {
+    let log = probe.log();
+    let worker_expired = log.worker_aborts > 0;
+    let shared_expired = !log.transfers.is_empty();
+    let c = attributable(
+        worker_expired.then_some(worker_phase),
+        shared_expired.then_some(budget),
+        &log.receipts,
+        log.drain_seq,
+        ready_seq,
+    );
+    (c, log.transfers.clone())
+}
+
+fn assert_first_poll(
+    report: &Option<SelectionShutdownReport>,
+    backend: &ContainerTransportBackend,
+    probe: &FixtureProbe,
+) {
+    assert!(report.is_none(), "first poll returns Pending");
+    assert!(backend.shutdown_observation_for_test().0, "backend sealed");
+    assert!(probe.log().worker_polls >= 1, "worker polled by the close");
+}
+
 pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> CloseRun {
     let CloseCase {
         capped,
@@ -690,52 +784,22 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
         wait,
         mut schedule,
     } = case;
-    let budget = if capped {
-        ms(200)
-    } else {
-        Duration::from_secs(SHUTDOWN_CLEANUP_BUDGET_SECS)
-    };
+    let budget = close_budget(capped);
     let worker_phase = budget - (budget / 4).min(SHUTDOWN_FINALIZATION_RESERVE_MAX);
     let wake = Arc::new(WakeFlag::default());
-    let probe = Arc::new_cyclic(|me| FixtureProbe {
-        me: me.clone(),
-        log: Mutex::default(),
-        external: AtomicBool::new(false),
-        child_timers: std::sync::atomic::AtomicUsize::new(0),
-        seq: AtomicU64::new(0),
-        t0: Mutex::new(None),
-        wait: wait.clone(),
-        wake: Arc::clone(&wake),
-        watchdog: Mutex::new(None),
-    });
+    let probe = new_probe(wait.clone(), &wake);
     let drain_gate = Arc::new(Gate::default());
-    let observer_probe = Arc::clone(&probe);
     let observer_gate = (hold == Hold::Drain).then(|| Arc::clone(&drain_gate));
-    domain
-        .container_backend
-        .set_shutdown_stage_observer_for_test(Arc::new(move |stage| {
-            observer_probe.stage(stage);
-            if let (ShutdownStage::Drain(_), Some(gate)) = (stage, observer_gate.as_ref()) {
-                gate.wait();
-            }
-        }));
+    install_stage_observer(domain.container_backend, &probe, observer_gate);
     install_worker_probe(domain.coordinator, &probe);
     let mut finalizer = spawn_finalizer(domain.ticket).await;
     let finalizer_id = finalizer.id();
     assert_domain_ready(domain.coordinator, domain.container_backend);
-    let watchdog = Arc::new(Watchdog {
-        state: Mutex::default(),
-        changed: Condvar::new(),
-        gates: vec![Arc::clone(&drain_gate)],
-        wake: Arc::clone(&wake),
-        case: format!("capped={capped} hold={hold:?} wait={wait:?}"),
-    });
-    *probe.watchdog.lock().unwrap() = Some(Arc::clone(&watchdog));
-    let (started, started_rx) = oneshot::channel();
-    let watch = Arc::clone(&watchdog);
-    let watcher = tokio::task::spawn_blocking(move || watch.watch(started));
+    let case = format!("capped={capped} hold={hold:?} wait={wait:?}");
+    let (watchdog, watcher) = start_watchdog(&probe, &drain_gate, &wake, case);
     let _stop_on_panic = StopOnPanic(Arc::clone(&watchdog));
-    started_rx.await.expect("watchdog acknowledges its start");
+    watcher.1.await.expect("watchdog acknowledges its start");
+    let watcher = watcher.0;
     let manager_hold = if hold == Hold::Rollback {
         Some(domain.manager.write().await)
     } else {
@@ -766,12 +830,7 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
         checkpoints: Vec::new(),
     };
     let mut report = driver.poll();
-    assert!(report.is_none(), "first poll returns Pending");
-    assert!(
-        domain.container_backend.shutdown_observation_for_test().0,
-        "backend sealed"
-    );
-    assert!(probe.log().worker_polls >= 1, "worker polled by the close");
+    assert_first_poll(&report, domain.container_backend, &probe);
 
     report = drive_worker_phase(
         &mut driver,
@@ -792,19 +851,7 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
     let checkpoints = std::mem::take(&mut driver.checkpoints);
     drop(driver);
 
-    let (c, transfers) = {
-        let log = probe.log();
-        let worker_expired = log.worker_aborts > 0;
-        let shared_expired = !log.transfers.is_empty();
-        let c = attributable(
-            worker_expired.then_some(worker_phase),
-            shared_expired.then_some(budget),
-            &log.receipts,
-            log.drain_seq,
-            ready_seq,
-        );
-        (c, log.transfers.clone())
-    };
+    let (c, transfers) = attribution(&probe, worker_phase, budget, ready_seq);
 
     // Release product guards, resume Tokio and join every owned handle once.
     drop(manager_hold);
