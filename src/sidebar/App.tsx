@@ -89,6 +89,7 @@ import { toastStore } from "../shared/stores/toasts";
 import { autoUnarchiveStore } from "./stores/auto-unarchive";
 import { handleProjectRefreshRequested } from "./project-refresh-handler";
 import { loopToastFromEvent, type LoopToast } from "./loop-event-toast";
+import { rememberDestroyedSession, showSessionWarningToast } from "./session-warning-toast";
 import { createUpdateToaster } from "./update-toast";
 import { wireScreenshotListeners } from "./listeners-screenshot";
 import { wireAgentUpdateListeners } from "./agent-update";
@@ -654,10 +655,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
   const surfaceSessionWarning = (warning: SessionWarning) => {
     if (disposed) return;
-    console.warn(
-      `Session warning for ${warning.sessionId} (${warning.key}/${warning.kind}): ${warning.message}`
-    );
-    toastStore.error(warning.message);
+    void showSessionWarningToast(warning, () => disposed);
   };
 
   const handleLiveSessionWarning = (warning: SessionWarning) => {
@@ -711,6 +709,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     bailIfDisposed();
     await register(
       onSessionDestroyed(({ id }) => {
+        rememberDestroyedSession(id);
         voiceRecorder.revokeSession(id);
         sessionsStore.removeSession(id);
         sessionsStore.setDetached(id, false);
