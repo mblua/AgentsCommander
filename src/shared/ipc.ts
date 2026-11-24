@@ -5,12 +5,7 @@ import {
   rememberSpawnViewport,
   resetUiTerminalControllerForTests,
 } from "./terminal-viewport";
-import type {
-  ListenOptions,
-  Transport,
-  TransportConnectionState,
-  UnlistenFn,
-} from "./transport";
+import type { ListenOptions, Transport, TransportConnectionState, UnlistenFn } from "./transport";
 import { TauriTransport } from "./transport-tauri";
 import { WsTransport } from "./transport-ws";
 import type {
@@ -155,6 +150,7 @@ import type {
 import { createPreflightTestAPI } from "./preflightTestApi";
 import { createTempRoomAPI } from "./temp-rooms";
 import { createAudioSinkAPI } from "./audio-sink";
+import { createCodingAgentsTransferAPI } from "./coding-agents-transfer";
 import { decodeSessionSelection } from "./session-selection";
 export type { UiTerminalOperation } from "./terminal-viewport";
 export interface SessionRepoInput {
@@ -577,6 +573,7 @@ export function assertCodingAgentMoveOrder(
 export const PreflightTestAPI = createPreflightTestAPI(transport);
 export const TempRoomAPI = createTempRoomAPI(transport);
 export const AudioSinkAPI = createAudioSinkAPI(transport);
+export const CodingAgentsTransferAPI = createCodingAgentsTransferAPI(transport);
 
 export const SettingsAPI = {
   // get_settings returns the flattened SettingsSnapshot (AppSettings +
