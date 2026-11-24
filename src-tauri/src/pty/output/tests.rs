@@ -17,7 +17,7 @@ fn fanout() -> SessionIoFanout {
 fn feed(fanout: &SessionIoFanout, id: Uuid, chunks: &[&[u8]]) {
     let token = fanout.registration_token_for_test(id);
     for chunk in chunks {
-        fanout.handle_output(&token, &id.to_string(), chunk.to_vec());
+        fanout.handle_output(&token, &id.to_string(), chunk);
     }
 }
 

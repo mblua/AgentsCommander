@@ -489,8 +489,7 @@
 //!      that reaches the predicate is a space.
 //!  26. (append here: one entry per spelling a reviewer proves still passes)
 
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // Resolving what the compiler compiles
@@ -502,6 +501,8 @@ use std::path::{Path, PathBuf};
 
 mod allowed;
 mod knot;
+#[path = "../support/module_sources.rs"]
+mod module_sources;
 mod registry;
 mod resolve;
 mod scan;
@@ -514,10 +515,10 @@ use allowed::{
     CONSTANT_NAME, CRATE_ANCHOR, FORBIDDEN_NAME, GLOB_CHILD, GUARDED_MODULE, HOST_MODULE,
     REGISTRY_MODULE, SELF_ANCHOR, SUPER_ANCHOR,
 };
-use resolve::{
-    crate_sources, every_file_under, expected, files_of, manifest_dir, observe, relative_of,
-    scrubbed,
+use module_sources::{
+    crate_sources, every_file_under, manifest_dir, own_files_of, relative_of, scrubbed, sources_of,
 };
+use resolve::{expected, files_of, observe};
 use rust_source_scrub::{scrub, Literals};
 use scan::{
     aliases_a_module_group, children_under, defines_the_constant, names_the_replaced_module,
