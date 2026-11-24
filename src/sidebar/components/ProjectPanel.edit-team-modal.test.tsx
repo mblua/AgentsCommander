@@ -76,7 +76,7 @@ function modalText(): string {
   return document.body.textContent ?? "";
 }
 
-describe("ProjectPanel edit-team modal (#669)", () => {
+describe("ProjectPanel edit-team modal", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
