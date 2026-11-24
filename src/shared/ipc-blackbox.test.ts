@@ -32,6 +32,7 @@ vi.stubGlobal(
 const CURRENT_KEY = "ac.ipc.bb.cur.web";
 const ROTATED_KEY = "ac.ipc.bb.prev.web";
 const TICK_MS = 1_000;
+const on = () => Promise.resolve(true);
 
 /** The 23 fields of phase 1's `BlackBoxRecord`, camelCase, in schema order. */
 const SCHEMA_FIELDS = [
@@ -91,7 +92,7 @@ describe("ipc black box", () => {
   });
 
   it("records a call from start to settle", async () => {
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
 
     const sentAt = Date.now();
     const id = noteInvokeStart("pty_write");
@@ -122,7 +123,7 @@ describe("ipc black box", () => {
   });
 
   it("marks a call overdue past the threshold", async () => {
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
 
     noteInvokeStart("get_sessions");
     vi.advanceTimersByTime(6_000);
@@ -136,7 +137,7 @@ describe("ipc black box", () => {
   });
 
   it("never marks the six never-overdue commands overdue", async () => {
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
 
     noteInvokeStart("pick_folder");
     noteInvokeStart("spec_board_pick_open");
@@ -161,7 +162,7 @@ describe("ipc black box", () => {
   });
 
   it("keeps a long-pending quit_application out of overdueTotal", async () => {
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
 
     noteInvokeStart("quit_application");
     vi.advanceTimersByTime(60_000);
@@ -176,7 +177,7 @@ describe("ipc black box", () => {
   });
 
   it("counts an ordinary call overdue alongside an exempt quit and settles both", async () => {
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
 
     const quitId = noteInvokeStart("quit_application");
     const ordinaryId = noteInvokeStart("get_sessions");
@@ -208,7 +209,7 @@ describe("ipc black box", () => {
   });
 
   it("counts every overdue call even when pending is capped and keeps the oldest", async () => {
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
 
     const ids: number[] = [];
     for (let i = 0; i < 40; i += 1) {
@@ -237,7 +238,7 @@ describe("ipc black box", () => {
   it("rotates the previous run's record before the first write", async () => {
     localStorage.setItem(CURRENT_KEY, '{"previous":"run"}');
 
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
 
     expect(localStorage.getItem(ROTATED_KEY)).toBe('{"previous":"run"}');
     expect(localStorage.getItem(CURRENT_KEY)).toBeNull();
@@ -251,7 +252,7 @@ describe("ipc black box", () => {
   });
 
   it("writes every field of the schema", async () => {
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
     vi.advanceTimersByTime(TICK_MS);
 
     const record = readRecord();
@@ -278,7 +279,7 @@ describe("ipc black box", () => {
   ] as const)("records window=%j as %j", async (value, expected) => {
     window.history.replaceState(null, "", `/?${new URLSearchParams({ window: value })}`);
     try {
-      await installIpcBlackBox();
+      await installIpcBlackBox(on);
       vi.advanceTimersByTime(TICK_MS);
       expect(readRecord().windowType).toBe(expected);
     } finally {
@@ -288,7 +289,7 @@ describe("ipc black box", () => {
 
   it("seeds visible from document.visibilityState at install", async () => {
     visibilityState = "visible";
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
     vi.advanceTimersByTime(TICK_MS);
     // No `visibilitychange` is dispatched in either seed case: this pins the
     // VALUE, not its consequence.
@@ -298,7 +299,7 @@ describe("ipc black box", () => {
     localStorage.clear();
 
     visibilityState = "hidden";
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
     vi.advanceTimersByTime(TICK_MS);
     expect(readRecord().visible).toBe(false);
 
@@ -313,7 +314,7 @@ describe("ipc black box", () => {
     localStorage.setItem("ac.ipc.bb.cur.other", '{"sibling":"current"}');
     localStorage.setItem("ac.ipc.bb.prev.other", '{"sibling":"rotated"}');
 
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
     vi.advanceTimersByTime(TICK_MS);
 
     const seen: StoredBlackBox[][] = [];
@@ -343,7 +344,7 @@ describe("ipc black box", () => {
   it("harvest survives a rejecting sender", async () => {
     localStorage.setItem("ac.ipc.bb.prev.other", '{"sibling":"rotated"}');
 
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
     const send = vi.fn(() => Promise.reject(new Error("command unavailable")));
 
     await expect(harvestIpcBlackBox(send)).resolves.toBeUndefined();
@@ -353,7 +354,7 @@ describe("ipc black box", () => {
   });
 
   it("the heartbeat survives a throwing setItem", async () => {
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
 
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
       throw new Error("QuotaExceededError");
@@ -375,7 +376,7 @@ describe("ipc black box", () => {
       return Promise.resolve(() => undefined);
     });
 
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
     vi.advanceTimersByTime(TICK_MS);
 
     const before = readRecord();
@@ -400,7 +401,7 @@ describe("ipc black box", () => {
   });
 
   it("noteEvent records the last backend event", async () => {
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
 
     const eventAt = Date.now();
     noteEvent("pty_output");
@@ -412,7 +413,7 @@ describe("ipc black box", () => {
   });
 
   it("marks this window's record cleanly closed instead of removing it", async () => {
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
     vi.advanceTimersByTime(TICK_MS);
 
     const ticked = readRecord();
@@ -435,7 +436,7 @@ describe("ipc black box", () => {
     __resetIpcBlackBoxForTests();
     localStorage.clear();
 
-    await installIpcBlackBox();
+    await installIpcBlackBox(on);
     noteInvokeStart("get_sessions");
     vi.advanceTimersByTime(6_000);
     expect(readRecord().overdueTotal).toBe(1);
@@ -448,4 +449,5 @@ describe("ipc black box", () => {
     expect(survivor.pending[0].cmd).toBe("get_sessions");
     expect(survivor.overdueTotal).toBe(1);
   });
+
 });

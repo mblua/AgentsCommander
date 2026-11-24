@@ -1651,10 +1651,10 @@ export const InstanceAPI = {
 };
 
 export const BlackBoxAPI = {
-  /** Hands the previous run's renderer black boxes to the backend and
-   *  returns the storage keys it wants deleted. */
+  /** Hands the previous run's black boxes to the backend; returns keys to delete. */
   report: (records: { key: string; json: string }[]) =>
     transport.invoke<string[]>("ipc_blackbox_report", { records }),
+  enabled: () => transport.invoke<boolean>("ipc_blackbox_enabled"), // boot-time value
 };
 
 export function emitThemeChanged(light: boolean): Promise<void> {
