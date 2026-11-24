@@ -390,12 +390,51 @@ impl SessionManager {
                 binding.session_id
             ));
         }
-        state.pending_create.remove(&binding.session_id);
-        state.pending_prompts.remove(&binding.session_id);
-        state.sessions.remove(&binding.session_id);
-        retire_coding_agent_binding(&mut state, binding.session_id);
-        state.order.retain(|id| *id != binding.session_id);
+        remove_pending_create(&mut state, binding.session_id);
         Ok(())
+    }
+
+    pub(in crate::session) async fn rollback_exact_pending_with_receipt(
+        &self,
+        permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        apply: impl FnOnce(&Session, &mut dyn FnMut()) -> bool,
+    ) -> bool {
+        let mut state = self.carrier_state_write(permit).await;
+        if !binding_matches(&state, binding) {
+            return false;
+        }
+        let Some(row) = state.sessions.get(&binding.session_id).cloned() else {
+            return false;
+        };
+        let mut pending = Some(&mut *state);
+        apply(&row, &mut || {
+            if let Some(state) = pending.take() {
+                remove_pending_create(state, binding.session_id);
+            }
+        }) && pending.is_none()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn fixture_change_rollback_row(
+        &self,
+        binding: PendingCreateBinding,
+        change_binding: bool,
+    ) {
+        let permit = acquire_carrier_mutation_permit().await;
+        if change_binding {
+            let mut state = self.carrier_state_write(&permit).await;
+            assert!(binding_matches(&state, binding));
+            state
+                .pending_create
+                .insert(binding.session_id, Uuid::new_v4());
+        } else {
+            self.update_pending_with_carrier_permit(&permit, binding, |row| {
+                row.token = Uuid::new_v4();
+            })
+            .await
+            .unwrap();
+        }
     }
 
     #[expect(
@@ -489,4 +528,12 @@ impl SessionManager {
         })
         .await
     }
+}
+
+fn remove_pending_create(state: &mut SessionManagerState, id: Uuid) {
+    state.pending_create.remove(&id);
+    state.pending_prompts.remove(&id);
+    state.sessions.remove(&id);
+    retire_coding_agent_binding(state, id);
+    state.order.retain(|session| *session != id);
 }

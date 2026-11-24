@@ -1,8 +1,6 @@
 //! Mailbox poller core: the `MailboxPoller` struct with retry, claim and wake lane state.
-//! Collects project refresh requests and delivers claimed wakes within `WAKE_DELIVERY_DEADLINE`.
-//! Reserves response requests and defines owned peer wake types such as `OwnedPeerWakeStep`.
-//! Evaluates the purge gate (`PurgeGatePeer`, `PurgeDecision`) and reads BOM-tolerant text.
-//! Most delivery logic lives in sibling modules that extend `MailboxPoller`.
+//! Collects project refresh requests, reserves responses and evaluates the purge gate.
+//! Owns the claimed-wake deadline and the state shared by peer delivery modules.
 
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
@@ -34,6 +32,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+use tokio::time::Instant;
 use uuid::Uuid;
 
 pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRefreshPollBatch {
@@ -114,33 +113,118 @@ pub(crate) fn collect_project_refresh_requests(requests_dir: &Path) -> ProjectRe
 pub(crate) const WAKE_DELIVERY_DEADLINE: Duration = Duration::from_secs(300);
 pub(crate) const ERR_WAKE_DELIVERY_TIMEOUT: &str = "wake delivery timed out";
 
-/// #3263 - bounds the waiter only; a detached owned core keeps running.
+#[derive(Clone)]
+pub(super) struct WakeAttempt {
+    deadline: Instant,
+    last_dispatch: Arc<Mutex<WakeDispatch>>,
+    #[cfg(test)]
+    probe: Option<super::host::WakeCreateProbe>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum WakeDispatch {
+    Delivery,
+    OwnedAdmission,
+    OwnedCreate,
+    GenericCreate,
+    WorkTransfer,
+    Input,
+}
+
+impl WakeDispatch {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Delivery => "delivery",
+            Self::OwnedAdmission => "owned_admission",
+            Self::OwnedCreate => "owned_create",
+            Self::GenericCreate => "generic_create",
+            Self::WorkTransfer => "work_transfer",
+            Self::Input => "input",
+        }
+    }
+
+    pub(super) fn mark(self) {
+        let _ = WAKE_ATTEMPT.try_with(|attempt| {
+            if let Some(attempt) = attempt {
+                *attempt
+                    .last_dispatch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = self;
+            }
+        });
+    }
+}
+
+tokio::task_local! {
+    pub(super) static WAKE_ATTEMPT: Option<WakeAttempt>;
+}
+
+pub(super) fn wake_deadline() -> Option<Instant> {
+    WAKE_ATTEMPT
+        .try_with(|attempt| Some(attempt.as_ref()?.deadline))
+        .unwrap_or_default()
+}
+
+pub(super) fn check_wake_deadline() -> Result<(), String> {
+    if wake_deadline().is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(ERR_WAKE_DELIVERY_TIMEOUT.into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) async fn observe_wake_attempt(stage: &'static str, binding: Option<Uuid>) {
+    if let Ok(Some(probe)) = WAKE_ATTEMPT.try_with(|attempt| attempt.as_ref()?.probe.clone()) {
+        (probe.observe)(stage, binding).await;
+    }
+}
+
+/// #3263 - a detached core may finish after the waiter reports its last dispatch.
 async fn deliver_within_deadline<S: MailboxHost>(
     delivery: &MailboxPoller,
     app: &S,
     validated: &ValidatedWake,
 ) -> Result<OutboxMessage, String> {
     #[cfg(test)]
-    let deadline = delivery
+    let budget = delivery
         .test_hooks
         .as_ref()
         .and_then(|hooks| *hooks.wake_delivery_deadline.lock().unwrap())
         .unwrap_or(WAKE_DELIVERY_DEADLINE);
     #[cfg(not(test))]
-    let deadline = WAKE_DELIVERY_DEADLINE;
-    let delivered = delivery.deliver_validated_wake(app, validated, false);
-    match tokio::time::timeout(deadline, delivered).await {
-        Ok(result) => result,
-        Err(_elapsed) => {
-            let error = format!(
-                "{ERR_WAKE_DELIVERY_TIMEOUT}: stage=deadline after {}s",
-                deadline.as_secs()
-            );
-            let msg = &validated.message;
-            log_wake_ended_without_input(&msg.id, &msg.to, None, &error);
-            Err(error)
-        }
-    }
+    let budget = WAKE_DELIVERY_DEADLINE;
+    #[cfg(test)]
+    let probe = app.wake_create_probe();
+    #[cfg(test)]
+    let budget = probe.as_ref().map_or(budget, |probe| probe.budget);
+    let deadline = Instant::now() + budget;
+    let last_dispatch = Arc::new(Mutex::new(WakeDispatch::Delivery));
+    let attempt = WakeAttempt {
+        deadline,
+        last_dispatch: last_dispatch.clone(),
+        #[cfg(test)]
+        probe,
+    };
+    let delivered = WAKE_ATTEMPT.scope(
+        Some(attempt),
+        Box::pin(delivery.deliver_validated_wake(app, validated, false)),
+    );
+    let reason = match tokio::time::timeout_at(deadline, delivered).await {
+        Ok(Err(error)) if error.starts_with(ERR_WAKE_DELIVERY_TIMEOUT) => error,
+        Ok(result) => return result,
+        Err(_) => ERR_WAKE_DELIVERY_TIMEOUT.into(),
+    };
+    let last = last_dispatch
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .name();
+    let error = format!(
+        "{reason}: stage=deadline last_dispatch={last} settlement=unknown after {}s",
+        budget.as_secs()
+    );
+    let msg = &validated.message;
+    log_wake_ended_without_input(&msg.id, &msg.to, None, &error);
+    Err(error)
 }
 
 /// (#1399) The detached delivery tail: deliver, archive on success, and on
@@ -599,6 +683,7 @@ pub(crate) struct OwnedPeerWakeExecution {
 
 pub(crate) struct OwnedPeerTarget {
     pub(crate) continuation: crate::session::selection::OwnedReplacementContinuation,
+    pub(crate) source: crate::session::selection::SourceExecutorGuard,
     pub(crate) gate: Arc<crate::api::message_store::PtyInputTargetGate>,
     pub(crate) exact: crate::api::message_store::PtyInputTargetGuard,
     pub(crate) stripe: crate::api::message_store::PtyInputStripeGuard,

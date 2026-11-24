@@ -9,8 +9,9 @@ use super::notice::{
     WakeDeliveryOrigin,
 };
 use super::poller::{
-    MailboxPoller, OwnedPeerWakeExecution, OwnedPeerWakeStep, PeerWakeFallback, RetainedExit,
-    SpawnedPeerWake, ERR_WAKE_RETAINED,
+    check_wake_deadline, MailboxPoller, OwnedPeerWakeExecution, OwnedPeerWakeStep,
+    PeerWakeFallback, RetainedExit, SpawnedPeerWake, WakeDispatch, ERR_WAKE_DELIVERY_TIMEOUT,
+    ERR_WAKE_RETAINED,
 };
 #[cfg(test)]
 use super::pty_claim::MailboxTestHooks;
@@ -36,6 +37,9 @@ async fn prepare_replacement_context(
     if let Some(spawn) = execution.request.resolved_spawn.as_ref() {
         if !continuation.validate_pre_effect_region(manager, pty).await {
             return Ok(false);
+        }
+        if let Err(error) = check_wake_deadline() {
+            return Err(rollback_before_publish(continuation, manager, pty, error).await);
         }
         let Some(effect) = continuation.start_effect(LifecycleEffectSlot::ContextPreparation)
         else {
@@ -69,13 +73,19 @@ async fn end_before_publish(
     stage: &'static str,
 ) -> Result<OwnedPeerWakeStep, String> {
     let base = format!("{ERR_WAKE_RETAINED}: stage={stage}");
+    Err(rollback_before_publish(continuation, manager, pty, base).await)
+}
+
+async fn rollback_before_publish(
+    continuation: &crate::session::selection::OwnedReplacementContinuation,
+    manager: &SessionManager,
+    pty: &Arc<Mutex<PtyManager>>,
+    base: String,
+) -> String {
     let done = continuation
         .rollback_failed_create(manager, pty, &base)
         .await;
-    Err(format!(
-        "{base} rollback={}",
-        if done { "done" } else { "refused" }
-    ))
+    format!("{base} rollback={}", if done { "done" } else { "refused" })
 }
 
 fn replacement_delivery(execution: &OwnedPeerWakeExecution) -> OutboxMessage {
@@ -241,7 +251,7 @@ impl MailboxPoller {
         #[cfg(test)]
         let continuation = &fixture_continuation;
         #[cfg(not(test))]
-        let continuation = &execution.continuation;
+        let continuation = &execution.continuation.clone();
         #[cfg(test)]
         if !continuation
             .fixture_reached(crate::session::selection::ReplacementFixtureCut::SourceCoreEntered)
@@ -250,11 +260,16 @@ impl MailboxPoller {
             return retained("fixture_core_entered", None);
         }
         let manager = app.pty_sessions().read().await.clone();
+        #[cfg(test)]
+        let continuation = &continuation.fixture_source_validator(|p| &p.refuse_precreate_source);
         if !continuation.validate_source().await {
             return end_before_publish(continuation, &manager, pty, "source_invalid").await;
         }
         if !prepare_replacement_context(execution, continuation, &manager, pty).await? {
             return end_before_publish(continuation, &manager, pty, "context_not_prepared").await;
+        }
+        if let Err(error) = check_wake_deadline() {
+            return Err(rollback_before_publish(continuation, &manager, pty, error).await);
         }
         #[cfg(test)]
         let fixture_created =
@@ -265,25 +280,39 @@ impl MailboxPoller {
             };
         #[cfg(not(test))]
         let fixture_created = None;
-        let created = match fixture_created {
-            Some(created) => created,
-            None => {
-                let proof = replacement_target_ownership(execution)?;
-                app.create_owned_response_replacement(
-                    execution.request.clone(),
-                    continuation.clone(),
-                    &proof,
-                )
+        let created = if let Some(created) = fixture_created {
+            created
+        } else {
+            let proof = replacement_target_ownership(execution)?;
+            let request = execution.request.clone();
+            WakeDispatch::OwnedCreate.mark();
+            Box::pin(app.create_owned_response_replacement(request, continuation.clone(), &proof))
                 .await
-            }
         };
 
         if let crate::session::create_contracts::OwnedReplacementCreateStep::Retained = created? {
+            continuation.relay_pending_source_refusal();
             return retained("create_retained", None);
         }
+        self.transfer_owned_wake(app, &manager, pty, execution, continuation)
+            .await
+    }
+
+    async fn transfer_owned_wake<S: MailboxHost>(
+        &self,
+        app: &S,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        execution: &mut OwnedPeerWakeExecution,
+        continuation: &crate::session::selection::OwnedReplacementContinuation,
+    ) -> Result<OwnedPeerWakeStep, String> {
         let Some((info, id, effect)) =
-            begin_replacement_work_transfer(continuation, &manager, pty).await
+            begin_replacement_work_transfer(continuation, manager, pty).await
         else {
+            continuation.record_wake_transfer_not_started();
+            if check_wake_deadline().is_err() {
+                return retained("deadline", None);
+            }
             return retained("work_transfer_unavailable", None);
         };
         if info.telegram_bot_id.is_some() {
@@ -297,18 +326,22 @@ impl MailboxPoller {
                 return retained("settle_failed", Some(id));
             }
         };
+        #[cfg(test)]
+        super::poller::observe_wake_attempt("final_refresh", Some(id)).await;
         if continuation
-            .refresh_completion_info(&manager, pty)
+            .refresh_completion_info(manager, pty)
             .await
             .is_none()
         {
-            // The bridge/settle calls returned; no input was attempted. Keep
-            // their known incomplete-work result instead of an unwind receipt.
-            effect.complete(Err("replacement work stopped before input".into()));
+            continuation.complete_wake_transfer_no_input(effect);
             return retained("completion_info_lost", Some(id));
         }
+        if check_wake_deadline().is_err() {
+            continuation.complete_wake_transfer_no_input(effect);
+            return retained("deadline", Some(id));
+        }
         let injected = self
-            .inject_wake_into_pty(
+            .dispatch_peer_wake_input(
                 app,
                 id,
                 &execution.message,
@@ -318,17 +351,20 @@ impl MailboxPoller {
             )
             .await;
         if let Err(error) = injected {
+            if error == ERR_WAKE_DELIVERY_TIMEOUT {
+                continuation.complete_wake_transfer_no_input(effect);
+                return retained("deadline", Some(id));
+            }
             retain_after_transfer_error(effect, continuation, error);
             return retained("inject_failed", Some(id));
         }
         drop(execution.exact.take());
         drop(execution.stripe.take());
         continuation
-            .finish_observed_work_transfer(&manager, pty, effect, true)
+            .finish_observed_work_transfer(manager, pty, effect, true)
             .await;
-        Ok(OwnedPeerWakeStep::Delivered(replacement_delivery(
-            execution,
-        )))
+        let delivered = replacement_delivery(execution);
+        Ok(OwnedPeerWakeStep::Delivered(delivered))
     }
 
     async fn try_inject_peer_candidate<S: MailboxHost>(
@@ -375,8 +411,9 @@ impl MailboxPoller {
         // Best-effort - a vanished session just falls through to the
         // inject's own race handling below.
         let settle = self.settle_live_before_inject(app, session_id).await;
+        check_wake_deadline()?;
         match self
-            .inject_wake_into_pty(
+            .dispatch_peer_wake_input(
                 app,
                 session_id,
                 msg,
@@ -529,7 +566,7 @@ impl MailboxPoller {
         )))
     }
 
-    async fn spawn_peer_wake_fallback<S: MailboxHost>(
+    pub(super) async fn spawn_peer_wake_fallback<S: MailboxHost>(
         &self,
         app: &S,
         msg: &OutboxMessage,
@@ -583,6 +620,9 @@ impl MailboxPoller {
             )
             .await
             .map_err(|e| {
+                if e == super::poller::ERR_WAKE_DELIVERY_TIMEOUT {
+                    return e;
+                }
                 format!(
                     "Failed to spawn session for '{}': command from {} resolved raw_command={:?}, \
                     shell={:?}, args={:?}: {}",
@@ -669,7 +709,8 @@ impl MailboxPoller {
         let settle = self.wait_for_spawned_wake_idle(app, session_id).await?;
 
         // Inject message — interactive mode (session persists, user sees reply instructions)
-        self.inject_wake_into_pty(
+        check_wake_deadline()?;
+        self.dispatch_peer_wake_input(
             app,
             session_id,
             msg,
@@ -847,12 +888,16 @@ async fn begin_replacement_work_transfer(
     crate::session::selection::LifecycleEffectGuard,
 )> {
     use crate::session::selection::LifecycleEffectSlot;
+    #[cfg(test)]
+    super::poller::observe_wake_attempt("first_refresh", None).await;
     let info = continuation.refresh_completion_info(manager, pty).await?;
     let id = continuation
         .binding()
         .map(PendingCreateBinding::session_id)?;
     // Start the work receipt only after its initial current-B checks. A
     // failed preflight has reached no bridge, settle or input effect.
+    check_wake_deadline().ok()?;
+    WakeDispatch::WorkTransfer.mark();
     let effect = continuation.start_effect(LifecycleEffectSlot::WorkTransfer)?;
     Some((info, id, effect))
 }

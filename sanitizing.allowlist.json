@@ -20,6 +20,22 @@
       "reason": "Closure moved to app_run/exit.rs::on_run_event (#bdf7e51c6ff1). Moved by the sanitizing campaign (#3176/#3180); the anchor changed with the move, so the hash re-anchor cannot pair it.",
       "issue": 3182,
       "since": "2026-10-23"
+    },
+    {
+      "gate": "06",
+      "rule": "tauri_files",
+      "path": "src-tauri/src/phone/mailbox/tests/wake_owner.rs",
+      "reason": "Retain 7 Tauri sites in the real wake-owner test harness.",
+      "issue": 4819,
+      "since": "2026-11-24"
+    },
+    {
+      "gate": "06",
+      "rule": "tauri_files",
+      "path": "src-tauri/src/phone/mailbox/tests/wake_owner/publication.rs",
+      "reason": "Retain 17 Tauri sites in the real wake-owner test harness.",
+      "issue": 4819,
+      "since": "2026-11-24"
     }
   ]
 }

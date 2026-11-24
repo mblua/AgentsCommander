@@ -96,6 +96,12 @@ impl CarrierPhysicalIdentity {
         &self.0.canonical_path
     }
 
+    pub(crate) fn matches_directory(&self, path: &std::path::Path) -> bool {
+        crate::path_identity::verify_directory(path).is_ok_and(|current| {
+            current.canonical_path == self.0.canonical_path && current.object_id == self.0.object_id
+        })
+    }
+
     pub(crate) fn is_dir(&self) -> bool {
         self.0.metadata.is_dir
     }

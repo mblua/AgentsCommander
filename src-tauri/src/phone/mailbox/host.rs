@@ -20,6 +20,8 @@ use crate::session::create_contracts::{
     PtyTargetCreateStep,
 };
 use crate::session::maintenance::PendingSelfClear;
+#[cfg(test)]
+use crate::session::manager::PendingCreateBinding;
 use crate::session::manager::SessionManager;
 use crate::session::purge_guard::PurgeGuard;
 use crate::session::selection::{
@@ -58,6 +60,16 @@ pub(crate) struct MailboxSessionCreate<'a> {
     pub(crate) resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
     pub(crate) viewport: Option<PtyViewport>,
     pub(crate) selection_intent: CreateSelectionIntent,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct WakeCreateProbe {
+    pub(crate) budget: std::time::Duration,
+    pub(crate) observe:
+        Arc<dyn Fn(&'static str, Option<Uuid>) -> BoxFuture<'static, bool> + Send + Sync>,
+    pub(crate) prepared: Arc<Mutex<Option<PendingCreateBinding>>>,
+    pub(super) hold_input: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Native capabilities available to captured mailbox work.
@@ -100,10 +112,23 @@ pub(crate) trait MailboxHost:
 
     fn outbox(&self) -> &AppOutbox;
 
+    #[cfg(test)]
+    fn wake_create_probe(&self) -> Option<WakeCreateProbe> {
+        None
+    }
+
     fn create_session_inner<'a>(
         &'a self,
         request: MailboxSessionCreate<'a>,
     ) -> impl Future<Output = Result<SessionInfo, String>> + Send + 'a;
+
+    fn create_session_inner_for_wake<'a>(
+        &'a self,
+        request: MailboxSessionCreate<'a>,
+        _deadline: Option<tokio::time::Instant>,
+    ) -> impl Future<Output = Result<SessionInfo, String>> + Send + 'a {
+        self.create_session_inner(request)
+    }
 
     fn create_session_inner_with_pty_target_ownership<'a, 'guard>(
         &'a self,

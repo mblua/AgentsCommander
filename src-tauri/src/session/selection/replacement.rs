@@ -243,7 +243,19 @@ pub(super) enum ReplacementCleanupAuthority {
     Unknown,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum PreInputReceipt {
+    NotStarted,
+    NoInput(Uuid),
+}
+
+#[derive(Default)]
+pub(super) struct PreInputProgress {
+    pub(super) receipt: Option<PreInputReceipt>,
+}
+
 pub(super) struct ReplacementProgress {
+    pub(super) pre_input: PreInputProgress,
     pub(super) source_executor: SourceExecutorObservation,
     pub(super) current_previous: crate::session::session::Session,
     pub(super) launch_start_fresh: Option<bool>,
@@ -262,15 +274,15 @@ pub(super) struct ReplacementProgress {
     pub(super) retirement_result: Option<CommitResult>,
     pub(super) retirement_cleanup_completed: bool,
     pub(super) preparing_released: bool,
-    pub(super) create_failed: bool,
     pub(super) rollback_completed: bool,
+    pub(super) rollback: Option<PendingRollback>,
+    pub(super) pending_source_refusal: Option<PendingSourceRefusal>,
     pub(super) create_reservation: Option<crate::pty::manager::CreateOwnerReservation>,
     pub(super) work_reservation: Option<crate::pty::manager::WorkDeliveryReservation>,
     pub(super) tracker: Option<crate::pty::manager::ResponseCloseState>,
     #[expect(
         dead_code,
-        reason = "C20 requires complete inert retained source data; this field grants no replay \
-            authority"
+        reason = "C20 retains a separate inert copy of accepted work"
     )]
     pub(super) accepted_work: OwnedReplacementWork,
     pub(super) cleanup: ReplacementCleanupAuthority,
@@ -368,9 +380,94 @@ impl Drop for SourceExecutorGuard {
     }
 }
 
+pub(super) type WakePathValidation<'a> = &'a (dyn Fn() -> bool + Sync);
+
 pub(super) enum PendingCleanupEvidence<'a> {
     ActualSetupFailure(&'a str),
     ObservedSourceStoppedOrReturnedFailure,
+    WakeHandoff(Option<WakePathValidation<'a>>),
+}
+
+impl<'a> PendingCleanupEvidence<'a> {
+    pub(super) fn wake_path_validation(&self) -> Option<WakePathValidation<'a>> {
+        match self {
+            Self::WakeHandoff(validate) => *validate,
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RollbackCause {
+    ActualSetupFailure,
+    AdmittedStopped,
+    PendingSourceRefusedBeforeSubmit,
+    ShutdownStopped,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RollbackCursor {
+    ClaimedBeforeSubmit,
+    CloseSubmitted,
+    RuntimeAbsent,
+    RowAbsent,
+    PreparingReleased,
+    Completed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RollbackRow {
+    InitialNoRow,
+    ExactRemoval {
+        token: Uuid,
+        backend: crate::pty::backend::SessionBackendKind,
+    },
+}
+
+pub(super) struct PendingSourceRefusal {
+    pub(super) token: Uuid,
+    pub(super) returned_to_wake: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PendingRollback {
+    pub(super) attempt: Uuid,
+    pub(super) cause: RollbackCause,
+    pub(super) cursor: RollbackCursor,
+    pub(super) row: RollbackRow,
+    pub(super) in_flight: bool,
+}
+
+pub(super) struct RollbackIdentity {
+    pub(super) binding: PendingCreateBinding,
+    pub(super) carrier: crate::config::sessions_persistence::PublishedCarrier,
+    pub(super) launch: Option<OwnedLaunchReceipt>,
+    pub(super) tracker: crate::pty::manager::ResponseCloseState,
+}
+
+pub(super) struct RollbackResume<'a> {
+    pub(super) continuation: &'a OwnedReplacementContinuation,
+    pub(super) binding: PendingCreateBinding,
+    pub(super) nonce: Uuid,
+    pub(super) attempt: Uuid,
+}
+
+impl ReplacementProgress {
+    pub(super) fn precommit_rollback_verified(&self, actual_err: bool) -> bool {
+        self.rollback_completed
+            && self.preparing_released
+            && self.reservations_released
+            && self.committed.is_none()
+            && self.rollback.is_some_and(|rollback| {
+                rollback.cursor == RollbackCursor::Completed
+                    && match rollback.cause {
+                        RollbackCause::ActualSetupFailure => actual_err,
+                        RollbackCause::AdmittedStopped
+                        | RollbackCause::PendingSourceRefusedBeforeSubmit => true,
+                        RollbackCause::ShutdownStopped => false,
+                    }
+            })
+    }
 }
 
 /// A transient handle to the same data-only owner retained by `CoordinatorInner`.
@@ -609,6 +706,15 @@ pub(super) struct ReplacementState {
 }
 
 impl ReplacementState {
+    pub(super) fn successful_publication_for(&self, binding: PendingCreateBinding) -> bool {
+        self.publication_observed
+            && self.envelope_released
+            && matches!(self.completion.as_ref(), Some(Ok(info))
+                if info.id == binding.session_id().to_string()
+                && matches!(&self.effects[LifecycleEffectSlot::Publication as usize],
+                    OwnedEffectState::Completed { outcome: Ok(Some(id)), .. } if *id == info.id))
+    }
+
     pub(super) fn retained_effect_diagnostic(&self) -> String {
         let pending = self
             .effects
@@ -631,48 +737,6 @@ impl ReplacementState {
                     .as_deref()
                     .unwrap_or("terminal-proof-incomplete")
             ),
-        }
-    }
-
-    fn effects_are_terminal(&self) -> bool {
-        self.effects.iter().all(|effect| {
-            matches!(
-                effect,
-                OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }
-            )
-        })
-    }
-
-    pub(super) fn replacement_terminal_is_verified(&self) -> bool {
-        if !self.publication_observed || !self.envelope_released || !self.effects_are_terminal() {
-            return false;
-        }
-        let Some(progress) = self.replacement.as_ref() else {
-            return false;
-        };
-        let released = progress.terminal_verified
-            && progress.work_transferred
-            && progress.reservations_released
-            && progress.preparing_released
-            && progress.create_reservation.is_none()
-            && progress.work_reservation.is_none()
-            && matches!(
-                progress.context_prerequisite,
-                None | Some(OwnedEffectState::Completed { .. })
-            );
-        if !released {
-            return false;
-        }
-        match self.stage {
-            ReplacementStage::Completed => {
-                progress.retired && progress.retirement_cleanup_completed
-            }
-            ReplacementStage::RolledBack => {
-                progress.rollback_completed
-                    && progress.committed.is_none()
-                    && matches!(self.completion, Some(Err(_)))
-            }
-            _ => false,
         }
     }
 
