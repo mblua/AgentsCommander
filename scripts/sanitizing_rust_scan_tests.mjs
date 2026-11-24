@@ -302,14 +302,17 @@ test('3330 external Rust declarators retain production throughout the snapshot',
 });
 test('5164 test-local #[path] between integration-test crates keeps the test-only set', () => {
   const shared = {'src-tauri/tests/support/shared.rs': 'fn helper() {}'};
+  const nested = '#[path = "../support/shared.rs"] mod shared;';
+  const flat = '#[path = "support/shared.rs"] mod shared;';
   for (const path of ['src-tauri/tests/a/main.rs', 'src-tauri/tests/b.rs'])
-    externalProof({...shared, [path]: path.endsWith('main.rs')
-      ? '#[path = "../support/shared.rs"] mod shared;' : '#[path = "support/shared.rs"] mod shared;'},
-    false);
-  for (const text of ['#[path = "../../src/h.rs"] mod h;', '#[path = "../support/missing.rs"] mod m;',
-    '#[cfg_attr(unix, path = "../support/shared.rs")] mod m;', 'include!("../support/shared.rs");'])
+    externalProof({...shared, [path]: path.endsWith('main.rs') ? nested : flat}, false);
+  for (const text of ['#[path = "../../src/h.rs"] mod h;',
+    '#[path = "../support/missing.rs"] mod m;',
+    '#[cfg_attr(unix, path = "../support/shared.rs")] mod m;',
+    'include!("../support/shared.rs");'])
     externalProof({...shared, 'src-tauri/tests/a/main.rs': text});
-  externalProof({...shared, [prefix + 'other.rs']: '#[path = "../tests/support/shared.rs"] mod s;'});
+  const escape = '#[path = "../tests/support/shared.rs"] mod s;';
+  externalProof({...shared, [prefix + 'other.rs']: escape});
 });
 test('3330 all Cargo manifests receive the complete conservative policy', () => {
   externalProof({'src-tauri/src/Cargo.toml': '[[bin]]\nname="prod"\npath="h.rs"\n'});
