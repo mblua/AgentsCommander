@@ -520,7 +520,7 @@ async fn a_real_five_second_reader_delays_the_batch_which_then_commits_once() {
 
 use std::path::PathBuf;
 
-// ---- #3532 P14: live-state pruning, pending sessions and composition ----------------------
+// ---- Live-state pruning, pending sessions and composition ----------------------
 
 /// Wait until `count` records are stored, at most ten seconds.
 async fn stored_at_least(shared: &Shared, count: usize) {
@@ -908,7 +908,7 @@ async fn a_pending_session_is_captured_once_finished_without_any_memo() {
     assert_eq!(values, [Some(40)]);
 }
 
-// ---- #4049 P03: live Settings polling through the production adapter ----------------------
+// ---- Live Settings polling through the production adapter ----------------------
 
 /// The fakes, with configuration from the production Settings adapter over `state`.
 fn start_on_settings(shared: &Arc<Shared>, state: &SettingsState) -> Started {

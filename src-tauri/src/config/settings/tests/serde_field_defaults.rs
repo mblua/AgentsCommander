@@ -537,7 +537,7 @@ fn agent_auto_update_by_command_default_empty_and_round_trip_camel_case() {
 
 #[test]
 fn agent_auto_update_by_command_absent_key_deserializes_empty() {
-    // An old settings.json without the #1327 key deserializes to an empty
+    // An old settings.json without the key deserializes to an empty
     // map (serde default), never an error.
     let mut value =
         serde_json::to_value(AppSettings::default()).expect("serialize default to value");

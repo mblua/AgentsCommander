@@ -336,7 +336,7 @@ fn configured_default_shell_custom_posix_host_rejects_any_configured_args() {
     assert_error_shape(&err, "bash.exe", "--norc", "conflicting/terminal");
 }
 
-// --- #1498 - detached launchers and terminal-only POSIX args ------------
+// --- Detached launchers and terminal-only POSIX args ------------
 
 #[test]
 fn reject_detached_launcher_matches_basename_case_insensitively() {

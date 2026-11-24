@@ -473,7 +473,7 @@ fn attach_cuts_the_batch_exactly_at_the_snapshot_boundary() {
 /// follow A=24x80, desync B=50x132 are pairwise distinct, each asymmetric, and no pair is
 /// a transposition of another. With A != R0, an implementation that never writes
 /// `conpty_size` converges onto R0 and the final grid assertion turns red; asymmetric,
-/// non-transposed grids make a rows/cols argument swap fail loudly (the #973 bug class).
+/// non-transposed grids make a rows/cols argument swap fail loudly (the bug class).
 #[test]
 fn a_grid_divergence_yields_no_seed_and_the_next_attach_seeds_clean() {
     let fanout = fanout();
