@@ -1,5 +1,45 @@
 use super::*;
 
+/// Backend over `runtime` with no broadcaster, lifecycle sender or token manager.
+fn backend_with_runtime(runtime: Arc<dyn ContainerRuntime>) -> ContainerTransportBackend {
+    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+    let idle_detector = IdleDetector::new(|_| {}, |_| {});
+    ContainerTransportBackend::with_runtime(
+        output_senders,
+        idle_detector,
+        None,
+        None,
+        runtime,
+        None,
+    )
+}
+
+/// Registers an active runtime handle for `session_id` on container `container-<id>`.
+fn insert_runtime_handle(
+    backend: &ContainerTransportBackend,
+    session_id: Uuid,
+) -> mpsc::Receiver<HostToBridgeFrame> {
+    backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
+        session_id,
+        container_id: format!("container-{session_id}"),
+    })
+}
+
+/// The sweep dropped the transport state but kept the runtime cleanup owner
+/// for `session_id`, and nothing was stopped yet.
+fn assert_runtime_owner_retained(
+    backend: &ContainerTransportBackend,
+    runtime: &RecordingRuntime,
+    session_id: Uuid,
+) {
+    assert!(!backend.contains_transport_state_for_test(session_id));
+    assert_eq!(
+        backend.retained_runtime_cleanup_sessions_for_test(),
+        vec![session_id]
+    );
+    assert!(runtime.stopped().is_empty());
+}
+
 fn production_route_remover_fixture(
     runtime: Arc<RecordingRuntime>,
 ) -> (
@@ -8,26 +48,14 @@ fn production_route_remover_fixture(
     Uuid,
     mpsc::Receiver<HostToBridgeFrame>,
 ) {
-    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
-    let idle_detector = IdleDetector::new(|_| {}, |_| {});
-    let backend = Arc::new(ContainerTransportBackend::with_runtime(
-        output_senders,
-        idle_detector,
-        None,
-        None,
-        runtime,
-        None,
-    ));
+    let backend = Arc::new(backend_with_runtime(runtime));
     let local_backend: Arc<dyn PtyBackend> = backend.clone();
     let pty_manager = Arc::new(Mutex::new(PtyManager::new_for_test_with_container_backend(
         local_backend,
         Arc::clone(&backend),
     )));
     let session_id = Uuid::new_v4();
-    let receiver = backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
-        session_id,
-        container_id: format!("container-{session_id}"),
-    });
+    let receiver = insert_runtime_handle(&backend, session_id);
     pty_manager
         .lock()
         .unwrap()
@@ -103,12 +131,7 @@ fn production_route_remover_outer_lock_deadline_retains_real_ownership() {
         elapsed <= budget + Duration::from_millis(400),
         "real outer-lock route removal exceeded the absolute deadline: {elapsed:?}"
     );
-    assert!(!backend.contains_transport_state_for_test(session_id));
-    assert_eq!(
-        backend.retained_runtime_cleanup_sessions_for_test(),
-        vec![session_id]
-    );
-    assert!(runtime.stopped().is_empty());
+    assert_runtime_owner_retained(&backend, &runtime, session_id);
     assert_eq!(
         manager_guard.backend_kind(session_id),
         Some(SessionBackendKind::ContainerTransport)
@@ -155,12 +178,7 @@ fn production_route_remover_outer_poison_is_exact_structured_residue() {
         elapsed <= budget + Duration::from_millis(400),
         "outer-poison route removal exceeded the absolute deadline: {elapsed:?}"
     );
-    assert!(!backend.contains_transport_state_for_test(session_id));
-    assert_eq!(
-        backend.retained_runtime_cleanup_sessions_for_test(),
-        vec![session_id]
-    );
-    assert!(runtime.stopped().is_empty());
+    assert_runtime_owner_retained(&backend, &runtime, session_id);
     let poisoned_guard = match pty_manager.lock() {
         Ok(_) => panic!("outer PTY manager mutex unexpectedly recovered poison"),
         Err(error) => error.into_inner(),
@@ -202,12 +220,7 @@ fn production_route_remover_registry_poison_is_exact_structured_residue() {
         elapsed <= budget + Duration::from_millis(400),
         "route-registry poison removal exceeded the absolute deadline: {elapsed:?}"
     );
-    assert!(!backend.contains_transport_state_for_test(session_id));
-    assert_eq!(
-        backend.retained_runtime_cleanup_sessions_for_test(),
-        vec![session_id]
-    );
-    assert!(runtime.stopped().is_empty());
+    assert_runtime_owner_retained(&backend, &runtime, session_id);
     assert_eq!(
         pty_manager.lock().unwrap().backend_kind(session_id),
         Some(SessionBackendKind::ContainerTransport)
@@ -253,21 +266,9 @@ fn production_route_remover_healthy_path_is_terminal_once() {
 #[test]
 fn blocked_global_sweep_route_remover_returns_at_deadline_with_retained_owner() {
     let runtime = Arc::new(RecordingRuntime::default());
-    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
-    let idle_detector = IdleDetector::new(|_| {}, |_| {});
-    let backend = Arc::new(ContainerTransportBackend::with_runtime(
-        output_senders,
-        idle_detector,
-        None,
-        None,
-        runtime.clone(),
-        None,
-    ));
+    let backend = Arc::new(backend_with_runtime(runtime.clone()));
     let session_id = Uuid::new_v4();
-    let _receiver = backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
-        session_id,
-        container_id: format!("container-{session_id}"),
-    });
+    let _receiver = insert_runtime_handle(&backend, session_id);
 
     let route_calls = Arc::new(AtomicUsize::new(0));
     let calls = Arc::clone(&route_calls);
@@ -313,12 +314,7 @@ fn blocked_global_sweep_route_remover_returns_at_deadline_with_retained_owner() 
         elapsed <= budget + Duration::from_millis(400),
         "blocked route remover exceeded the absolute deadline: {elapsed:?}"
     );
-    assert!(!backend.contains_transport_state_for_test(session_id));
-    assert_eq!(
-        backend.retained_runtime_cleanup_sessions_for_test(),
-        vec![session_id]
-    );
-    assert!(runtime.stopped().is_empty());
+    assert_runtime_owner_retained(&backend, &runtime, session_id);
     assert_eq!(route_calls.load(Ordering::SeqCst), 1);
     assert!(
         report.retained.iter().any(|context| {
@@ -358,21 +354,9 @@ fn blocked_global_sweep_route_remover_returns_at_deadline_with_retained_owner() 
 #[test]
 fn poisoned_global_sweep_route_removal_is_structured_residue() {
     let runtime = Arc::new(RecordingRuntime::default());
-    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
-    let idle_detector = IdleDetector::new(|_| {}, |_| {});
-    let backend = ContainerTransportBackend::with_runtime(
-        output_senders,
-        idle_detector,
-        None,
-        None,
-        runtime.clone(),
-        None,
-    );
+    let backend = backend_with_runtime(runtime.clone());
     let session_id = Uuid::new_v4();
-    let _receiver = backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
-        session_id,
-        container_id: format!("container-{session_id}"),
-    });
+    let _receiver = insert_runtime_handle(&backend, session_id);
     backend.set_route_remover(Arc::new(|_, _| {
         Err(RouteRemovalError::LockPoisoned("ptyManager"))
     }));
@@ -381,12 +365,7 @@ fn poisoned_global_sweep_route_removal_is_structured_residue() {
     let report = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
 
     assert!(!report.terminal, "retained={:?}", report.retained);
-    assert!(!backend.contains_transport_state_for_test(session_id));
-    assert_eq!(
-        backend.retained_runtime_cleanup_sessions_for_test(),
-        vec![session_id]
-    );
-    assert!(runtime.stopped().is_empty());
+    assert_runtime_owner_retained(&backend, &runtime, session_id);
     assert!(
         report.retained.iter().any(|context| {
             context.contains("owner=containerCleanup")
@@ -410,16 +389,7 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
     );
     assert_eq!(runtime.active_reader_count(), 2);
     let (retry_entered, retry_release) = runtime.install_command_retry_gate_for_test();
-    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
-    let idle_detector = IdleDetector::new(|_| {}, |_| {});
-    let backend = Arc::new(ContainerTransportBackend::with_runtime(
-        output_senders,
-        idle_detector,
-        None,
-        None,
-        runtime.clone(),
-        None,
-    ));
+    let backend = Arc::new(backend_with_runtime(runtime.clone()));
     let budget = Duration::from_millis(150);
     let (report_sender, report_receiver) = std::sync::mpsc::channel();
     let sweep_backend = Arc::clone(&backend);
@@ -600,22 +570,10 @@ fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
     let runtime = Arc::new(RetainedContextRuntime {
         contexts: runtime_contexts,
     });
-    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
-    let idle_detector = IdleDetector::new(|_| {}, |_| {});
-    let backend = ContainerTransportBackend::with_runtime(
-        output_senders,
-        idle_detector,
-        None,
-        None,
-        runtime,
-        None,
-    );
+    let backend = backend_with_runtime(runtime);
     for index in 0..INSTALLED_ENTRIES {
         let session_id = Uuid::from_u128(20_000 + index as u128);
-        let _receiver = backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
-            session_id,
-            container_id: format!("container-{session_id}"),
-        });
+        let _receiver = insert_runtime_handle(&backend, session_id);
     }
 
     let budget = Duration::ZERO;

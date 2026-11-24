@@ -1,6 +1,31 @@
 use super::*;
 use crate::config::sessions_persistence::save_sessions_to_dir;
 
+/// Serializes the tests that reset or read the process-wide orphan counters.
+fn orphan_serial() -> std::sync::MutexGuard<'static, ()> {
+    ORPHAN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Persists `mgr` into `dir` with `retention` as the only project roots.
+async fn persist_with_retention(
+    mgr: &SessionManager,
+    dir: &std::path::Path,
+    retention: &[String],
+    mode: PersistMode,
+    expect_msg: &str,
+) {
+    persist_current_state_to_dir_for_project_paths_result(mgr, dir, Some(retention), mode)
+        .await
+        .expect(expect_msg);
+}
+
+/// Reads the orphan archive written into `dir`.
+fn read_archive(dir: &std::path::Path) -> String {
+    std::fs::read_to_string(dir.join(ORPHAN_ARCHIVE_FILENAME)).expect("archive")
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // §1295 tests: purge persist prune / archive / dedup / gate
 // ──────────────────────────────────────────────────────────────────────
@@ -14,9 +39,7 @@ use crate::config::sessions_persistence::save_sessions_to_dir;
 )]
 #[tokio::test]
 async fn purge_reaps_nonexistent_cwd_outside_roots_once_and_is_byte_idempotent() {
-    let _serial = ORPHAN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = orphan_serial();
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -90,9 +113,7 @@ async fn purge_reaps_nonexistent_cwd_outside_roots_once_and_is_byte_idempotent()
 )]
 #[tokio::test]
 async fn purge_archives_existing_cwd_outside_roots() {
-    let _serial = ORPHAN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = orphan_serial();
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -144,9 +165,7 @@ async fn purge_archives_existing_cwd_outside_roots() {
 )]
 #[tokio::test]
 async fn purge_keeps_root_agent_and_archived_root_rows() {
-    let _serial = ORPHAN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = orphan_serial();
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -189,8 +208,7 @@ async fn purge_keeps_root_agent_and_archived_root_rows() {
     assert_eq!(filtered2.len(), 2, "both rows survive both cycles");
 }
 
-/// Creates a local-process session with no agent metadata, as the AC3 test
-/// does for both its dormant and live orphans.
+/// Creates a local-process session with no agent metadata.
 async fn create_local_session(
     mgr: &SessionManager,
     shell: &str,
@@ -221,9 +239,7 @@ async fn create_local_session(
 )]
 #[tokio::test]
 async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
-    let _serial = ORPHAN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = orphan_serial();
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -239,14 +255,14 @@ async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
     mgr.mark_exited(dormant.id, 0).await;
 
     let retention = vec![current.to_string_lossy().to_string()];
-    persist_current_state_to_dir_for_project_paths_result(
+    persist_with_retention(
         &mgr,
         temp.path(),
-        Some(&retention),
+        &retention,
         PersistMode::PruneDormant,
+        "persist",
     )
-    .await
-    .expect("persist");
+    .await;
 
     // (create_session auto-names rows "Session N"; assert by id, not name.)
     let dormant_id = dormant.id.to_string();
@@ -265,8 +281,7 @@ async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
         "both orphans dropped from the disk snapshot"
     );
     // ONE archive record (only the dormant one; the live one is kept live).
-    let archive =
-        std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
+    let archive = read_archive(temp.path());
     assert_eq!(
         archive.lines().count(),
         1,
@@ -288,18 +303,16 @@ async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
     );
 
     // Second persist: silent (no archive growth, counters frozen, no new warns).
-    let archive_after_first =
-        std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
-    persist_current_state_to_dir_for_project_paths_result(
+    let archive_after_first = read_archive(temp.path());
+    persist_with_retention(
         &mgr,
         temp.path(),
-        Some(&retention),
+        &retention,
         PersistMode::PruneDormant,
+        "second persist",
     )
-    .await
-    .expect("second persist");
-    let archive_after_second =
-        std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
+    .await;
+    let archive_after_second = read_archive(temp.path());
     assert_eq!(
         archive_after_first, archive_after_second,
         "no archive growth on repeat"
@@ -325,9 +338,7 @@ async fn persist_prunes_dormant_orphan_keeps_live_orphan() {
 )]
 #[tokio::test]
 async fn persist_is_silent_when_nothing_orphaned() {
-    let _serial = ORPHAN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = orphan_serial();
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -335,27 +346,22 @@ async fn persist_is_silent_when_nothing_orphaned() {
     let in_root = current.join("wg-1").join("__agent_keep");
     std::fs::create_dir_all(&in_root).expect("create in-root agent");
     let mgr = SessionManager::new();
-    mgr.create_session(
-        "keep".into(),
-        vec![],
+    create_local_session(
+        &mgr,
+        "keep",
         in_root.to_string_lossy().to_string(),
-        None,
-        None,
-        Vec::new(),
-        false,
-        crate::pty::backend::SessionBackendKind::LocalProcess,
+        "create kept session",
     )
-    .await
-    .expect("create kept session");
+    .await;
     let retention = vec![current.to_string_lossy().to_string()];
-    persist_current_state_to_dir_for_project_paths_result(
+    persist_with_retention(
         &mgr,
         temp.path(),
-        Some(&retention),
+        &retention,
         PersistMode::NoPrune,
+        "persist",
     )
-    .await
-    .expect("persist");
+    .await;
     assert!(
         !temp.path().join(ORPHAN_ARCHIVE_FILENAME).exists(),
         "no archive file when nothing orphaned"
@@ -380,9 +386,7 @@ async fn persist_is_silent_when_nothing_orphaned() {
 )]
 #[tokio::test]
 async fn transition_border_no_prune_keeps_then_steady_prune_removes() {
-    let _serial = ORPHAN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = orphan_serial();
     reset_orphan_counters();
     reset_orphan_warned();
     reset_orphan_archived();
@@ -397,19 +401,7 @@ async fn transition_border_no_prune_keeps_then_steady_prune_removes() {
         .to_string_lossy()
         .to_string();
     let mgr = SessionManager::new();
-    let row = mgr
-        .create_session(
-            "border".into(),
-            vec![],
-            orphan_cwd.clone(),
-            None,
-            None,
-            Vec::new(),
-            false,
-            crate::pty::backend::SessionBackendKind::LocalProcess,
-        )
-        .await
-        .expect("create orphan row");
+    let row = create_local_session(&mgr, "border", orphan_cwd.clone(), "create orphan row").await;
     mgr.mark_exited(row.id, 0).await;
     mgr.set_active_only(row.id).await.expect("select row");
     let id_str = row.id.to_string();
@@ -418,22 +410,21 @@ async fn transition_border_no_prune_keeps_then_steady_prune_removes() {
 
     // No-prune (transitional) persist: row stays in RAM, archived once,
     // dropped from disk.
-    persist_current_state_to_dir_for_project_paths_result(
+    persist_with_retention(
         &mgr,
         temp.path(),
-        Some(&retention),
+        &retention,
         PersistMode::NoPrune,
+        "no-prune persist",
     )
-    .await
-    .expect("no-prune persist");
+    .await;
     let rows = mgr.list_sessions().await;
     assert!(
         rows.iter().any(|s| s.id == id_str),
         "no-prune persist keeps the dormant row in RAM"
     );
     assert_eq!(mgr.selection_payload().await.id(), Some(row.id));
-    let archive =
-        std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
+    let archive = read_archive(temp.path());
     assert_eq!(archive.lines().count(), 1, "no-prune persist archives once");
     assert!(
         load_sessions_raw_from_dir_for_test(temp.path()).is_empty(),
@@ -449,21 +440,20 @@ async fn transition_border_no_prune_keeps_then_steady_prune_removes() {
     assert_eq!(warned, 1);
 
     // Steady prune: row leaves RAM; archive NOT re-appended (B1-once tie).
-    persist_current_state_to_dir_for_project_paths_result(
+    persist_with_retention(
         &mgr,
         temp.path(),
-        Some(&retention),
+        &retention,
         PersistMode::PruneDormant,
+        "steady prune",
     )
-    .await
-    .expect("steady prune");
+    .await;
     let rows = mgr.list_sessions().await;
     assert!(
         !rows.iter().any(|s| s.id == id_str),
         "steady prune removes the dormant row from RAM"
     );
-    let archive_after =
-        std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
+    let archive_after = read_archive(temp.path());
     assert_eq!(
         archive_after.lines().count(),
         1,
@@ -496,9 +486,7 @@ async fn transition_border_no_prune_keeps_then_steady_prune_removes() {
 )]
 #[tokio::test]
 async fn cross_site_dedup_purge_then_persist_warns_once() {
-    let _serial = ORPHAN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = orphan_serial();
     reset_orphan_counters();
     reset_orphan_warned();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -528,26 +516,15 @@ async fn cross_site_dedup_purge_then_persist_warns_once() {
 
     // Manager row (site B) with the same cwd.
     let mgr = SessionManager::new();
-    mgr.create_session(
-        "manager-orphan".into(),
-        vec![],
-        orphan_cwd,
-        None,
-        None,
-        Vec::new(),
-        false,
-        crate::pty::backend::SessionBackendKind::LocalProcess,
-    )
-    .await
-    .expect("create manager row");
-    persist_current_state_to_dir_for_project_paths_result(
+    create_local_session(&mgr, "manager-orphan", orphan_cwd, "create manager row").await;
+    persist_with_retention(
         &mgr,
         temp.path(),
-        Some(&retention),
+        &retention,
         PersistMode::NoPrune,
+        "persist",
     )
-    .await
-    .expect("persist");
+    .await;
 
     assert_eq!(
         orphan_warned_len(),
@@ -569,9 +546,7 @@ async fn cross_site_dedup_purge_then_persist_warns_once() {
 )]
 #[tokio::test]
 async fn site_c_record_reason_restore_cwd_missing() {
-    let _serial = ORPHAN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = orphan_serial();
     let temp = tempfile::tempdir().expect("tempdir");
     let ps = PersistedSession {
         name: "restore-skip".into(),
@@ -594,8 +569,7 @@ async fn site_c_record_reason_restore_cwd_missing() {
         before_bytes, after_bytes,
         "site C does not touch sessions.json"
     );
-    let archive =
-        std::fs::read_to_string(temp.path().join(ORPHAN_ARCHIVE_FILENAME)).expect("archive");
+    let archive = read_archive(temp.path());
     let lines: Vec<&str> = archive.lines().collect();
     assert_eq!(lines.len(), 1);
     let record: serde_json::Value = serde_json::from_str(lines[0]).expect("parse");
@@ -614,9 +588,7 @@ async fn site_c_record_reason_restore_cwd_missing() {
 )]
 #[tokio::test]
 async fn archive_appends_and_rotates_best_effort() {
-    let _serial = ORPHAN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = orphan_serial();
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = temp.path().to_path_buf();
     let ps = PersistedSession {
@@ -708,9 +680,7 @@ fn p05_assert_error_since(start: usize, expected: &str) {
 )]
 #[tokio::test]
 async fn characterize_3254_p05_ndjson_bytes() {
-    let _serial = ORPHAN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = orphan_serial();
     crate::logging::test_install_logger();
     crate::config::sessions_persistence::reset_orphan_archived();
     crate::config::sessions_persistence::reset_orphan_warned();
@@ -806,9 +776,7 @@ async fn characterize_3254_p05_ndjson_bytes() {
 )]
 #[tokio::test]
 async fn characterize_3254_p05_rotation() {
-    let _serial = ORPHAN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = orphan_serial();
     crate::logging::test_install_logger();
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join(ORPHAN_ARCHIVE_FILENAME);
