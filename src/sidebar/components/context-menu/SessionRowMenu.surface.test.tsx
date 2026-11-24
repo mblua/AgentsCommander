@@ -64,6 +64,22 @@ const groupSpec = (): AddToGroupSpec => ({
 
 const BASE_CAPS: SessionRowMenuCaps = { restart: { onSelect: noop } };
 
+// Counts entries into the outer ContextMenuSurface click shield: Solid
+// delegates onClick through the element's $$click slot, so wrapping it
+// observes exactly the clicks whose bubbling reached the outer handler.
+function armOuterShield(): { entries: () => number; stop: () => void } {
+  type Delegated = HTMLElement & { $$click?: (this: HTMLElement, e: Event) => unknown };
+  const menu = document.querySelector<Delegated>(".session-context-menu");
+  const original = menu?.$$click;
+  if (!menu || !original) throw new Error("outer shield not registered");
+  let entries = 0;
+  menu.$$click = function (this: HTMLElement, e: Event) {
+    entries += 1;
+    return original.call(this, e);
+  };
+  return { entries: () => entries, stop: () => (menu.$$click = original) };
+}
+
 const q = (testid: string): HTMLElement | null =>
   document.querySelector<HTMLElement>(`[data-ac-testid="${testid}"]`);
 const menuEl = (): HTMLElement => {
@@ -716,6 +732,20 @@ describe("#4945 SessionRowMenu surface propagation baseline", () => {
     rightClick(flyout);
     win.stop();
     expect(win.seen).toHaveLength(0);
+    expect(h.onDismiss).not.toHaveBeenCalled();
+    expect(q(GROUP_TEST_IDS.flyout)).not.toBeNull();
+  });
+
+  it("Add to Group: the local flyout shield stops clicks before the outer menu shield", async () => {
+    const h = mountHost();
+    await openMenu({ caps: { addToGroup: groupSpec() } });
+    mouseEnter(q(GROUP_TEST_IDS.trigger)!);
+    const outer = armOuterShield();
+    click(q(GROUP_TEST_IDS.flyout)!);
+    expect(outer.entries()).toBe(0);
+    click(document.querySelector(".session-context-menu")!);
+    expect(outer.entries()).toBe(1);
+    outer.stop();
     expect(h.onDismiss).not.toHaveBeenCalled();
     expect(q(GROUP_TEST_IDS.flyout)).not.toBeNull();
   });

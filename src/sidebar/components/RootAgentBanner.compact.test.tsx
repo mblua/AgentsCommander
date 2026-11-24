@@ -494,5 +494,28 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
       await waitFor(() => expect(document.querySelector(MENU_SEL)).not.toBeNull());
       expect(selections(r.fake)).toBe(0);
     });
+
+    it("9f. a stale Telegram settings response after a reopen leaves the new menu unchanged", async () => {
+      const fake = bannerFake();
+      let release: (v: unknown) => void = () => {};
+      fake.onInvoke("get_settings", () => new Promise((res) => (release = res)));
+      const r = renderBanner(fake);
+      const openMenu = () =>
+        r.banner.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      const q = (id: string) => document.querySelector(`[data-ac-testid="rootAgent.menu${id}"]`);
+      openMenu();
+      await waitFor(() => expect(q(".telegram")).not.toBeNull());
+      fire(q(".telegram")!);
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+      openMenu();
+      expect(q("")).not.toBeNull();
+      const bot = (id: string) => ({ id, label: id, token: "t", chatId: 1, color: "#fff" });
+      release(baseSettings({ telegramBots: [bot("a"), bot("b")] }));
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(q("")).not.toBeNull();
+      expect(q(".telegram.bot.a")).toBeNull();
+      expect(q(".telegram.bot.b")).toBeNull();
+      expect(fake.callsFor("telegram_attach")).toHaveLength(0);
+    });
   });
 });
