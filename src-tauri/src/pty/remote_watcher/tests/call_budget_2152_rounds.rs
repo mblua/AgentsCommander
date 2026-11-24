@@ -41,7 +41,6 @@ fn both_features_disabled_does_not_spawn_the_thread() {
 
 #[tokio::test]
 async fn disabled_axis_is_skipped_in_the_round() {
-    let _guard = round_test_lock().await;
     let settings = AppSettings {
         ci_activity_enabled: false,
         ..AppSettings::default()
@@ -72,7 +71,6 @@ fn clamps_hold_at_the_floor_and_ceiling() {
 
 #[tokio::test]
 async fn snapshot_is_keyed_by_the_exact_unnormalized_path() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     harness.repo("repo-b");
     let unnormalized = format!(
@@ -100,7 +98,6 @@ async fn snapshot_is_keyed_by_the_exact_unnormalized_path() {
 
 #[tokio::test]
 async fn gc_removes_a_path_that_left_the_work_list() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let first = harness.repo("repo-a");
     let second = harness.repo("repo-b");
@@ -118,7 +115,6 @@ async fn gc_removes_a_path_that_left_the_work_list() {
 
 #[tokio::test]
 async fn gc_runs_on_an_empty_work_list() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let first = harness.repo("repo-a");
     let second = harness.repo("repo-b");
@@ -160,7 +156,6 @@ fn payload_wire_shape_is_camel_case() {
 
 #[tokio::test]
 async fn payload_vectors_are_the_same_length_and_sorted_by_path() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let first = harness.repo("repo-a");
     let second = harness.repo("repo-b");
@@ -182,7 +177,6 @@ async fn payload_vectors_are_the_same_length_and_sorted_by_path() {
 
 #[tokio::test]
 async fn event_is_gated_on_whole_payload_equality() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(&[repo]);
@@ -213,7 +207,6 @@ async fn event_is_gated_on_whole_payload_equality() {
 
 #[tokio::test]
 async fn transition_channel_full_drops_and_keeps_publishing() {
-    let _guard = round_test_lock().await;
     let harness = Harness::with_capacity(AppSettings::default(), 1);
     let first = harness.repo("repo-a");
     let second = harness.repo("repo-b");
@@ -250,7 +243,6 @@ async fn transition_channel_full_drops_and_keeps_publishing() {
 
 #[tokio::test]
 async fn transition_channel_closed_drops_and_keeps_publishing() {
-    let _guard = round_test_lock().await;
     let harness = Harness::with_capacity(AppSettings::default(), 4);
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
@@ -287,7 +279,6 @@ async fn transition_channel_closed_drops_and_keeps_publishing() {
 
 #[tokio::test]
 async fn ci_transitions_carry_an_empty_base_branch() {
-    let _guard = round_test_lock().await;
     let settings = AppSettings {
         branch_staleness_enabled: false,
         ..AppSettings::default()
@@ -353,8 +344,6 @@ async fn ci_transitions_carry_an_empty_base_branch() {
 
 #[tokio::test]
 async fn base_branch_resolution_walks_the_three_step_chain() {
-    let _guard = round_test_lock().await;
-
     // Step 1: the GitHub default branch.
     {
         let harness = Harness::new(AppSettings::default());
@@ -443,7 +432,6 @@ async fn base_branch_resolution_walks_the_three_step_chain() {
 
 #[tokio::test]
 async fn base_branch_is_resolved_once_per_nwo_and_cached() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let first = harness.repo("repo-a");
     let second = harness.repo("repo-b");
@@ -519,7 +507,6 @@ fn gh_command_spec_pins_the_child_environment_and_creation_flags() {
 
 #[tokio::test]
 async fn every_round_process_goes_through_the_spawner_seam() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let first = harness.repo("repo-a");
     let second = harness.repo("repo-b");
@@ -604,7 +591,6 @@ fn round_log_level_is_debug() {
 
 #[tokio::test]
 async fn archived_roots_are_normalized_before_filtering() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let archived_root = harness.temp.path().join("archived");
     let repo = archived_root.join(".ac").join("wg-1").join("repo-x");

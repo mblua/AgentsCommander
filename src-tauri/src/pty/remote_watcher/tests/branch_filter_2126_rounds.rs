@@ -5,7 +5,6 @@ use std::sync::PoisonError;
 /// could invalidate, so the notice is suppressed while the chip still turns.
 #[tokio::test]
 async fn stale_without_own_commits_sends_no_notice_but_keeps_the_chip() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
@@ -49,7 +48,6 @@ async fn stale_without_own_commits_sends_no_notice_but_keeps_the_chip() {
 /// one key and proves nothing about the carry-over.
 #[tokio::test]
 async fn stale_without_own_commits_notifies_once_after_the_first_own_commit() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
@@ -106,7 +104,6 @@ async fn stale_without_own_commits_notifies_once_after_the_first_own_commit() {
 /// which is not the edge the notice fires on, so it was never told at all.
 #[tokio::test]
 async fn branch_that_commits_while_behind_notifies_after_the_carry_over() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
@@ -147,7 +144,6 @@ async fn branch_that_commits_while_behind_notifies_after_the_carry_over() {
 /// Dedup now survives a commit, which it did not before.
 #[tokio::test]
 async fn carry_over_does_not_duplicate_a_notice_across_a_commit() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
@@ -195,7 +191,6 @@ async fn carry_over_does_not_duplicate_a_notice_across_a_commit() {
 /// unknown CI, and seeding it would assert a run state nobody observed.
 #[tokio::test]
 async fn carry_over_leaves_the_ci_axis_unknown_on_a_new_sha() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings {
         ci_activity_enabled: true,
         ..AppSettings::default()
@@ -271,7 +266,6 @@ async fn carry_over_leaves_the_ci_axis_unknown_on_a_new_sha() {
 /// are polled concurrently and a shared queue would not be deterministic.
 #[tokio::test]
 async fn two_live_keys_on_one_branch_never_seed_each_other() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let first = harness.repo("repo-a");
     let second = harness.repo("repo-b");
@@ -335,7 +329,6 @@ async fn two_live_keys_on_one_branch_never_seed_each_other() {
 /// input, and an absent one is not evidence that the branch is empty.
 #[tokio::test]
 async fn stale_with_a_missing_ahead_by_still_sends_the_notice() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     publish_branch(&repo, "fix/2141", harness.git_state.as_ref());
@@ -364,7 +357,6 @@ async fn stale_with_a_missing_ahead_by_still_sends_the_notice() {
 
 #[tokio::test]
 async fn stale_on_a_feature_branch_still_sends_the_notice() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     crate::pty::git_watcher::publish_git_status(
@@ -406,7 +398,6 @@ async fn stale_on_a_feature_branch_still_sends_the_notice() {
 
 #[tokio::test]
 async fn stale_with_an_unresolved_default_branch_still_sends_the_notice() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     // Overwrite `Harness::repo`'s `main` with the sentinel literal itself: an
@@ -462,7 +453,6 @@ async fn stale_with_an_unresolved_default_branch_still_sends_the_notice() {
 /// while the shared key still costs exactly one CI query per round.
 #[tokio::test]
 async fn two_rooms_on_one_default_commit_are_one_call_and_no_ci_transition() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let first = harness.repo("repo-a");
     let second = harness.repo("repo-b");
@@ -514,7 +504,6 @@ async fn two_rooms_on_one_default_commit_are_one_call_and_no_ci_transition() {
 
 #[tokio::test]
 async fn backoff_is_per_key_and_per_axis() {
-    let _guard = round_test_lock().await;
     let settings = AppSettings {
         ci_sweep_min_interval_secs: 30,
         branch_staleness_interval_secs: 300,
@@ -607,7 +596,6 @@ async fn backoff_is_per_key_and_per_axis() {
 
 #[tokio::test]
 async fn rate_limit_jumps_straight_to_the_cap() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(&[repo]);

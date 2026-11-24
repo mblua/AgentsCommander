@@ -3,7 +3,6 @@ use std::sync::PoisonError;
 
 #[tokio::test]
 async fn secondary_rate_limit_backs_off_one_minute() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(&[repo]);
@@ -47,7 +46,6 @@ async fn secondary_rate_limit_backs_off_one_minute() {
 /// so the ONLY failure kind in play is the CI one.
 #[tokio::test]
 async fn default_branch_ci_failure_keeps_idle_chip_and_arms_the_backoff() {
-    let _guard = round_test_lock().await;
     for (failure, expected) in [
         (primary_limit_output(), BACKOFF_CAP),
         (secondary_limit_output(), SECONDARY_BACKOFF_BASE),
@@ -161,7 +159,6 @@ fn failure_kind_classifies_the_three_403_texts() {
 
 #[tokio::test]
 async fn budget_starved_key_is_not_queried_and_keeps_its_chip() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let _paths = two_repos(&harness);
     // One resolution plus two axis queries: exactly one key fits.
@@ -207,7 +204,6 @@ async fn budget_starved_key_is_not_queried_and_keeps_its_chip() {
 
 #[tokio::test]
 async fn running_ci_wins_the_last_token() {
-    let _guard = round_test_lock().await;
     for budget in [4.0, 1.0] {
         let harness = Harness::new(AppSettings::default());
         let first = harness.repo("a");
@@ -313,7 +309,6 @@ async fn running_ci_wins_the_last_token() {
 
 #[tokio::test]
 async fn a_secondary_limit_silences_the_next_round() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     harness.set_jitter(0.0);
     let _paths = two_repos(&harness);
@@ -371,7 +366,6 @@ async fn a_secondary_limit_silences_the_next_round() {
 
 #[tokio::test]
 async fn jitter_spans_the_half_open_range() {
-    let _guard = round_test_lock().await;
     let now = Instant::now();
     let wall = Local::now();
 
@@ -411,7 +405,6 @@ async fn jitter_spans_the_half_open_range() {
 
 #[tokio::test]
 async fn a_primary_limit_closes_the_gate_for_fifteen_minutes() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     harness.set_jitter(0.0);
     let _paths = two_repos(&harness);
@@ -458,7 +451,6 @@ async fn a_primary_limit_closes_the_gate_for_fifteen_minutes() {
 
 #[tokio::test]
 async fn sustained_spend_never_exceeds_the_ceiling() {
-    let _guard = round_test_lock().await;
     let (harness, _paths) = budget_fixture();
 
     let mut now = Instant::now();
@@ -497,7 +489,6 @@ async fn sustained_spend_never_exceeds_the_ceiling() {
 
 #[tokio::test]
 async fn starved_keys_are_served_in_a_later_round() {
-    let _guard = round_test_lock().await;
     let (harness, _paths) = budget_fixture();
 
     let mut now = Instant::now();

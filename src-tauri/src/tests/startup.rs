@@ -32,15 +32,6 @@ fn startup_unavailable_project_state_never_enters_session_load_or_purge() {
 // which would read the developer's own configuration directory. File names
 // are literals on purpose: an independent oracle, not the constants.
 
-/// Serializes the tests that record or take the process-wide summary.
-static NAMING_MIGRATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn naming_migration_guard() -> std::sync::MutexGuard<'static, ()> {
-    NAMING_MIGRATION_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 const INSTANCE_FAMILIES_FIXTURE: [(&str, &str); 8] = [
     ("settings.json", "settings.30.instance.no-git.json"),
     ("settings.local.json", "settings.50.personal.no-git.json"),
@@ -121,7 +112,6 @@ fn data_files(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
 #[test]
 fn instance_families_happy_path() {
     let summary_owner = crate::startup::StartupMigrationSummary::new();
-    let _guard = naming_migration_guard();
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
     seed_instance_families(dir);
@@ -166,7 +156,6 @@ fn instance_families_happy_path() {
 #[test]
 fn the_overlay_is_read_under_its_new_name_after_migration() {
     let summary_owner = crate::startup::StartupMigrationSummary::new();
-    let _guard = naming_migration_guard();
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
     std::fs::write(dir.join("settings.json"), r#"{"logLevel":"info"}"#).unwrap();
@@ -190,7 +179,6 @@ fn the_overlay_is_read_under_its_new_name_after_migration() {
 #[test]
 fn a_pre_existing_target_wins_and_the_old_file_is_set_aside() {
     let summary_owner = crate::startup::StartupMigrationSummary::new();
-    let _guard = naming_migration_guard();
     for existing_ordinals in [0_u32, 1] {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path();
@@ -257,7 +245,6 @@ fn a_pre_existing_target_wins_and_the_old_file_is_set_aside() {
 #[test]
 fn a_stale_lock_or_temp_is_left_on_disk_and_noted() {
     let summary_owner = crate::startup::StartupMigrationSummary::new();
-    let _guard = naming_migration_guard();
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
     seed_instance_families(dir);
@@ -287,7 +274,6 @@ fn a_stale_lock_or_temp_is_left_on_disk_and_noted() {
 #[test]
 fn only_the_three_fatal_outcomes_stop_startup() {
     let summary_owner = crate::startup::StartupMigrationSummary::new();
-    let _guard = naming_migration_guard();
 
     // An unreadable journal.
     let temp = tempfile::tempdir().unwrap();
@@ -338,7 +324,6 @@ fn only_the_three_fatal_outcomes_stop_startup() {
 fn a_contended_migration_waits_then_defers_to_the_winner() {
     let summary_owner = crate::startup::StartupMigrationSummary::new();
     use crate::config::naming_migration as nm;
-    let _guard = naming_migration_guard();
 
     // The winner completes the scope inside the budget.
     let temp = tempfile::tempdir().unwrap();
@@ -422,7 +407,6 @@ fn a_contended_migration_waits_then_defers_to_the_winner() {
 #[test]
 fn the_post_logger_summary_names_what_was_renamed() {
     let summary_owner = crate::startup::StartupMigrationSummary::new();
-    let _guard = naming_migration_guard();
     let _ = crate::take_naming_migration_summary(&summary_owner);
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
@@ -456,7 +440,6 @@ fn the_post_logger_summary_names_what_was_renamed() {
 #[test]
 fn a_complete_scope_whose_old_name_is_back_is_re_run() {
     let summary_owner = crate::startup::StartupMigrationSummary::new();
-    let _guard = naming_migration_guard();
 
     // The data rename was lost behind a durable `Complete`.
     let temp = tempfile::tempdir().unwrap();
@@ -500,7 +483,6 @@ fn a_complete_scope_whose_old_name_is_back_is_re_run() {
 #[test]
 fn a_missing_config_dir_skips_and_a_bad_one_is_fatal() {
     let summary_owner = crate::startup::StartupMigrationSummary::new();
-    let _guard = naming_migration_guard();
     let temp = tempfile::tempdir().unwrap();
 
     // Absent: skipped, recorded, and nothing is written anywhere.
@@ -550,7 +532,6 @@ fn a_missing_config_dir_skips_and_a_bad_one_is_fatal() {
 #[test]
 fn no_config_dir_skips_the_migration_and_starts() {
     let summary_owner = crate::startup::StartupMigrationSummary::new();
-    let _guard = naming_migration_guard();
     let _ = crate::take_naming_migration_summary(&summary_owner);
     let untouched = tempfile::tempdir().unwrap();
 

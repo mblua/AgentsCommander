@@ -2,16 +2,10 @@ use super::*;
 
 /// M1: a successful create answers the request with a `created` result
 /// sidecar carrying the session id, and deletes the request.
-// clippy (1.98) `await_holding_lock`: the guard is the test-only
-// cross-test serialization lock (a std `Mutex` on purpose — the sync
-// C1-C5 tests in `cli::create_agent` share the same static) and must be
-// held across the poll await; the tests run single-threaded per process.
 #[allow(clippy::await_holding_lock, reason = "test-only serial lock")]
 #[tokio::test]
 async fn session_request_result_sidecar_written_on_success() {
-    // `config_dir()` is process-wide — one shared session-requests
-    // dir for every C/M artifact test. Serialize so a poll never consumes
-    // another test's request file mid-test.
+    // Participating tests hold this guard while using the shared request directory.
     let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()

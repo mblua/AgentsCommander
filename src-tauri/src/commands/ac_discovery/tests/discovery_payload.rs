@@ -296,7 +296,6 @@ fn discovery_branch_payload_gate_fires_on_dirty_flip() {
 /// path, and the existing path push is unchanged.
 #[test]
 fn with_replicas_mut_pushes_repo_rooms_alongside_paths() {
-    let _guard = crate::pty::git_watcher::DISCOVERY_TEST_LOCK.blocking_lock();
     let (app, _settings, _receiver, session_mgr, _pty_mgr) =
         archive_command_app(AppSettings::default());
     let git_state = Arc::new(crate::pty::git_watcher::GitState::new());

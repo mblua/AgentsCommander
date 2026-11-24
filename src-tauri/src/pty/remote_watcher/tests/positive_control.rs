@@ -255,7 +255,6 @@ fn compare_without_ahead_by_reads_none_and_keeps_its_state() {
 
 #[tokio::test]
 async fn unpushed_head_404_maps_to_unknown() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
@@ -281,7 +280,6 @@ async fn unpushed_head_404_maps_to_unknown() {
 
 #[tokio::test]
 async fn every_failure_maps_to_unknown() {
-    let _guard = round_test_lock().await;
     type ScriptedFailure = Box<dyn Fn(&mut GhScripts)>;
     let cases: Vec<ScriptedFailure> = vec![
         Box::new(|gh: &mut GhScripts| gh.ci.push_back(Err(FailureKind::Timeout))),
@@ -346,7 +344,6 @@ async fn every_failure_maps_to_unknown() {
 
 #[tokio::test]
 async fn failure_does_not_retain_the_previous_state() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
@@ -376,7 +373,6 @@ async fn failure_does_not_retain_the_previous_state() {
 
 #[tokio::test]
 async fn cold_start_emits_no_transition() {
-    let _guard = round_test_lock().await;
     for body in [
         ci_body(&sha_of('a'), &["in_progress"]),
         ci_body(&sha_of('a'), &[]),

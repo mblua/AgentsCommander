@@ -85,7 +85,6 @@ fn p2_outcome(
 
 #[tokio::test]
 async fn p2_apply_ci_clears_runs_on_suppressed_and_err_and_sets_failure_only_on_plain_err() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let key = p2_key();
     let now = Instant::now();
@@ -242,7 +241,6 @@ fn p3_gh_count(harness: &Harness, needle: &str) -> usize {
 /// without any identity compare.
 #[tokio::test]
 async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
-    let _guard = round_test_lock().await;
     let dir = tempfile::tempdir().expect("snapshot dir");
     let (harness, repo) = p3_setup(dir.path());
     let marker = format!(
@@ -351,7 +349,6 @@ async fn p3_producer_publishes_run_ids_prs_and_reason_end_to_end() {
 /// identical-to-default branch are suppressed to Idle with no detail.
 #[tokio::test]
 async fn p3_producer_publishes_runs_after_identity_compare_and_clears_them_when_suppressed() {
-    let _guard = round_test_lock().await;
     let dir = tempfile::tempdir().expect("snapshot dir");
     let settings = AppSettings {
         branch_staleness_enabled: false,
