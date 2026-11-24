@@ -1,4 +1,5 @@
 import "./shared/styles/scrollbars.css";
+import "./shared/styles/select.css";
 import "./shared/console-capture";
 import { render } from "solid-js/web";
 import { WindowErrorBoundary } from "./shared/window-error-boundary";
