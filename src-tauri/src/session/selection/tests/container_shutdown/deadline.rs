@@ -272,7 +272,7 @@ impl Watchdog {
         self.lock().first_failure.clone()
     }
 
-    fn fail(&self, state: &mut WatchState, finding: String, at: Instant) {
+    pub(super) fn fail(&self, state: &mut WatchState, finding: String, at: Instant) {
         let line = format!(
             "case={} watchdog {finding} stamps={:?}",
             self.case, state.stamps
