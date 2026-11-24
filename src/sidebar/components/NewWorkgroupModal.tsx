@@ -82,18 +82,14 @@ const NewWorkgroupModal: Component<{
     closeTeamList();
   };
   const handleOptionKeyDown = (e: KeyboardEvent, name: string) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.repeat || e.isComposing || compositionActive) return;
-      heldKey = e.key;
-      returnToSearch();
-      confirmTeam(name);
-    } else if (e.key === "Escape" || (e.key === "Tab" && e.shiftKey)) {
-      e.preventDefault();
-      e.stopPropagation();
-      returnToSearch();
-    }
+    const confirms = e.key === "Enter" || e.key === " ";
+    if (!confirms && e.key !== "Escape" && !(e.key === "Tab" && e.shiftKey)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.repeat || e.isComposing || compositionActive) return;
+    heldKey = e.key;
+    returnToSearch();
+    if (confirms) confirmTeam(name);
   };
   const handleListFocusOut = (e: FocusEvent) => {
     if (insideCombobox(e.relatedTarget)) return;

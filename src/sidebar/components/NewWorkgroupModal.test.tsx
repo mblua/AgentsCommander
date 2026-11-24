@@ -786,8 +786,32 @@ describe("#4945 P4 option focus and keyboard", () => {
     expect(list().hidden).toBe(true);
     expect(confirmed().textContent).toBe("No team selected.");
     expect(onClose).not.toHaveBeenCalled();
+    keyup(search(), "Escape");
     key(search(), "Escape");
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("held option Escape repeats on Search without closing the modal until keyup", () => {
+    const { onClose } = focusBeta();
+    expect(key(rows()[1], "Escape").defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(search());
+    expect(key(search(), "Escape", { repeat: true }).defaultPrevented).toBe(true);
+    expect(key(search(), "Escape", { repeat: true }).defaultPrevented).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+    keyup(search(), "Escape");
+    key(search(), "Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("option Escape and Shift+Tab ignore autorepeat and IME composition", () => {
+    const { onClose } = focusBeta();
+    expect(key(rows()[1], "Escape", { repeat: true }).defaultPrevented).toBe(true);
+    expect(key(rows()[1], "Escape", { isComposing: true }).defaultPrevented).toBe(true);
+    const shiftTab = { shiftKey: true, isComposing: true };
+    expect(key(rows()[1], "Tab", shiftTab).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(rows()[1]);
+    expect(list().hidden).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("option keys ignore autorepeat and IME composition", () => {
