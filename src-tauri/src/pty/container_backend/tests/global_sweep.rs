@@ -378,7 +378,9 @@ fn poisoned_global_sweep_route_removal_is_structured_residue() {
         Err(RouteRemovalError::LockPoisoned("ptyManager"))
     }));
 
-    let report = backend.stop_all_started_containers_blocking(Duration::from_millis(50));
+    // Under load 50 ms can end before the remover runs once (#1253); on the
+    // poison path this budget is also the run time, so keep it at 1 s.
+    let report = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
 
     assert!(!report.terminal, "retained={:?}", report.retained);
     assert!(!backend.contains_transport_state_for_test(session_id));
