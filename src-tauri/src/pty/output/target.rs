@@ -32,8 +32,8 @@ pub(crate) enum PtyOutputEmitError {
 /// 9. u64 precision is not a concern below 2^53 output events.
 ///
 /// The field is absent when the parser is unavailable, and the client then writes those bytes
-/// live with no reconcile: live PTY bytes are never gated (PR #961). Emitting nothing for a
-/// faulted parser is what made the terminal permanently black in #955.
+/// live with no reconcile: live PTY bytes are never gated. Emitting nothing for a
+/// faulted parser is what made the terminal permanently black.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PtyOutputPayload {

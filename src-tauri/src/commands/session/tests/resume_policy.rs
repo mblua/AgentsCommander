@@ -1,6 +1,6 @@
 use super::*;
 
-// ── (#630/#631) restart_skip_auto_resume_with_intent: the call site uses this
+// ── restart_skip_auto_resume_with_intent: the call site uses this
 //    exact composition to decide resume-vs-fresh on a restart. ──
 
 #[test]
@@ -23,7 +23,7 @@ fn restart_intent_normal_member_reopen_resumes() {
 
 #[test]
 fn restart_intent_deferred_fresh_member_reopen_stays_fresh() {
-    // #631 closure: a "Restart Session"-then-app-restart member defers, then
+    // Closure: a "Restart Session"-then-app-restart member defers, then
     // reopens via Branch A (Some(false)), but its persisted fresh intent wins.
     assert!(super::super::restart_skip_auto_resume_with_intent(
         true,
@@ -39,7 +39,7 @@ fn restart_intent_stored_fresh_with_restart_button_is_fresh() {
     ));
 }
 
-// ── (#747) carry_communication_for_restart: shared decision for the
+// ── carry_communication_for_restart: shared decision for the
 //    Branch-A reopen (restart_session_inner_with_activation) AND the
 //    startup wake arm (lib.rs restore loop), which reuses this helper with
 //    the persisted intent. This matrix pins the fresh gate for BOTH. ──
@@ -81,7 +81,7 @@ fn carry_communication_for_restart_matrix() {
     assert!(super::super::carry_communication_for_restart(None, false).is_none());
 }
 
-// ── #599 R1 effective_create_skip_auto_resume tests ──
+// ── R1 effective_create_skip_auto_resume tests ──
 
 #[test]
 fn effective_create_skip_auto_resume_defaults_to_true_for_none() {
@@ -92,8 +92,8 @@ fn effective_create_skip_auto_resume_defaults_to_true_for_none() {
 
 #[test]
 fn effective_create_skip_auto_resume_respects_explicit_false() {
-    // #599 R1: reopening a coordinator destroyed by auto-close (#552/#580)
-    // or manual close (#588) opts in to resume; --continue is then injected
+    // R1: reopening a coordinator destroyed by auto-close
+    // or manual close opts in to resume; --continue is then injected
     // (still subject to the claude_project_exists disk gate downstream).
     assert!(!super::super::effective_create_skip_auto_resume(Some(
         false
@@ -106,7 +106,7 @@ fn effective_create_skip_auto_resume_respects_explicit_true() {
     assert!(super::super::effective_create_skip_auto_resume(Some(true)));
 }
 
-// ── #599 R2 claude_projects_dir_for_config_dir tests ──
+// ── R2 claude_projects_dir_for_config_dir tests ──
 
 #[test]
 fn claude_projects_dir_for_config_dir_joins_projects_and_mangled() {
@@ -132,12 +132,12 @@ fn claude_projects_dir_for_config_dir_expands_percent_envvar_in_base() {
     let var = "AC_TEST_599_CONFIG_DIR";
     let tmp = tempfile::tempdir().unwrap();
     let custom_base = tmp.path().join(".claude-env");
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only, see the follow-up
     unsafe {
         std::env::set_var(var, custom_base.to_str().unwrap());
     }
     let resolved = super::super::claude_projects_dir_for_config_dir(&format!("%{var}%"), "C:\\x");
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only, see the follow-up
     unsafe {
         std::env::remove_var(var);
     }
@@ -167,7 +167,7 @@ fn local_resume_probe_env_layer_expands_powershell_envvar() {
     let var = "AC_TEST_894_CONFIG_DIR";
     let tmp = tempfile::tempdir().unwrap();
     let custom_base = tmp.path().join(".claude-env");
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only, see the follow-up
     unsafe {
         std::env::set_var(var, custom_base.to_str().unwrap());
     }
@@ -175,7 +175,7 @@ fn local_resume_probe_env_layer_expands_powershell_envvar() {
     let resolved =
         super::super::claude_projects_dir_for_config_dir(&format!("$env:{var}\\.claude"), "C:\\x");
 
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only, see the follow-up
     unsafe {
         std::env::remove_var(var);
     }
@@ -185,7 +185,7 @@ fn local_resume_probe_env_layer_expands_powershell_envvar() {
     assert_eq!(resolved, expected);
 }
 
-// ── should_inject_continue tests (issue #82, plan §8.1) ──
+// ── should_inject_continue tests ──
 
 #[test]
 fn should_inject_continue_returns_false_when_not_claude() {
@@ -271,7 +271,7 @@ fn should_inject_continue_returns_true_when_unrelated_continue_substring() {
     ));
 }
 
-// ── (#756) mirror_forces_fresh truth table ──
+// ── mirror_forces_fresh truth table ──
 
 #[test]
 fn mirror_forces_fresh_truth_table() {
@@ -287,7 +287,7 @@ fn mirror_forces_fresh_truth_table() {
     assert!(!super::super::mirror_forces_fresh(true, false, false));
 }
 
-// ── (#756) should_inject_fresh_session_id decision table ──
+// ── should_inject_fresh_session_id decision table ──
 
 #[test]
 fn should_inject_fresh_session_id_true_for_claude_skip_clean_argv() {
@@ -351,7 +351,7 @@ fn should_inject_fresh_session_id_true_when_unrelated_flag_substring() {
     ));
 }
 
-// ── (#2454) transcript_id_from_args ──
+// ── transcript_id_from_args ──
 
 const TRANSCRIPT_UUID: &str = "7f9e4a10-2b3c-4d5e-8f90-1a2b3c4d5e6f";
 
@@ -433,7 +433,7 @@ fn transcript_id_is_none_for_a_trailing_flag_without_value() {
     assert_eq!(transcript_id_of(&["claude", "--session-id"]), None);
 }
 
-// ── Issue #107 Round 5 §R5.8.6 — build_title_prompt_appendage idempotence ──
+// ── build_title_prompt_appendage idempotence ──
 //
 // Tempdir naming starts with `wg-` so `find_workgroup_task_path_for_cwd`'s
 // ancestor walk finds the cwd itself as the wg ancestor. The three tests
@@ -443,7 +443,7 @@ fn transcript_id_is_none_for_a_trailing_flag_without_value() {
 // `std::fs::read_to_string`, which is not worth the harness for a thin
 // orchestrator.
 
-// ── Issue #186 — resolve_claude_projects_dir ──
+// ── resolve_claude_projects_dir ──
 
 pub(super) fn write_wrapper(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
@@ -678,7 +678,7 @@ fn resolve_claude_projects_dir_expands_percent_envvar_value() {
     let var = "AC_TEST_186_BASE_PCT";
     let tmp = tempfile::tempdir().unwrap();
     let custom_base = tmp.path().join(".claude-mb");
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only, see the follow-up
     unsafe {
         std::env::set_var(var, custom_base.to_str().unwrap());
     }
@@ -689,7 +689,7 @@ fn resolve_claude_projects_dir_expands_percent_envvar_value() {
     );
     let resolved =
         super::super::resolve_claude_projects_dir(wrapper.to_str().unwrap(), &[], "C:\\x");
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only, see the follow-up
     unsafe {
         std::env::remove_var(var);
     }
@@ -704,7 +704,7 @@ fn resolve_claude_projects_dir_expands_powershell_envvar_value() {
     let var = "AC_TEST_186_BASE_PS";
     let tmp = tempfile::tempdir().unwrap();
     let custom_base = tmp.path().join(".claude-mb");
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only, see the follow-up
     unsafe {
         std::env::set_var(var, custom_base.to_str().unwrap());
     }
@@ -715,7 +715,7 @@ fn resolve_claude_projects_dir_expands_powershell_envvar_value() {
     );
     let resolved =
         super::super::resolve_claude_projects_dir(wrapper.to_str().unwrap(), &[], "C:\\x");
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only, see the follow-up
     unsafe {
         std::env::remove_var(var);
     }

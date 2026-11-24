@@ -94,7 +94,7 @@ fn validate_session_creation_cwd_rejects_unregistered_and_missing() {
     }
 }
 
-/// #2716 (B3) E42 - the unreadable mark is keyed by directory: marking A
+/// E42 - the unreadable mark is keyed by directory: marking A
 /// never suppresses B's save, and loading B's readable agents file never
 /// clears A's key. The mark is set by the real loader, not a test setter.
 #[test]
@@ -155,7 +155,7 @@ fn the_unreadable_mark_is_scoped_to_its_own_directory() {
     );
 }
 
-/// #2716 (B3) - marks `dir` through the real loader: a settings file plus an
+/// Marks `dir` through the real loader: a settings file plus an
 /// unparseable agents file, loaded by `load_settings_from_path`.
 fn b3_mark_dir_unreadable(dir: &std::path::Path) -> crate::config::settings::AppSettings {
     use crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME;
@@ -189,7 +189,7 @@ fn b3_sha(path: &std::path::Path) -> String {
     format!("{:x}", sha2::Sha256::digest(std::fs::read(path).unwrap()))
 }
 
-/// #2716 (B3) E34a: with the mark set by the real loader, two distinct
+/// E34a: with the mark set by the real loader, two distinct
 /// writers, a persist and the startup purge, leave `sessions.json` with its
 /// exact bytes. The purge fixture really writes when the mark is clear, so a
 /// gate relocated to the persist functions still fails this row.
@@ -255,7 +255,7 @@ async fn an_unreadable_sidecar_suppresses_every_session_file_write() {
     );
 }
 
-/// #2716 (B3) E34b: start one runs under the mark, the sidecar is repaired,
+/// E34b: start one runs under the mark, the sidecar is repaired,
 /// and start two still finds the agent row eligible to wake, with its resume
 /// prompt; a write in start two lands and the exact key is gone.
 #[tokio::test]

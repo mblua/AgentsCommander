@@ -36,7 +36,7 @@ fn normalize_path_for_compare(s: &str) -> String {
 /// Logical resolution of `.` and `..` components in a path string (no disk
 /// access). Used as a fallback when `std::fs::canonicalize()` fails because
 /// the target doesn't exist — e.g., legacy identity refs that point to a
-/// previous workspace folder name (see #299).
+/// previous workspace folder name.
 ///
 /// Returns a forward-slash string. `..` components above the root of an
 /// absolute path are dropped; `..` components at the front of a purely
@@ -442,7 +442,7 @@ pub(super) fn team_members(
         }
         crate::path_identity::verify_directory(&ac_root.join(format!("_agent_{member}")))?;
         seen.push(member.clone());
-        // #1245: the application's team-config writer requires the coordinator
+        // The application's team-config writer requires the coordinator
         // to appear in `agents` (commands/entity_creation.rs::
         // normalize_team_config_for_project, and rule 4 of
         // docs/agent-matrix-conventions.md). The coordinator is returned

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// #1171 test 78 needs both sides of the `isTauri` gate in one file, so the module is
+// Test 78 needs both sides of the `isTauri` gate in one file, so the module is
 // mocked behind a mutable flag rather than probed from the environment.
 let tauriEnvironment = true;
 vi.mock("../../shared/platform", () => ({
@@ -25,7 +25,7 @@ import {
 
 const WATCHERS_BTN = '[data-ac-testid="statusBar.watchers"]';
 
-describe("the StatusBar watcher-activity button (#1171)", () => {
+describe("the StatusBar watcher-activity button", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

@@ -1,9 +1,9 @@
-//! #1005 token-accounting harness (plan section 7). Renders the three boot
+//! Token-accounting harness (plan section 7). Renders the three boot
 //! profiles from FIXED synthetic inputs so the numbers are deterministic across
 //! machines and stages, plus two supplement rows (B1/B3) that no boot profile
 //! can see (B1 reaches Root boots through the `context[]` array, B3 is a
 //! durable file that never boots). Profile numbers EXCLUDE the Role.md
-//! passthrough and the `# Context: <label>` glue, matching the #1005 inventory
+//! passthrough and the `# Context: <label>` glue, matching the S-phase inventory
 //! baseline. chars/4 is the declared token estimate (number of record).
 //!
 //! Run (ignored; never gates CI):
@@ -16,7 +16,7 @@ use std::path::Path;
 // fs check and `display_path` does not canonicalize, so these render
 // byte-identically on every machine.
 //
-// #1795: `FAKE_REPLICA_ROOT` gained its `.ac/` level so it is an AUTHORITATIVE
+// `FAKE_REPLICA_ROOT` gained its `.ac/` level so it is an AUTHORITATIVE
 // room replica under `replica_shared_roots`; without it the budget test would
 // measure a four-entry block that no real agent receives. That correction wakes
 // one code path that was asleep: `{{HOST_PLATFORM_RULES}}` calls `find_ac_root`,
@@ -103,7 +103,7 @@ const V4_TOUCHED_OWNERS_BYTES: usize = 8_363;
 const V4_FULL_WG_PROFILE_BYTES: usize = 9_866;
 const V4_MAX_TOUCHED_OWNERS_BYTES: usize = 7_606;
 const V4_MAX_FULL_WG_PROFILE_BYTES: usize = 9_109;
-// #1795 V5 generation, on the exact V3-to-V4 pattern. Every V3 and V4
+// V5 generation, on the exact V3-to-V4 pattern. Every V3 and V4
 // constant and every existing `assert_eq!` is kept; `REQUIRED_REDUCTION_BYTES`
 // stays 757 and is not re-derived.
 //
@@ -118,7 +118,7 @@ const V5_TOUCHED_OWNERS_BYTES: usize = 9_474;
 const V5_FULL_WG_PROFILE_BYTES: usize = 10_977;
 const V5_MAX_TOUCHED_OWNERS_BYTES: usize = 8_717;
 const V5_MAX_FULL_WG_PROFILE_BYTES: usize = 10_220;
-// #2031 V6 generation: the Answering section is TEMPLATE BODY text, so it
+// V6 generation: the Answering section is TEMPLATE BODY text, so it
 // moves the full WG profile only. The five touched owners are summed from
 // the dynamic blocks (write restrictions + messaging + CLI + credentials +
 // delegated reporting), which this change does not touch, so their V5
@@ -132,15 +132,15 @@ const V6_PRE_TEMPLATE_BYTES: usize = 559;
 const V6_DELTA_BYTES: usize = 294;
 const V6_FULL_WG_PROFILE_BYTES: usize = 11_271;
 const V6_MAX_FULL_WG_PROFILE_BYTES: usize = 10_514;
-// The pre-#1795 fixture renders no shared-location entries, so its full
+// The pre-shared-locations fixture renders no shared-location entries, so its full
 // profile is the V4-shaped render plus the V6 template delta.
 const V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES: usize = V4_MAX_FULL_WG_PROFILE_BYTES + V6_DELTA_BYTES;
-// #2840 adds an explicitly measured status grant. Keep every historical
+// This step adds an explicitly measured status grant. Keep every historical
 // constant and the required 757-byte reduction; account only this exact
 // addition separately so unrelated growth still fails the old ladder.
 const P2_STATUS_GRANT_BYTES: usize = 1_145;
 
-// #2871: explicit human approval permits only the independently measured
+// Explicit human approval permits only the independently measured
 // Windows host wording addition; other hosts retain their existing gates.
 const OLD_WINDOWS_HOST_RULES: &str = concat!(
     r#"## Host Platform Rules
@@ -161,7 +161,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
 );
 const WINDOWS_HOST_RULES_DELTA_BYTES: usize = 74;
 
-// #2888: account only the exact archive-layout wording growth. Frozen
+// Account only the exact archive-layout wording growth. Frozen
 // previous clauses and independently pinned new clauses keep historical
 // ceilings/reduction checks meaningful without removing privacy text.
 const OLD_ARCHIVE_GRANT: &str = "Read-only there: every rotated `memory_YYYYMMDD_hhmmss/` \
@@ -179,7 +179,7 @@ const NEW_PEER_PRIVACY: &str = "Other agents' memory* directories (live memory/,
     never read/list/search/summarize, even if asked; message the owner.";
 const MEMORY_LAYOUT_DELTA_BYTES: usize = 200;
 
-// #2931 changes only the TASK verb list. Pin both literal clauses and
+// This step changes only the TASK verb list. Pin both literal clauses and
 // measure their exact delta independently of the generated output;
 // historical accounting excludes it, while actual ceilings stay fixed.
 const OLD_TASK_VERBS: &str = "only through the `task-set-title` and `task-append-body` CLI verbs";
@@ -187,13 +187,13 @@ const NEW_TASK_VERBS: &str =
     "only through the `task-set-title`, `task-append-body` and `task-set-body` CLI verbs";
 const TASK_SET_BODY_RULE_DELTA_BYTES: usize = 17;
 
-// #4752 P01: entry 6 keeps this sentence; it no longer ends the task rules.
+// P01: entry 6 keeps this sentence; it no longer ends the task rules.
 const MOVED_PEER_ACCESS: &str = " No peer-memory/other-room access.";
-// #4752 P01: 20 + "C:/fake/.ac/wg-1-team/TASK.md".len()
+// 20 + "C:/fake/.ac/wg-1-team/TASK.md".len()
 const ROOM_TASK_RULES_GLUE_BYTES: usize = 49;
-// #4752 P01: 79 + messaging (31) + task (29)
+// P01: 79 + messaging (31) + task (29)
 const INTEGRITY_SPLIT_CURRENT_DELTA_BYTES: usize = 139;
-// #4752 P01: 59 + messaging (27)
+// P01: 59 + messaging (27)
 const INTEGRITY_SPLIT_PRE_1795_DELTA_BYTES: usize = 86;
 
 struct CurrentProfile {
@@ -227,7 +227,7 @@ fn summarized_default_context_meets_size_budget() {
     let current = measure_current_profile(&values, &write_restrictions, &skills, host_allowance);
     let pre = measure_pre_1795_profile(&skills, current.selected_host_rules, host_allowance);
     assert_v5_delta_oracle(&values, &current, &pre);
-    // #4752 P01: the 20-byte heading plus both rules, minus the trimmed final 2 bytes.
+    // P01: the 20-byte heading plus both rules, minus the trimmed final 2 bytes.
     assert_eq!(
         super::super::render_integrity_rules_block(&values).len(),
         20 + values.messaging_integrity_rule.len() + values.room_task_rules.len() - 2
@@ -350,7 +350,7 @@ fn measure_pre_1795_profile(
     selected_host_rules: &str,
     host_allowance: usize,
 ) -> Pre1795Profile {
-    // #1795 6.1: the fixture half of the delta, measured against the pre-#1795
+    // 6.1: the fixture half of the delta, measured against the pre-shared-locations
     // fixture in this same run. That root has no `.ac` grandparent, so check 3
     // rejects it, it renders the four-entry text, and the difference is exactly
     // (corrected path) + (the two entries).
@@ -399,7 +399,7 @@ fn assert_v5_delta_oracle(
     let pre_touched_owners = pre.pre_touched_owners;
     let pre_full_wg = &pre.pre_full_wg;
     let historical_pre_full_wg_bytes = pre.historical_pre_full_wg_bytes;
-    // #1795 6.1: an oracle that depends on NO measured number. Equal deltas across
+    // 6.1: an oracle that depends on NO measured number. Equal deltas across
     // the two rows would otherwise certify any wrong common text, because V5 is
     // measured from the changed output itself.
     assert!(
@@ -537,7 +537,7 @@ fn assert_full_wg_required_text(full_wg: &str) {
     assert_eq!(full_wg.matches("# Agent Repos").count(), 1);
     assert!(!full_wg.contains("{{"));
     assert!(!full_wg.contains("}}"));
-    // #1605: the platform block renders in the WG profile on every OS (linux/
+    // The platform block renders in the WG profile on every OS (linux/
     // macos render their minimal block too).
     assert!(
         full_wg.contains("## Host Platform Rules"),
@@ -546,7 +546,7 @@ fn assert_full_wg_required_text(full_wg: &str) {
 }
 
 fn assert_write_restriction_bodies(write_restrictions: &str) {
-    // #1795 6.1: bind the exact bodies, so the ladder cannot certify wrong text of
+    // 6.1: bind the exact bodies, so the ladder cannot certify wrong text of
     // the right length. `display_path` does NOT normalize separators
     // (`path_utils.rs:32-35`) and `Path::join` pushes `\` on Windows, so a
     // rendered path literal must be compared against a separator-normalized copy,
@@ -599,9 +599,9 @@ fn assert_final_budgets(current: &CurrentProfile, host_allowance: usize) {
     );
 }
 
-/// #2232's origin line is now owned by the selected Root template (#2832).
+/// The origin line is now owned by the selected Root template.
 /// Measure its exact 211-byte contribution across every host/auto selection,
-/// instead of pinning the removed #979 prologue's historical total length.
+/// instead of pinning the removed prologue's historical total length.
 #[test]
 fn comanaged_origin_line_moves_the_selected_root_template_by_exactly_its_bytes() {
     const CO_MANAGED_ORIGIN_LINE: &str = "\n- Some notifications carry a `(Co-managed)` sender \

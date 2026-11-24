@@ -1,16 +1,114 @@
 use super::*;
 
+type SessionMgr = Arc<tokio::sync::RwLock<SessionManager>>;
+type PtyMgr = Arc<Mutex<crate::pty::manager::PtyManager>>;
+type MockApp = tauri::App<tauri::test::MockRuntime>;
+
+/// A fresh session manager and PTY manager over `backend`, on a test app.
+fn app_with_backend(backend: Arc<dyn PtyBackend>) -> (SessionMgr, PtyMgr, MockApp) {
+    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+        backend,
+    )));
+    let app = session_test_app(
+        test_settings(),
+        Arc::clone(&session_mgr),
+        Arc::clone(&pty_mgr),
+    );
+    (session_mgr, pty_mgr, app)
+}
+
+/// Restarts `session_id` with the activated, non-skipped-resume options.
+async fn restart_activated(
+    app: &MockApp,
+    session_mgr: &SessionMgr,
+    pty_mgr: &PtyMgr,
+    session_id: Uuid,
+) -> Result<SessionInfo, String> {
+    let settings = app.state::<crate::config::settings::SettingsState>();
+    super::super::restart_session_inner_with_activation(
+        app.handle(),
+        session_mgr,
+        pty_mgr,
+        settings.inner(),
+        session_id,
+        None,        // agent_id
+        None,        // requested_profile
+        Some(false), // skip_auto_resume
+        true,        // activate_after
+    )
+    .await
+}
+
+/// Manual cascade over a barrier-held destroy backend with `member_a` selected.
+struct SelectedMemberCascade {
+    _cwd: tempfile::TempDir,
+    session_mgr: SessionMgr,
+    backend: Arc<BarrierDestroyBackend>,
+    app: MockApp,
+    started_rx: tokio::sync::oneshot::Receiver<Uuid>,
+    release_tx: std::sync::mpsc::Sender<()>,
+    ids: [Uuid; 4],
+}
+
+async fn selected_member_cascade() -> SelectedMemberCascade {
+    let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
+    std::fs::create_dir_all(root).expect("Root fixture creation succeeds");
+    let cwd = tempfile::tempdir().unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let backend = Arc::new(BarrierDestroyBackend::new(started_tx, release_rx));
+    let (session_mgr, pty_mgr, app) = app_with_backend(backend.clone());
+    let ids = create_manual_cascade_fixture(&app, &session_mgr, &pty_mgr, cwd.path()).await;
+    app.state::<crate::session::selection::SelectionCoordinator>()
+        .transition(crate::session::selection::SelectionRequest::user_switch(
+            ids[1],
+        ))
+        .await
+        .unwrap();
+    SelectedMemberCascade {
+        _cwd: cwd,
+        session_mgr,
+        backend,
+        app,
+        started_rx,
+        release_tx,
+        ids,
+    }
+}
+
+fn spawn_cascade_close(
+    app: &MockApp,
+    coordinator_id: Uuid,
+    member_ids: Vec<Uuid>,
+) -> tokio::task::JoinHandle<Result<crate::commands::session::DestroyOutcome, String>> {
+    let app = app.handle().clone();
+    tokio::spawn(async move {
+        execute_manual_coordinator_destroy(&app, coordinator_id, member_ids, true).await
+    })
+}
+
+fn recv_event_names(
+    events: &std::sync::mpsc::Receiver<(String, String)>,
+    count: usize,
+) -> Vec<String> {
+    (0..count)
+        .map(|_| {
+            events
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap()
+                .0
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn e2992_p42_invalid_prevents_spawn() {
     use crate::config::settings::{SettingsAvailability, SettingsState};
 
     let cwd = tempfile::tempdir().unwrap();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let backend = Arc::new(ScriptedSpawnBackend::default());
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend.clone(),
-    )));
-    let app = session_test_app(test_settings(), session_mgr.clone(), pty_mgr.clone());
+    let (session_mgr, pty_mgr, app) = app_with_backend(backend.clone());
     let cwd = crate::path_utils::normalize_windows_verbatim_path_buf(
         &std::fs::canonicalize(cwd.path()).expect("canonicalize P42 session cwd"),
     )
@@ -53,7 +151,7 @@ async fn e2992_p42_invalid_prevents_spawn() {
     close_test_coordinator(&app).await;
 }
 
-// #1063: while a real create is paused at `before_project_gate` with its pending
+// While a real create is paused at `before_project_gate` with its pending
 // row inserted, the deletion-only pending-inclusive snapshot must observe its
 // working directory even though every public read hides it. This is the exact
 // property the Agent Matrix delete recheck relies on.
@@ -63,18 +161,10 @@ async fn before_project_gate_barrier_exposes_pending_create_to_deletion_snapshot
     let cwd_str = cwd.path().to_string_lossy().into_owned();
     // The create normalizes its cwd; key the barriers by the same value.
     let barrier_key = crate::path_utils::normalize_windows_verbatim_path(&cwd_str);
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let backend = Arc::new(GatedSpawnBackend::new(started_tx, release_rx, false));
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend,
-    )));
-    let app = session_test_app(
-        test_settings(),
-        Arc::clone(&session_mgr),
-        Arc::clone(&pty_mgr),
-    );
+    let (session_mgr, pty_mgr, app) = app_with_backend(backend);
 
     let before_gate = super::super::seed_race_barriers::install_before_project_gate(&barrier_key);
     let after_seed = super::super::seed_race_barriers::install_after_seed_before_pty(&barrier_key);
@@ -152,39 +242,17 @@ async fn before_project_gate_barrier_exposes_pending_create_to_deletion_snapshot
 
 #[tokio::test]
 async fn manual_coordinator_cascade_barrier_publishes_only_one_final_selection() {
-    use tauri::Manager;
-
-    let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
-    std::fs::create_dir_all(root).expect("Root fixture creation succeeds");
-    let cwd = tempfile::tempdir().unwrap();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let backend = Arc::new(BarrierDestroyBackend::new(started_tx, release_rx));
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend,
-    )));
-    let app = session_test_app(
-        test_settings(),
-        Arc::clone(&session_mgr),
-        Arc::clone(&pty_mgr),
-    );
-    let [external, member_a, member_b, coordinator_id] =
-        create_manual_cascade_fixture(&app, &session_mgr, &pty_mgr, cwd.path()).await;
-    app.state::<crate::session::selection::SelectionCoordinator>()
-        .transition(crate::session::selection::SelectionRequest::user_switch(
-            member_a,
-        ))
-        .await
-        .unwrap();
+    let SelectedMemberCascade {
+        _cwd,
+        session_mgr,
+        backend: _,
+        app,
+        started_rx,
+        release_tx,
+        ids: [external, member_a, member_b, coordinator_id],
+    } = selected_member_cascade().await;
     let events = capture_session_lifecycle(&app);
-    let close = {
-        let app = app.handle().clone();
-        tokio::spawn(async move {
-            execute_manual_coordinator_destroy(&app, coordinator_id, vec![member_a, member_b], true)
-                .await
-        })
-    };
+    let close = spawn_cascade_close(&app, coordinator_id, vec![member_a, member_b]);
 
     assert_eq!(started_rx.await.unwrap(), member_a);
     assert_eq!(
@@ -208,14 +276,7 @@ async fn manual_coordinator_cascade_barrier_publishes_only_one_final_selection()
         selection.source(),
         crate::session::selection::SelectionSource::ManualClose
     );
-    let observed = (0..4)
-        .map(|_| {
-            events
-                .recv_timeout(std::time::Duration::from_secs(1))
-                .unwrap()
-                .0
-        })
-        .collect::<Vec<_>>();
+    let observed = recv_event_names(&events, 4);
     assert_eq!(
         observed,
         vec![
@@ -231,31 +292,15 @@ async fn manual_coordinator_cascade_barrier_publishes_only_one_final_selection()
 
 #[tokio::test]
 async fn manual_coordinator_cascade_failed_selected_member_stays_selected_without_fallback() {
-    use tauri::Manager;
-
-    let root = crate::config::root_agent::root_agent_dir().expect("resolve root agent dir");
-    std::fs::create_dir_all(root).expect("Root fixture creation succeeds");
-    let cwd = tempfile::tempdir().unwrap();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let backend = Arc::new(BarrierDestroyBackend::new(started_tx, release_rx));
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend.clone(),
-    )));
-    let app = session_test_app(
-        test_settings(),
-        Arc::clone(&session_mgr),
-        Arc::clone(&pty_mgr),
-    );
-    let [_external, member_a, member_b, coordinator_id] =
-        create_manual_cascade_fixture(&app, &session_mgr, &pty_mgr, cwd.path()).await;
-    app.state::<crate::session::selection::SelectionCoordinator>()
-        .transition(crate::session::selection::SelectionRequest::user_switch(
-            member_a,
-        ))
-        .await
-        .unwrap();
+    let SelectedMemberCascade {
+        _cwd,
+        session_mgr,
+        backend,
+        app,
+        started_rx,
+        release_tx,
+        ids: [_external, member_a, member_b, coordinator_id],
+    } = selected_member_cascade().await;
     backend.fail_kill_for(member_a);
     let revision = session_mgr
         .read()
@@ -264,13 +309,7 @@ async fn manual_coordinator_cascade_failed_selected_member_stays_selected_withou
         .await
         .revision();
     let events = capture_session_lifecycle(&app);
-    let close = {
-        let app = app.handle().clone();
-        tokio::spawn(async move {
-            execute_manual_coordinator_destroy(&app, coordinator_id, vec![member_a, member_b], true)
-                .await
-        })
-    };
+    let close = spawn_cascade_close(&app, coordinator_id, vec![member_a, member_b]);
     assert_eq!(started_rx.await.unwrap(), member_a);
     release_tx.send(()).unwrap();
     let outcome = close
@@ -293,14 +332,7 @@ async fn manual_coordinator_cascade_failed_selected_member_stays_selected_withou
     let selection = session_mgr.read().await.selection_payload().await;
     assert_eq!(selection.id(), Some(member_a));
     assert_eq!(selection.revision(), revision);
-    let observed = (0..2)
-        .map(|_| {
-            events
-                .recv_timeout(std::time::Duration::from_secs(1))
-                .unwrap()
-                .0
-        })
-        .collect::<Vec<_>>();
+    let observed = recv_event_names(&events, 2);
     assert_eq!(observed, vec!["session_destroyed", "session_destroyed"]);
     assert!(events.try_recv().is_err());
     close_test_coordinator(&app).await;
@@ -308,19 +340,9 @@ async fn manual_coordinator_cascade_failed_selected_member_stays_selected_withou
 
 #[tokio::test]
 async fn restart_success_publishes_created_destroyed_selection_in_order() {
-    use tauri::Manager;
-
     let cwd = tempfile::tempdir().unwrap();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let backend = Arc::new(ScriptedSpawnBackend::default());
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend.clone(),
-    )));
-    let app = session_test_app(
-        test_settings(),
-        Arc::clone(&session_mgr),
-        Arc::clone(&pty_mgr),
-    );
+    let (session_mgr, pty_mgr, app) = app_with_backend(backend.clone());
     let old =
         create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd.path().to_string_lossy()).await;
     let old_id = Uuid::parse_str(&old.id).unwrap();
@@ -336,21 +358,10 @@ async fn restart_success_publishes_created_destroyed_selection_in_order() {
         .set_communication_for_test(old_id, carried.clone())
         .await;
     let events = capture_session_lifecycle(&app);
-    let settings = app.state::<crate::config::settings::SettingsState>();
 
-    let replacement = super::super::restart_session_inner_with_activation(
-        app.handle(),
-        &session_mgr,
-        &pty_mgr,
-        settings.inner(),
-        old_id,
-        None,
-        None,
-        Some(false),
-        true,
-    )
-    .await
-    .expect("restart succeeds");
+    let replacement = restart_activated(&app, &session_mgr, &pty_mgr, old_id)
+        .await
+        .expect("restart succeeds");
     let replacement_id = Uuid::parse_str(&replacement.id).unwrap();
     assert_ne!(replacement_id, old_id);
     assert!(!backend.has_session(old_id));
@@ -392,23 +403,15 @@ async fn restart_success_publishes_created_destroyed_selection_in_order() {
 
 #[tokio::test]
 async fn restart_of_live_wg_replica_session_does_not_sessionrace() {
-    // #1101: `teardown_old_for_restart` retains the old canonical row (non-Exited)
+    // `teardown_old_for_restart` retains the old canonical row (non-Exited)
     // until the atomic commit's `mutations.remove(uuid)`, which runs AFTER the
     // create-gate. For a live WG replica restart (Suppress intent + replica cwd) the
     // gate saw `appeared_session == true` and returned Err("sessionRace"). The gate
     // must be skipped for the restart replacement create. The existing restart tests
     // use a plain tempdir (not a WG replica), so they never entered this gate.
     let (_fixture, first_cwd, _second) = strict_target_fixture();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let backend = Arc::new(ScriptedSpawnBackend::default());
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend.clone(),
-    )));
-    let app = session_test_app(
-        test_settings(),
-        Arc::clone(&session_mgr),
-        Arc::clone(&pty_mgr),
-    );
+    let (session_mgr, pty_mgr, app) = app_with_backend(backend.clone());
 
     // Seed a LIVE session at the strict WG replica cwd. User intent bypasses the
     // create-gate on create and establishes a non-Exited canonical row.
@@ -423,20 +426,11 @@ async fn restart_of_live_wg_replica_session_does_not_sessionrace() {
     .expect("seed live WG replica session");
     let old_id = Uuid::parse_str(&old.id).unwrap();
 
-    let settings = app.state::<crate::config::settings::SettingsState>();
-    let replacement = super::super::restart_session_inner_with_activation(
-        app.handle(),
-        &session_mgr,
-        &pty_mgr,
-        settings.inner(),
-        old_id,
-        None,        // agent_id
-        None,        // requested_profile
-        Some(false), // skip_auto_resume
-        true,        // activate_after
-    )
-    .await
-    .unwrap_or_else(|e| panic!("restart of a live WG replica session must not fail; got Err({e})"));
+    let replacement = restart_activated(&app, &session_mgr, &pty_mgr, old_id)
+        .await
+        .unwrap_or_else(|e| {
+            panic!("restart of a live WG replica session must not fail; got Err({e})")
+        });
 
     let replacement_id = Uuid::parse_str(&replacement.id).unwrap();
     assert_ne!(replacement_id, old_id, "restart must replace the old row");
@@ -447,13 +441,13 @@ async fn restart_of_live_wg_replica_session_does_not_sessionrace() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// #1535 nested-project sessionRace confinement (S1-S2)
+// Nested-project sessionRace confinement (S1-S2)
 // ──────────────────────────────────────────────────────────────────────
 
-/// #1535 S1/S2 fixture: `strict_target_fixture` PLUS a nested project with
+/// S1/S2 fixture: `strict_target_fixture` PLUS a nested project with
 /// its own full workgroup inside `__agent_dev-one`:
 /// `nested-proj/.ac/{_team_team, _agent_lead2, _agent_inner2,
-/// wg-2-team/{__agent_lead2, __agent_inner2}}` and the #1535 bug-shaped
+/// wg-2-team/{__agent_lead2, __agent_inner2}}` and the bug-shaped
 /// origin dir `nested-proj/.ac/_agent_phase0`. The nested replica
 /// `config.json` identity is `../../_agent_inner2`; the nested team config
 /// names the nested origin matrices.
@@ -495,22 +489,14 @@ fn nested_strict_target_fixture() -> (tempfile::TempDir, String, String, String)
     )
 }
 
-/// #1535 S1: a create in a nested project (origin dir under an ancestor
+/// S1: a create in a nested project (origin dir under an ancestor
 /// workgroup replica, the exact bug shape) must NOT sessionRace against
 /// the ANCESTOR replica's live session (pre-fix: `Err("sessionRace")`).
 #[tokio::test]
 async fn nested_project_create_does_not_sessionrace_against_ancestor_live_session() {
     let (temp, first_cwd, _nested_replica, nested_origin) = nested_strict_target_fixture();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let backend = Arc::new(ScriptedSpawnBackend::default());
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend.clone(),
-    )));
-    let app = session_test_app(
-        test_settings(),
-        Arc::clone(&session_mgr),
-        Arc::clone(&pty_mgr),
-    );
+    let (session_mgr, pty_mgr, app) = app_with_backend(backend.clone());
 
     // Seed a LIVE session at the OUTER replica; the ancestor's live session
     // must not gate a nested-project create.
@@ -549,22 +535,14 @@ async fn nested_project_create_does_not_sessionrace_against_ancestor_live_sessio
     close_test_coordinator(&app).await;
 }
 
-/// #1535 S2: a nested project with its OWN replica (a) does not race
+/// S2: a nested project with its OWN replica (a) does not race
 /// against the ancestor's live session, and (b) still gates against its
 /// own replica's duplicate.
 #[tokio::test]
 async fn nested_project_create_gates_against_its_own_replica_only() {
     let (temp, first_cwd, nested_replica, nested_origin) = nested_strict_target_fixture();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let backend = Arc::new(ScriptedSpawnBackend::default());
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend.clone(),
-    )));
-    let app = session_test_app(
-        test_settings(),
-        Arc::clone(&session_mgr),
-        Arc::clone(&pty_mgr),
-    );
+    let (session_mgr, pty_mgr, app) = app_with_backend(backend.clone());
 
     // (a) Live ancestor session + nested replica create -> Ok (the nested
     // replica's gate scopes to the nested project, never the ancestor).
@@ -621,16 +599,8 @@ async fn restart_closes_old_history_before_teardown_and_never_waits_on_it() {
     use tauri::Manager;
 
     let cwd = tempfile::tempdir().unwrap();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let backend = Arc::new(ScriptedSpawnBackend::default());
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend.clone(),
-    )));
-    let app = session_test_app(
-        test_settings(),
-        Arc::clone(&session_mgr),
-        Arc::clone(&pty_mgr),
-    );
+    let (session_mgr, pty_mgr, app) = app_with_backend(backend.clone());
     let (ingress, mut mailbox) = HistoryIngress::for_test(16);
     app.manage(ingress);
     let old =
@@ -653,38 +623,17 @@ async fn restart_closes_old_history_before_teardown_and_never_waits_on_it() {
         }
         seen
     });
-    let settings = app.state::<crate::config::settings::SettingsState>();
-    let replacement = super::super::restart_session_inner_with_activation(
-        app.handle(),
-        &session_mgr,
-        &pty_mgr,
-        settings.inner(),
-        old_id,
-        None,
-        None,
-        Some(false),
-        true,
-    )
-    .await
-    .expect("restart succeeds");
+    let replacement = restart_activated(&app, &session_mgr, &pty_mgr, old_id)
+        .await
+        .expect("restart succeeds");
     let replacement_id = Uuid::parse_str(&replacement.id).unwrap();
     assert!(!backend.has_session(old_id));
     // The second restart's notice is never acknowledged: it still succeeds,
     // within the ack budget plus the restart itself.
     let began = std::time::Instant::now();
-    super::super::restart_session_inner_with_activation(
-        app.handle(),
-        &session_mgr,
-        &pty_mgr,
-        settings.inner(),
-        replacement_id,
-        None,
-        None,
-        Some(false),
-        true,
-    )
-    .await
-    .expect("unacknowledged history never fails restart");
+    restart_activated(&app, &session_mgr, &pty_mgr, replacement_id)
+        .await
+        .expect("unacknowledged history never fails restart");
     assert!(began.elapsed() < std::time::Duration::from_secs(5));
     let seen = tokio::time::timeout(std::time::Duration::from_secs(5), observer)
         .await

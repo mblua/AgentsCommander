@@ -509,7 +509,7 @@ fn workgroup_names_cannot_collide_with_sentinels() {
     assert!(validate_existing_name("DIRTY-REPOS", "Workgroup").is_ok());
 }
 
-/// #113 follow-up: `collect_files_to_probe` must include the WG root
+/// `collect_files_to_probe` must include the WG root
 /// directory plus every `repo-*`, `__agent_*`, and `messaging/` top-level
 /// subdir. Surfacing dir handles is what lets RM detect terminal-cwd /
 /// IDE-workspace-open / file-watcher blockers, which file-only registration
@@ -558,7 +558,7 @@ fn collect_files_to_probe_includes_wg_root_and_top_level_dirs() {
     );
 }
 
-/// #113 follow-up: the dir entries must come BEFORE files in the output
+/// Follow-up: the dir entries must come BEFORE files in the output
 /// so that, under the `MAX_FILES_TO_PROBE` cap, dirs are preferred. The
 /// plan calls this out explicitly: dir handles are the new signal, file
 /// handles were already covered.

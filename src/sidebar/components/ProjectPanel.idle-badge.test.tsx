@@ -18,7 +18,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { clockStore } from "../stores/clock";
 import type { AcAgentReplica } from "../../shared/types";
 
-// #580 — the coordinator idle counter and the AUTO-CLOSED pill are mutually
+// The coordinator idle counter and the AUTO-CLOSED pill are mutually
 // exclusive (the XOR gate, Section 7.1), and the tooltip's auto-close clause is
 // conditional on the setting (Section 7.2). These render the real ProjectPanel
 // through the FakeTransport harness and assert the DOM, per the
@@ -62,7 +62,7 @@ function coordDiscovery(coord: Partial<AcAgentReplica>) {
   });
 }
 
-describe("ProjectPanel coordinator idle badge (#580 XOR gate + conditional tooltip)", () => {
+describe("ProjectPanel coordinator idle badge (XOR gate + conditional tooltip)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -104,7 +104,7 @@ describe("ProjectPanel coordinator idle badge (#580 XOR gate + conditional toolt
 
       // Reopen (clear the marker, as the auto-close event does) → the pill
       // disappears and the red 90m counter returns from the same anchor.
-      // #748: the clear lands in the volatile store; the pill memo must react
+      // The clear lands in the volatile store; the pill memo must react
       // WITHOUT the row being re-created (row identity is stable now).
       replicaVolatileStore.setAutoClosedAt(coordPath, null);
       await waitFor(() => {
@@ -125,7 +125,7 @@ describe("ProjectPanel coordinator idle badge (#580 XOR gate + conditional toolt
     fake.resolve("get_settings", baseSettings({ coordinatorAutoCloseEnabled: true }));
     // Auto-closed marker set AND a 90-min idle anchor. Critically, the marker is
     // NEVER cleared in this test (it simulates a discovery reload clobbering the
-    // event clear, the #589 root cause): the liveness gate alone must drive the
+    // event clear, the root cause): the liveness gate alone must drive the
     // pill, proving the fix self-heals without the projectStore marker changing.
     fake.resolve(
       "discover_project",

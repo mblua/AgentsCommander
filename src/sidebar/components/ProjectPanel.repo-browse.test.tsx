@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { vi } from "vitest";
-// #943 - the Browse submenu is desktop-only (`open_external_url` and
+// The Browse submenu is desktop-only (`open_external_url` and
 // `git_remote_url` are both no-ops on the WS host), so it only renders when
 // isTauri is true. jsdom has no __TAURI_INTERNALS__, so isTauri is false there.
 // Mock the module for THIS FILE ONLY: vi.mock is hoisted file-wide, and flipping
@@ -221,7 +221,7 @@ function flyoutLabels(): string[] {
   return Array.from(panel.querySelectorAll("button")).map((b) => (b.textContent ?? "").trim());
 }
 
-describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
+describe("ProjectPanel coordinator repo Browse submenu", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
@@ -859,7 +859,7 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
     expect(flyout()).toBeNull();
   });
 
-  // 18 (#977)
+  // 18
   it("keeps the menu open when the pointer crosses into the Browse flyout", async () => {
     await setupPanel(
       [coordASession([repo(repoA1, "AgentsCommander", "feature/x")])],
@@ -874,7 +874,7 @@ describe("ProjectPanel coordinator repo Browse submenu (#943)", () => {
     try {
       // The flyout is a sibling <Portal>, NOT a descendant of the menu, so the
       // pointer crossing the 4px gap into it fires the MENU's own mouseleave.
-      // #977 arms a menu close there; the flyout's mouseenter must cancel it,
+      // The menu guard arms a menu close there; the flyout's mouseenter must cancel it,
       // or the submenu would be unreachable.
       mouseLeave(repoEntries()[0]);
       mouseLeave(menu()!);

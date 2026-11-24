@@ -19,13 +19,13 @@ use chrono::Utc;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// #2682 - production deadline for [`acquire_loop_lock`].
+/// Production deadline for [`acquire_loop_lock`].
 pub const LOOP_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// #2682 - a held Loop lock; dropping it releases the OS lock.
+/// A held Loop lock; dropping it releases the OS lock.
 pub(crate) type LoopDirLock = SidecarWriteLock;
 
-/// #2682 - cross-process guard over one Loop's `config.toml` + `state.json` +
+/// Cross-process guard over one Loop's `config.toml` + `state.json` +
 /// `audit.jsonl`, and over the existence of the Loop directory itself.
 ///
 /// The sidecar is `<canonical ac_root>/._loop_<id>.lock`: outside the Loop
@@ -50,7 +50,7 @@ pub(crate) fn acquire_loop_lock(
     )
 }
 
-/// #2718 (B4b) - [`acquire_loop_lock`] with an explicit journal directory. The
+/// [`acquire_loop_lock`] with an explicit journal directory. The
 /// Loop state migration runs here, under the lock just taken, before the guard
 /// is returned, so every Loop section passes through it.
 pub(super) fn acquire_loop_lock_in(
@@ -74,7 +74,7 @@ pub(super) fn acquire_loop_lock_in(
     Ok(guard)
 }
 
-/// #2682 - [`acquire_loop_lock`] for a caller that holds only the Loop
+/// [`acquire_loop_lock`] for a caller that holds only the Loop
 /// directory path (`<ac_root>/_loop_<id>`), such as the scheduler.
 pub(crate) fn acquire_loop_lock_for_dir(
     dir: &Path,
@@ -83,7 +83,7 @@ pub(crate) fn acquire_loop_lock_for_dir(
     acquire_loop_lock_for_dir_in(dir, timeout, crate::config::config_dir().as_deref())
 }
 
-/// #2718 (B4b) - [`acquire_loop_lock_for_dir`] with an explicit journal directory.
+/// [`acquire_loop_lock_for_dir`] with an explicit journal directory.
 pub(super) fn acquire_loop_lock_for_dir_in(
     dir: &Path,
     timeout: Duration,
@@ -100,12 +100,12 @@ pub(super) fn acquire_loop_lock_for_dir_in(
     acquire_loop_lock_in(ac_root, loop_id, timeout, journal_dir)
 }
 
-/// #2718 (B4b) - one naming-migration scope per canonical Loop directory.
+/// One naming-migration scope per canonical Loop directory.
 pub(super) fn loop_state_scope_key(loop_dir: &Path) -> String {
     format!("loop-state:{}", loop_dir.display())
 }
 
-/// #2718 (B4b) - moves `_loop_<id>/state.json` to `LOOP_STATE_FILE`, journalled
+/// Moves `_loop_<id>/state.json` to `LOOP_STATE_FILE`, journalled
 /// in `journal_dir`. It runs under the Loop lock the caller already holds and
 /// takes **no** lock of its own: `lock_scope` would open that sidecar on a
 /// second handle and deadlock against the caller (see [`acquire_loop_lock`]),
@@ -179,7 +179,7 @@ pub(super) fn sweep_pause_hook(stage: &str, dir: &Path) {
     naming_migration::pause::hook(stage, dir);
 }
 
-/// #2718 (B4b) 4.5 - appends to `<ac_root>/.gitignore` the Loop state rows it
+/// B4b 4.5: appends to `<ac_root>/.gitignore` the Loop state rows it
 /// lacks. An appending write, never a rewrite, so no line another writer added
 /// can be lost; retirement of the old row stays with the writer at registration.
 pub(super) fn ensure_loop_state_ignore_rows(
@@ -191,7 +191,7 @@ pub(super) fn ensure_loop_state_ignore_rows(
     .map_err(naming_migration::Refusal::Io)
 }
 
-/// #2682 - the create section shared by the app command and the CLI: lock,
+/// The create section shared by the app command and the CLI: lock,
 /// existence check, validation, then the config+state pair as one unit.
 pub fn create_loop_files(
     project_dir: &Path,
@@ -210,7 +210,7 @@ pub fn create_loop_files(
     Ok((dir, state))
 }
 
-/// #2682 - the read-modify-write section shared by the app `update_loop` /
+/// The read-modify-write section shared by the app `update_loop` /
 /// `toggle_loop` and the CLI `update` / `enable` / `disable`.
 pub fn update_loop_files(
     project_dir: &Path,
@@ -239,7 +239,7 @@ pub fn update_loop_files(
     Ok((dir, config, state))
 }
 
-/// #2682 - the delete section shared by the app `delete_loop` and the CLI
+/// The delete section shared by the app `delete_loop` and the CLI
 /// `remove`. The sidecar lives outside the directory it deletes.
 pub fn remove_loop_files(ac_root: &Path, loop_id: &str) -> Result<PathBuf, String> {
     let _lock = acquire_loop_lock(ac_root, loop_id, LOOP_LOCK_TIMEOUT)?;

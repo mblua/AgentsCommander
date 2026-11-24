@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4825 - the TASK title editor input, Save and Cancel carry data-ac-testid
+// The TASK title editor input, Save and Cancel carry data-ac-testid
 // under the menu prefix, and each id drives its own handler.
 import { createSignal } from "solid-js";
 import { render } from "solid-js/web";
@@ -78,5 +78,118 @@ describe("#4825 SessionRowMenu TASK title editor test ids", () => {
     expect(onSave).toHaveBeenCalledTimes(1);
     click(byId(`${PREFIX}.menu.editTaskTitle.cancel`));
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  const mountEditor = (opts: { draft?: string; busy?: boolean } = {}) => {
+    const [editing, setEditing] = createSignal(false);
+    const [draft, setDraft] = createSignal(opts.draft ?? "Old title");
+    const onSave = vi.fn();
+    const onCancel = vi.fn(() => setEditing(false));
+    const onDismiss = vi.fn();
+    const spec = (): EditTaskTitleSpec => ({
+      editing: editing(),
+      draft: draft(),
+      busy: opts.busy ?? false,
+      error: null,
+      onDraft: setDraft,
+      onStart: () => setEditing(true),
+      onSave,
+      onCancel,
+    });
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const unmount = render(
+      () => (
+        <SessionRowMenu
+          open={true}
+          x={10}
+          y={10}
+          testIdPrefix={PREFIX}
+          caps={{ editTaskTitle: spec() }}
+          onDismiss={onDismiss}
+        />
+      ),
+      root,
+    );
+    dispose = () => {
+      unmount();
+      root.remove();
+    };
+    return { onSave, onCancel, onDismiss, editing };
+  };
+  const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 20));
+  const field = () => byId<HTMLInputElement>(`${PREFIX}.menu.editTaskTitle.input`);
+  const openEditor = async () => {
+    await tick();
+    click(byId(`${PREFIX}.menu.editTaskTitle`));
+    await tick();
+  };
+  const key = (el: Element, k: string) =>
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+  const windowCount = (type: string) => {
+    const seen: Event[] = [];
+    const fn = (e: Event) => seen.push(e);
+    window.addEventListener(type, fn);
+    return { seen, stop: () => window.removeEventListener(type, fn) };
+  };
+
+  it("#4945 focuses and selects the input on open", async () => {
+    mountEditor();
+    await openEditor();
+    expect(document.activeElement).toBe(field());
+    expect(field().selectionStart).toBe(0);
+    expect(field().selectionEnd).toBe("Old title".length);
+  });
+
+  it("#4945 editor clicks reach the window zero times and keep the menu open", async () => {
+    const { onDismiss } = mountEditor();
+    await openEditor();
+    const win = windowCount("click");
+    click(field());
+    click(field().parentElement!);
+    win.stop();
+    expect(win.seen).toHaveLength(0);
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it("#4945 Save button saves", async () => {
+    const { onSave } = mountEditor();
+    await openEditor();
+    click(byId(`${PREFIX}.menu.editTaskTitle.save`));
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it("#4945 Cancel button cancels", async () => {
+    const { onCancel } = mountEditor();
+    await openEditor();
+    click(byId(`${PREFIX}.menu.editTaskTitle.cancel`));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("#4945 Enter saves when enabled", async () => {
+    const { onSave } = mountEditor();
+    await openEditor();
+    expect(key(field(), "Enter")).toBe(false);
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it("#4945 Enter does not save while busy", async () => {
+    const { onSave } = mountEditor({ busy: true });
+    await openEditor();
+    key(field(), "Enter");
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("#4945 Escape cancels the edit and the outer menu stays open", async () => {
+    const { onCancel, onDismiss, editing } = mountEditor();
+    await openEditor();
+    const win = windowCount("keydown");
+    key(field(), "Escape");
+    win.stop();
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(editing()).toBe(false);
+    expect(win.seen).toHaveLength(0);
+    expect(onDismiss).not.toHaveBeenCalled();
+    expect(document.querySelector(".session-context-menu")).not.toBeNull();
   });
 });

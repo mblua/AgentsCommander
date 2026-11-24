@@ -58,7 +58,7 @@ function errorToasts(root: HTMLElement): HTMLElement[] {
   );
 }
 
-describe("SidebarApp #1077 project-path conflict", () => {
+describe("SidebarApp project-path conflict", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

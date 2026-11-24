@@ -12,6 +12,8 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
   const [loading, setLoading] = createSignal(false);
   let inputRef!: HTMLInputElement;
   let debounceTimer: number | undefined;
+  let createPending = false;
+  let disposed = false;
 
   onMount(async () => {
     if (!props.initialRepo) {
@@ -23,6 +25,7 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
   });
 
   onCleanup(() => {
+    disposed = true;
     if (debounceTimer) clearTimeout(debounceTimer);
   });
 
@@ -40,13 +43,13 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
   });
 
   const handleEscape = () => {
-    const repo = selectedRepo();
-
-    if (repo && !props.initialRepo) {
-      // Go back to repo list (only if we navigated there ourselves)
+    if (selectedRepo() && !props.initialRepo) {
+      if (createPending) return;
       setSelectedRepo(null);
       setHighlightIndex(0);
-      requestAnimationFrame(() => inputRef?.focus());
+      requestAnimationFrame(() => {
+        if (!selectedRepo() && inputRef?.isConnected) inputRef.focus();
+      });
     } else {
       props.onClose();
     }
@@ -64,7 +67,7 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         setHighlightIndex((i) => Math.max(i - 1, 0));
-      } else if (e.key === "Enter" && list.length > 0) {
+      } else if (e.key === "Enter" && e.target === inputRef && list.length > 0) {
         e.preventDefault();
         setSelectedRepo(list[highlightIndex()] ?? null);
         setHighlightIndex(0);
@@ -75,40 +78,40 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
   };
 
   const handleDocumentKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") handleEscape();
+    if (e.key !== "Escape") return;
+    // Give the picker its own Escape before either handler changes the view.
+    if (selectedRepo() && e.composedPath().some((target) =>
+      target instanceof Element && target.matches('[data-ac-testid="agentPicker.overlay"]')
+    )) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    handleEscape();
   };
 
-  document.addEventListener("keydown", handleDocumentKeyDown);
-  onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
+  document.addEventListener("keydown", handleDocumentKeyDown, true);
+  onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown, true));
 
   const launchAgent = async (repo: RepoMatch, selection: AgentPickerSelection) => {
-    // Create first; only hide Home / close the modal once the session
-    // exists. A rejection (e.g. the Resource Monitor cap) propagates to
-    // AgentPickerModal.apply()'s catch, which keeps this modal open with the
-    // error shown instead of hiding Home behind a silent hang.
-    await SessionAPI.create({
-      cwd: repo.path,
-      sessionName: repo.name,
-      agentId: selection.agent.id,
-      requestedProfile: selection.requestedProfile,
-    });
+    createPending = true;
+    try {
+      // Let the picker display a create rejection and restore its controls.
+      await SessionAPI.create({
+        cwd: repo.path,
+        sessionName: repo.name,
+        agentId: selection.agent.id,
+        requestedProfile: selection.requestedProfile,
+      });
+      if (disposed) return;
 
-    homeStore.hide();
-    props.onClose();
+      homeStore.hide();
+      props.onClose();
+    } finally {
+      createPending = false;
+    }
   };
 
-  if (selectedRepo()) {
-    return (
-      <AgentPickerModal
-        sessionName={selectedRepo()!.name}
-        agentPath={selectedRepo()!.path}
-        onSelect={(selection) => launchAgent(selectedRepo()!, selection)}
-        onClose={handleEscape}
-      />
-    );
-  }
-
-  return (
+  const repoList = () => (
     <div class="modal-overlay" onKeyDown={handleKeyDown}>
       <div class="agent-modal">
         {/* Header */}
@@ -134,26 +137,49 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
               }
             >
               <For each={repos()}>
-                {(repo, i) => (
-                  <div
-                    class={`agent-modal-item ${i() === highlightIndex() ? "highlighted" : ""}`}
+                {(repo, i) => {
+                  // Rows are native buttons: Enter/Space activate natively. Inline
+                  // styles neutralize only the UA button styles the row CSS does not
+                  // set; the UA background is cleared only outside :hover/highlight.
+                  const [hovered, setHovered] = createSignal(false);
+                  const highlighted = () => i() === highlightIndex();
+                  return (
+                  <button
+                    type="button"
+                    class={`agent-modal-item ${highlighted() ? "highlighted" : ""}`}
+                    style={{
+                      width: "100%",
+                      appearance: "none",
+                      font: "inherit",
+                      color: "inherit",
+                      "text-align": "left",
+                      "border-top": "none",
+                      "border-right": "none",
+                      "border-bottom": "none",
+                      "background-color":
+                        highlighted() || hovered() ? undefined : "transparent",
+                    }}
                     onClick={() => {
                       setSelectedRepo(repo);
                       setHighlightIndex(0);
                     }}
-                    onMouseEnter={() => setHighlightIndex(i())}
+                    onMouseEnter={() => {
+                      setHovered(true);
+                      setHighlightIndex(i());
+                    }}
+                    onMouseLeave={() => setHovered(false)}
                   >
-                    <div class="agent-modal-item-icon">&#x1F4C1;</div>
-                    <div class="agent-modal-item-info">
-                      <div class="agent-modal-item-name">
+                    <span class="agent-modal-item-icon">&#x1F4C1;</span>
+                    <span class="agent-modal-item-info">
+                      <span class="agent-modal-item-name" style={{ display: "block" }}>
                         {repo.name.includes("/") ? (
                           <>
                             <span class="name-prefix">{repo.name.slice(0, repo.name.lastIndexOf("/") + 1)}</span>
                             {repo.name.slice(repo.name.lastIndexOf("/") + 1)}
                           </>
                         ) : repo.name}
-                      </div>
-                      <div class="agent-modal-item-badges">
+                      </span>
+                      <span class="agent-modal-item-badges">
                         <For each={repo.agents}>
                           {(agent) => (
                             <span
@@ -164,10 +190,11 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
                             </span>
                           )}
                         </For>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                      </span>
+                    </span>
+                  </button>
+                  );
+                }}
               </For>
             </Show>
         </div>
@@ -176,10 +203,23 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
         <div class="agent-modal-footer">
           <span>&#x2191;&#x2193; navigate</span>
           <span>&#x23CE; select</span>
-          <span>esc {selectedRepo() && !props.initialRepo ? "back" : "close"}</span>
+          <span>esc close</span>
         </div>
       </div>
     </div>
+  );
+
+  return (
+    <Show when={selectedRepo()} keyed fallback={repoList()}>
+      {(repo) => (
+        <AgentPickerModal
+          sessionName={repo.name}
+          agentPath={repo.path}
+          onSelect={(selection) => launchAgent(repo, selection)}
+          onClose={handleEscape}
+        />
+      )}
+    </Show>
   );
 };
 

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4779 - the catalogue's Unleash item and the dimmed DisabledItemSpec forms of
+// The catalogue's Unleash item and the dimmed DisabledItemSpec forms of
 // Add to Group and Edit TASK title. Existing hosts that pass none of them must
 // render exactly as before.
 import { render } from "solid-js/web";
@@ -44,7 +44,7 @@ const rowIds = (menu: HTMLElement) =>
     el.getAttribute("data-ac-testid"),
   );
 
-describe("#4779 SessionRowMenu disabled items", () => {
+describe("SessionRowMenu disabled items", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
   });

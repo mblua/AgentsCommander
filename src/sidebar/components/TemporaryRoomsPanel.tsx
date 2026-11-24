@@ -1,4 +1,4 @@
-// #4779 - the "Temporary Rooms" sidebar category: list, create, launch and delete
+// The "Temporary Rooms" sidebar category: list, create, launch and delete
 // temp rooms. Markup reuses existing classes only; the agent row's menu is the
 // shared SessionRowMenu catalogue, so this host owns nothing but the data.
 import { createMemo, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
@@ -140,7 +140,7 @@ const TemporaryRoomsPanel: Component = () => {
   const [titleBusy, setTitleBusy] = createSignal(false);
   const [titleError, setTitleError] = createSignal<string | null>(null);
 
-  // #4805 - the Temporary Rooms group set (ProjectPanel `groupPredicate` mirror).
+  // The Temporary Rooms group set (ProjectPanel `groupPredicate` mirror).
   const groupsConfig = () => workgroupGroupsStore.config(KEY);
   const compiled = createMemo(() => compileWorkgroupGroups(groupsConfig().groups));
   const inSelectedGroup = (room: TempRoomInfo): boolean => {
@@ -156,7 +156,7 @@ const TemporaryRoomsPanel: Component = () => {
     return groupMatchesWorkgroup(compiled(), selected.id, wg);
   };
 
-  // #4786 - red warning when the saved agent uses a placeholder temp rooms lack.
+  // Red warning when the saved agent uses a placeholder temp rooms lack.
   const refreshWarnings = async () => {
     try {
       const snapshot = await readSettings();
@@ -225,7 +225,7 @@ const TemporaryRoomsPanel: Component = () => {
     setTitleError(null);
   };
 
-  // #4805 - stale group entries of a reused trNN number.
+  // Stale group entries of a reused trNN number.
   const forgetGroups = async (name: string) => {
     try {
       await workgroupGroupsStore.forgetWorkgroup(KEY, name);
@@ -393,7 +393,7 @@ const TemporaryRoomsPanel: Component = () => {
     }
   };
 
-  // #4780 - the replica Unleash flow (#4752) on the temp-room path; restart relaunches.
+  // The replica Unleash flow on the temp-room path; restart relaunches.
   const unleashed = (room: TempRoomInfo) =>
     unleashedReplicasStore.isUnleashed({ path: room.path, unleashed: room.unleashed });
 
@@ -586,7 +586,7 @@ const TemporaryRoomsPanel: Component = () => {
     };
   };
 
-  // #4785 - the one sidebar filter; a match on the label keeps every room.
+  // The one sidebar filter; a match on the label keeps every room.
   const visibleRooms = () =>
     !sidebarFilter.active() || sidebarFilter.matches("Temporary Rooms")
       ? rooms().filter(inSelectedGroup)
@@ -674,7 +674,7 @@ const TemporaryRoomsPanel: Component = () => {
                 </div>
                 <div
                   class="replica-item"
-                  role="presentation"
+                  role="none"
                   classList={{
                     active: !!session() && session()?.id === sessionsStore.activeId,
                     unleashed: unleashed(room),

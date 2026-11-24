@@ -13,11 +13,11 @@ import {
 import { settingsStore } from "../../shared/stores/settings";
 import { sessionsStore } from "./sessions";
 
-// #2271 phase 8 - the sidecar map and the refresh it must survive. A flag on
+// The sidecar map and the refresh it must survive. A flag on
 // Session would be wiped by projectStoredSelection's wholesale replacement, so
 // the executable form of section 4.1 is here and not in a component test.
 
-describe("sessionsStore comanaged sidecar (#2271)", () => {
+describe("sessionsStore comanaged sidecar", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -85,7 +85,7 @@ describe("sessionsStore comanaged sidecar (#2271)", () => {
       const dot = rendered.root.querySelector(".session-item-status");
       if (!dot) throw new Error("status dot missing after refresh");
       // The refresh changed the runtime state to idle; the row keeps the real
-      // idle colour and adds the Co-managed ring (#2408: "idle comanaged").
+      // idle colour and adds the Co-managed ring.
       expect(dot.classList.contains("comanaged")).toBe(true);
       expect(dot.classList.contains("idle")).toBe(true);
       expect(dot.getAttribute("data-ac-comanaged")).toBe("true");

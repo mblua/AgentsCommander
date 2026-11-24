@@ -11,12 +11,12 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 
-// #1453 — the Start button of the Web Remote Access section ignored the boolean
+// The Start button of the Web Remote Access section ignored the boolean
 // that start_web_server returns, and that command answers `false` when the bind
 // fails. In the exact scenario of the issue the modal therefore reported
 // `Running` and offered `Stop Server` for a server that never bound.
 
-describe("SettingsModal web server start (#1453)", () => {
+describe("SettingsModal web server start", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

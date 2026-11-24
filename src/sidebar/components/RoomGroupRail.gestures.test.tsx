@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4695 — pin rail gesture diagnostics edges before they move into rail-diagnostics.
+// Pin rail gesture diagnostics edges before they move into rail-diagnostics.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RailDiagnosticRecord } from "../../shared/ipc";
 import { setLogLevel } from "../../shared/console-capture";
@@ -29,7 +29,7 @@ async function withRail(body: (log: () => RailDiagnosticRecord[], node: HTMLElem
 const ofEvent = (log: RailDiagnosticRecord[], event: string) =>
   log.filter(entry => entry.event === event);
 
-describe("RoomGroupRail gesture diagnostics edges (#4695)", () => {
+describe("RoomGroupRail gesture diagnostics edges", () => {
   afterEach(() => {
     setLogLevel("info");
     resetUiStoresForTests();

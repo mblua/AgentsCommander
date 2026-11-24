@@ -340,10 +340,10 @@ fn config_seed_clocks_do_not_change_existing_manifest() {
     }
 }
 
-// Stage E (#1064) end-to-end config-staging scale benchmark (plan section
+// Stage E end-to-end config-staging scale benchmark (plan section
 // 7.4, 10.5 item 7): config staging is the only per-file target I/O, and the
 // collector returns exactly the installed regular-file list. `#[ignore]`
-// ---- #1596 pi shellPath seed (Windows-only) ---------------------------
+// ---- pi shellPath seed (Windows-only) ---------------------------
 
 #[cfg(target_os = "windows")]
 fn seed_pi_fixture() -> (tempfile::TempDir, ResolvedConfigSeed, PathBuf) {
@@ -360,7 +360,7 @@ fn seed_pi_fixture() -> (tempfile::TempDir, ResolvedConfigSeed, PathBuf) {
 #[cfg(target_os = "windows")]
 #[test]
 fn pi_seed_writes_shell_path_when_settings_absent() {
-    // #1596: a `.pi` template without settings.json gets the Git-Bash
+    // A `.pi` template without settings.json gets the Git-Bash
     // shellPath written; the seed report stays Published.
     let (_temp, resolved, replica) = seed_pi_fixture();
     let publication = assert_published(perform_config_seed(&resolved, "sfx"));
@@ -378,7 +378,7 @@ fn pi_seed_writes_shell_path_when_settings_absent() {
 #[cfg(target_os = "windows")]
 #[test]
 fn pi_seed_preserves_existing_settings() {
-    // #1596: a settings.json shipped by the template (operator-authored
+    // A settings.json shipped by the template (operator-authored
     // content) is never overwritten: absent-only.
     let temp = tempfile::tempdir().unwrap();
     let ac_root = temp.path().join("ws");
@@ -401,7 +401,7 @@ fn pi_seed_preserves_existing_settings() {
 #[cfg(target_os = "windows")]
 #[test]
 fn non_pi_seed_writes_no_settings_json() {
-    // #1596: only an exact `.pi` dest triggers the shellPath step; a
+    // Only an exact `.pi` dest triggers the shellPath step; a
     // non-`.pi` seed must not write settings.json anywhere.
     let (_temp, resolved, replica) = seed_swap_fixture(); // `.claude` dest
     let publication = assert_published(perform_config_seed(&resolved, "sfx"));

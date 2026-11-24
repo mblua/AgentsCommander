@@ -33,7 +33,7 @@ mod watcher_sink;
 mod web_server;
 mod window;
 
-/// #2756 U2a: capture without key or catalog, and recovery of the retained
+/// U2a: capture without key or catalog, and recovery of the retained
 /// candidate once the room is `Ready`.
 ///
 /// Controlled window (plan 9.1), declared once for every test that counts
@@ -46,14 +46,14 @@ mod window;
 /// discovery `SlotChanged` itself, and it mounts no mark.
 mod u2a_tests;
 
-/// #2296 quit-gate unit tests.
+/// Quit-gate unit tests.
 ///
 /// Time is injected through `TestClock`, so every deadline assertion is exact
 /// and the suite never sleeps on wall-clock time. Events and process exit are
 /// injected through `TestHost`.
 mod quit_gate;
 
-/// #2456 (epic #2442 p5): the Room reader-demand re-raise tick.
+/// P5: the Room reader-demand re-raise tick.
 ///
 /// Every test calls `reraise_room_reader_demands` directly, N times: the
 /// supervisor's own timer runs on `tauri::async_runtime`, which defeats a

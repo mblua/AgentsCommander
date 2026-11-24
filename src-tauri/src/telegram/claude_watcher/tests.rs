@@ -397,7 +397,7 @@ fn sidechain_assistant_records_are_captured_today() {
     assert_eq!(records[0].text, "sidechain body");
 }
 
-// ── #2454: the pinned first attach ──
+// ── The pinned first attach ──
 
 const PIN_ID: &str = "16045f91-7d59-4c75-acdb-11ebfcb9aa68";
 
@@ -839,7 +839,7 @@ async fn a_clear_after_the_pinned_attach_is_still_a_rotation() {
     assert_eq!(rotated.origin, RecordOrigin::RotationBackfill);
 }
 
-/// Test 24, pure (#2454 p3b requirement 4): the decision runs only while
+/// Test 24, pure (p3b requirement 4): the decision runs only while
 /// the first-attach latch is clear and no file is attached.
 #[test]
 fn runs_first_attach_decision_only_before_the_first_attach() {
@@ -849,7 +849,7 @@ fn runs_first_attach_decision_only_before_the_first_attach() {
     assert!(!runs_first_attach_decision(true, true));
 }
 
-/// Test 24 (#2454 p3b requirement 4): the pinned transcript vanishes after
+/// Test 24 (p3b requirement 4): the pinned transcript vanishes after
 /// the first attach and comes back with the same bytes. The reader must
 /// not re-run the pin decision: nothing restored is offered `Live` and
 /// nothing restored routes a second time.

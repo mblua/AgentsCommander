@@ -145,7 +145,7 @@ fn closing_owner_for_discard<R: tauri::Runtime>(
     }
 }
 
-/// #3317 - runs under the discard's carrier permit, so no settlement can race.
+/// Runs under the discard's carrier permit, so no settlement can race.
 fn recover_quiescent_closing<R: tauri::Runtime>(
     app: &AppHandle<R>,
     permit: &crate::session::manager::CarrierMutationPermit,
@@ -591,7 +591,7 @@ pub struct CoordinatorCloseOutcome {
     pub working_count: usize,
 }
 
-/// #588 Count LIVE team members that are working (not `waiting_for_input`). Pure so
+/// Count LIVE team members that are working (not `waiting_for_input`). Pure so
 /// the working-gate rule is unit-testable without a live app, mirroring how
 /// `auto_close.rs` extracts `team_is_closeable`. A member counts only when it is
 /// both live (PTY-backed) and not waiting for input.

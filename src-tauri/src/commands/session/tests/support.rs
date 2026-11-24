@@ -63,7 +63,7 @@ pub(crate) fn session_test_app_with_store(
         shutdown.token().clone(),
     );
     let output_senders = Arc::new(Mutex::new(HashMap::new()));
-    // #2232 phase 4 test 9: the app owns the **single** capture registry and
+    // Test 9: the app owns the **single** capture registry and
     // an outbound network, exactly as `run()` does, so a supervisor-spawned
     // reader reaches the registry slot and a bot attach can be counted.
     let captures = Arc::new(crate::capture::registry::CaptureRegistry::new());
@@ -200,26 +200,26 @@ pub(in crate::commands::session) fn strict_target_fixture() -> (tempfile::TempDi
     )
 }
 
-/// #1175. The bytes every rotation fixture seeds into `memory/MEMORY.md`.
+/// The bytes every rotation fixture seeds into `memory/MEMORY.md`.
 /// Asserted verbatim on both sides of every differential, so a green test can
 /// never mean "an archive directory exists but is empty".
 const ROTATION_SENTINEL: &str = "remembered bytes";
 
-/// #1175. One replica and the origin Agent Matrix its `config.json` identity
+/// One replica and the origin Agent Matrix its `config.json` identity
 /// points at.
 pub(super) struct RotationSide {
     pub(super) replica_cwd: String,
     pub(super) matrix: std::path::PathBuf,
 }
 
-/// #1175. `strict_target_fixture` (`:5896`) already builds two symmetric
+/// `strict_target_fixture` (`:5896`) already builds two symmetric
 /// replicas under `<temp>/project/.ac/wg-1-team/` whose `config.json` identity
 /// names `<temp>/project/.ac/_agent_dev-one` and `_agent_dev-two`. Those two
 /// directories sit directly under a `.ac` workspace, so they satisfy
 /// `is_canonical_agent_matrix_dir`, which is what `resolve_rotatable_matrix_root`
 /// (`config/agent_memory.rs:83`) resolves a replica session to.
 ///
-/// Seed a non-empty `memory/` in each: #1172 D2 makes an EMPTY `memory/` a
+/// Seed a non-empty `memory/` in each: D2 makes an EMPTY `memory/` a
 /// no-op, so the sentinel is what gives the fresh half of each differential
 /// something to rotate.
 pub(super) fn rotation_fixture() -> (tempfile::TempDir, RotationSide, RotationSide) {
@@ -244,7 +244,7 @@ pub(super) fn rotation_fixture() -> (tempfile::TempDir, RotationSide, RotationSi
     (temp, first, second)
 }
 
-/// #1175. Every nested memory rotation, sorted. Same shape as
+/// Every nested memory rotation, sorted. Same shape as
 /// `agent_memory.rs:180-189`.
 fn rotated_memory_dirs(matrix: &std::path::Path) -> Vec<String> {
     let entries = match std::fs::read_dir(matrix.join("memory-archive")) {
@@ -261,7 +261,7 @@ fn rotated_memory_dirs(matrix: &std::path::Path) -> Vec<String> {
     names
 }
 
-/// #1175. "Nothing has happened to this side." Used for the resume side AND
+/// "Nothing has happened to this side." Used for the resume side AND
 /// for a side whose own launch has not run yet, which is what stops the second
 /// launch from laundering a side effect of the first (D3, hole 2).
 pub(super) fn assert_memory_pristine(side: &RotationSide, case: &str) {
@@ -295,7 +295,7 @@ pub(super) fn assert_memory_pristine(side: &RotationSide, case: &str) {
     );
 }
 
-/// #1175. The RESUME assertion: pristine, PLUS a witness that the launch
+/// The RESUME assertion: pristine, PLUS a witness that the launch
 /// actually entered the context block.
 ///
 /// The witness is not decoration. `:2041` is an `if let`, and a launch that
@@ -317,7 +317,7 @@ pub(super) fn assert_resume_left_memory_alone(side: &RotationSide, case: &str) {
     assert_memory_pristine(side, case);
 }
 
-/// #1175. The FRESH assertion, which is also the POSITIVE CONTROL: it fails if
+/// The FRESH assertion, which is also the POSITIVE CONTROL: it fails if
 /// the launch never reached the rotation chokepoint, which is what makes a green
 /// `assert_resume_left_memory_alone` on the resume side attributable to the gate
 /// rather than to an unreached call site.

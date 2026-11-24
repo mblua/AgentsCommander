@@ -1,48 +1,36 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use agentscommander_lib::commands::pty::get_screen_snapshot;
 use agentscommander_lib::commands::session::{create_session_inner, CreateSelectionIntent};
 use agentscommander_lib::config::sessions_persistence::{
     load_sessions, persist_current_state_result,
 };
 use agentscommander_lib::config::settings::{save_settings, AppSettings, SettingsState};
-use agentscommander_lib::pty::git_watcher::GitWatcher;
-use agentscommander_lib::pty::idle_detector::IdleDetector;
 use agentscommander_lib::pty::manager::PtyManager;
-use agentscommander_lib::resource_monitor::ResourceMonitorState;
 use agentscommander_lib::session::manager::SessionManager;
-use agentscommander_lib::session::selection::SelectionCoordinator;
 use agentscommander_lib::session::session::{SessionInfo, SessionStatus};
-use agentscommander_lib::shutdown::ShutdownSignal;
 use agentscommander_lib::telegram::manager::{
     OutputSenderMap, TelegramBridgeManager, TelegramBridgeState,
 };
-use agentscommander_lib::voice::tracker::{VoiceTracker, VoiceTrackingState};
-use agentscommander_lib::web::auth::WebAccessToken;
-use agentscommander_lib::web::broadcast::WsBroadcaster;
-use agentscommander_lib::{
-    AppOutbox, ConfigSeedLockState, DetachedSessionsState, MasterToken, RestoreInProgress,
-    SpecBoardState, WebServerHandle,
-};
-use serde::Deserialize;
-use tauri::{Listener, Manager};
+use tauri::Listener;
 use uuid::Uuid;
 
 use super::process::{
     path_to_string, process_exists, run_powershell_preflight, script_args, stop_process,
     write_child_script, POLL_INTERVAL,
 };
+pub(crate) use super::pty_fixture::parse_session_id;
+use super::pty_fixture::{
+    build_test_app, git_watcher_and_pty, wait_for_snapshot_contains as shared_wait, TestAppStates,
+    TestConfigEnvGuard, TestPtyOutputDelivery, TEST_CONFIG_ENV_LOCK,
+};
 
 const OUTPUT_TIMEOUT: Duration = Duration::from_secs(10);
 
 type PtyCleanupEntries = Arc<Mutex<Vec<(Arc<Mutex<PtyManager>>, Uuid)>>>;
-
-static TEST_CONFIG_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn lifecycle_test_config_dir() -> PathBuf {
     std::env::temp_dir()
@@ -51,68 +39,6 @@ fn lifecycle_test_config_dir() -> PathBuf {
             std::process::id()
         ))
         .join("config")
-}
-
-/// Test-only wire observation of the two final `pty_output` delivery variants.
-/// This is a tagged mirror of the production `TerminalOutputDelivery` union, not a
-/// production DTO: data bytes are retained only for the data variant, and either
-/// variant records one delivery for its session id.
-#[derive(Deserialize)]
-#[serde(tag = "kind")]
-enum TestPtyOutputDelivery {
-    #[serde(rename = "data")]
-    Data {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        #[serde(rename = "generation")]
-        _generation: String,
-        #[serde(rename = "firstSequence")]
-        _first_sequence: String,
-        #[serde(rename = "sequence")]
-        sequence: String,
-        #[serde(rename = "data")]
-        data: Vec<u8>,
-    },
-    #[serde(rename = "resyncRequired")]
-    ResyncRequired {
-        #[serde(rename = "sessionId")]
-        session_id: String,
-        #[serde(rename = "generation")]
-        _generation: String,
-        #[serde(rename = "sequence")]
-        _sequence: String,
-    },
-}
-
-struct TestConfigEnvGuard {
-    previous: Option<String>,
-}
-
-impl TestConfigEnvGuard {
-    fn set(path: &Path) -> Self {
-        let previous = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").ok();
-        // SAFETY: the fixture holds TEST_CONFIG_ENV_LOCK
-        unsafe {
-            std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", path);
-        }
-        Self { previous }
-    }
-}
-
-impl Drop for TestConfigEnvGuard {
-    fn drop(&mut self) {
-        if let Some(previous) = self.previous.as_ref() {
-            // SAFETY: the fixture holds TEST_CONFIG_ENV_LOCK
-            unsafe {
-                std::env::set_var("AGENTSCOMMANDER_TEST_CONFIG_DIR", previous);
-            }
-        } else {
-            // SAFETY: the fixture holds TEST_CONFIG_ENV_LOCK
-            unsafe {
-                std::env::remove_var("AGENTSCOMMANDER_TEST_CONFIG_DIR");
-            }
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -250,24 +176,6 @@ fn assert_managed_settings_omit_project_paths(config_dir: &Path) {
     }
 }
 
-fn start_selection_coordinator(app: &tauri::App, selection_coordinator: &SelectionCoordinator) {
-    selection_coordinator
-        .start(app.handle().clone())
-        .expect("start selection coordinator");
-    let bootstrap = selection_coordinator.clone();
-    std::thread::spawn(move || {
-        tauri::async_runtime::block_on(async move {
-            bootstrap
-                .submit_restore_first()
-                .await
-                .expect("open selection coordinator")
-                .finish();
-        });
-    })
-    .join()
-    .expect("join selection bootstrap");
-}
-
 fn install_pty_output_listener(
     app: &tauri::App,
     captured: Arc<Mutex<HashMap<String, Vec<u8>>>>,
@@ -334,7 +242,7 @@ pub(crate) fn make_lifecycle_fixture() -> LifecycleFixture {
     let script_path = temp.path().join("pty-child.ps1");
 
     std::fs::create_dir_all(&repo_root).expect("create repo root");
-    // #1077: a registered project path must resolve to a real AC project (a
+    // A registered project path must resolve to a real AC project (a
     // directory containing a `.ac` Project Root) for the six-field decoder to
     // select it into the runtime projectPaths. Without this `.ac`, the CLI loader
     // (`load_settings_for_cli`) validates repo_root as AcRootOrCollectionMissing,
@@ -434,7 +342,6 @@ pub(crate) fn make_test_app(
     let tg_mgr: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
         TelegramBridgeManager::new(Arc::clone(&output_senders)),
     ));
-    let idle_detector = IdleDetector::new(|_| {}, |_| {});
     let settings: SettingsState = agentscommander_lib::config::settings::new_settings_state({
         let mut s = AppSettings::default();
         s.default_shell = "powershell.exe".to_string();
@@ -442,70 +349,20 @@ pub(crate) fn make_test_app(
         s.project_paths = vec![path_to_string(repo_root)];
         s
     });
-    let git_app = Box::leak(Box::new(
-        agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build git watcher handle app"),
-    ));
-    let git_watcher = GitWatcher::with_state(
-        Arc::clone(&session_mgr),
-        git_app.handle().clone(),
-        owners.git.clone(),
-    );
-    let pty_mgr = Arc::new(Mutex::new(PtyManager::with_owners(
-        output_senders,
-        idle_detector,
-        Arc::clone(&git_watcher),
-        None,
-        None,
-        #[cfg(windows)]
-        owners.git_guard.clone(),
-        owners.spawn.clone(),
-    )));
-
-    let detached_sessions: DetachedSessionsState = Arc::new(Mutex::new(HashSet::new()));
-    let voice_tracking: VoiceTrackingState = Arc::new(Mutex::new(VoiceTracker::new()));
-    let spec_board_state: SpecBoardState = Arc::new(tokio::sync::RwLock::new(
-        agentscommander_lib::commands::spec_board::SpecBoardManager::new(),
-    ));
-    let config_seed_lock: ConfigSeedLockState = Arc::new(tokio::sync::Mutex::new(()));
-    let shutdown_signal = ShutdownSignal::new();
-    let selection_coordinator =
-        SelectionCoordinator::new(Arc::clone(&session_mgr), shutdown_signal.token().clone());
+    let (git_watcher, pty_mgr) = git_watcher_and_pty(&owners, &session_mgr, output_senders);
 
     let captured = Arc::clone(captured_output);
     let captured_sequences = Arc::clone(captured_sequences);
     let captured_deliveries = Arc::clone(captured_deliveries);
     let listener_errors = Arc::clone(listener_errors);
-    let app = agentscommander_lib::test_support::test_builder_with_owners(owners.clone())
-        .manage(MasterToken::new("pty-lifecycle-master-token".into()))
-        .manage(AppOutbox::new(
-            repo_root.join(".app-outbox").to_string_lossy().to_string(),
-        ))
-        .manage(settings)
-        .manage(Arc::clone(&session_mgr))
-        .manage(selection_coordinator.clone())
-        .manage(tg_mgr)
-        .manage(detached_sessions)
-        .manage(voice_tracking)
-        .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
-        .manage(shutdown_signal)
-        .manage(Arc::new(WebAccessToken::new(
-            "pty-lifecycle-web-token".into(),
-        )))
-        .manage(WsBroadcaster::new())
-        .manage(WebServerHandle::default())
-        .manage(spec_board_state)
-        .manage(config_seed_lock)
-        .manage(git_watcher)
-        .manage(Arc::new(ResourceMonitorState::with_spawn_registry(
-            owners.spawn.clone(),
-        )))
-        .manage(Arc::clone(&pty_mgr))
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("build pty lifecycle test app");
-
-    start_selection_coordinator(&app, &selection_coordinator);
+    let states = TestAppStates {
+        settings,
+        session_mgr: Arc::clone(&session_mgr),
+        tg_mgr,
+        git_watcher,
+        pty_mgr: Arc::clone(&pty_mgr),
+    };
+    let app = build_test_app(&owners, repo_root, states, "pty-lifecycle");
 
     install_pty_output_listener(
         &app,
@@ -621,11 +478,7 @@ impl LifecycleFixture {
     }
 }
 
-/// Polls the unchanged public `commands::pty::get_screen_snapshot` route until the native
-/// snapshot contains the complete expected bytes (bounded by `OUTPUT_TIMEOUT`). Before
-/// returning success it inspects the per-session tagged listener recorder and asserts zero
-/// `pty_output` data or resync-marker deliveries: these are inactive-session regressions,
-/// so native parser/snapshot progress must occur without any UI observer delivery.
+/// Lifecycle wrapper of the shared snapshot wait, bounded by `OUTPUT_TIMEOUT`.
 pub(crate) async fn wait_for_snapshot_contains(
     fixture: &LifecycleFixture,
     app: &tauri::App,
@@ -633,41 +486,9 @@ pub(crate) async fn wait_for_snapshot_contains(
     expected_bytes: &str,
     phase: &str,
 ) -> Result<(), String> {
-    let start = Instant::now();
-    let mut last_snapshot: Option<serde_json::Value> = None;
-    while start.elapsed() < OUTPUT_TIMEOUT {
-        let snapshot = get_screen_snapshot(
-            app.state::<Arc<Mutex<PtyManager>>>(),
-            session_id.to_string(),
-        )
-        .map_err(|e| format!("{phase}: get_screen_snapshot failed for {session_id}: {e}"))?;
-        if let Some(snapshot) = snapshot {
-            last_snapshot =
-                Some(serde_json::to_value(&snapshot).expect("serialize legacy snapshot payload"));
-            let text = String::from_utf8_lossy(&snapshot.data);
-            if text.contains(expected_bytes) {
-                let deliveries = fixture
-                    .captured_deliveries
-                    .lock()
-                    .unwrap()
-                    .get(&session_id.to_string())
-                    .copied()
-                    .unwrap_or(0);
-                if deliveries != 0 {
-                    return Err(format!(
-                        "{phase}: session {session_id} recorded {deliveries} tagged pty_output \
-                         deliveries while inactive; expected zero"
-                    ));
-                }
-                return Ok(());
-            }
-        }
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
-    Err(format!(
-        "{phase}: timeout waiting for snapshot marker '{expected_bytes}' in session \
-         {session_id}; last_snapshot={last_snapshot:?}"
-    ))
+    let marker = (session_id, expected_bytes, phase);
+    let bounds = (OUTPUT_TIMEOUT, POLL_INTERVAL);
+    shared_wait(app, &fixture.captured_deliveries, marker, bounds).await
 }
 
 /// The last UI event sequence for a session. Inactive-session regressions deliver zero
@@ -770,8 +591,4 @@ pub(crate) async fn assert_active_session(
     let mgr = session_mgr.read().await;
     let session = mgr.get_session(id).await.expect("active session exists");
     assert_eq!(session.status, SessionStatus::Active);
-}
-
-pub(crate) fn parse_session_id(session: &SessionInfo) -> Uuid {
-    Uuid::parse_str(&session.id).expect("session id is uuid")
 }

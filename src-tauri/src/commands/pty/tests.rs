@@ -264,7 +264,7 @@ fn user_input_test_app(
         .expect("build user input test app")
 }
 
-/// #1682 - `user_input_test_app`'s builder plus a managed `IdleDetector`, so
+/// `user_input_test_app`'s builder plus a managed `IdleDetector`, so
 /// test 7's control-write mark has somewhere to live. A separate fixture
 /// deliberately: `user_input_test_app` is shared by more than one existing
 /// test and must stay byte-unchanged.
@@ -481,11 +481,11 @@ async fn a_substantive_terminal_prompt_arms() {
     );
 }
 
-/// #1682 - the terminal plane: a PTY write marks the session, and the
+/// The terminal plane: a PTY write marks the session, and the
 /// substantive submission that follows clears the mark. The \x1b[I step is the
 /// control, and the last step is the assertion that goes red if the clear is
 /// omitted from the `if substantive` block.
-/// #2411 Typed input clears the auto-closed marker (production `pty.rs` clear).
+/// Typed input clears the auto-closed marker (production `pty.rs` clear).
 #[tokio::test]
 async fn typed_input_clears_auto_closed_marker() {
     let f = fresh_intent_fixture().await;
@@ -613,7 +613,7 @@ async fn ctrl_c_cancelled_terminal_line_keeps_restore_fresh() {
     assert!(!inject_continue_after_restore(record_fresh(&f).await));
 }
 
-/// (#1793) The #260 case: `IdleDetector::register_session` seeds
+/// The silent-spawn case: `IdleDetector::register_session` seeds
 /// `activity[id]` at spawn, so a session that has printed nothing still
 /// reaches `waiting_for_input`. The seed alone must NOT read as printable
 /// output, which is the whole reason this helper exists.
@@ -634,7 +634,7 @@ fn session_printed_since_is_false_for_a_session_that_only_has_the_spawn_seed() {
     );
 }
 
-/// (#1793) Real printable output after the reference instant does count.
+/// Real printable output after the reference instant does count.
 #[test]
 fn session_printed_since_is_true_after_real_printable_output() {
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -654,7 +654,7 @@ fn session_printed_since_is_true_after_real_printable_output() {
     );
 }
 
-/// (#1793) Fail CLOSED without a managed detector. This is the OPPOSITE
+/// Fail CLOSED without a managed detector. This is the OPPOSITE
 /// direction from every neighbouring `try_state` helper in this file, so it
 /// is pinned explicitly: a missing detector must never authorise a write.
 #[test]
@@ -670,7 +670,7 @@ fn session_printed_since_fails_closed_without_a_managed_detector() {
 }
 
 // ---------------------------------------------------------------------
-// #2232 phase 3, section 10.1: the budget recharge source filter.
+// The budget recharge source filter.
 // ---------------------------------------------------------------------
 
 /// A coordinator session whose cwd sits inside a real `room-<N>-*` root, so
@@ -869,7 +869,7 @@ fn substantive_terminal_input_progresses_while_the_room_lock_is_held() {
     });
 }
 
-// ---- #4778: persist session state only on a submitted line (Enter) ----
+// ---- persist session state only on a submitted line (Enter) ----
 
 #[test]
 fn persists_session_state_only_for_submitted_lines() {

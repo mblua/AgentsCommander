@@ -1,7 +1,10 @@
-// #3516 - the collapsed "Preflight" block of a Coding Agent card or a Profile cell.
+// The collapsed "Preflight" block of a Coding Agent card or a Profile cell.
 // Controlled: the modal owns every value and draft; this block keeps no state.
 import { type Component, Show, createUniqueId } from "solid-js";
 import { INVALID_TIMEOUT_TEXT } from "./preflightModel";
+import {
+  AC_MATRIX_ROOT_PLACEHOLDER, AC_REPLICA_ROOT_PLACEHOLDER, AC_WORKSPACE_ROOT_PLACEHOLDER,
+} from "../../../shared/profile-utils";
 
 const LEVEL_HELP = {
   agent: "Runs before every new session for this Coding Agent, before the profile preflight. "
@@ -9,6 +12,19 @@ const LEVEL_HELP = {
   profile: "Runs after the Coding Agent preflight for this effective profile. "
     + "Leave empty to skip this step.",
 } as const;
+// Hover help for the command input. Its %AC_…% tokens must match AC_PLACEHOLDER_TOKENS in
+// src-tauri/src/config/placeholders.rs; PreflightFields.test.tsx keeps them in sync.
+const VARIABLES_HELP = [
+  "Supported variables:",
+  `${AC_REPLICA_ROOT_PLACEHOLDER} = the session launch folder (room replica, Root Agent `
+    + "or Temporary Room folder). Not available elsewhere.",
+  `${AC_WORKSPACE_ROOT_PLACEHOLDER} = the project .ac folder above the launch folder. `
+    + "Not available in Temporary Rooms or outside a .ac workspace.",
+  `${AC_MATRIX_ROOT_PLACEHOLDER} = the agent's origin Agent Matrix (<.ac>/_agent_<name>). `
+    + "Room replicas only; not Root Agent or Temporary Rooms.",
+  "Any other %VAR% (e.g. %USERPROFILE%) blocks the launch.",
+  "$VAR is not expanded by AgentsCommander; only a shell the command runs can expand it.",
+].join("\n");
 const COMMON_HELP = "A finite command or script. Exit code 0 allows launch; any failure blocks "
   + "launch. Uses the session working directory and environment.";
 const TIMEOUT_HELP = "Default: 60 seconds. Each preflight has its own timeout. "
@@ -40,6 +56,7 @@ export const PreflightFields: Component<PreflightFieldsProps> = (props) => {
           value={props.command ?? ""}
           placeholder="Optional command or script"
           spellcheck={false}
+          title={VARIABLES_HELP}
           onInput={(e) => props.onCommand(e.currentTarget.value)}
           data-ac-testid={`${props.testid}.command`}
           data-ac-role="textbox"

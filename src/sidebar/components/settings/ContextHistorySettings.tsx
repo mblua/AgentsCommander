@@ -1,4 +1,4 @@
-// #4049 - Settings > Context Heat Map (desktop only). Renders the preferences;
+// Settings > Context Heat Map (desktop only). Renders the preferences;
 // the modal owns the draft, validation and Save/Cancel. No persistence or history here.
 import { type Component, For, Show } from "solid-js";
 import { sessionWindowLabel } from "../../../shared/context-history";
@@ -6,7 +6,7 @@ import { sessionWindowLabel } from "../../../shared/context-history";
 export const CONTEXT_HISTORY_RETENTION_DAYS_MIN = 1;
 export const CONTEXT_HISTORY_RETENTION_DAYS_MAX = 365;
 export const CONTEXT_HISTORY_RETENTION_DAYS_DEFAULT = 30;
-// #4091 Session-window list bounds; the backend owns the default list.
+// Session-window list bounds; the backend owns the default list.
 export const CONTEXT_HISTORY_SESSION_WINDOWS_MAX_LEN = 8;
 export const CONTEXT_HISTORY_SESSION_WINDOW_MAX = 10000;
 
@@ -21,7 +21,7 @@ export function parseContextHistoryRetentionDays(raw: string): number | null {
 }
 
 /**
- * #4091 Comma-separated session counts: 1..8 ascending distinct whole numbers
+ * Comma-separated session counts: 1..8 ascending distinct whole numbers
  * in 1..10000, or null. Never sorts, deduplicates or drops a blank token.
  */
 export function parseContextHistorySessionWindows(raw: string): number[] | null {
@@ -32,7 +32,7 @@ export function parseContextHistorySessionWindows(raw: string): number[] | null 
     if (!/^\d+$/.test(token)) return null;
     const value = Number(token);
     if (value < 1 || value > CONTEXT_HISTORY_SESSION_WINDOW_MAX) return null;
-    const previous = counts[counts.length - 1];
+    const previous = counts.at(-1);
     if (previous !== undefined && value <= previous) return null;
     counts.push(value);
   }

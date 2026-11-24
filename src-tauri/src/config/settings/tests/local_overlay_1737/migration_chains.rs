@@ -88,7 +88,7 @@ fn the_load_time_chain_mutates_exactly_the_pinned_key_set() {
     fixture.insert("sidebarZoom".to_string(), json!(1.5));
     fixture.insert("sidebarAlwaysOnTop".to_string(), json!(true));
     fixture.insert("startOnlyCoordinators".to_string(), json!(true));
-    // #2190: pinned explicitly so the legacy carrier still flips the
+    // Pinned explicitly so the legacy carrier still flips the
     // destination (false -> true) whatever the struct default is.
     fixture.insert("restoreCoordinatorWakeState".to_string(), json!(false));
     fixture.insert(
@@ -208,7 +208,7 @@ fn the_migration_destination_table_is_pinned_to_serialized_field_names() {
     }
 }
 
-// #1757 (D11/D12) - an overlay that owns `agents` suppresses the migration.
+// (D11/D12) - an overlay that owns `agents` suppresses the migration.
 #[test]
 fn an_overlay_owned_agents_array_suppresses_the_1757_migration() {
     let temp = tempfile::tempdir().unwrap();
@@ -229,7 +229,7 @@ fn an_overlay_owned_agents_array_suppresses_the_1757_migration() {
             .owns_top_level(OVERLAY_KEY_AGENTS),
         "the fixture stopped producing an overlay-owned agents array"
     );
-    // #1905: the overlay-owned array is not exported (one info! per agent), so
+    // The overlay-owned array is not exported (one info! per agent), so
     // no blocking-menus `.local` file appears and layer 0 keeps serving the
     // overlay's one-entry array rather than the shipped two.
     assert!(!blocking_menus_local_path(&path).exists());

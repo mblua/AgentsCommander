@@ -3,10 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import UnleashConfirmModal from "./UnleashConfirmModal";
 
-// #4752 P05 - the Unleash confirmation dialog.
+// The Unleash confirmation dialog.
 const byTestId = (id: string) => document.querySelector<HTMLElement>(`[data-ac-testid="${id}"]`);
 
-describe("UnleashConfirmModal (#4752)", () => {
+describe("UnleashConfirmModal", () => {
   let dispose: (() => void) | null = null;
 
   function mount(busy = false) {

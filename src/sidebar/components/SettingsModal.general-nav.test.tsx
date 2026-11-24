@@ -66,6 +66,7 @@ const PRE_EXISTING_TESTIDS = `
   settings.general.roomNumberMask
   settings.general.roomNumberMask.example
   settings.general.screenshotCaptureHotkey
+  settings.general.screenshotCopyPath
   settings.general.screenshotHyprlandBind
   settings.general.selectedRowRailColor
   settings.general.selectedRowRailColor.note
@@ -78,7 +79,7 @@ const PRE_EXISTING_TESTIDS = `
   .trim()
   .split(/\s+/);
 
-describe("SettingsModal General categories + search (#2704)", () => {
+describe("SettingsModal General categories + search", () => {
   // The returned function is Vitest's per-test teardown (runs where afterEach did).
   beforeEach(() => {
     const cleanupDom = installBrowserDomStubs();
@@ -386,12 +387,12 @@ describe("SettingsModal General categories + search (#2704)", () => {
     const { rendered, $ } = await renderModal();
     try {
       type($<HTMLInputElement>(SEARCH), "hotkey");
-      expect(rendered.root.querySelectorAll(".settings-general-result")).toHaveLength(3);
+      expect(rendered.root.querySelectorAll(".settings-general-result")).toHaveLength(4);
       for (const c of GENERAL_CATEGORIES) expect($(pane(c.id)).hidden).toBe(true);
       const counts = GENERAL_CATEGORIES.map(
         (c) => $(cat(c.id)).querySelector(".settings-general-cat-count")!.textContent,
       );
-      expect(counts).toEqual(["3", "0", "0", "0", "0"]);
+      expect(counts).toEqual(["4", "0", "0", "0", "0"]);
       expect($(cat("terminal")).classList.contains("is-empty")).toBe(true);
       expect($(cat("appearance")).hasAttribute("aria-current")).toBe(false);
       expect($(".settings-general-result-path").textContent).toBe("Appearance › Hotkeys");
@@ -483,6 +484,29 @@ describe("SettingsModal General categories + search (#2704)", () => {
       expect(saved.logLevel).toBe("debug");
     } finally {
       rendered.cleanup();
+    }
+  });
+
+  it("wires each screenshot checkbox to its own field", async () => {
+    const start = { screenshotHyprlandBind: true, screenshotCopyPath: false };
+    for (const which of ["screenshotHyprlandBind", "screenshotCopyPath"] as const) {
+      const other = which === "screenshotHyprlandBind" ? "screenshotCopyPath" : "screenshotHyprlandBind";
+      const { fake, rendered, $ } = await renderModal(start);
+      try {
+        $<HTMLButtonElement>(cat("appearance")).click();
+        const hypr = $<HTMLInputElement>(tid("settings.general.screenshotHyprlandBind"));
+        const copyPath = $<HTMLInputElement>(tid("settings.general.screenshotCopyPath"));
+        await waitFor(() => expect(hypr.checked).toBe(true));
+        expect(copyPath.checked).toBe(false);
+        $<HTMLInputElement>(tid(`settings.general.${which}`)).click();
+        $<HTMLButtonElement>(SAVE).click();
+        await waitFor(() => expect(fake.lastCall("save_settings_draft")).toBeTruthy());
+        const draft = (fake.lastCall("save_settings_draft")!.args as { draft: AppSettings }).draft;
+        expect(draft[which]).toBe(!start[which]);
+        expect(draft[other]).toBe(start[other]);
+      } finally {
+        rendered.cleanup();
+      }
     }
   });
 

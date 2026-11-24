@@ -1,4 +1,4 @@
-//! #1032 - compiling the user's per-agent context regex.
+//! Compiling the user's per-agent context regex.
 //!
 //! The engine ships no anchoring rules of its own: `%`-required, column-2-anchored and
 //! glyph-required all live in the pattern, because the pattern is per-agent user
@@ -31,7 +31,7 @@ const SIZE_LIMIT_BYTES: usize = 1024 * 1024;
 
 /// Compile a user-supplied pattern, or say why it cannot be one.
 ///
-/// The error is for `app.log` and for #1033 if it ever wants to surface it in Settings; the
+/// The error is for `app.log` and for the UI if it ever wants to surface it in Settings; the
 /// engine itself treats every failure the same way - the reading is unavailable.
 pub fn compile(source: &str) -> Result<ContextPattern, String> {
     let regex = RegexBuilder::new(source)

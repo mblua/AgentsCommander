@@ -1,7 +1,7 @@
 use super::*;
 use std::sync::PoisonError;
 
-/// #2141: a branch with no commits of its own has nothing that a stale base
+/// A branch with no commits of its own has nothing that a stale base
 /// could invalidate, so the notice is suppressed while the chip still turns.
 #[tokio::test]
 async fn stale_without_own_commits_sends_no_notice_but_keeps_the_chip() {
@@ -101,7 +101,7 @@ async fn stale_without_own_commits_notifies_once_after_the_first_own_commit() {
     );
 }
 
-/// #2141 closes a defect that predates it: a branch that is current, commits,
+/// Closes a defect that predates it: a branch that is current, commits,
 /// and only then falls behind used to observe `None -> Stale` on its new key,
 /// which is not the edge the notice fires on, so it was never told at all.
 #[tokio::test]
@@ -144,7 +144,7 @@ async fn branch_that_commits_while_behind_notifies_after_the_carry_over() {
 
 /// The other direction of the same carry: a `Stale` that already notified is
 /// carried too, so a commit does not re-open the edge and notify twice. The
-/// #2131 dedup now survives a commit, which it did not before.
+/// Dedup now survives a commit, which it did not before.
 #[tokio::test]
 async fn carry_over_does_not_duplicate_a_notice_across_a_commit() {
     let _guard = round_test_lock().await;
@@ -331,7 +331,7 @@ async fn two_live_keys_on_one_branch_never_seed_each_other() {
     );
 }
 
-/// #2141 fails open on a missing `ahead_by`: the field is a suppression
+/// Fails open on a missing `ahead_by`: the field is a suppression
 /// input, and an absent one is not evidence that the branch is empty.
 #[tokio::test]
 async fn stale_with_a_missing_ahead_by_still_sends_the_notice() {
@@ -457,7 +457,7 @@ async fn stale_with_an_unresolved_default_branch_still_sends_the_notice() {
     assert_eq!(transitions[0].behind_by, Some(4));
 }
 
-/// #2329: two rooms sharing one repo and one commit on the resolved default
+/// Two rooms sharing one repo and one commit on the resolved default
 /// branch behave identically - both stay idle, neither gets a CI notice -
 /// while the shared key still costs exactly one CI query per round.
 #[tokio::test]

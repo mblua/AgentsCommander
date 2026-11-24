@@ -879,18 +879,18 @@ export interface AppSettings {
   containerCredentialsFromHost: boolean;
   logLevel: LogLevel | null;
   activityLogEnabled: boolean;
-  /** Seconds the automatic typing hold stays active after the last
-   *  qualifying keystroke in a session. The backend reads it live and clamps it
-   *  to 1..3600; optional so a snapshot saved before the field reads as the
-   *  backend default (30). */
+  ipcBlackBoxEnabled: boolean; // renderer IPC black box; the backend reads it once at start
+  /** Seconds the automatic typing hold stays active after the last qualifying keystroke in a
+   *  session. The backend reads it live and clamps it to 1..3600; optional so a snapshot
+   *  saved before the field reads as the backend default (30). */
   typingHoldSeconds?: number;
   responseCloseEnabled?: boolean;
   responseCloseIdleSeconds?: number;
   screenshotCaptureHotkey?: string;
   /** AC keeps its own key binding block in Omarchy's hypr/bindings.lua. */
   screenshotHyprlandBind?: boolean;
-  /** Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E". Validated on save;
-   * an invalid value blocks the save. */
+  screenshotCopyPath?: boolean; // #5178 copy the PNG path, not the image
+  /** Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E"; an invalid value blocks the save. */
   sidebarCompactHotkey?: string;
   /** Mask for numbering NEW room directories: one `#` per zero-padded digit.
    * Optional so a snapshot saved before the field reads as the backend default ("#"). */
@@ -1105,7 +1105,7 @@ export interface AgentUpdateResult {
   verificationError?: string;
 }
 
-/** A result as it may arrive from an older backend: the four #1691 keys may be absent.
+/** A result as it may arrive from an older backend: the four newer keys may be absent.
  *  `normalizeAgentUpdateResult` (sidebar/agent-update.ts) turns one of these into the canonical
  *  shape before any store fold or notification classification. */
 export type AgentUpdateResultWire = Omit<
@@ -1804,7 +1804,7 @@ export type AssignmentMode = "ordinary" | "assignAndLock";
  *  protected replicas. There is deliberately no default. */
 export type ConflictDecision = "unlockedOnly" | "forceReviewed";
 
-/** Strict protection state read by #1939. `invalid` is a diagnostic,
+/** Strict protection state read by discovery. `invalid` is a diagnostic,
  *  never a permissive default. */
 export type SelectionState = "unlocked" | "locked" | "invalid";
 

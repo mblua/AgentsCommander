@@ -20,7 +20,7 @@ import { roomHasRaisedHand } from "./room-session";
 const projectPath = "C:\\Project";
 
 /** A workgroup with one coordinator replica. `taskTitle` defaults to a real
- *  title so the #763 `!!wg.taskTitle` gate passes; pass null to exercise it. */
+ *  title so the `!!wg.taskTitle` gate passes; pass null to exercise it. */
 function room(
   name: string,
   opts: { taskTitle?: string | null; coordinator?: boolean } = {}
@@ -75,7 +75,7 @@ function railRaiseHands(): string[] {
   ).map((el) => el.dataset.acTestid!.replace("workgroupGroups.raiseHand.", ""));
 }
 
-describe("roomHasRaisedHand (#763 predicate — mirrors the #747 row)", () => {
+describe("roomHasRaisedHand (predicate — mirrors the row rule)", () => {
   beforeEach(() => resetUiStoresForTests());
   afterEach(() => resetUiStoresForTests());
 
@@ -84,7 +84,7 @@ describe("roomHasRaisedHand (#763 predicate — mirrors the #747 row)", () => {
     expect(roomHasRaisedHand(room("wg-1-dev-team"))).toBe(true);
   });
 
-  it("stays true when the coordinator session has EXITED (no live gate — #747/decision C)", () => {
+  it("stays true when the coordinator session has EXITED (no live gate — decision C)", () => {
     // The whole point of decision C: a restored/dormant coordinator keeps its
     // persisted hand, so the tab must light even though the PTY is gone.
     sessionsStore.setSessions([raisedSession("wg-1-dev-team", { status: { exited: 0 } })]);
@@ -121,14 +121,14 @@ describe("roomHasRaisedHand (#763 predicate — mirrors the #747 row)", () => {
   });
 });
 
-describe("RoomGroupRail raise-hand badge (#763 render + aggregation)", () => {
+describe("RoomGroupRail raise-hand badge (render + aggregation)", () => {
   beforeEach(() => resetUiStoresForTests());
   afterEach(() => {
     resetUiStoresForTests();
     document.body.replaceChildren();
   });
 
-  it("lights the amber badge on the group whose coordinator raised a hand, never on All (#775)", async () => {
+  it("lights the amber badge on the group whose coordinator raised a hand, never on All", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
     sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
@@ -139,19 +139,19 @@ describe("RoomGroupRail raise-hand badge (#763 render + aggregation)", () => {
     );
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
-      // #775: lights the matching group; All never lights; the rest stay dark.
+      // Lights the matching group; All never lights; the rest stay dark.
       await waitFor(() => expect(railRaiseHands()).toEqual(["ui"]));
 
       const badge = target<HTMLElement>("workgroupGroups.raiseHand.ui");
       expect(badge.classList.contains("workgroup-group-rail-raise-hand")).toBe(true);
-      // #775 round 2: a raised-hand SVG glyph, not the old amber "!".
+      // A raised-hand SVG glyph, not the old amber "!".
       expect(
         badge.querySelector("svg.workgroup-group-rail-raise-hand-icon")
       ).not.toBeNull();
       expect(badge.textContent ?? "").not.toContain("!");
       expect(badge.getAttribute("aria-label")).toBe("An orchestrator raised its hand");
 
-      // #775 rule 3 (Option B): the hand renders inline, to the LEFT of the
+      // Rule 3 (Option B): the hand renders inline, to the LEFT of the
       // title — first child of the title line, ahead of the title text.
       const button = target<HTMLElement>("workgroupGroups.button.ui");
       const titleLine = button.querySelector(".workgroup-group-rail-title-line");
@@ -166,7 +166,7 @@ describe("RoomGroupRail raise-hand badge (#763 render + aggregation)", () => {
     }
   });
 
-  it("never lights All even when every member workgroup has a raised hand (#775)", async () => {
+  it("never lights All even when every member workgroup has a raised hand", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
     sessionsStore.setSessions([
@@ -189,7 +189,7 @@ describe("RoomGroupRail raise-hand badge (#763 render + aggregation)", () => {
     }
   });
 
-  it("aggregates onto Ungrouped (never All) when an ungrouped workgroup's coordinator raised (#775)", async () => {
+  it("aggregates onto Ungrouped (never All) when an ungrouped workgroup's coordinator raised", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
     sessionsStore.setSessions([raisedSession("wg-3-docs-team")]);
@@ -200,7 +200,7 @@ describe("RoomGroupRail raise-hand badge (#763 render + aggregation)", () => {
     );
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
-      // #775: Ungrouped still aggregates the ungrouped raise; All never lights.
+      // Ungrouped still aggregates the ungrouped raise; All never lights.
       await waitFor(() => expect(railRaiseHands()).toEqual(["ungrouped"]));
     } finally {
       rendered.cleanup();
@@ -236,7 +236,7 @@ describe("RoomGroupRail raise-hand badge (#763 render + aggregation)", () => {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       expect(railRaiseHands()).toEqual([]);
 
-      // Hand goes up -> badge appears on the group only (never All, #775).
+      // Hand goes up -> badge appears on the group only (never All).
       sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
       await waitFor(() => expect(railRaiseHands()).toEqual(["ui"]));
 
@@ -248,7 +248,7 @@ describe("RoomGroupRail raise-hand badge (#763 render + aggregation)", () => {
     }
   });
 
-  it("bolds built-in group labels (All, Ungrouped) and leaves user groups normal (#775)", async () => {
+  it("bolds built-in group labels (All, Ungrouped) and leaves user groups normal", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
 
@@ -271,7 +271,7 @@ describe("RoomGroupRail raise-hand badge (#763 render + aggregation)", () => {
     }
   });
 
-  it("never bolds a user group merely named like a built-in (#775 structural gate)", async () => {
+  it("never bolds a user group merely named like a built-in (structural gate)", async () => {
     const fake = new FakeTransport();
     fake.resolve(
       "get_project_groups",
@@ -303,7 +303,7 @@ describe("RoomGroupRail raise-hand badge (#763 render + aggregation)", () => {
     }
   });
 
-  it("bolds the built-in Non-stop group; All still never shows the hand (#775 + #777 merge)", async () => {
+  it("bolds the built-in Non-stop group; All still never shows the hand (merge)", async () => {
     const fake = new FakeTransport();
     fake.resolve(
       "get_project_groups",
@@ -330,7 +330,7 @@ describe("RoomGroupRail raise-hand badge (#763 render + aggregation)", () => {
         ".workgroup-group-rail-title"
       );
       expect(nonstopTitle?.classList.contains("workgroup-group-rail-title-system")).toBe(true);
-      // #775 — Non-stop is a real member group, so wg-1's raised hand DOES light
+      // Non-stop is a real member group, so wg-1's raised hand DOES light
       // it (locks in Maria's "Non-stop keeps the hand" decision).
       expect(railRaiseHands()).toContain("nonstop");
       // Rule 1 survives the merge: All never shows the hand, even with Non-stop present.

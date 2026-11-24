@@ -73,7 +73,7 @@ fn seed_swap_fixture() -> (tempfile::TempDir, ResolvedConfigSeed, PathBuf) {
     (temp, resolved, replica)
 }
 
-// ---- #2162 OS-aware tiers ---------------------------------------------
+// ---- OS-aware tiers ---------------------------------------------
 
 /// Expected candidate pair (OS variant first, then base) for one tier.
 fn os_pair(tier: ConfigSeedTier, root: &Path, folder: &str, os: &str) -> Vec<ConfigSeedCandidate> {

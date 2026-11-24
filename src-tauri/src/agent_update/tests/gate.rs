@@ -1,7 +1,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------
-// #1551 - gate
+// Gate
 // ---------------------------------------------------------------------
 
 #[test]
@@ -234,7 +234,7 @@ fn pass_nodes_follow_catalog_order_across_updates_and_prompts() {
 #[test]
 fn pass_nodes_skip_an_empty_effective_winner() {
     // Even a manually built plan cannot surface a node for a command whose
-    // first effective catalog entry carries no sequence (#1967).
+    // first effective catalog entry carries no sequence.
     let catalog = vec![
         entry("pi", "Pi (empty)", vec![]),
         CodingAgentDefinition {

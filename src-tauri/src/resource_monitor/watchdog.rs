@@ -32,7 +32,7 @@ pub struct ResourceWatchdogDecision {
     pub kill_required: bool,
 }
 
-/// #1151 - which branch handled one quarantine retry. `Coordinator` means a live public
+/// Which branch handled one quarantine retry. `Coordinator` means a live public
 /// session took the normal coordinator plus Job Object path; `Orphan` means the session
 /// row was gone and the registry-only fallback ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -45,7 +45,7 @@ pub(crate) enum QuarantineRetryPath {
     Error,
 }
 
-/// #1151 - structured, NON-CLAIMING report of one quarantine retry.
+/// Structured, NON-CLAIMING report of one quarantine retry.
 /// `still_counts_toward_admission` is read back from the registry after the call using
 /// the admission predicate itself, so nothing here asserts "we reclaimed a slot"; it
 /// states the observable fact and leaves authorship out of it.
@@ -85,7 +85,7 @@ impl QuarantineRetryReport {
     }
 }
 
-/// #1151 - only an explicit `NoPublicSession` may fall through to the registry-only
+/// Only an explicit `NoPublicSession` may fall through to the registry-only
 /// retry. `AlreadyInFlight` means another critical admission owns the outcome, and
 /// treating it as an orphan is the exact mistake the issue rules out. Extracted so that
 /// rule is directly unit-testable.
@@ -160,13 +160,13 @@ async fn run_tick(
     let limits = ResourceLimits::from(&cfg);
     let groups = monitor.sample_for_watchdog(limits);
 
-    // #1151 - the kill_required loop is evaluated FIRST. Before this fix an orphan
+    // The kill_required loop is evaluated FIRST. Before this fix an orphan
     // quarantine retry returned immediately, so the quarantine loop was effectively free;
     // it now performs a real blocking kill_group per orphan, and running it first would
     // delay every memory-driven kill decision on a KillGroup install. The starvation is
     // introduced by this change, so mitigating it belongs to this change.
     //
-    // #559 (H2) - the quarantine retry runs on EVERY configured action, including the
+    // The quarantine retry runs on EVERY configured action, including the
     // default Warn. The action gate is therefore SCOPED to the kill_required loop; it must
     // never be an early return from run_tick, which would delete the whole fix on a
     // default install while the app kept quarantining and kept leaking.
@@ -178,14 +178,14 @@ async fn run_tick(
         }
     }
 
-    // #559 (H2) - retry cleanup for quarantined groups regardless of the configured
+    // Retry cleanup for quarantined groups regardless of the configured
     // watchdog action; a leaked slot must be reclaimed even in Warn mode. kill_group
     // already re-observes and releases if the process is now gone. A double-dispatch
     // (a still-Quarantined group whose prior retry is mid-flight) is a no-op via
     // kill_group's Terminating/Terminated idempotency guard, so this relies on that
     // guard staying intact.
     //
-    // #1151 - that guard now has TWO callers. The orphan fallback below reaches
+    // That guard now has TWO callers. The orphan fallback below reaches
     // kill_group_inner directly, WITHOUT the coordinator's WatchdogKill dedup key, and
     // relies on the same Terminating/Terminated transition for mutual exclusion. So
     // weakening kill_group_inner's state guard now breaks two callers, not one.
@@ -198,7 +198,7 @@ async fn run_tick(
     let _ = run_quarantine_retries(monitor, coordinator, &groups).await;
 }
 
-/// #1151 - owns the quarantine-retry GATE and the loop, so no caller reimplements the
+/// Owns the quarantine-retry GATE and the loop, so no caller reimplements the
 /// dispatch decision. `run_tick` calls it, and so does the automation hook, which is what
 /// makes the automation evidence about shipped dispatch logic rather than a mirrored copy.
 pub(crate) async fn run_quarantine_retries(
@@ -220,7 +220,7 @@ pub(crate) async fn run_quarantine_retries(
     reports
 }
 
-/// #1151 - the per-group decision. The coordinator is asked FIRST, so a live public
+/// The per-group decision. The coordinator is asked FIRST, so a live public
 /// session always takes the coordinator plus Job Object path exactly as before. Only an
 /// explicit `NoPublicSession` falls through to the registry-only retry.
 pub(crate) async fn retry_quarantined_group(
@@ -288,7 +288,7 @@ async fn retry_orphaned_group(
     root_identity: ProcessIdentity,
 ) -> QuarantineRetryReport {
     let monitor_c = monitor.clone();
-    // #1151 - this spawn_blocking is the ONLY production invocation of
+    // This spawn_blocking is the ONLY production invocation of
     // retry_orphaned_quarantine. kill_group can cost ~2s per stubborn PID
     // (windows.rs WaitForSingleObject), so inlining it here would stall a Tokio worker.
     // Awaited rather than detached: it keeps the loop sequential, keeps the log ordering,
@@ -383,7 +383,7 @@ async fn submit_watchdog_kill(coordinator: &SelectionCoordinator, session_id: Uu
                 result.finalized
             );
         }
-        // #1151 - the two conditions the old conflated line merged are now distinct, so a
+        // The two conditions the old conflated line merged are now distinct, so a
         // log reader can tell an in-flight critical admission from a vanished session row.
         Ok(WatchdogKillOutcome::AlreadyInFlight) => {
             log::debug!("[resource-watchdog] kill already in flight session={session_id}");

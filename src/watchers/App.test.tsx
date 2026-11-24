@@ -29,7 +29,7 @@ import type {
 
 // A call that lands after `rendered.cleanup()` restores the test transport falls through to
 // the default one, which outside Tauri is a real `WsTransport`. Under jsdom that opens a `ws`
-// client and leaves an unhandled rejection (#4103). An inert stand-in keeps those late calls
+// client and leaves an unhandled rejection. An inert stand-in keeps those late calls
 // pending instead of reaching the network.
 vi.mock("../shared/transport-ws", () => ({
   WsTransport: class {
@@ -124,13 +124,13 @@ async function flush(): Promise<void> {
  * The persistent startup notice, mirroring `errorBanner` below.
  *
  * Module-scoped rather than local to one `describe`, because the two suites that assert it --
- * the rewritten subscribe-failure test in the #1171 block and the whole #1196 block -- are
+ * the rewritten subscribe-failure test in the activity-window block and the whole mount-chain block -- are
  * different blocks and this is one helper, not two.
  */
 const startupBanner = (root: HTMLElement): HTMLElement | null =>
   root.querySelector<HTMLElement>('[data-ac-testid="watchers.startupDegraded"]');
 
-describe("the watcher activity window (#1171)", () => {
+describe("the watcher activity window", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -145,7 +145,7 @@ describe("the watcher activity window (#1171)", () => {
     document.body.replaceChildren();
   });
 
-  // #1171 test 81, the four states told apart from snapshot values alone.
+  // Test 81, the four states told apart from snapshot values alone.
   it("shows the warming state before the engine has ticked, never the day-one message", async () => {
     const fake = transportWith(snapshot({ warmedUp: false }));
     const rendered = renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
@@ -197,7 +197,7 @@ describe("the watcher activity window (#1171)", () => {
     }
   });
 
-  // #1171 tests 82 and 83.
+  // Tests 82 and 83.
   it("keeps the truncated banner and the unsampled note as separate elements", async () => {
     const fake = transportWith(
       snapshot({ matches: [match()], truncated: true, possiblyMissedFrames: 3 })
@@ -241,7 +241,7 @@ describe("the watcher activity window (#1171)", () => {
     }
   });
 
-  // #1171 test 84.
+  // Test 84.
   it("renders a row containing HTML-looking text as text", async () => {
     const hostile = "<img src=x onerror=alert(1)> Read (<script>)";
     const fake = transportWith(
@@ -260,7 +260,7 @@ describe("the watcher activity window (#1171)", () => {
     }
   });
 
-  // #1171 test 85.
+  // Test 85.
   it("distinguishes a state row from an occurrence row", async () => {
     const fake = transportWith(
       snapshot({
@@ -285,7 +285,7 @@ describe("the watcher activity window (#1171)", () => {
     }
   });
 
-  // #1171 test 80.
+  // Test 80.
   it("hides the Agent and Workgroup chips in single-session scope and shows them in All sessions", async () => {
     const fake = transportWith(snapshot({ matches: [match()] }));
     const rendered = renderWithFakeTransport(() => <WatchersApp initialSessionId="s1" />, fake);
@@ -318,7 +318,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1193. The two labels name each other's concept, so both renames have to hold at once:
+   * The two labels name each other's concept, so both renames have to hold at once:
    * asserting all three strings in one test makes a half-applied swap -- which would leave
    * two controls labelled AGENT -- fail. The assertions read the source casing because
    * `text-transform: uppercase` is a paint-time rule jsdom does not apply to `textContent`.
@@ -364,7 +364,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1171 test 79, the frontend half. The backend focuses the existing window and emits
+   * Test 79, the frontend half. The backend focuses the existing window and emits
    * `watchers_scope_request` instead of building a second one; what is left to prove here
    * is that the window actually changes scope when that event arrives.
    */
@@ -437,7 +437,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1171 test 77, the race the earlier version of this test did not run.
+   * Test 77, the race the earlier version of this test did not run.
    *
    * Waiting for the snapshot row to be in the DOM and only then emitting proves nothing: it
    * passes even if the window fetched before it subscribed, or dropped whatever arrived
@@ -475,10 +475,10 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1171 test 79d, both orderings of the same race. They fail differently, which is why
+   * Test 79d, both orderings of the same race. They fail differently, which is why
    * neither one alone is enough.
    */
-  describe("settling the scope on mount (#1171 test 79d)", () => {
+  describe("settling the scope on mount (test 79d)", () => {
     it("adopts the event and never fetches the scope it was about to leave", async () => {
       const pull = deferred<string | null>();
       const fake = transportWith(snapshot());
@@ -536,10 +536,10 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1171 test 79e, the content guard. Three assertions that fail independently, because a
+   * Test 79e, the content guard. Three assertions that fail independently, because a
    * correct selector over the previous session's rows is the failure this exists to prevent.
    */
-  describe("guarding what is painted (#1171 test 79e)", () => {
+  describe("guarding what is painted (test 79e)", () => {
     it("drops the previous scope's rows synchronously, before the new fetch resolves and when it rejects", async () => {
       const second = deferred<WatcherActivitySnapshot>();
       const fake = transportWith(snapshot());
@@ -637,7 +637,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1171 test 79f. In "All sessions" the scope is a SET derived from the session list, and
+   * Test 79f. In "All sessions" the scope is a SET derived from the session list, and
    * the session listeners rewrite it without touching the selection. A generation keyed on
    * the selected session passes every other test here and fails this one.
    */
@@ -774,7 +774,7 @@ describe("the watcher activity window (#1171)", () => {
    * list afterwards, so an answer that resolves out of order is not a flicker: it is wrong
    * permanently.
    */
-  describe("reloading the session list (#1171)", () => {
+  describe("reloading the session list", () => {
     const optionValues = (root: HTMLElement) =>
       [
         ...root.querySelectorAll<HTMLOptionElement>(
@@ -843,7 +843,7 @@ describe("the watcher activity window (#1171)", () => {
   });
 
   /**
-   * #1196 REVERSES what this test used to pin, deliberately.
+   * REVERSES what this test used to pin, deliberately.
    *
    * It used to assert that a failed subscribe stopped the mount where it stood
    * (`get_watcher_activity` length 0). That invariant is the defect: the arming of the poll
@@ -923,13 +923,13 @@ describe("the watcher activity window (#1171)", () => {
 });
 
 /**
- * #1171 - the setup sequence behind the geometry listeners.
+ * The setup sequence behind the geometry listeners.
  *
  * Registering them one at a time and keeping each unlisten in its own local means a later
  * registration that REJECTS strands the earlier one: it never reaches the component's
  * cleanup, and the window is gone with a live move handler still attached to it.
  */
-describe("registering a set of listeners as one unit (#1171)", () => {
+describe("registering a set of listeners as one unit", () => {
   it("hands over a single release when every registration succeeds", async () => {
     const released: string[] = [];
     const release = await registerAll(
@@ -993,14 +993,14 @@ describe("registering a set of listeners as one unit (#1171)", () => {
 });
 
 /**
- * #1171 - the pure conversion behind the geometry the activity window persists.
+ * The pure conversion behind the geometry the activity window persists.
  *
  * `outerPosition()` and `innerSize()` answer in PHYSICAL pixels while the window builder's
  * `position` and `inner_size` take LOGICAL ones, so writing back what was read multiplies the
  * rect by the scale factor on every save-and-reopen cycle. The defect is invisible at a scale
  * factor of 1, which is the only one a headless run ever has, so it is pinned here.
  */
-describe("persisting the activity window's geometry (#1171)", () => {
+describe("persisting the activity window's geometry", () => {
   it("converts a physical rect to the logical one the builder restores", () => {
     expect(logicalGeometry({ x: 300, y: 150, width: 2205, height: 1200 }, 1.5)).toEqual({
       x: 200,
@@ -1033,12 +1033,12 @@ describe("persisting the activity window's geometry (#1171)", () => {
 });
 
 /**
- * #1188 - the bound that turns "never settles" into "settles as a failure".
+ * The bound that turns "never settles" into "settles as a failure".
  *
  * The failure `withDeadline` exists for needs a promise that never settles, which no real IPC
  * call produces on demand, so it is tested here in isolation rather than through the window.
  */
-describe("bounding one activity round (#1188)", () => {
+describe("bounding one activity round", () => {
   // Fake timers are required even where nothing is advanced: `vi.getTimerCount()` goes through
   // Vitest's `_checkFakeTimers()`, which throws outright when the timer APIs are not mocked.
   beforeEach(() => {
@@ -1079,7 +1079,7 @@ describe("bounding one activity round (#1188)", () => {
 });
 
 /**
- * #1188 - the poll chain that could die, and the window that never said so.
+ * The poll chain that could die, and the window that never said so.
  *
  * The only re-arm of `pollTimer` lived inside the `.then()` of the fetch the poll had just
  * issued, so a `get_watcher_activity` that never settled ended the chain for the life of the
@@ -1087,7 +1087,7 @@ describe("bounding one activity round (#1188)", () => {
  * than blank, and `loadError` is only ever written from a `catch`, which a promise that never
  * settles never reaches.
  */
-describe("the activity poll chain (#1188)", () => {
+describe("the activity poll chain", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -1117,7 +1117,7 @@ describe("the activity poll chain (#1188)", () => {
    * `installBrowserDomStubs` stubs `requestAnimationFrame` with a real `setTimeout`, which
    * under fake timers would never run. There is no `requestAnimationFrame` in `src/watchers/`.
    *
-   * #1196 raised it from 50. Bounding all eight mount awaits adds microtask hops per step --
+   * Raised it from 50. Bounding all eight mount awaits adds microtask hops per step --
    * `Promise.race` attaches a `then`, `.finally()` is specified as a `then` whose handler
    * returns `Promise.resolve(x).then(...)`, and each `step` async frame adds its own -- which
    * puts the mount over the old 50 and failed T1, T2, T3 and T6 at their FIRST assertion,
@@ -1295,7 +1295,7 @@ describe("the activity poll chain (#1188)", () => {
 });
 
 /**
- * #1196 - the mount that could hang before it ever armed its poll.
+ * The mount that could hang before it ever armed its poll.
  *
  * `schedulePoll()` was the SOLE entry into the poll chain and it sat behind eight sequential
  * IPC awaits, none of them bounded. A single reply that never arrived left the chain unarmed,
@@ -1303,11 +1303,11 @@ describe("the activity poll chain (#1188)", () => {
  * promise that never settles never rejects and `refresh()` itself was gated on the arming. The
  * window sat on "Waiting for the first sample..." for as long as it was open.
  *
- * The remedy is #1188's, one level up: a deadline to turn "never settles" into "settles as a
+ * The remedy is the poll chain's, one level up: a deadline to turn "never settles" into "settles as a
  * failure", and a `finally` to make the arming unconditional once everything pending has been
  * made to settle. Neither half works alone.
  */
-describe("the watcher window mount chain (#1196)", () => {
+describe("the watcher window mount chain", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -1323,10 +1323,10 @@ describe("the watcher window mount chain (#1196)", () => {
   });
 
   /**
-   * The #1188 driver, at its post-#1196 count.
+   * The poll-chain driver, at its mount-chain count.
    *
    * Copied rather than shared because AC2 makes `flushMount()`'s turn count the ONLY permitted
-   * modification inside the #1188 block, and hoisting it to module scope would be a second
+   * modification inside the poll-chain block, and hoisting it to module scope would be a second
    * one. `waitFor` is still unusable here for the reason given in that block: it polls on
    * `Date.now()` and a real `setTimeout`, both of which `vi.useFakeTimers()` replaces.
    */

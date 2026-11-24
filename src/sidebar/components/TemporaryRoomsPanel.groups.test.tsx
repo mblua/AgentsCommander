@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4805 P03 - temp-room groups, Alert me! and TASK title from the agent-row menu.
+// Temp-room groups, Alert me! and TASK title from the agent-row menu.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TemporaryRoomsPanel from "./TemporaryRoomsPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";
@@ -127,7 +127,7 @@ async function openDeleteModal() {
 const enter = (el: HTMLElement) =>
   el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 
-describe("#4805 TemporaryRoomsPanel groups and TASK title", () => {
+describe("TemporaryRoomsPanel groups and TASK title", () => {
   let cleanupDom: (() => void) | null = null;
   let cleanups: (() => void)[] = [];
   const track = <T extends { rendered: { cleanup: () => void } }>(r: T): T => {

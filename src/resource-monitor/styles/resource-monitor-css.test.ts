@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// #2245 - the CSS byte contract for the integral view.
+// The CSS byte contract for the integral view.
 //
 // jsdom lays nothing out, implements no container queries and does not know
 // `max-content`, so the bytes on disk are the only place the layout switch, the
@@ -207,7 +207,7 @@ const FORBIDDEN: ReadonlyArray<[string, string]> = [
 
 // The conditional list is empty and written as an empty literal, so adding one
 // is a visible edit in the diff rather than a silent relaxation. The base list
-// holds exactly one entry, #2582's caption strip, and criterion 26 asserts both
+// holds exactly one entry, the caption strip, and criterion 26 asserts both
 // lists by value and proves the exception really is a caption and not a value.
 const BASE_HIDING_EXCEPTIONS: ReadonlyArray<string> = [".rm-column-header"];
 const CONDITIONAL_HIDING_EXCEPTIONS: ReadonlyArray<string> = [];
@@ -262,7 +262,7 @@ const LEGACY_COLOUR_LITERAL_SELECTORS = [
   ".rm-titlebar-btn-close:hover",
 ];
 
-describe("#2245 resource-monitor.css byte contract", () => {
+describe("resource-monitor.css byte contract", () => {
   // 26
   it("declares no hiding or zero-sizing anywhere, in either rule family", () => {
     // Non-vacuity first: a parser that silently returned an empty or partial
@@ -300,7 +300,7 @@ describe("#2245 resource-monitor.css byte contract", () => {
       }
     }
 
-    // #2582 - the exception is asserted in closed form: the base really hides
+    // The exception is asserted in closed form: the base really hides
     // the caption strip, the container block really brings it back as a grid,
     // and no metric cell is in either list.
     expect(declares(baseRule(".rm-column-header").body, "display", "none")).toBe(true);
@@ -606,9 +606,9 @@ describe("#2245 resource-monitor.css byte contract", () => {
   });
 });
 
-// #2581 - a flex item that may shrink below its content lets the Agents rows
+// A flex item that may shrink below its content lets the Agents rows
 // spill under the next section. Both sections keep their content height.
-describe("#2581 sections never shrink under their content", () => {
+describe("sections never shrink under their content", () => {
   it("declares flex-shrink: 0 and no min-height: 0 on .rm-groups, .rm-warnings", () => {
     for (const selector of [".rm-groups", ".rm-warnings"]) {
       const rule = baseRule(selector);
@@ -618,14 +618,14 @@ describe("#2581 sections never shrink under their content", () => {
   });
 });
 
-describe("#2583 the retired socket column leaves no stylesheet bytes", () => {
+describe("the retired socket column leaves no stylesheet bytes", () => {
   it("never spells network anywhere in the file, comments included", () => {
     expect(CSS).not.toContain("network");
   });
 });
 
-// #2582 - the caption strip rides on the row's own tracks, gap and padding.
-describe("#2582 the column-header strip cannot drift from the row", () => {
+// The caption strip rides on the row's own tracks, gap and padding.
+describe("the column-header strip cannot drift from the row", () => {
   it("repeats the row's tracks, gap and padding as equalities", () => {
     const header = containerRule(".rm-column-header-main");
     const main = containerRule(".rm-group-main");
@@ -651,7 +651,7 @@ describe("#2582 the column-header strip cannot drift from the row", () => {
       ).toBe(false);
     }
     expect(declares(strip.body, "position", "sticky")).toBe(true);
-    // #2582 check 3: the strip covers .rm-body's 12px padding band above it.
+    // The strip covers .rm-body's 12px padding band above it.
     expect(declaredValue(strip, "top")).toBe("calc(var(--spacing-md) * -1)");
     expect(declaredValue(strip, "padding-top")).toBe("calc(4px + var(--spacing-md))");
   });

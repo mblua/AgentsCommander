@@ -25,7 +25,7 @@ import {
 import RoomGroupRail from "./RoomGroupRail";
 import ProjectPanel from "./ProjectPanel";
 
-// #810 - Two backslash Windows paths (grinch F4). Forward-slash or simplified
+// Two backslash Windows paths (grinch F4). Forward-slash or simplified
 // paths would hide the F1 regression (CSS selector happened to parse cleanly).
 // With the ref-Map fix, backslash paths exercise the real production code path.
 const projectPathA = "C:\\ProjectA";
@@ -92,7 +92,7 @@ function createProjectFake(allowedPaths: readonly string[]): FakeTransport {
 }
 
 // Find the header by its raw title ATTRIBUTE value, not a CSS attribute
-// selector: Windows backslashes are CSS string escapes (#810).
+// selector: Windows backslashes are CSS string escapes.
 function findProjectHeader(root: ParentNode, projectPath: string): HTMLElement {
   const headers = Array.from(root.querySelectorAll<HTMLElement>(".project-header"));
   const header = headers.find((h) => h.getAttribute("title") === projectPath);
@@ -191,7 +191,7 @@ const SidebarHarness: Component = () => {
   );
 };
 
-describe("RoomGroupRail selection focus (#810/#941)", () => {
+describe("RoomGroupRail selection focus", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -376,7 +376,7 @@ describe("RoomGroupRail selection focus (#810/#941)", () => {
 
       // Auto-focus ProjectA -> ProjectB's project-level collapses, but its
       // "Workgroups" sub-section collapse choice must survive (sub-sections
-      // are NOT touched by #810 - they live in the local collapsedByKey signal).
+      // are NOT touched by auto-focus - they live in the local collapsedByKey signal).
       click(railButton("ProjectA", "all"));
       await waitFor(() =>
         expect(headerCollapsed(findProjectHeader(rendered.root, projectPathB))).toBe(true)

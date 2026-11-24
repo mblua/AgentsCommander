@@ -1,5 +1,5 @@
 #![cfg(target_os = "windows")]
-//! Integration test for issue #129. Reproduces the PS-NonInteractive `&` direct-
+//! Integration test. Reproduces the PS-NonInteractive `&` direct-
 //! call failure mode and asserts that the fix (conditional `AttachConsole`) lets
 //! stdout flow through the inherited pipe.
 //!
@@ -246,7 +246,7 @@ fn list_peers_outputs_valid_json_under_powershell_noninteractive_via_git_bash() 
     debug_guard();
     let guard = TempConfigRoot::new();
 
-    // #1596: Git Bash is the required carrier on Windows — bash.exe is
+    // Git Bash is the required carrier on Windows — bash.exe is
     // console-subsystem, so PowerShell captures its stdout AND propagates the
     // AC binary's exit code through it (`; exit $LASTEXITCODE`). Skip (not a
     // failure) when bash.exe is not on PATH, e.g. a non-Git-Bash dev machine.
@@ -539,7 +539,7 @@ static ISOLATION_INVENTORY: &[Entry] = &[
             include_str!("cli_create_agent_matrix/main.rs"),
             include_str!("cli_create_agent_matrix/launch.rs"),
         ),
-        18,
+        14,
         &[
             (
                 "create_agent_matrix_success_prints_json_and_writes_layout",
@@ -581,23 +581,7 @@ static ISOLATION_INVENTORY: &[Entry] = &[
                 "create_agent_matrix_from_cached_agency_template_seeds_role_without_skills",
                 1,
             ),
-            (
-                "create_agent_matrix_launch_reports_launched_when_app_confirms",
-                1,
-            ),
-            ("create_agent_matrix_launch_rejection_is_reported", 1),
-            (
-                "create_agent_matrix_whitespace_launch_command_warns_without_request",
-                1,
-            ),
-            (
-                "create_agent_matrix_empty_launch_request_warns_without_request",
-                1,
-            ),
-            (
-                "create_agent_project_mode_blank_launch_command_warns_without_request",
-                1,
-            ),
+            ("run_create_with_launch", 1),
         ],
         &[],
     ),

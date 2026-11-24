@@ -113,7 +113,7 @@ pub enum UiAutomationAction {
 }
 
 impl UiAutomationAction {
-    /// #944 - exhaustive on purpose. A new variant is a COMPILE error here, and the
+    /// Exhaustive on purpose. A new variant is a COMPILE error here, and the
     /// `None` terminator bounds the walk, so a variant cannot be silently left out of
     /// the iteration the way a hand-written `[UiAutomationAction; N]` array lets it be
     /// (name the variant in the forced match arm, forget the array, and the parity test
@@ -140,7 +140,7 @@ impl UiAutomationAction {
     /// `action_wire_name`, and yet is never yielded here, so the parity test below would
     /// not see it. It only bites a Rust-ONLY head-insertion: add the same member to the
     /// types.ts union and the set comparison goes red at once. Appending a variant (the
-    /// normal case, and what #944 itself did) is fully covered. Closing the hole outright
+    /// normal case, and what the original fix did) is fully covered. Closing the hole outright
     /// needs a derive macro (strum) or a hand-written length, and a hand-written length is
     /// the exact weakness this walk replaced.
     #[cfg(test)]

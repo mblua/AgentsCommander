@@ -1,4 +1,4 @@
-// #4843 - sound button state, label, the one sink check and the sticky toast.
+// Sound button state, label, the one sink check and the sticky toast.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ tauri: true, getStatus: vi.fn() }));
@@ -39,7 +39,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("soundButtonState (#4843)", () => {
+describe("soundButtonState", () => {
   const TABLE: [boolean, boolean, AudioSinkStatus, SoundButtonState][] = [
     [false, false, "ok", "disabled"],
     [false, false, "missing", "disabled"],
@@ -60,7 +60,7 @@ describe("soundButtonState (#4843)", () => {
   });
 });
 
-describe("soundButtonLabel (#4843)", () => {
+describe("soundButtonLabel", () => {
   it.each([
     ["disabled", "Mute all app sounds"],
     ["audible", "Mute all app sounds"],
@@ -71,7 +71,7 @@ describe("soundButtonLabel (#4843)", () => {
   });
 });
 
-describe("checkAudioSink (#4843)", () => {
+describe("checkAudioSink", () => {
   it("does not ask the backend outside Tauri", async () => {
     mocks.tauri = false;
     await expect(checkAudioSink()).resolves.toBeUndefined();
@@ -104,7 +104,7 @@ describe("checkAudioSink (#4843)", () => {
   });
 });
 
-describe("showAudioSinkToast (#4843)", () => {
+describe("showAudioSinkToast", () => {
   it("shows one sticky error toast, deduplicated by tag", () => {
     vi.useFakeTimers();
     showAudioSinkToast();
@@ -119,7 +119,7 @@ describe("showAudioSinkToast (#4843)", () => {
   });
 });
 
-describe("createAudioSinkAPI (#4843)", () => {
+describe("createAudioSinkAPI", () => {
   it("invokes get_audio_sink_status with no arguments", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_audio_sink_status", "missing");

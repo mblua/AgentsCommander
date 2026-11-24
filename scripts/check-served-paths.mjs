@@ -62,7 +62,7 @@ function rustToken(source, index) {
         "\\'": "'" };
       if (escape in simple) return simple[escape];
       if (escape.startsWith(String.raw`\x`)) {
-        return String.fromCharCode(Number.parseInt(escape.slice(2), 16));
+        return String.fromCodePoint(Number.parseInt(escape.slice(2), 16));
       }
       if (escape.startsWith(String.raw`\u{`)) {
         const code = Number.parseInt(escape.slice(3, -1).replaceAll('_', ''), 16);

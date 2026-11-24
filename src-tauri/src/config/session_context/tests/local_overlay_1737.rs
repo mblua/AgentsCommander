@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────
-// #1737 - the Markdown half of the `.local` override layer. Plan section 11,
+// The Markdown half of the `.local` override layer. Plan section 11,
 // C1 to C11.
 // ─────────────────────────────────────────────────────────────────────────
 

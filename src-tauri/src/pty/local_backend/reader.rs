@@ -60,7 +60,7 @@ impl OutputReader {
                     fanout.observe_raw_read_for_reader(&output_token, bytes.len(), read_at)
                 },
                 |bytes| {
-                    fanout.handle_output(&output_token, &session_id_str, bytes.to_vec());
+                    fanout.handle_output(&output_token, &session_id_str, bytes);
                     if !rendered.load(Ordering::Relaxed) && fanout.has_rendered_visible_content(id)
                     {
                         gate_backend.open_startup_gate(id);
@@ -82,12 +82,12 @@ impl OutputReader {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            // #942 - time-to-first-output and the retained head bytes. Hot
+                            // Time-to-first-output and the retained head bytes. Hot
                             // path: once the first byte is stamped and the head buffer is
                             // full this is two relaxed loads and one relaxed add.
                             record.note_output(&buf[..n]);
-                            fanout.handle_output(&output_token, &session_id_str, buf[..n].to_vec());
-                            // #973 (B) - has the child PAINTED anything yet? Asked of the real
+                            fanout.handle_output(&output_token, &session_id_str, &buf[..n]);
+                            // (B) - has the child PAINTED anything yet? Asked of the real
                             // vt100 parser that `handle_output` has just fed this chunk to, which
                             // is why it is asked after it and not before.
                             //

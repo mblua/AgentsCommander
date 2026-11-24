@@ -28,7 +28,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
   });
 }
 
-describe("mergeSettingsForSavePreservingProjects (#529 G3 normalization)", () => {
+describe("mergeSettingsForSavePreservingProjects (G3 normalization)", () => {
   it("drops an empty or whitespace-only instructionsFilename so the sentinel never persists", () => {
     const draft = settings({
       agents: [
@@ -83,7 +83,7 @@ describe("mergeSettingsForSavePreservingProjects (#529 G3 normalization)", () =>
   });
 });
 
-describe("mergeSettingsForSavePreservingProjects (#598 configSeed normalization)", () => {
+describe("mergeSettingsForSavePreservingProjects (configSeed normalization)", () => {
   it("drops an inactive configSeed so it never persists as a sentinel", () => {
     const draft = settings({
       agents: [
@@ -126,7 +126,7 @@ describe("mergeSettingsForSavePreservingProjects (#598 configSeed normalization)
   });
 });
 
-describe("mergeSettingsForSavePreservingProjects (#868 backend normalization)", () => {
+describe("mergeSettingsForSavePreservingProjects (backend normalization)", () => {
   it("drops absent, empty, and explicit Local backend objects", () => {
     const draft = settings({
       containerOptionsEnabled: true,
@@ -335,7 +335,7 @@ describe("mergeSettingsForSavePreservingProjects api-server seed rebasing", () =
     expect(merged.apiServerBind).toBe("0.0.0.0");
   });
 
-  // #1033 - the context regex normalizer (plan SS9.3).
+  // The context regex normalizer (plan SS9.3).
   //
   // The single most important test in this plan. The other three normalizers in this
   // file all trim; this one must not. Leading whitespace is a regex's column anchor,
@@ -391,8 +391,8 @@ describe("mergeSettingsForSavePreservingProjects api-server seed rebasing", () =
   });
 });
 
-describe("mergeSettingsForSavePreservingProjects (#1793 restart-resume fields)", () => {
-  it("carries the three #1793 restart-resume fields through a save", () => {
+describe("mergeSettingsForSavePreservingProjects (restart-resume fields)", () => {
+  it("carries the three restart-resume fields through a save", () => {
     // The guard against the save path dropping an unknown key: all three are
     // set away from their fixture defaults, and all three must survive verbatim.
     const draft = settings({
@@ -409,7 +409,7 @@ describe("mergeSettingsForSavePreservingProjects (#1793 restart-resume fields)",
   });
 });
 
-describe("response close preference rebasing (#2851)", () => {
+describe("response close preference rebasing", () => {
   it("normalizes old snapshots and preserves unedited concurrent preferences and projects", () => {
     const seed = settings();
     const draft = settings({ responseCloseEnabled: true, responseCloseIdleSeconds: 30 });
@@ -494,7 +494,7 @@ describe("manual container visibility save ownership", () => {
 
 type WithTempRoom = AppSettings & { tempRoomAgent?: TempRoomAgentChoice };
 
-describe("mergeSettingsForSavePreservingProjects outside-writer keys (#4783)", () => {
+describe("mergeSettingsForSavePreservingProjects outside-writer keys", () => {
   it("1. tempRoomAgent: draft none, fresh has one -> fresh's", () => {
     const draft = settings();
     const fresh: WithTempRoom = {

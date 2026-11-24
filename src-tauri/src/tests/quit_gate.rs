@@ -637,7 +637,7 @@ async fn successive_rounds_get_distinct_increasing_epochs() {
     assert_eq!(host.exits(), 1);
 }
 
-// --- #2563 detached windows close before exit ----------------------------
+// --- Detached windows close before exit ----------------------------
 
 #[tokio::test]
 async fn exiting_round_closes_detached_before_exit() {

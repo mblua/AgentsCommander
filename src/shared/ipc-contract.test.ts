@@ -1,4 +1,4 @@
-// #4316 - frontend `invoke("<cmd>", args)` calls must match a registered Rust
+// Frontend `invoke("<cmd>", args)` calls must match a registered Rust
 // `#[tauri::command]` by name and by argument keys (Tauri 2 lowerCamelCase keys).
 // Registered commands with no caller are printed, never failed.
 //
@@ -87,6 +87,52 @@ const NO_OPTS: ContractOptions = { wsOnly: [], forwarders: {} };
 function fixture(ts: string, rust: Sources = RUST, opts = NO_OPTS): string[] {
   return checkContract(rust, { "src/fake.ts": ts }, opts).failures;
 }
+
+describe("IPC contract scanner equivalence", () => {
+  it("preserves head selection, parameter keys and the full report", () => {
+    const rust = {
+      "fixtures/plain.rs": "#[tauri::command]\nfn plain(" +
+        "mut : u8, mut __some_id: u8, optional: Option<u8>, " +
+        "injected: &tauri::State<'_, C>, noType:) {}",
+      "fixtures/generic.rs": "#[tauri::command]\nfn generic<T>\n + U> \t(required: u8) {}",
+      "fixtures/broken.rs": "#[tauri::command]\nfn absent<T (x: u8) {}",
+      "fixtures/later.rs": "#[tauri::command]\nfn rejected<T fn later(x: u8) {}",
+      "fixtures/boundary.rs": "#[tauri::command]\nxfn ghost() {}\néfn unicode(_c: u8) {}",
+      "fixtures/registered.rs": "tauri::generate_handler![plain, generic, absent, later, unicode]",
+    };
+    const frontend = {
+      "src/fake.ts": [
+        'invoke("plain", { mut: 1, injected: 2 });',
+        'invoke("generic");',
+        'invoke("unicode", { c: 1 });',
+      ].join("\n"),
+    };
+    expect(checkContract(rust, frontend, NO_OPTS)).toEqual({
+      failures: [
+        'extra arg key "injected" for "plain" at src/fake.ts:1',
+        'missing required arg key "required" for "generic" at src/fake.ts:2',
+        'missing required arg key "someId" for "plain" at src/fake.ts:1',
+        'registered command "absent" has no #[tauri::command] fn',
+        'unparsed parameter "noType:" in plain at fixtures/plain.rs',
+      ],
+      uncalled: ["absent", "later"],
+    });
+  });
+
+  it("retains parameters following LF, CR, LS and PS comments", () => {
+    const rust = {
+      "fixtures/comments.rs": "#[tauri::command]\n" +
+        "fn comments(one: u8, // LF\n two: u8, // CR\r three: u8, " +
+        "// LS\u2028 four: u8, // PS\u2029 five: u8, tail: Type// embedded\n) {}\n" +
+        "tauri::generate_handler![comments]",
+    };
+    const frontend = { "src/fake.ts": 'invoke("comments", { one, two, three, four, five });' };
+    expect(checkContract(rust, frontend, NO_OPTS)).toEqual({
+      failures: ['missing required arg key "tail" for "comments" at src/fake.ts:1'],
+      uncalled: [],
+    });
+  });
+});
 
 describe("IPC contract (negative controls)", () => {
   it("N1 fails on a command name mismatch", () => {

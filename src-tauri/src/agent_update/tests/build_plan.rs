@@ -27,7 +27,7 @@ fn build_plan_dedupes_by_command_first_entry_wins() {
 
 #[test]
 fn build_plan_empty_winner_blocks_later_nonempty_duplicates() {
-    // #1967: the FIRST entry of a command is effective even when its
+    // The FIRST entry of a command is effective even when its
     // sequence is empty - the command is suppressed for the whole pass and
     // a later non-empty duplicate can never re-enable it.
     let catalog = vec![
@@ -208,12 +208,12 @@ fn build_plan_registered_filter_preserves_first_entry_semantics() {
 }
 
 // ---------------------------------------------------------------------
-// #1968 R2 - P4 parity on real migrated / local-composed on-disk catalogs.
+// P4 parity on real migrated / local-composed on-disk catalogs.
 // The production reader feeds the real (pure) build_update_plan; nothing
 // here launches a vendor process.
 // ---------------------------------------------------------------------
 
-/// The #1968 R2 legacy user-owned catalog fixture.
+/// The legacy user-owned catalog fixture.
 fn legacy_migrated_catalog_fixture() -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": 1,
@@ -444,7 +444,7 @@ fn build_plan_from_a_local_composed_on_disk_catalog_honors_exact_command_consent
 }
 
 // ---------------------------------------------------------------------
-// #4804 - mise-managed agents
+// Mise-managed agents
 // ---------------------------------------------------------------------
 
 #[test]

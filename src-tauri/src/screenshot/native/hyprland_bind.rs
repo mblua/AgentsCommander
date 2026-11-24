@@ -1,4 +1,4 @@
-//! #2774 Hyprland key binding: one AC-managed block per instance in `bindings.lua`, and
+//! Hyprland key binding: one AC-managed block per instance in `bindings.lua`, and
 //! detection of a binding the user added by hand. Leaf module: env is passed in.
 
 use std::path::Path;

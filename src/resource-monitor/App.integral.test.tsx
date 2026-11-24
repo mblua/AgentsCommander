@@ -18,7 +18,7 @@ import type {
   ResourceSnapshot,
 } from "../shared/types";
 
-// #2245 - the integral Resource Monitor view: PID filter, search, sort with
+// The integral Resource Monitor view: PID filter, search, sort with
 // pinned expansions, the single counter, the process tree, and the kill
 // dialog's keyboard and focus behaviour.
 //
@@ -312,7 +312,7 @@ const key = (el: HTMLElement, init: KeyboardEventInit): KeyboardEvent => {
   return event;
 };
 
-describe("#2245 Resource Monitor integral view", () => {
+describe("Resource Monitor integral view", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -1034,7 +1034,7 @@ describe("#2245 Resource Monitor integral view", () => {
         must(rendered.root, "resourceMonitor.summary.processCount").textContent
       ).toContain(String(expected));
 
-      // Pins the tile order that #2246 documents in prose.
+      // Pins the tile order that the plan documents in prose.
       const tiles = Array.from(
         must(rendered.root, "resourceMonitor.summary").querySelectorAll(".rm-status-tile")
       ).map((el) => el.getAttribute("data-ac-testid"));
@@ -1337,7 +1337,7 @@ describe("#2245 Resource Monitor integral view", () => {
     }
   });
 
-  // #2583 - the retired per-agent socket field leaves no element behind.
+  // The retired per-agent socket field leaves no element behind.
   it("renders no retired socket tile or cell, and seven cells per group row", async () => {
     const harness = makeHarness();
     const rendered = await renderApp(harness);
@@ -1363,7 +1363,7 @@ describe("#2245 Resource Monitor integral view", () => {
     }
   });
 
-  // #2583 - a healthy snapshot reads OK even when it still carries an unknown
+  // A healthy snapshot reads OK even when it still carries an unknown
   // value of the removed per-agent socket field.
   it("renders the healthy state as OK on the State tile and the group row", async () => {
     const okSnapshot = {
@@ -1386,7 +1386,7 @@ describe("#2245 Resource Monitor integral view", () => {
     }
   });
 
-  // #2582 - the caption strip: one strip, seven spans over the row's seven
+  // The caption strip: one strip, seven spans over the row's seven
   // cells, six captions, and the seventh span empty for the Kill track.
   it("renders one column-header strip whose spans match the row cells", async () => {
     const harness = makeHarness();

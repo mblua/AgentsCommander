@@ -650,7 +650,7 @@ pub(crate) fn ensure_seeded_for_project_with_token(
     project_root: &Path,
     activation: Option<&ManifestActivationToken>,
 ) {
-    // #2715: the one place this seeding chain reads `config_dir()`; it names
+    // The one place this seeding chain reads `config_dir()`; it names
     // both the legacy instance catalog and the naming-migration journal.
     let config_dir = crate::config::config_dir();
     let legacy = config_dir.as_ref().map(|dir| dir.join(CATALOG_DIR_NAME));
@@ -663,7 +663,7 @@ pub(crate) fn ensure_seeded_for_project_with_token(
 }
 
 /// [`ensure_seeded_for_project_with_token`] with the legacy catalog and the
-/// naming-migration journal directory injected (#2715).
+/// naming-migration journal directory injected.
 pub(crate) fn ensure_seeded_for_project_in(
     project_root: &Path,
     activation: Option<&ManifestActivationToken>,

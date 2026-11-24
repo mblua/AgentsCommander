@@ -22,10 +22,10 @@ fn feed(fanout: &SessionIoFanout, id: Uuid, chunk: &[u8]) {
     let token = fanout
         .registration_token_for_session(id)
         .expect("registered watcher fixture");
-    fanout.handle_output(&token, &id.to_string(), chunk.to_vec());
+    fanout.handle_output(&token, &id.to_string(), chunk);
 }
 
-/// #1171, section 7.3 - the three numbers recorded in this module's doc comment.
+/// Section 7.3: the three numbers recorded in this module's doc comment.
 ///
 /// `#[ignore]`d so it never becomes a flaky timing gate, and kept in the tree so the
 /// numbers can be re-taken rather than guessed at again:

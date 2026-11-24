@@ -8,7 +8,7 @@ import {
 
 const keys = (q: string) => searchGeneralSettings(q).map((e) => e.key);
 
-describe("generalSettingsIndex (#2704)", () => {
+describe("generalSettingsIndex", () => {
   it("has unique keys and only known categories", () => {
     const all = GENERAL_SETTINGS_INDEX.map((e) => e.key);
     expect(new Set(all).size).toBe(all.length);
@@ -30,7 +30,7 @@ describe("generalSettingsIndex (#2704)", () => {
   });
 
   it("matches section and category names", () => {
-    expect(keys("hotkeys")).toEqual(["screenshotCaptureHotkey", "screenshotHyprlandBind", "sidebarCompactHotkey"]);
+    expect(keys("hotkeys")).toEqual(["screenshotCaptureHotkey", "screenshotHyprlandBind", "screenshotCopyPath", "sidebarCompactHotkey"]);
     const network = GENERAL_SETTINGS_INDEX.filter((e) => e.category === "network").map((e) => e.key);
     expect(keys("network")).toEqual(network);
   });
@@ -48,7 +48,7 @@ describe("generalSettingsIndex (#2704)", () => {
 
   it("counts results per category", () => {
     expect(countByCategory(searchGeneralSettings("hotkey"))).toEqual({
-      appearance: 3,
+      appearance: 4,
       terminal: 0,
       agents: 0,
       network: 0,
@@ -57,7 +57,7 @@ describe("generalSettingsIndex (#2704)", () => {
   });
 });
 
-describe("response close search (#2851)", () => {
+describe("response close search", () => {
   it("finds both labels in the terminal category", () => {
     expect(keys("close terminal after response")).toContain("responseCloseEnabled");
     expect(keys("idle seconds after response")).toEqual(["responseCloseIdleSeconds"]);
@@ -67,7 +67,7 @@ describe("response close search (#2851)", () => {
   });
 });
 
-describe("context history color moved out of General (#4049)", () => {
+describe("context history color moved out of General", () => {
   it("has no General entry or section for the color window", () => {
     expect(GENERAL_SETTINGS_INDEX.some((e) => e.key === "contextHistoryColorDays")).toBe(false);
     expect(GENERAL_SETTINGS_INDEX.some((e) => e.section === "Contexto en la barra lateral"))
@@ -79,5 +79,11 @@ describe("context history color moved out of General (#4049)", () => {
       .filter((e) => e.category === "appearance")
       .map((e) => e.section);
     expect(sections[sections.lastIndexOf("Window") + 1]).toBe("Hotkeys");
+  });
+});
+
+describe("IPC black box search", () => {
+  it("finds the System > Logging entry by black box, freeze and ipc", () => {
+    for (const q of ["black box", "freeze", "ipc"]) expect(keys(q)).toContain("ipcBlackBoxEnabled");
   });
 });

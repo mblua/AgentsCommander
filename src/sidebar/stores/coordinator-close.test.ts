@@ -14,14 +14,14 @@ import {
   __resetCoordinatorCloseModalHostForTests,
 } from "./coordinator-close";
 
-// #588 — the single by-id helper funnels all three close paths (ProjectPanel
+// The single by-id helper funnels all three close paths (ProjectPanel
 // "X", SessionItem, keyboard shortcut). A non-coordinator is a plain destroy; a
 // coordinator goes through close_coordinator and opens the busy-confirm modal
 // (the module-level pendingCoordinatorClose signal) when the backend refuses.
 
 const COORD_NAME = "wg-2-dev-team/dev-webpage-ui";
 
-describe("coordinator-close helper (#588)", () => {
+describe("coordinator-close helper", () => {
   let fake: FakeTransport;
   let restoreTransport: () => void;
   // Tests that expect the confirm modal must register a host (a window with a

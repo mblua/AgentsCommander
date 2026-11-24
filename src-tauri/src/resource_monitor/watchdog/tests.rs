@@ -195,7 +195,7 @@ fn ignores_non_running_groups() {
     assert!(evaluate_watchdog_groups(&groups, limits()).is_empty());
 }
 
-/// #1151 - supported backend with the shape every orphan takes: a root plus one owned
+/// Supported backend with the shape every orphan takes: a root plus one owned
 /// descendant, the descendant refusing to verify gone until it is marked gone. That
 /// refusal is exactly what parks a group in `Quarantined` with its permit retained.
 #[derive(Default)]
@@ -304,7 +304,7 @@ impl ProcessTreeBackend for QuarantineWatchdogBackend {
     }
 }
 
-/// #1151 - the default watchdog action is `Warn` (config/settings.rs), and the
+/// The default watchdog action is `Warn` (config/settings.rs), and the
 /// quarantine retry must run there too. Every orphan test uses the default on purpose.
 fn orphan_settings(max_groups: u32) -> AppSettings {
     AppSettings {
@@ -352,7 +352,7 @@ fn register_agent_group(
         .expect("supported backend observes the root identity")
 }
 
-/// #1151 - the coordinator must be at `Running` or `watchdog_resource_kill` answers
+/// The coordinator must be at `Running` or `watchdog_resource_kill` answers
 /// `Err(Busy)` at its phase gate, before the absent-session check. `SelectionCoordinator::new`
 /// starts at `Bootstrapping` and `CoordinatorPhase` is private, so the supported route
 /// is `submit_restore_first`, which needs a started worker and therefore an `AppHandle`.
@@ -383,11 +383,11 @@ async fn running_coordinator(
     (app, coordinator)
 }
 
-/// #1151 - drives one group from launch to an orphaned quarantine: register, quarantine
+/// Drives one group from launch to an orphaned quarantine: register, quarantine
 /// on the stubborn child, then let the blocker disappear. The public session row never
 /// exists, which is what makes it an orphan.
 ///
-/// #1160 - the retry backoff is deliberately NOT satisfied here. Callers that want a
+/// The retry backoff is deliberately NOT satisfied here. Callers that want a
 /// DUE group use `orphan_one_group`, which is this plus the backdate; the not-yet-due
 /// shape is the only one that can observe the `quarantine_retry_due` gate at all.
 fn orphan_one_group_not_yet_due(
@@ -410,9 +410,9 @@ fn orphan_one_group_not_yet_due(
     root
 }
 
-/// #1151 - the same orphaned quarantine with its retry backoff already satisfied, which
+/// The same orphaned quarantine with its retry backoff already satisfied, which
 /// is what every test that needs the retry to DISPATCH depends on. Behavior is identical
-/// to the pre-#1160 helper of this name, so its existing callers are unaffected.
+/// to the older helper of this name, so its existing callers are unaffected.
 fn orphan_one_group(
     monitor: &ResourceMonitorState,
     backend: &QuarantineWatchdogBackend,
@@ -519,7 +519,7 @@ async fn e2992_p44_invalid_no_enforcement() {
     }
 }
 
-// #1151 (W1) - the issue's minimum supported-backend regression, end to end through
+// The issue's minimum supported-backend regression, end to end through
 // the REAL run_tick: an orphaned quarantined group whose blocker cleared is reclaimed,
 // the cap recovers, and the next launch is admitted. Runs on the DEFAULT Warn action,
 // which is what makes a mis-scoped action gate fail here rather than ship silently.
@@ -555,7 +555,7 @@ async fn orphaned_quarantine_recovers_through_real_tick() {
     coordinator.close_and_join().await;
 }
 
-// #1160 - the pin for the 15s quarantine-retry backoff gate: the
+// The pin for the 15s quarantine-retry backoff gate: the
 // `&& monitor.quarantine_retry_due(*session_id)` clause in run_quarantine_retries.
 // Phase 1 is the half no other test can express, because every other orphan test
 // backdates the group DUE before ticking: an orphan whose blocker has already cleared
@@ -564,7 +564,7 @@ async fn orphaned_quarantine_recovers_through_real_tick() {
 // it is deleted.
 //
 // observe_tree is deliberately NOT pinned: sample_for_watchdog re-observes Quarantined
-// groups on every snapshot by design (#647 C), so it moves even on a correctly skipped
+// groups on every snapshot by design, so it moves even on a correctly skipped
 // tick. Pinning it would fail on correct code.
 #[tokio::test]
 async fn not_yet_due_quarantine_is_skipped_then_retried_after_backoff() {
@@ -635,7 +635,7 @@ async fn not_yet_due_quarantine_is_skipped_then_retried_after_backoff() {
     coordinator.close_and_join().await;
 }
 
-// #1151 (W7) - the named pin for `#559 (H2)`, which has been unpinned since it was
+// The named pin for `H2`, which has been unpinned since it was
 // written: the quarantine retry runs on EVERY configured action, starting with the
 // DEFAULT Warn. This is what fails if the run_tick action gate is ever restored to an
 // early return instead of a scoped `if` around the kill_required loop.
@@ -684,7 +684,7 @@ async fn quarantine_retry_runs_in_warn_mode() {
     }
 }
 
-// #1151 (W3a) - the rule the issue states explicitly: only NoPublicSession may fall
+// W3a: the rule the issue states explicitly: only NoPublicSession may fall
 // through to the registry-only retry. Treating AlreadyInFlight as an orphan would
 // re-enter a cleanup another caller already owns.
 #[test]
@@ -707,7 +707,7 @@ fn already_in_flight_is_not_an_orphan_fallback() {
     ));
 }
 
-// #1151 (W3b) - and the same rule proved through retry_quarantined_group itself: the
+// W3b: and the same rule proved through retry_quarantined_group itself: the
 // AlreadyInFlight arm touches the process-tree backend zero times.
 #[tokio::test]
 async fn already_in_flight_performs_zero_registry_calls() {
@@ -770,7 +770,7 @@ async fn already_in_flight_performs_zero_registry_calls() {
     let _ = waiter.await;
 }
 
-// #1151 (W4) - retry_quarantined_group forwards the SAMPLED root identity verbatim, so
+// `retry_quarantined_group` forwards the SAMPLED root identity verbatim, so
 // a stale sample is refused by the registry guard instead of acting on whatever row
 // now holds the uuid.
 #[tokio::test]
@@ -802,7 +802,7 @@ async fn stale_sample_root_cannot_touch_replacement() {
     coordinator.close_and_join().await;
 }
 
-// #1151 (W8) - the restart shape end to end. Three consecutive cycles, each a DISTINCT
+// The restart shape end to end. Three consecutive cycles, each a DISTINCT
 // uuid sharing one workgroup/agent/project at cap 1, which is what "repetition
 // exhausts the cap" actually means. Rows must not accumulate across cycles.
 #[tokio::test]

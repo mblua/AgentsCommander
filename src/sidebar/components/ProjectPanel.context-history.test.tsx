@@ -39,7 +39,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { rampColor } from "./ContextBadge";
 import type { AppSettings } from "../../shared/types";
 
-// #3532 P11 - rows hand the live runtime UUID and their project to the badge;
+// Rows hand the live runtime UUID and their project to the badge;
 // nothing on the badge may switch or restart the session.
 
 const root = "C:\\Project";
@@ -59,7 +59,7 @@ const settings = (): AppSettings =>
 const badges = () =>
   Array.from(document.querySelectorAll<HTMLElement>(".ctx-badge.ctx-history"));
 
-describe("ProjectPanel CTX history scope (#3532 P11)", () => {
+describe("ProjectPanel CTX history scope", () => {
   let cleanupDom: (() => void) | null = null;
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();

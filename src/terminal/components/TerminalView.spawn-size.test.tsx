@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #973 — a coding agent's tile stays blank on spawn.
+// A coding agent's tile stays blank on spawn.
 //
 // AC opened every ConPTY at a hardcoded 120x30 and let the view correct it a few
 // hundred milliseconds later. That correction lands inside the agent's TUI
@@ -67,7 +67,7 @@ vi.mock("@xterm/xterm", () => ({
     private resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
 
     // Real xterm honours cols/rows from the constructor and defaults to 80x24.
-    // That default is the thing #973 must stop relying on.
+    // That default is the thing the fix must stop relying on.
     constructor(options?: { cols?: number; rows?: number }) {
       this.cols = options?.cols ?? 80;
       this.rows = options?.rows ?? 24;
@@ -89,7 +89,7 @@ vi.mock("@xterm/xterm", () => ({
     write(data: unknown, callback?: () => void): void {
       this.writes.push(data);
       // Real xterm fires the write callback when the write completes; the
-      // #1283 admission uses it to settle the replay/write gate.
+      // admission uses it to settle the replay/write gate.
       callback?.();
     }
     reset(): void {}
@@ -187,7 +187,7 @@ function setupTerminalTransport(fake: FakeTransport): void {
   fake.resolve("set_last_prompt", undefined);
   fake.resolve("create_session", session({ id: SPAWNED }));
 
-  // #1363: the selection path attaches and seeds from the snapshot the attach
+  // The selection path attaches and seeds from the snapshot the attach
   // resolves to. The snapshot reports the PTY size the terminal was created at
   // (backend truth) and carries no data, so no snapshot resize fires and the
   // resize/viewport behavior under test is untouched.
@@ -262,7 +262,7 @@ async function driveFramesUntil(
   );
 }
 
-describe("TerminalView PTY spawn size (#973)", () => {
+describe("TerminalView PTY spawn size", () => {
   let cleanupDom: (() => void) | null = null;
   // Installed in beforeEach, so every test in this file drives the animation
   // frame queue itself. Definite assignment, with a null-safe restore below in
@@ -500,7 +500,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
   // one. The burst collapses to a single call, and when that one is the one that
   // failed, the PTY just stays at the wrong size.
   //
-  // So this test gives the failure nothing to hide behind. Since #1439 (R1) the
+  // So this test gives the failure nothing to hide behind. Since the dedup (R1) the
   // attach settle sends one same-size resize (rows 23 here), which succeeds and
   // settles the system: no pending rAF, no pending fit, no timer armed. Then ONE
   // resize is driven through xterm's onResize, exactly as a user dragging the
@@ -519,7 +519,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
         return undefined;
       }
       // One-shot, aimed by dims: the FIRST send carrying the drag's rows 24
-      // fails; the #1439 settle send (rows 23) must succeed.
+      // fails; the settle send (rows 23) must succeed.
       if (!dragSendFailed && args.rows === 24) {
         dragSendFailed = true;
         throw new Error("pty_resize failed");
@@ -608,7 +608,7 @@ describe("TerminalView PTY spawn size (#973)", () => {
       // The user drags the window. First attempts are never budget-gated, so
       // the drag's own send still goes out (and says "giving up" once more),
       // but it arms no retry: the attempt counter resets only on a success
-      // (#1439 round-2 residual, plan section 7). Bounded either way.
+      //. Bounded either way.
       spawned.emitResize(74, 24);
 
       await waitFor(() =>
@@ -626,13 +626,13 @@ describe("TerminalView PTY spawn size (#973)", () => {
     }
   });
 
-  // #973 through the other door.
+  // Through the other door.
   //
   // `syncViewport` fits the container, and `fit()` measures a layout box. A
   // hidden container has none, so xterm clamps the proposal to its own
   // MINIMUM_COLS = 2 / MINIMUM_ROWS = 1: measuring a hidden session does not
   // produce a stale size, it produces a WRONG one, and sending it is a 2x1
-  // resize into a live PTY — #973 in its worst form. That is why both callbacks
+  // resize into a live PTY — the bug in its worst form. That is why both callbacks
   // in `scheduleViewportSync` are guarded on the session still being active
   // (`TerminalView.tsx:191-193` and `:198`), and it is intended behaviour, not
   // an oversight: a hidden session keeps its geometry until it is shown again.

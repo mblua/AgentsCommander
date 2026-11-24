@@ -1,4 +1,4 @@
-//! #1171 - what the engine makes of one frame: which rows became evaluable, and what text
+//! What the engine makes of one frame: which rows became evaluable, and what text
 //! they carry.
 //!
 //! Two separate things live here, on purpose.

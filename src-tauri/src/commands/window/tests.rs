@@ -394,7 +394,7 @@ fn watchers_app(label: &str) -> tauri::App<tauri::test::MockRuntime> {
         .unwrap_or_else(|_| panic!("build {label} app"))
 }
 
-/// #1171, test 79a: a second open does not build a second window, and it does re-scope the
+/// Test 79a: a second open does not build a second window, and it does re-scope the
 /// one that is already there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reopening_the_watchers_window_re_scopes_it_instead_of_building_a_second_one() {
@@ -427,7 +427,7 @@ async fn reopening_the_watchers_window_re_scopes_it_instead_of_building_a_second
     assert!(payloads_rx.try_recv().is_err());
 }
 
-/// #1171, test 79b: two opens leave the authoritative scope at the SECOND one, whether or
+/// Test 79b: two opens leave the authoritative scope at the SECOND one, whether or
 /// not any listener exists.
 ///
 /// This is the property a Rust-side listener cannot certify. `app.listen_any` registers in
@@ -485,7 +485,7 @@ async fn the_last_open_wins_the_scope_with_no_listener_and_with_one() {
     );
 }
 
-/// #1171, test 79c: two concurrent opens for two different sessions produce exactly one
+/// Test 79c: two concurrent opens for two different sessions produce exactly one
 /// window, two `Ok`s and no duplicate-label failure, AND the authoritative scope agrees
 /// with the event the loser emitted.
 ///
@@ -543,7 +543,7 @@ async fn open_watchers_window_refuses_a_session_id_that_is_not_a_uuid() {
     assert_eq!(get_watchers_scope(app.state()).await.unwrap(), None);
 }
 
-// ── #2348 - the narrow main-window placement command ──────────────────
+// ── the narrow main-window placement command ──────────────────
 
 fn placement_geometry(x: f64, y: f64) -> WindowGeometry {
     WindowGeometry {

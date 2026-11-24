@@ -23,13 +23,13 @@ impl SessionIoFanout {
         &self,
         token: &PtyOutputRegistrationToken,
         session_id_str: &str,
-        data: Vec<u8>,
+        data: &[u8],
     ) {
         let Some(lease) = self.acquire_reader_lease(token) else {
             return;
         };
         let id = token.identity.session_id;
-        self.notify_output_observers(id, &data);
+        self.notify_output_observers(id, data);
 
         let (accumulated, registration) = {
             let Ok(mut parsers) = self.screen_parsers.lock() else {
@@ -58,7 +58,7 @@ impl SessionIoFanout {
                 ParserAvailability::Unavailable => (None, false),
                 ParserAvailability::Available => {
                     let processed = crate::logging::catch_payload_unwind(|| {
-                        state.parser.process(&data);
+                        state.parser.process(data);
                         let sequence = state.output_sequence.checked_add(1).ok_or(())?;
                         state.output_sequence = sequence;
                         // Order matters, and these two lines must stay contiguous. The ring
@@ -69,7 +69,7 @@ impl SessionIoFanout {
                         // watermark and only skips what is at or below the snapshot sequence,
                         // so those bytes would be seeded and then written again when they
                         // arrive live: a duplicated block of history.
-                        append_history(&mut state.history, &mut state.history_aligned, &data);
+                        append_history(&mut state.history, &mut state.history_aligned, data);
                         Ok::<u64, ()>(sequence)
                     });
                     match processed {
@@ -93,7 +93,7 @@ impl SessionIoFanout {
             // The emit it may ask for is run below, after the lock is dropped.
             let accumulated = if ui_open {
                 self.attachments
-                    .accumulate(&registration, sequence, &data, parser_fault)
+                    .accumulate(&registration, sequence, data, parser_fault)
             } else {
                 Accumulated::Unattached
             };
@@ -103,7 +103,7 @@ impl SessionIoFanout {
         if let Some(ref broadcaster) = self.ws_broadcaster {
             #[cfg(test)]
             self.trace(FanoutTraceEvent::Websocket);
-            broadcaster.broadcast_pty_output(session_id_str, &data);
+            broadcaster.broadcast_pty_output(session_id_str, data);
         }
 
         // The UI EMIT is still the last thing this function does, which is what keeps a slow
@@ -135,7 +135,7 @@ impl SessionIoFanout {
             );
         }
 
-        // #2124 - the detector decides whether this chunk counts, resets the
+        // The detector decides whether this chunk counts, resets the
         // silence clock or is absorbed into a pending short burst. The trace
         // order stays TouchSilence then PrintableActivity for the burst-off
         // sessions the trace tests use.
@@ -218,7 +218,7 @@ impl SessionIoFanout {
             return Err(TerminalOutputAttachError::OutputTargetUnavailable);
         }
         let mut reconcile_fault = false;
-        // #1458: carried out of the parser lock exactly like `reconcile_fault`. `Some` only
+        // Carried out of the parser lock exactly like `reconcile_fault`. `Some` only
         // when the ring was flagged unaligned; the pair is (ring length, bytes kept).
         let mut history_unaligned: Option<(usize, usize)> = None;
         let snapshot = if state.parser_availability == ParserAvailability::Available {
@@ -226,7 +226,7 @@ impl SessionIoFanout {
             if (parser_rows, parser_cols) == state.conpty_size {
                 copy_attach_snapshot(state, id, include_history, &mut history_unaligned)
             } else {
-                // #1439: the parser grid diverged from the grid the ConPTY took
+                // The parser grid diverged from the grid the ConPTY took
                 // (a skipped follow, or any path that resized one without the
                 // other). A seed rendered off this parser adopts the stale grid
                 // in the attaching window and replays other-grid bytes into it:
@@ -261,7 +261,7 @@ impl SessionIoFanout {
         }
         if reconcile_fault {
             log::error!("[terminal-snapshot] stage=parser_fault session={id}");
-            // #1439 R2: flush at the transition, OUTSIDE the parser lock. An
+            // R2: flush at the transition, OUTSIDE the parser lock. An
             // emit under that lock stalls the PTY reader on its next chunk;
             // both existing fault sites flush only after releasing the lock.
             self.attachments.flush(id, false);
@@ -342,7 +342,7 @@ fn copy_attach_snapshot(
         // rotates the buffer during what is otherwise a copy out.
         let replay = if uses_history {
             let (front, back) = state.history.as_slices();
-            // #1458: the hot-path realignment is capped at 4 KiB and stays failed
+            // The hot-path realignment is capped at 4 KiB and stays failed
             // for as long as the front sits in a newline-free region, so it can
             // leave the front inside an escape sequence. Attach is cold: pay the
             // full scan here rather than seed a literal sequence tail.
@@ -380,7 +380,7 @@ fn copy_attach_snapshot(
                 // No line start with content behind it. The ring cannot be
                 // replayed from any offset, and in the observed incident it holds
                 // nothing but spinner frames anyway. The mirror is a consistent
-                // full repaint on a grid the #1439 branch above already validated.
+                // full repaint on a grid the branch above already validated.
                 None => screen.contents_formatted(),
             };
             Ok::<PtyScreenSnapshot, ()>(PtyScreenSnapshot {

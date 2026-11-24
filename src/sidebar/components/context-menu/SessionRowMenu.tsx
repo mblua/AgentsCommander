@@ -165,8 +165,8 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
 
   // Rule 3: exactly two booleans, each a memo so only a real change reclamps.
   const botsShown = createMemo(() => {
-    const telegram = props.caps.telegram;
-    return !!(telegram && telegram.bots);
+    const telegram = props.caps.telegram || undefined;
+    return !!telegram?.bots;
   });
   // addToGroup / editTaskTitle split into their live and dimmed forms.
   const liveGroup = createMemo(() => {
@@ -186,8 +186,8 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
     return spec && isDisabledItem(spec) ? spec : false;
   });
   const editorShown = createMemo(() => {
-    const editor = liveTitle();
-    return !!(editor && editor.editing);
+    const editor = liveTitle() || undefined;
+    return !!editor?.editing;
   });
   createEffect(on([botsShown, editorShown], () => props.surface.reclamp(), { defer: true }));
 
@@ -375,6 +375,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
           <Show when={props.surface.flyoutKey() === KEY}>
             <div
               class="session-context-flyout"
+              role="none"
               ref={(el) => props.surface.setFlyoutEl(el)}
               style={{
                 left: `${props.surface.flyoutPos()?.x ?? 0}px`,
@@ -491,7 +492,7 @@ const CatalogueBody: Component<CatalogueBodyProps> = (props) => {
         Edit TASK title
       </button>
       <Show when={spec().editing}>
-        <div class="session-context-title-edit" onClick={stop}>
+        <div class="session-context-title-edit" role="none" onClick={stop}>
           <input
             ref={(el) =>
               deferToFrame(() => {

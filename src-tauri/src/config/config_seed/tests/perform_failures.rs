@@ -330,7 +330,7 @@ fn unserialized_prefix_sweep_would_destroy_a_concurrent_inflight_swap() {
     );
 }
 
-// ---- CatalogDefault tier (#769 P2: absent-only + non-empty) ------------
+// ---- CatalogDefault tier (absent-only + non-empty) ------------
 
 /// Append the absent-only `CatalogDefault` candidate LAST, exactly as the spawn
 /// caller (`build_agent_spawn_command`) does.

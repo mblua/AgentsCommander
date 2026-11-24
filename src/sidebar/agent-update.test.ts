@@ -61,7 +61,7 @@ function ref(command: string): AgentUpdateCommandRef {
   return { command, label: label(command) };
 }
 
-/** #1691 - the canonical succeeded result of a #1691 backend. */
+/** The canonical succeeded result of a current backend. */
 function ok(command: string): AgentUpdateResult {
   return {
     command,
@@ -78,12 +78,12 @@ function failed(command: string, error = "exit code 1"): AgentUpdateResult {
   return { ...ok(command), ok: false, outcome: "failed", error };
 }
 
-/** #1691 - `ok=false` and NEVER a failure: this result must emit no `Auto-update failed` toast. */
+/** `ok=false` and NEVER a failure: this result must emit no `Auto-update failed` toast. */
 function cancelled(command: string): AgentUpdateResult {
   return { ...ok(command), ok: false, outcome: "cancelled" };
 }
 
-/** #1691 - the pre-#1691 wire shape: no `outcome`, no probes, no `change`. */
+/** The older wire shape: no `outcome`, no probes, no `change`. */
 function legacyOk(command: string): AgentUpdateResultWire {
   return { command, label: label(command), ok: true };
 }
@@ -119,7 +119,7 @@ async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-describe("wireAgentUpdateListeners (#1327)", () => {
+describe("wireAgentUpdateListeners", () => {
   let fake: FakeTransport;
   let restore: () => void;
 
@@ -195,7 +195,7 @@ describe("wireAgentUpdateListeners (#1327)", () => {
   });
 });
 
-describe("agent-update store: per-command events and the monotonic snapshot merge (#1551)", () => {
+describe("agent-update store: per-command events and the monotonic snapshot merge", () => {
   let fake: FakeTransport;
   let restore: () => void;
 
@@ -487,7 +487,7 @@ describe("agent-update store: per-command events and the monotonic snapshot merg
       installAfter: installed("2.1", 1),
     });
     expect(store.installAfter.codex).toEqual(installed("2.1", 1));
-    // #1691 - the row's text comes from the RESULT's own probes, never from this cache
+    // The row's text comes from the RESULT's own probes, never from this cache
     expect(codexView()).toMatchObject({ state: "ok", detail: "Ready - 2.0 -> 2.1" });
     fake.emitFromBackend("agent_install_state_changed", { command: "codex", install: installed("9.9", 8) });
     expect(store.installAfter.codex).toEqual(installed("9.9", 8));
@@ -652,7 +652,7 @@ describe("agent-update store: per-command events and the monotonic snapshot merg
   });
 });
 
-describe("#1691 - verification, cancellation folds and terminal first-winner", () => {
+describe("verification, cancellation folds and terminal first-winner", () => {
   let fake: FakeTransport;
   let restore: () => void;
   let errorSpy: ReturnType<typeof vi.spyOn>;

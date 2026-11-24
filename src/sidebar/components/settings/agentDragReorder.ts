@@ -1,8 +1,8 @@
 import { type Accessor, createSignal, onCleanup } from "solid-js";
 import { DRAG_THRESHOLD, autoScrollDelta, insertionSlot, reorderIndex } from "./agentReorderDnd";
 
-/** #2594 - the one pointer drag-reorder lifecycle shared by Settings > Coding
- *  Agents (#2544) and the agent picker (#2577). */
+/** The one pointer drag-reorder lifecycle shared by Settings > Coding
+ *  Agents and the agent picker. */
 export type AgentDragReorderOptions = {
   /** The scrolling element that is also the rows' offset parent. Read lazily:
    *  both call sites assign it through a Solid `ref` after this runs. */
@@ -68,7 +68,7 @@ export function createAgentDragReorder(options: AgentDragReorderOptions): AgentD
     const others = all.filter((row) => row !== drag.row);
     drag.slot = insertionSlot(drag.lastY, others.map((row) => row.getBoundingClientRect()));
     const atSlot = others[drag.slot];
-    const last = others[others.length - 1];
+    const last = others.at(-1);
     if (from < 0 || drag.slot === from || !last) {
       setDropIndicatorTop(null);
     } else {

@@ -21,7 +21,7 @@ use super::{
 };
 
 // ---------------------------------------------------------------------------
-// #1968 write machinery: directory/lock discipline, exclusive publication,
+// Write machinery: directory/lock discipline, exclusive publication,
 // migration, recovery, refresh and initialization.
 // ---------------------------------------------------------------------------
 
@@ -39,8 +39,8 @@ impl CatalogPaths {
         Self::with_names(dir, CATALOG_MANIFEST_FILENAME, LOCAL_CATALOG_FILENAME)
     }
 
-    /// #2715 - the same composition over explicit data-file names, so an
-    /// interrupted #1968 migration is recovered over the PRE-migration names.
+    /// The same composition over explicit data-file names, so an
+    /// interrupted migration is recovered over the PRE-migration names.
     pub(crate) fn with_names(dir: &Path, base: &str, local: &str) -> Self {
         Self {
             base: dir.join(base),

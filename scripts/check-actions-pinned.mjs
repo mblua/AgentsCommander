@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// #4690: CI gate `actions-pinned` (workflow .github/workflows/actions-pinned.yml, also
+// CI gate `actions-pinned` (workflow .github/workflows/actions-pinned.yml, also
 // `npm run actions-pinned`). Fails when any `uses:` under .github/workflows or
 // .github/actions is external and not `@<40-hex lowercase SHA> # vX.Y.Z`. Zero rule, no
 // baseline. Two fixed exemptions:
@@ -12,8 +12,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveGit } from './resolve-git.mjs';
 
-const FULL_USE = /^\s*(?:-\s+)?uses:\s*(['"]?)([^'"\s#]+)\1\s*(?:(#.*?))?\s*$/;
-const ANY_USE = /^\s*(?:-\s*)?\{?\s*uses:/;
+const USES_PREFIX = 'uses:';
 const SHA_REF = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+@[0-9a-f]{40}$/;
 const DOCKER_DIGEST = /^docker:\/\/.+@sha256:[0-9a-f]{64}$/;
 const VERSION_COMMENT = /^#\s*v\d+\.\d+\.\d+\s*$/;
@@ -33,16 +32,51 @@ export function classifyUse(ref, comment) {
   return 'unpinned';
 }
 
+function skipWhitespace(text, index) {
+  while (index < text.length && /\s/.test(text[index])) index += 1;
+  return index;
+}
+
+function scanFullUse(text, index) {
+  if (text[index] === '-') {
+    const next = skipWhitespace(text, index + 1);
+    if (next === index + 1) return null;
+    index = next;
+  }
+  if (!text.startsWith(USES_PREFIX, index)) return null;
+
+  index = skipWhitespace(text, index + USES_PREFIX.length);
+  const quote = text[index] === "'" || text[index] === '"' ? text[index] : '';
+  index += quote.length;
+  const start = index;
+  while (index < text.length && !/['"\s#]/.test(text[index])) index += 1;
+  if (start === index || (quote && text[index] !== quote)) return null;
+
+  const ref = text.slice(start, index);
+  index = skipWhitespace(text, index + quote.length);
+  if (index === text.length) return { ref, comment: '' };
+  if (text[index] !== '#') return null;
+
+  const comment = text.slice(index).trimEnd();
+  return /[\r\n\u2028\u2029]/.test(comment) ? null : { ref, comment };
+}
+
+function hasFallbackUse(text, index) {
+  if (text[index] === '-') index = skipWhitespace(text, index + 1);
+  if (text[index] === '{') index = skipWhitespace(text, index + 1);
+  return text.startsWith(USES_PREFIX, index);
+}
+
 export function scanText(text) {
   const uses = [];
   text.split('\n').forEach((raw, index) => {
     const lineText = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
-    const match = FULL_USE.exec(lineText);
+    const start = skipWhitespace(lineText, 0);
+    const match = scanFullUse(lineText, start);
     if (match) {
-      const ref = match[2];
-      const comment = match[3] ?? '';
+      const { ref, comment } = match;
       uses.push({ line: index + 1, ref, comment, kind: classifyUse(ref, comment) });
-    } else if (ANY_USE.test(lineText)) {
+    } else if (hasFallbackUse(lineText, start)) {
       uses.push({ line: index + 1, ref: lineText.trim(), comment: '', kind: 'unparsed' });
     }
   });
@@ -82,6 +116,35 @@ function selfTest() {
     if (found.length > 1 || kind !== expected) {
       failures.push(`${JSON.stringify(input)}: expected ${expected}, got ${kind}`);
     }
+  }
+  const text = [
+    '# uses: a/b@v1',
+    ' uses: "a/b@v1" # keep  \t\r',
+    "uses: 'a/b@v2'",
+    'uses: "a/b@v1\'',
+    '-uses: a/b@v1',
+    '-{\u00a0uses: a/b@v1}',
+    '\uFEFF-\u2003uses:\u00a0./local # trailing\u2028 \r',
+    'uses: a/b@v1 # first\u2028second',
+    'uses: a/b@v1#',
+    '\u200Buses: a/b@v1',
+  ].join('\n');
+  const expected = [
+    { line: 2, ref: 'a/b@v1', comment: '# keep', kind: 'unpinned' },
+    { line: 3, ref: 'a/b@v2', comment: '', kind: 'unpinned' },
+    { line: 4, ref: 'uses: "a/b@v1\'', comment: '', kind: 'unparsed' },
+    { line: 5, ref: '-uses: a/b@v1', comment: '', kind: 'unparsed' },
+    { line: 6, ref: '-{\u00a0uses: a/b@v1}', comment: '', kind: 'unparsed' },
+    { line: 7, ref: './local', comment: '# trailing', kind: 'local' },
+    { line: 8, ref: 'uses: a/b@v1 # first\u2028second', comment: '', kind: 'unparsed' },
+    { line: 9, ref: 'a/b@v1', comment: '#', kind: 'unpinned' },
+  ];
+  const actual = scanText(text);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    failures.push(
+      'scanText records differ: expected ' + JSON.stringify(expected) +
+        ', got ' + JSON.stringify(actual),
+    );
   }
   if (CASES.length === 0 || failures.length > 0) {
     for (const failure of failures) process.stderr.write(`[actions-pinned] ${failure}\n`);

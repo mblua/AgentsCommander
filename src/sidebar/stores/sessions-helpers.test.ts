@@ -133,7 +133,7 @@ describe("applySelectionToSessionList", () => {
   });
 });
 
-describe("upsertSessionList (#274 banner-reuse hydration)", () => {
+describe("upsertSessionList (banner-reuse hydration)", () => {
   it("appends a new session when id is not present", () => {
     const sessions = [mkSession("a", "idle")];
     const next = upsertSessionList(sessions, mkSession("b", "running"));
@@ -152,7 +152,7 @@ describe("upsertSessionList (#274 banner-reuse hydration)", () => {
     expect(next[0].agentLabel).toBe("new");
   });
 
-  // #647 (test 7, E5): a verified RM Kill makes the backend emit session_created
+  // Test 7, E5: a verified RM Kill makes the backend emit session_created
   // carrying the Exited SessionInfo for the SAME id. The sidebar's listener
   // routes it through addSession -> upsertSessionList, which must UPDATE the
   // existing tile's status to Exited (not append a duplicate) so the flip renders.

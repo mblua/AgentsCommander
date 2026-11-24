@@ -24,7 +24,7 @@ function snapshot(over: Partial<PreflightTestSnapshot> = {}): PreflightTestSnaps
   };
 }
 
-describe("parseTimeoutInput (#3516)", () => {
+describe("parseTimeoutInput", () => {
   it.each([
     ["", { ok: true, value: undefined }],
     ["   ", { ok: true, value: undefined }],
@@ -41,7 +41,7 @@ describe("parseTimeoutInput (#3516)", () => {
   });
 });
 
-describe("timeoutKey (#3516)", () => {
+describe("timeoutKey", () => {
   it("keys the agent row and each cell, and scopes keys to their agent", () => {
     expect(timeoutKey("codex", null)).toBe("agent:codex");
     expect(timeoutKey("codex", "B")).toBe("cell:codex:B");
@@ -52,7 +52,7 @@ describe("timeoutKey (#3516)", () => {
   });
 });
 
-describe("isStale (#3516)", () => {
+describe("isStale", () => {
   it("is stale on another revision, and the edited flag stays sticky after a revert", () => {
     const result = { settingsRevision: "rev" };
     expect(isStale(result, "rev", false)).toBe(false);
@@ -69,7 +69,7 @@ describe("isStale (#3516)", () => {
   });
 });
 
-describe("preflightFingerprint (#3516)", () => {
+describe("preflightFingerprint", () => {
   const settings = baseSettings({
     agents: [{
       id: "codex", label: "Codex", command: "codex", color: "#000", envs: [],
@@ -94,7 +94,7 @@ describe("preflightFingerprint (#3516)", () => {
   });
 });
 
-describe("stageStatusText (#3516)", () => {
+describe("stageStatusText", () => {
   const cases: [PreflightStageStatus, Partial<PreflightStageReport>, string[]][] = [
     ["pending", {}, ["Waiting"]],
     ["running", {}, ["Running…"]],
@@ -119,7 +119,7 @@ describe("stageStatusText (#3516)", () => {
   });
 });
 
-describe("activeLine (#3516)", () => {
+describe("activeLine", () => {
   it("uses the stage source, not its label", () => {
     const stages = [report({ source: "profile", label: "Profile A", status: "running" })];
     expect(activeLine(snapshot({ stages }), false)).toBe("Running Profile preflight…");
@@ -152,7 +152,7 @@ function target(path: string, over: Partial<PreflightTestTarget> = {}): Prefligh
   };
 }
 
-describe("buildPreflightDraft (#3832)", () => {
+describe("buildPreflightDraft", () => {
   it("keeps only preflight commands and timeouts, with null for undefined", () => {
     const settings = baseSettings({
       agents: [{
@@ -183,7 +183,7 @@ describe("buildPreflightDraft (#3832)", () => {
   });
 });
 
-describe("picker helpers (#3832)", () => {
+describe("picker helpers", () => {
   it("filters by launch Profile after fallback; card mode keeps every row", () => {
     const rows = [
       target("a"), target("b", { effectiveProfile: "B" }),
@@ -203,7 +203,7 @@ describe("picker helpers (#3832)", () => {
   });
 });
 
-describe("formatDuration (#3516)", () => {
+describe("formatDuration", () => {
   it.each([[0, "0 ms"], [999, "999 ms"], [1000, "1.0 s"], [1250, "1.3 s"], [61000, "61.0 s"]])(
     "formats %d", (ms, text) => expect(formatDuration(ms)).toBe(text));
 });

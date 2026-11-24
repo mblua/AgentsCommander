@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// #2236 phase 6 — the compact toolbar rule. jsdom attaches no stylesheet and
+// The compact toolbar rule. jsdom attaches no stylesheet and
 // performs no layout, so the bytes on disk are the only place the declarations
 // and the arithmetic that lets two 30px buttons fit the 68px rail can be
 // pinned. Both sheets are CRLF on disk: every scan splits on /\r?\n/, never a
@@ -80,7 +80,7 @@ function px(value: string, context: string): number {
 
 const COMPACT_ACTION_BAR = ".sidebar-compact .action-bar";
 
-describe("#2236 phase 6 compact toolbar CSS bytes", () => {
+describe("phase 6 compact toolbar CSS bytes", () => {
   it("declares the compact inline padding and gap and no block padding or shorthand", () => {
     const declared = declarations(ruleBodyLines(CSS_LINES, COMPACT_ACTION_BAR));
 

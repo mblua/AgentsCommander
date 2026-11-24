@@ -18,8 +18,8 @@ import type { Session, SessionCommunication } from "../../shared/types";
 
 vi.mock("../attention", () => ({ requestTaskbarAttention: vi.fn() }));
 
-// #2452 - the backend publishes communication.kind = "coManaged" with the
-// message text (#2232). These tests drive the real
+// The backend publishes communication.kind = "coManaged" with the
+// message text. These tests drive the real
 // session_communication_changed event through the fake transport so the store
 // handler, not the test, applies it to the row.
 const projectPath = "C:\\Project";
@@ -98,7 +98,7 @@ function setupTransport(fake: FakeTransport, shape: RowShape): void {
   fake.resolve("switch_session", undefined);
 }
 
-// Always a fresh object: the store merges key by key (issue 1863).
+// Always a fresh object: the store merges key by key.
 function communication(
   kind: string,
   visible: boolean,
@@ -107,7 +107,7 @@ function communication(
   return { kind, visible, updatedAt, message } as SessionCommunication;
 }
 
-describe("ProjectPanel Co-managed row text (#2452)", () => {
+describe("ProjectPanel Co-managed row text", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
@@ -227,7 +227,7 @@ describe("ProjectPanel Co-managed row text (#2452)", () => {
   });
 });
 
-describe("Co-managed slot stylesheet rule (#2452)", () => {
+describe("Co-managed slot stylesheet rule", () => {
   // Same file: URL construction as ProjectPanel.menu-guard.test.tsx; the
   // two-argument URL form resolves against the jsdom document base.
   const marker = "/src/sidebar/components/";

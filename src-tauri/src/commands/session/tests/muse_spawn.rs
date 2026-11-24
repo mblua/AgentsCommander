@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1873 - Root agent-picker selection on a LIVE Muse record omits the restart
+/// Root agent-picker selection on a LIVE Muse record omits the restart
 /// flag; `super::super::effective_restart_skip_auto_resume(None)` is fresh, and
 /// `execute_restart_transaction` tears the old runtime down once and spawns
 /// exactly one replacement with configured plain muse.
@@ -168,7 +168,7 @@ async fn retained_exited_respawn_c19_completed_restarts_reclaim_more_than_64_ent
     );
 }
 
-/// #1873 - a spawn-time `Err` makes exactly one resume attempt, surfaces that one
+/// A spawn-time `Err` makes exactly one resume attempt, surfaces that one
 /// diagnostic, publishes no created event, leaves no row, and never retries plain.
 #[tokio::test]
 async fn muse_spawn_error_is_not_retried_fresh() {
@@ -239,7 +239,7 @@ async fn muse_spawn_error_is_not_retried_fresh() {
     close_test_coordinator(&app).await;
 }
 
-/// #1873 - through the REAL local backend: a trusted resume launch of a `muse`
+/// Through the REAL local backend: a trusted resume launch of a `muse`
 /// executable that journals argv and exits 41 succeeds at create (one retained
 /// row, one created event, wire "muse", argv `[muse-path, "resume", "--last"]`),
 /// then the monitor reports one child-initiated exit with duplicate suppression;

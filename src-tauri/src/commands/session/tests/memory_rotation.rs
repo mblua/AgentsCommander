@@ -13,7 +13,7 @@ fn rotate_origin_memory_at_spawn_has_one_gated_call_in_session_rs() {
     assert!(source_rotation(&sources) && source_fresh(&sources) && source_budgets(&sources));
 }
 
-/// #1175 B1. The behavioral guard on #1172 D5's normative property, within the
+/// B1. The behavioral guard on D5's normative property, within the
 /// scope D5 of this plan declares. This EXECUTES the launch path and looks at
 /// the filesystem, so unlike the reference inventory above it reds under the
 /// cross-file alias the issue built.
@@ -131,14 +131,14 @@ async fn a_production_shaped_startup_restore_never_rotates_while_a_fresh_launch_
     close_test_coordinator(&app).await;
 }
 
-/// #1175 B2. The same function twice with matched arguments and the same
+/// B2. The same function twice with matched arguments and the same
 /// session label, one launch fresh and one launch resuming, in the OPPOSITE
 /// order from B1.
 ///
 /// It is deliberately NOT called a one-boolean experiment, and it never was
 /// one: the cwd differs, and the second launch runs against a `SessionManager`,
 /// selection coordinator and backend the first already mutated. Naming that
-/// "the flag alone" would grant exactly the false confidence #1175 exists to
+/// "the flag alone" would grant exactly the false confidence this guard exists to
 /// remove. What it does establish, together with B1, is that no discriminator
 /// based solely on first-versus-second launch explains the result: B1 runs
 /// resume then fresh, this runs fresh then resume.
@@ -150,7 +150,7 @@ async fn a_production_shaped_startup_restore_never_rotates_while_a_fresh_launch_
 /// only. Separate replicas are used so each side has its own independently
 /// seeded, non-empty `memory/` to observe.
 ///
-/// Its resume half uses the same `false` polarity as the #599 reopen of a
+/// Its resume half uses the same `false` polarity as the reopen of a
 /// closed coordinator, but it is NOT that scenario: `is_coordinator` is
 /// deterministically false for every cwd in this binary, and the Tauri
 /// `create_session` producer is bypassed. Plan D5 records coordinator polarity
@@ -209,7 +209,7 @@ async fn create_session_inner_rotates_the_fresh_target_and_not_the_resumed_one()
         Some("Codex".to_string()),
         true,
         Vec::new(),
-        false, // the #599 reopen value: this launch RESUMES
+        false, // the reopen value: this launch RESUMES
         None,
         None,
         None,
@@ -326,7 +326,7 @@ async fn create_session_inner_holds_a_spawn_mark_until_the_pty_exists() {
                 true,
                 None,
                 None,
-                None, // #973 - no view in this test: 120x30
+                None, // no view in this test: 120x30
                 CreateSelectionIntent::User,
             )
             .await
@@ -410,7 +410,7 @@ async fn create_session_inner_retires_the_spawn_mark_on_spawn_failure() {
                 true,
                 None,
                 None,
-                None, // #973 - no view in this test: 120x30
+                None, // no view in this test: 120x30
                 CreateSelectionIntent::User,
             )
             .await

@@ -1,6 +1,6 @@
 // Creates the per-user application menu entry for a global npm install on Linux.
 // install.js calls it after the executable is in place; a failure only warns.
-// Issue #2066.
+// Linux-only helper.
 //
 // The entry is written under $XDG_DATA_HOME/applications (default
 // ~/.local/share/applications). /usr/share/applications needs root and is out of

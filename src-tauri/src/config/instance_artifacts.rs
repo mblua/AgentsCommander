@@ -2,7 +2,7 @@
 //! directory, and the disposition of each one.
 //!
 //! This module is the single source for the generated instance `.gitignore`
-//! (#1446): `instance_gitignore::required_rules` derives every static rule from
+//! `instance_gitignore::required_rules` derives every static rule from
 //! the table below, so a rule can no longer be a retyped literal that drifts
 //! away from the writer that produces the file. Writer modules define their
 //! artifact-name constants as aliases of the constants declared here, so a
@@ -17,7 +17,7 @@
 //!    third-party import. A module with zero outgoing arcs is a trivial SCC no
 //!    matter how many modules point at it, so every arc into this registry is
 //!    safe regardless of whether its source sits inside the crate's cyclic
-//!    component. That is the same argument #1273 established for the parent
+//!    component. That is the same argument that holds for the parent
 //!    module, and `tests/instance_gitignore_layering.rs` asserts it by equality
 //!    against empty tables. The one exception the guard allows is the glob
 //!    import of the single test module (`instance_artifacts/tests.rs`), which the arc
@@ -28,7 +28,7 @@
 //!    rule is written down: "not in the registry" must never again mean "nobody
 //!    looked".
 //!
-//!    That claim rests entirely on the enumeration recipe of the #1446 plan
+//!    That claim rests entirely on the enumeration recipe of the plan
 //!    (`.ac/plans/1446-instance-gitignore-artifact-registry.md`, Section 7), which
 //!    is the procedure that produced this inventory and the only way to keep it
 //!    true. Its four legs exist because narrower sweeps missed real writers: leg
@@ -130,7 +130,7 @@ pub(crate) enum ArtifactKind {
     /// the instance directory. Exceptional by design; a registry test pins the
     /// number of such rows.
     GlobAnyDepth,
-    /// #1968 - renders as `/{name}` where `name` is a full path RELATIVE to the
+    /// Renders as `/{name}` where `name` is a full path RELATIVE to the
     /// instance root (`coding-agents/agents.local.json`). The only kind whose
     /// name carries a forward slash: the pattern is still anchored by the one
     /// leading slash the renderer adds, and a registry test pins the exact
@@ -863,7 +863,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
     },
 ];
 
-/// #1968 - the exact `coding-agents/` child allowlist `RootRelativeGlob` rows
+/// The exact `coding-agents/` child allowlist `RootRelativeGlob` rows
 /// may carry. A registry test pins the table to this set, so widening the kind
 /// to another directory is a policy change rather than a table tweak.
 #[cfg(test)]

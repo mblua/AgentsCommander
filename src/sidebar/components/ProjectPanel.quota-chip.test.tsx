@@ -14,7 +14,7 @@ import {
 import { sessionsStore } from "../stores/sessions";
 import type { AgentConfig, Session } from "../../shared/types";
 
-// #2482 p7 - the weekly-quota fill on the ROOM-REPLICA agent chip. Every case
+// The weekly-quota fill on the ROOM-REPLICA agent chip. Every case
 // resolves the chip through its row and asserts the NodeList length first: a
 // missing chip must fail, never pass a "no quota-fill" check.
 const projectPath = "C:\\Project";
@@ -110,7 +110,7 @@ function setupTransport(fake: FakeTransport, idleAgentId: string): void {
   fake.resolve("get_agent_quota_readings", {});
 }
 
-describe("ProjectPanel replica weekly-quota chip (#2482)", () => {
+describe("ProjectPanel replica weekly-quota chip", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

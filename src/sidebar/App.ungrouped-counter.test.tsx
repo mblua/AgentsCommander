@@ -18,7 +18,7 @@ import {
   exactGroupRegexForWorkgroup,
 } from "./stores/workgroup-groups";
 
-// #2036: the rail counter and the panel Rooms count must derive Ungrouped from
+// The rail counter and the panel Rooms count must derive Ungrouped from
 // ONE rule. This mounts the real SidebarApp so the two sides agree in the same
 // DOM: wg-1 is in UI, wg-2 is Alert me!-only, wg-3 is the only ungrouped room.
 
@@ -72,7 +72,7 @@ function roomsCount(root: HTMLElement): string | null {
   return header?.querySelector(".ac-team-count")?.textContent ?? null;
 }
 
-describe("SidebarApp Ungrouped counter (#2036)", () => {
+describe("SidebarApp Ungrouped counter", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #2297 phase 3 - main window close handshake.
+// Main window close handshake.
 //
 // The real `QuitConfirmModal`, the real IPC funnel and the real `FakeTransport`
 // are used; only the Tauri window APIs, the heavy child surfaces and the
@@ -185,7 +185,7 @@ function pressKey(key: string, shiftKey = false): KeyboardEvent {
   return event;
 }
 
-describe("MainApp quit handshake (#2297)", () => {
+describe("MainApp quit handshake", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     fake = new FakeTransport();
@@ -404,7 +404,7 @@ describe("MainApp quit handshake (#2297)", () => {
     expect(statusText()).toContain("timeout");
   });
 
-  // #2641 - every arm of the normal attempt's invoke result. "" means the
+  // Every arm of the normal attempt's invoke result. "" means the
   // round ended with no status; otherwise the status must contain the text.
   it.each([
     ["Exiting ends the round", null, { outcome: "Exiting", epoch: 5 }, ""],
@@ -648,7 +648,7 @@ describe("MainApp quit handshake (#2297)", () => {
     expect(document.activeElement).toBe(closeButton);
   });
 
-  // #2349 - the bounded placement flush precedes the first quit command.
+  // The bounded placement flush precedes the first quit command.
   it("awaits the placement save before the zero-detached quit command", async () => {
     const placement = deferred<void>();
     fake.onInvoke("set_main_window_placement", () => placement.promise);

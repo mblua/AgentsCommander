@@ -9,7 +9,7 @@ import {
   pathHasEntityDirSegment,
 } from "./entity-prefix";
 
-// #1614 D2/D4: five functions rather than one, because each preserves its call
+// Five functions rather than one, because each preserves its call
 // site's exact case sensitivity. WorkgroupTask.tsx documents that its gate must
 // stay case-sensitive or the TASK buttons enable for clicks that always fail,
 // while the rail's two predicates are display-only and have always been

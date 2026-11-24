@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { declProps, declValue, scanSheet, soleRuleBody } from "./css-test-helpers";
 
-// #2584 - the Favorites header is a flex item of a capped flex column and also
+// The Favorites header is a flex item of a capped flex column and also
 // carries the label's `overflow: hidden`, so its automatic minimum size is 0.
 // When favorites overflow the 40% cap it shrank to ~6px and clipped its text.
 // jsdom does no layout, so the stylesheet bytes are the contract.
@@ -10,7 +10,7 @@ const ruleFor = (selector: string): string => soleRuleBody(RULES, selector);
 
 const HEADER = ".workgroup-group-rail-favorites > .workgroup-group-rail-header";
 
-describe("#2584 rail Favorites header", () => {
+describe("rail Favorites header", () => {
   it("T1 header never shrinks below its content height", () => {
     expect(declValue(ruleFor(HEADER), "flex-shrink")).toBe("0");
   });

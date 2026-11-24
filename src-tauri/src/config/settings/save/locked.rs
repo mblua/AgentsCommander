@@ -72,7 +72,7 @@ pub(crate) fn save_settings_value_locked_with_startup(
         disk_read.as_ref().map(|(map, _)| map),
         disk_read.as_ref().map(|(_, contents)| contents.as_str()),
     )?;
-    // #2058: the exact bytes this save is about to replace, captured before the
+    // The exact bytes this save is about to replace, captured before the
     // tuple is reduced to its object half.
     let previous_contents: Option<String> = disk_read.as_ref().map(|(_, c)| c.clone());
     let disk = disk_read.map(|(map, _)| map);
@@ -106,7 +106,7 @@ pub(crate) fn save_settings_value_locked_with_startup(
         main_window_placement_mode,
     )?;
 
-    // #1737: the effective view the caller must adopt for overlay-owned paths. `out`
+    // The effective view the caller must adopt for overlay-owned paths. `out`
     // is not a usable source: in Reconcile mode it was seeded from the disk object,
     // which already holds base values. Skipped entirely when no overlay is in force,
     // which is what keeps the no-overlay write path byte-identical.
@@ -115,10 +115,10 @@ pub(crate) fn save_settings_value_locked_with_startup(
     } else {
         Some(serialize_settings_object(settings, path)?)
     };
-    // #1737: last writer over `out`, so no earlier stage can leak an overlay value
+    // Last writer over `out`, so no earlier stage can leak an overlay value
     // into the base file. Runs in both project write modes: Reconcile seeds `out`
     // from the live settings when the file is absent. The overlay-ineligible sets
-    // (D7a, D7b) already exclude every key the #1077 and #1173 stages touch.
+    // (D7a, D7b) already exclude every key the and #1173 stages touch.
     if matches!(mode, ProjectWriteMode::Preserve) {
         write_identity_rows(&mut out, &settings.local_overlay_state);
     }
@@ -242,7 +242,7 @@ pub(crate) fn backup_legacy_profiles_before_write(
     map: Option<&Map<String, Value>>,
     contents: Option<&str>,
 ) -> Result<(), SettingsSaveError> {
-    // #2015: Preserve builds from the struct, which ignores legacy pre-v2
+    // Preserve builds from the struct, which ignores legacy pre-v2
     // profile fields; keep the original once before any save drops them.
     if matches!(mode, ProjectWriteMode::Preserve)
         && let (Some(map), Some(contents)) = (map, contents)
@@ -612,7 +612,7 @@ fn decode_written_settings(
     base: Option<&Path>,
 ) -> Result<AppSettings, SettingsSaveError> {
     let mut written_value = value;
-    // #2716 (B3): the re-decode sees what a load would, the agents file's groups
+    // (B3): the re-decode sees what a load would, the agents file's groups
     // in the base object, under the overlay reapplied below.
     let physical_groups = agents_groups.keys().cloned().collect::<Vec<_>>();
     let profile_owner = selected_registered_profile_owner(
@@ -630,7 +630,7 @@ fn decode_written_settings(
     if let Some(profiles) = profile_owner_view.get("codingAgentProfiles") {
         written_value["codingAgentProfiles"] = profiles.clone();
     }
-    // #1737: disk holds the base, memory holds the effective value. Without this the
+    // Disk holds the base, memory holds the effective value. Without this the
     // caller would adopt base values for every overlay-owned key on the first save.
     if let (Some(effective), Value::Object(object)) = (&effective, &mut written_value) {
         settings.local_overlay_state.reapply_from(effective, object);
@@ -677,7 +677,7 @@ fn publish_settings(
         physical_sidecar,
         profiles_in_sidecar,
     ) = prepared;
-    // #2716 (B3): the agents file is written first; only the keys it now holds
+    // (B3): the agents file is written first; only the keys it now holds
     // leave `out`, in both modes. A failure returns before the settings write.
     let agents_groups = save_agents_instance_file(
         settings,

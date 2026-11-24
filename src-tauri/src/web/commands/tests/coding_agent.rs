@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn coding_agent_profile_commands_route_past_unknown_command() {
-    // #859 regression: before web-router parity these five commands hit the
+    // Regression: before web-router parity these five commands hit the
     // `Unknown command` fallback. Empty args make each inner fail arg
     // validation instead, which proves the route now exists.
     let (state, _rx) = ws_state_for(AppSettings::default());
@@ -407,4 +407,4 @@ async fn apply_coding_agent_profile_selection_web_dispatch_broadcasts() {
     assert_eq!(event["payload"]["updatedCount"], json!(1));
 }
 
-// ── #1941 scoped selection-lock transport parity ────────────────────
+// ── Scoped selection-lock transport parity ────────────────────

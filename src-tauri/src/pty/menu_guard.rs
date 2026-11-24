@@ -1,4 +1,4 @@
-//! #1646 / #1647 - Proactive detection subsystem for terminal blocking menus
+//! Proactive detection subsystem for terminal blocking menus
 //! (e.g. folder trust dialogs).
 //!
 //! Scans terminal output frames periodically for known blocking menu patterns. When detected,
@@ -30,7 +30,7 @@ pub fn is_menu_guard_deferred_error(e: &str) -> bool {
     e.starts_with(ERR_MENU_GUARD_DEFERRED)
 }
 
-/// #2336 - deferral marker for the per-session typing hold. Deliberately a
+/// Deferral marker for the per-session typing hold. Deliberately a
 /// SEPARATE marker from the menu guard, not a reuse of it: both refusals get the
 /// same recoverable "not yet" treatment at every retry boundary (lease release,
 /// no attempt burn), but their causes never overlap and their lifetimes differ
@@ -106,7 +106,7 @@ impl MenuGuard {
         Self::default()
     }
 
-    /// #1905 - production constructor: the store built from the config dir at startup.
+    /// Production constructor: the store built from the config dir at startup.
     pub fn with_store(store: BlockingMenusStore) -> Self {
         Self {
             store,
@@ -114,7 +114,7 @@ impl MenuGuard {
         }
     }
 
-    /// #1905 - the entries evaluated for one agent's sessions (D3, layer 0 first).
+    /// The entries evaluated for one agent's sessions (D3, layer 0 first).
     pub(crate) fn entries_for(&self, agent: &AgentConfig) -> Vec<BlockingMenuEntry> {
         self.store.resolve_for(agent)
     }
@@ -387,7 +387,7 @@ impl MenuGuard {
                     let eval = self.evaluate_logical_rows(session_uuid, &rows, &entries);
                     if eval.should_notify {
                         if let Some(msg) = eval.matched_notification {
-                            // #1669: the transition must reach sessions.json so a disk-reading CLI
+                            // The transition must reach sessions.json so a disk-reading CLI
                             // (`list-peers`) can see the blocked terminal. Only a REAL transition
                             // writes: `Unchanged` is the steady state on this 250 ms loop and does
                             // no save and no settings read. A failed save is logged inside the

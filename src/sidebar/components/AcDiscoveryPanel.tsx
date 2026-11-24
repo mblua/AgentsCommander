@@ -102,7 +102,7 @@ const AcDiscoveryPanel: Component = () => {
     if (dismissCtxMenu) {
       window.removeEventListener("click", dismissCtxMenu);
       window.removeEventListener("contextmenu", dismissCtxMenu);
-      window.removeEventListener("keydown", dismissCtxMenu as any);
+      window.removeEventListener("keydown", dismissCtxMenu);
       dismissCtxMenu = null;
     }
   };
@@ -124,7 +124,7 @@ const AcDiscoveryPanel: Component = () => {
     setTimeout(() => {
       window.addEventListener("click", dismiss);
       window.addEventListener("contextmenu", dismiss);
-      window.addEventListener("keydown", dismiss as any);
+      window.addEventListener("keydown", dismiss);
     });
   };
 
@@ -181,7 +181,7 @@ const AcDiscoveryPanel: Component = () => {
     setNewCtxPath("");
   };
 
-  // #2655 - Escape = backdrop click while the panel is open (AgentMatrixNoticeModal idiom).
+  // Escape = backdrop click while the panel is open (AgentMatrixNoticeModal idiom).
   createEffect(() => {
     if (!ctxFilesReplica()) return;
     const onEscape = (e: KeyboardEvent) => {
@@ -352,6 +352,7 @@ const AcDiscoveryPanel: Component = () => {
         <Portal>
           <div
             class="session-context-menu"
+            role="none"
             style={{ left: `${ctxMenuPos().x}px`, top: `${ctxMenuPos().y}px` }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -401,7 +402,7 @@ const AcDiscoveryPanel: Component = () => {
             currentAgentId={pendingLaunch()!.currentAgentId}
             onSelect={async (selection) => {
               const pending = pendingLaunch()!;
-              // #516 — await create so a rejection (e.g. the Resource Monitor
+              // Await create so a rejection (e.g. the Resource Monitor
               // cap) reaches AgentPickerModal.apply()'s catch instead of being
               // a swallowed unhandled rejection. Hide Home / clear the picker
               // only after the session is created.
@@ -423,8 +424,15 @@ const AcDiscoveryPanel: Component = () => {
       {/* Context files panel */}
       {ctxFilesReplica() && (
         <Portal>
-          <div class="ctx-files-overlay" onClick={closeContextFilesPanel}>
-            <div class="ctx-files-panel" onClick={(e) => e.stopPropagation()}>
+          <div
+            class="ctx-files-overlay"
+            role="none"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) closeContextFilesPanel();
+              else e.stopPropagation();
+            }}
+          >
+            <div class="ctx-files-panel">
               <div class="ctx-files-header">
                 <span class="ctx-files-title">
                   Context Files — {ctxFilesReplica()!.name}

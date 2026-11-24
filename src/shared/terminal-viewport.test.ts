@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #973 — the guard rails around the size we hand to `create_session`.
+// The guard rails around the size we hand to `create_session`.
 //
 // dev-rust measured the fix as it will actually ship: opening the PTY at the
 // fitted size and letting the view's redundant same-size burst land is 0/10
@@ -38,7 +38,7 @@ const BACKEND_SOURCES = import.meta.glob<string>("../../src-tauri/src/**/*.rs", 
   eager: true,
 });
 
-describe("pty spawn viewport (#973)", () => {
+describe("pty spawn viewport", () => {
   let restoreTransport: (() => void) | null = null;
 
   beforeEach(() => {

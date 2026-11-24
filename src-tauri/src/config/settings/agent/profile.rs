@@ -860,7 +860,7 @@ pub fn repair_coding_agent_profiles_config(
         changed |= cells.len() != original_cells_len;
     }
 
-    // #548: prune invalid (non A..Z) letters from each agent's label-override map,
+    // Prune invalid (non A..Z) letters from each agent's label-override map,
     // mirroring the cell-letter prune above. Never creates override entries and never
     // prunes by agent id (an override for a not-yet-loaded agent is harmless and may
     // precede its agent in load order, per plan 3.7). `retain` keeps every valid key,

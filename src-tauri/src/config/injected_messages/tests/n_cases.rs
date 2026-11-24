@@ -1,5 +1,4 @@
 use super::*;
-use std::sync::PoisonError;
 
 // ---- N1..N16 ---------------------------------------------------------
 
@@ -383,11 +382,10 @@ fn setext_heading_is_not_a_conflict_marker() {
 #[test]
 fn second_provisioning_run_writes_nothing() {
     let warnings = crate::config::injected_messages::MessageWarnings::new();
-    let _serialized = COUNTING_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let dir = tempdir();
     ensure_injected_messages(dir.path(), &warnings).expect("seed");
 
-    start_counting();
+    start_counting(dir.path());
     ensure_injected_messages(dir.path(), &warnings).expect("second run");
     let writes = stop_counting(dir.path());
     assert!(
@@ -398,7 +396,7 @@ fn second_provisioning_run_writes_nothing() {
     // A first run does write all three, which is what makes the assertion
     // above meaningful.
     let dir = tempdir();
-    start_counting();
+    start_counting(dir.path());
     ensure_injected_messages(dir.path(), &warnings).expect("first run");
     let writes = stop_counting(dir.path());
     assert_eq!(
@@ -681,7 +679,7 @@ fn known_messages_has_five_entries_with_unique_ids() {
     }
 }
 
-/// #2141 replaced the older "exactly one digest" rule. That rule encoded "no
+/// This replaced the older "exactly one digest" rule. That rule encoded "no
 /// shipped default has moved yet", which stopped being true when the
 /// branch-stale wording changed; the rule worth keeping is that the list ENDS
 /// at what ships today, so reconciliation still recognizes every default ever

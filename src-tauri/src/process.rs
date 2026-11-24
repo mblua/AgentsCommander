@@ -16,7 +16,7 @@ pub(crate) fn is_running(pid: u32) -> bool {
         return true;
     }
     let filter = format!("PID eq {pid}");
-    // #992 - reachable from the GUI process (Tauri get_agency_templates_status /
+    // Reachable from the GUI process (Tauri get_agency_templates_status /
     // update_agency_templates -> CacheLock::acquire -> recover_stale_lock_if_possible),
     // which owns no console: without the flag Windows pops a Windows Terminal tab for
     // tasklist.exe. Both pipes are captured, so nothing would ever be shown in it.
@@ -55,7 +55,7 @@ pub(crate) fn is_running(pid: u32) -> bool {
     pid == process::id()
 }
 
-/// #2774 Run `hyprctl <args>`; stdout on success. 5 s timeout, no stdin, killed on drop.
+/// Run `hyprctl <args>`; stdout on success. 5 s timeout, no stdin, killed on drop.
 #[cfg(target_os = "linux")]
 pub(crate) async fn hyprctl(args: &[&str]) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("hyprctl");
@@ -80,7 +80,7 @@ pub(crate) async fn hyprctl(args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// #4843 What GStreamer says about `autoaudiosink`, the sink WebKitGTK plays sound through.
+/// What GStreamer says about `autoaudiosink`, the sink WebKitGTK plays sound through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum AudioSinkStatus {
@@ -89,10 +89,10 @@ pub(crate) enum AudioSinkStatus {
     Unknown,
 }
 
-/// #4843 The GStreamer inspector used to look up `autoaudiosink`.
+/// The GStreamer inspector used to look up `autoaudiosink`.
 const GST_INSPECT: &str = "gst-inspect-1.0";
 
-/// #4843 `gst-inspect-1.0 --exists` exit code: 0 present, 1 missing, anything else unknown.
+/// `gst-inspect-1.0 --exists` exit code: 0 present, 1 missing, anything else unknown.
 fn status_from_exit(code: Option<i32>) -> AudioSinkStatus {
     match code {
         Some(0) => AudioSinkStatus::Ok,
@@ -101,12 +101,12 @@ fn status_from_exit(code: Option<i32>) -> AudioSinkStatus {
     }
 }
 
-/// #4843 `Ok` off Linux; `Unknown` inside an AppImage (its bundled GStreamer may differ).
+/// `Ok` off Linux; `Unknown` inside an AppImage (its bundled GStreamer may differ).
 pub(crate) async fn audio_sink_status(in_appimage: bool) -> AudioSinkStatus {
     audio_sink_status_with(in_appimage, std::ffi::OsStr::new(GST_INSPECT)).await
 }
 
-/// #4843 `audio_sink_status` with the inspector as a parameter (tests pass a stub).
+/// `audio_sink_status` with the inspector as a parameter (tests pass a stub).
 async fn audio_sink_status_with(in_appimage: bool, program: &std::ffi::OsStr) -> AudioSinkStatus {
     if cfg!(not(target_os = "linux")) {
         return AudioSinkStatus::Ok;
@@ -117,7 +117,7 @@ async fn audio_sink_status_with(in_appimage: bool, program: &std::ffi::OsStr) ->
     probe_audio_sink(program).await
 }
 
-/// #4843 Run `<program> --exists autoaudiosink` with the app's own environment (no
+/// Run `<program> --exists autoaudiosink` with the app's own environment (no
 /// login-shell PATH). 5 s timeout, no stdin, output discarded, killed on drop.
 async fn probe_audio_sink(program: &std::ffi::OsStr) -> AudioSinkStatus {
     let mut cmd = tokio::process::Command::new(program);

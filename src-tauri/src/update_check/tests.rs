@@ -134,9 +134,9 @@ fn resolve_latest_fetch_fail_no_cache() {
     assert_eq!(resolve_latest(CheckPlan::Fetch, None, &None), (None, false));
 }
 
-// ---- #1925: the remote blocking-menu download ---------------------------
+// ---- The remote blocking-menu download ---------------------------
 
 mod remote_blocking_menus_1925;
 
-/// #2133 (P7) - the agent-help download over an injected temp `settings_path`.
+/// (P7) - the agent-help download over an injected temp `settings_path`.
 mod remote_agent_help_2133;

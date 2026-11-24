@@ -19,7 +19,7 @@ import { sessionsStore } from "./stores/sessions";
 import { sessionActivity } from "../shared/session-activity";
 import type { Session, SessionStatus } from "../shared/types";
 
-// #2271 phase 8 - the idle edge is the only place the Co-managed decision can
+// The idle edge is the only place the Co-managed decision can
 // reach the dot without painting `waiting` first: lib.rs emits `session_idle`
 // synchronously and App.tsx turns it straight into setSessionWaiting. This suite
 // mounts the real SidebarApp and drives the real handlers over FakeTransport; it
@@ -31,7 +31,7 @@ const projectPath = "C:\\Project";
 const agentAPath = `${projectPath}\\.ac\\_agent_General`;
 const agentBPath = `${projectPath}\\.ac\\_agent_Worker`;
 
-// #2453 test 5 - the status the backend snapshot reports for SESSION_B.
+// The status the backend snapshot reports for SESSION_B.
 let backendStatusB: SessionStatus = "running";
 
 function backendRows(): Session[] {
@@ -82,7 +82,7 @@ function activity(id: string) {
   });
 }
 
-describe("SidebarApp Co-managed idle edge (#2271)", () => {
+describe("SidebarApp Co-managed idle edge", () => {
   let cleanupDom: (() => void) | null = null;
   let reconcileIntervals: ReconcileIntervalSpy;
 
@@ -109,7 +109,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     resetUiStoresForTests();
   });
 
-  it("the idle edge arms Co-managed, still paints Co-managed, and records waiting underneath (test 8, #2453)", async () => {
+  it("the idle edge arms Co-managed, still paints Co-managed, and records waiting underneath (test 8)", async () => {
     const fake = new FakeTransport();
     setupTransport(fake);
     const waitingSpy = vi.spyOn(sessionsStore, "setSessionWaiting");
@@ -133,7 +133,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
       expect(
         waitingSpy.mock.calls.filter(([id, waiting]) => id === SESSION_B && waiting === true),
       ).toHaveLength(1);
-      // #2442 D4-g - the dot keeps its real activity colour; the Co-managed
+      // The dot keeps its real activity colour; the Co-managed
       // signal is the additive ring, which the armed idle edge must add.
       expect(observedClasses.map((c) => c.split(/\s+/).includes("comanaged"))).toEqual([
         false,
@@ -205,7 +205,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
       rendered.cleanup();
     }
   });
-  // #2453 - a Co-managed cycle must leave the row as a plain idle edge would.
+  // A Co-managed cycle must leave the row as a plain idle edge would.
   async function mountApp(): Promise<{ fake: FakeTransport; cleanup: () => void }> {
     const fake = new FakeTransport();
     setupTransport(fake);
@@ -226,7 +226,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     fake.emitFromBackend("session_comanaged_state", { id, active: false, reason: null });
   }
 
-  it("the Co-managed cycle ends in waitingForInput on the active session (#2453 test 1)", async () => {
+  it("the Co-managed cycle ends in waitingForInput on the active session (test 1)", async () => {
     const { fake, cleanup } = await mountApp();
     try {
       runCycle(fake, SESSION_A, []);
@@ -236,7 +236,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     }
   });
 
-  it("the Co-managed cycle ends in pendingReview on a non-active session (#2453 test 2)", async () => {
+  it("the Co-managed cycle ends in pendingReview on a non-active session (test 2)", async () => {
     const { fake, cleanup } = await mountApp();
     try {
       runCycle(fake, SESSION_B, []);
@@ -246,7 +246,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     }
   });
 
-  it("paints exactly comanaged during the armed window on both legs (#2453 test 3)", async () => {
+  it("paints exactly comanaged during the armed window on both legs (test 3)", async () => {
     const { fake, cleanup } = await mountApp();
     try {
       const during: string[] = [];
@@ -258,7 +258,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     }
   });
 
-  it("a plain idle edge never paints comanaged (#2453 test 4)", async () => {
+  it("a plain idle edge never paints comanaged (test 4)", async () => {
     const { fake, cleanup } = await mountApp();
     try {
       fake.emitFromBackend("session_busy", { id: SESSION_A });
@@ -272,7 +272,7 @@ describe("SidebarApp Co-managed idle edge (#2271)", () => {
     }
   });
 
-  it("the 250 ms reconciler keeps the waiting recorded by the armed idle edge (#2453 test 5)", async () => {
+  it("the 250 ms reconciler keeps the waiting recorded by the armed idle edge (test 5)", async () => {
     const { fake, cleanup } = await mountApp();
     try {
       fake.emitFromBackend("session_busy", { id: SESSION_B });

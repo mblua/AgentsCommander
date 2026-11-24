@@ -7,6 +7,7 @@ import SidebarApp from "../App";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   baseSettings,
+  contextMenu,
   installBrowserDomStubs,
   registerCompactHostForTests,
   renderWithFakeTransport,
@@ -27,7 +28,7 @@ import { voiceRecorder } from "../../shared/voice-recorder";
 import { declValue, scanRules } from "../styles/css-test-helpers";
 import { initialSelection } from "../../shared/testing/session-selection";
 
-// #2236 phase 9 (#2284) - the banner's collapse/expand toggle, the row's real
+// The banner's collapse/expand toggle, the row's real
 // activation button and the hotkey hydration. jsdom applies no stylesheet, so
 // hit-testing claims are read from sidebar.css as text, never from a click.
 
@@ -424,5 +425,115 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
     await Promise.resolve();
     expect(currentHotkey()).toBe(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
     expect(r.toggle.getAttribute("aria-label")).toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
+  });
+
+  // #4945 P5 characterization: pointer, native and contextmenu paths on the
+  // banner group, pinned in both expanded and compact modes.
+  const MENU_SEL = '[data-ac-testid="rootAgent.menu"]';
+  const fire = (el: Element) =>
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+  describe.each([
+    ["expanded", false],
+    ["compact", true],
+  ] as const)("9. #4945 %s banner activation paths", (_mode, isCompact) => {
+    beforeEach(() => {
+      setSidebarCompactMode(isCompact);
+      sessionsStore.setSessions([rootLive()]);
+    });
+
+    it("9a. a bubbling click on the group hook opens the session exactly once", async () => {
+      const r = renderBanner();
+      expect(r.root.querySelector(BANNER_SEL)).toBe(r.banner);
+      expect(r.banner.getAttribute("role")).toBe("group");
+      fire(r.banner);
+      await waitFor(() => expect(selections(r.fake)).toBe(1));
+      await waitFor(() => expect(r.open.disabled).toBe(false));
+      expect(selections(r.fake)).toBe(1);
+    });
+
+    it("9b. a click on the native open button activates exactly once", async () => {
+      const r = renderBanner();
+      fire(r.open);
+      await waitFor(() => expect(selections(r.fake)).toBe(1));
+      await waitFor(() => expect(r.open.disabled).toBe(false));
+      expect(selections(r.fake)).toBe(1);
+    });
+
+    it("9c. the toggle and a nested control cause zero session opens", async () => {
+      vi.spyOn(voiceRecorder, "autoExecuteSessionId").mockReturnValue("root");
+      const cancel = vi
+        .spyOn(voiceRecorder, "cancelAutoExecute")
+        .mockImplementation(() => undefined);
+      const r = renderBanner();
+      fire(r.toggle);
+      expect(sidebarCompact()).toBe(!isCompact);
+      const nested = r.banner.querySelector(".voice-cancel-execute") as HTMLButtonElement;
+      expect(nested).not.toBeNull();
+      fire(nested);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(selections(r.fake)).toBe(0);
+    });
+
+    it("9d. a bubbling contextmenu on the group opens the menu, no session open", async () => {
+      const r = renderBanner();
+      expect(document.querySelector(MENU_SEL)).toBeNull();
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      r.banner.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      await waitFor(() => expect(document.querySelector(MENU_SEL)).not.toBeNull());
+      expect(selections(r.fake)).toBe(0);
+    });
+
+    it("9e. a contextmenu from a child (the status dot) also opens the menu", async () => {
+      const r = renderBanner();
+      const dot = r.banner.querySelector(":scope > .session-item-status") as HTMLElement;
+      contextMenu(dot);
+      await waitFor(() => expect(document.querySelector(MENU_SEL)).not.toBeNull());
+      expect(selections(r.fake)).toBe(0);
+    });
+
+    it("9f. a stale Telegram settings response after a reopen keeps the new menu", async () => {
+      const fake = bannerFake();
+      let release: (v: unknown) => void = () => {};
+      fake.onInvoke("get_settings", () => new Promise((res) => (release = res)));
+      const r = renderBanner(fake);
+      const openMenu = () =>
+        r.banner.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      const q = (id: string) => document.querySelector(`[data-ac-testid="rootAgent.menu${id}"]`);
+      openMenu();
+      await waitFor(() => expect(q(".telegram")).not.toBeNull());
+      fire(q(".telegram")!);
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+      openMenu();
+      expect(q("")).not.toBeNull();
+      const bot = (id: string) => ({ id, label: id, token: "t", chatId: 1, color: "#fff" });
+      release(baseSettings({ telegramBots: [bot("a"), bot("b")] }));
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(q("")).not.toBeNull();
+      expect(q(".telegram.bot.a")).toBeNull();
+      expect(q(".telegram.bot.b")).toBeNull();
+      expect(fake.callsFor("telegram_attach")).toHaveLength(0);
+    });
+
+    it("9g. #4945 phase 2: a boxless role=none shell owns the guarded click", async () => {
+      const r = renderBanner();
+      const shell = r.banner.parentElement as HTMLElement;
+      expect(shell.getAttribute("role")).toBe("none");
+      expect(shell.style.display).toBe("contents");
+      expect(shell.firstElementChild).toBe(r.banner);
+      expect(shell.hasAttribute("tabindex")).toBe(false);
+      expect(r.banner.getAttribute("role")).toBe("group");
+      expect(r.banner.getAttribute("aria-label")).toBe("Open Root Agent session");
+      expect(r.banner.contains(r.open)).toBe(true);
+      fire(r.banner.querySelector(".root-agent-title") ?? r.banner);
+      await waitFor(() => expect(selections(r.fake)).toBe(1));
+      await waitFor(() => expect(r.open.disabled).toBe(false));
+      fire(r.toggle);
+      await Promise.resolve();
+      expect(selections(r.fake)).toBe(1);
+    });
   });
 });

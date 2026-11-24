@@ -10,12 +10,12 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 
-// #1313 — the Default Shell field warns (informational red banner) while its
+// The Default Shell field warns (informational red banner) while its
 // value is not a plausible complete executable path, i.e. it contains no
 // directory separator. The check is a pure shape heuristic: no filesystem
 // access, no platform sniffing, and it never blocks saving.
 
-describe("isPlausibleCompleteExecutablePath (#1313)", () => {
+describe("isPlausibleCompleteExecutablePath", () => {
   it.each([
     // Bare names: no directory separator -> not a complete path.
     ["powershell.exe", false],

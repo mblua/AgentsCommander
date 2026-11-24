@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// #1682 — the last coding-agent message timestamp in the terminal status strip.
+// The last coding-agent message timestamp in the terminal status strip.
 //
 // The user asked for "el último timestamp de sistema del último mensaje recibido
 // desde el coding agent por esta terminal", rendered to the LEFT of the existing
@@ -218,7 +218,7 @@ async function awaitAgentMessageListener(fake: FakeTransport): Promise<void> {
   );
 }
 
-describe("TerminalView last coding-agent message stamp (#1682)", () => {
+describe("TerminalView last coding-agent message stamp", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

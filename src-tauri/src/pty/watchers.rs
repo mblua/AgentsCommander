@@ -1,4 +1,4 @@
-//! #1171 - generic, user-configured regex watchers over the plain de-ANSI'd rows of the
+//! Generic, user-configured regex watchers over the plain de-ANSI'd rows of the
 //! `vt100` screen mirror AC already keeps for every session.
 //!
 //! A sibling of `context_scrape`, not an extension of it. The two engines share only the
@@ -313,11 +313,11 @@ impl WatcherSessionState {
 
 /// One session the engine is sampling.
 struct RegisteredSession {
-    /// `None` for a session sampled only by an internal activity consumer (#2879).
+    /// `None` for a session sampled only by an internal activity consumer.
     agent_id: Option<String>,
-    /// #2879 - the internal consumer attached at registration, if any.
+    /// The internal consumer attached at registration, if any.
     activity: Option<ActivityConsumer>,
-    /// #2879 - the consumer's own view: the last frame it judged, and whether it must see a
+    /// The consumer's own view: the last frame it judged, and whether it must see a
     /// complete frame again (after `Missing`) before it may trust an `Unchanged`. Separate
     /// from `stamp`, which belongs to the user watchers.
     activity_stamp: Option<FrameStamp>,
@@ -456,9 +456,9 @@ pub struct WatcherEngine {
     /// Test-visible: the number of `pattern::compile` calls. The compile site is also the log
     /// site, so this is what "logged once per change, not once per tick" is measured by.
     compiles: AtomicUsize,
-    /// #2879 - fixed at construction. `None` keeps the engine exactly user-watchers-only.
+    /// Fixed at construction. `None` keeps the engine exactly user-watchers-only.
     activity_factory: Option<ActivityFactory>,
-    /// #2879 - `CODEX_WORKING_PATTERN`, compiled once. `None` with a factory means it did not
+    /// `CODEX_WORKING_PATTERN`, compiled once. `None` with a factory means it did not
     /// compile, and every verdict is `Unavailable`.
     codex_working: Option<pattern::WatcherPattern>,
 }
@@ -475,7 +475,7 @@ impl WatcherEngine {
         Self::new_with_activity_factory(backends, patterns, sink, history, None)
     }
 
-    /// #2879 - `new`, plus an internal activity factory consulted once per registration.
+    /// `new`, plus an internal activity factory consulted once per registration.
     pub(crate) fn new_with_activity_factory(
         backends: Arc<dyn WatcherBackendSource>,
         patterns: Arc<dyn WatcherPatternSource>,
@@ -553,7 +553,7 @@ impl WatcherEngine {
     /// with no agent and no internal activity consumer is never registered, so a plain shell
     /// costs nothing - the same rule `ContextScraper` follows (`commands/session.rs:2268-2274`).
     ///
-    /// #2879 - the factory attaches outside every engine guard, and the attach is validated
+    /// The factory attaches outside every engine guard, and the attach is validated
     /// before the entry exists: one invalidated in between never samples, so it can neither
     /// publish nor reinstate detector state. A replaced entry's consumer is retired outside
     /// the guards; its identity is its own attach, so that can never release the new one.
@@ -615,7 +615,7 @@ impl WatcherEngine {
         }
     }
 
-    /// #2879 - whether any registered session has an internal consumer to sample for.
+    /// Whether any registered session has an internal consumer to sample for.
     fn samples_activity(&self) -> bool {
         self.registered()
             .values()
@@ -691,7 +691,7 @@ impl WatcherEngine {
         let _sequence = self.sequence.lock().unwrap_or_else(PoisonError::into_inner);
         let registered = self.registered();
         for (id, session) in registered.iter() {
-            // #2879 - a session registered only for internal observation has no user view.
+            // A session registered only for internal observation has no user view.
             let Some(agent_id) = &session.agent_id else {
                 continue;
             };
@@ -749,7 +749,7 @@ impl WatcherEngine {
             }
             return;
         };
-        // #2879 - an internal consumer is sampled whatever the user configured.
+        // An internal consumer is sampled whatever the user configured.
         if resolved.is_empty() && !self.samples_activity() {
             self.publish_unwatched(&resolved);
             return;
@@ -827,7 +827,7 @@ impl WatcherEngine {
             return (None, false, None);
         };
 
-        // #2879 - one read serves both views. When they disagree on what they last saw (the
+        // One read serves both views. When they disagree on what they last saw (the
         // consumer owes itself a complete frame after `Missing`, or one view is newer), read
         // the complete frame and let each view decide below whether it is new to it.
         let consumer = session.activity.clone();
@@ -851,7 +851,7 @@ impl WatcherEngine {
         };
         let logical = frame.as_ref().map(frame::logical_rows);
 
-        // #3059 - the internal verdict: ANY complete physical or logical indicator is `Present`.
+        // The internal verdict: ANY complete physical or logical indicator is `Present`.
         // Independent of every user watcher, cap, suspension and budget.
         let delivery = consumer.and_then(|consumer| {
             let observation = match &frame {

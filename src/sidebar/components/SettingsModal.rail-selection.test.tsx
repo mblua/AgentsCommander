@@ -11,7 +11,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { AgentConfig } from "../../shared/types";
 
-// #895 — the configured coding-agent list doubles as the rail picker. Use calls
+// The configured coding-agent list doubles as the rail picker. Use calls
 // the same selection closure: row 0 targets the left/primary rail, later rows
 // target the right/comparison rail, and opposite-rail occupants exchange places.
 
@@ -90,7 +90,7 @@ function railCountAttr(root: HTMLElement): string | null {
   return byTestId(root, "settings.profiles.section")?.getAttribute("data-ac-rail-count") ?? null;
 }
 
-describe("SettingsModal coding-agent rail selection (#895)", () => {
+describe("SettingsModal coding-agent rail selection", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -326,7 +326,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
       await ready(r.root);
       await enterTwoRails(r.root);
       // 2-rail view: left=codex (agents[0]), right=claude (agents[1]). Assigning
-      // a later row to the right rail is now a 2-rail-only behavior (#1098).
+      // a later row to the right rail is now a 2-rail-only behavior.
       expect(rails(r.root)).toEqual(["codex", "claude"]);
 
       click(r.root, "settings.agentRow.2.select");
@@ -366,7 +366,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
       expect(rails(r.root)).toEqual(["opencode", null]);
 
       // Row 2 (opencode) already holds the single rail; clicking it stays a no-op
-      // and must never populate a second rail (#1098).
+      // and must never populate a second rail.
       click(r.root, "settings.agentRow.2.select");
       await waitFor(() => expect(railCountAttr(r.root)).toBe("1"));
       expect(rails(r.root)).toEqual(["opencode", null]);
@@ -522,7 +522,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     }
   });
 
-  // ── #1095: 1/2-rail layout toggle ──
+  // ── 1/2-rail layout toggle ──
 
   it("defaults to a single rail with the second rail hidden", async () => {
     const r = renderAgents();
@@ -600,7 +600,7 @@ describe("SettingsModal coding-agent rail selection (#895)", () => {
     }
   });
 
-  // ── #1098: repeated comparison-row clicks stay in the single left rail ──
+  // ── Repeated comparison-row clicks stay in the single left rail ──
 
   it("keeps loading the single left rail across repeated comparison-row clicks", async () => {
     const r = renderAgents();

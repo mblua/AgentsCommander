@@ -7,7 +7,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { AgentConfig, ProfileCellConfig } from "../../shared/types";
 
-// #3516 - the Preflight blocks inside Settings: save round-trip, key removal,
+// The Preflight blocks inside Settings: save round-trip, key removal,
 // invalid timeout drafts that block Save even when collapsed, refetch survival,
 // and Escape ownership while the test panel is open.
 
@@ -75,7 +75,7 @@ async function savedDraft(r: ReturnType<typeof render>) {
   return { row: draft.agents[0], cell: draft.codingAgentProfiles.profilesByAgent.codex.A };
 }
 
-describe("SettingsModal preflight blocks (#3516)", () => {
+describe("SettingsModal preflight blocks", () => {
   let cleanupDom: (() => void) | null = null;
   let cleanup: (() => void) | null = null;
 

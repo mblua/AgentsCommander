@@ -212,7 +212,7 @@ async fn non_identical_branch_notifies_only_its_own_rooms() {
     );
 }
 
-/// #2329: a repo on its RESOLVED default branch publishes no CI at all,
+/// A repo on its RESOLVED default branch publishes no CI at all,
 /// even while GitHub has a run in progress on that exact branch and SHA.
 /// The CI query is still issued (the reserved token is spent); only its
 /// answer is suppressed.
@@ -661,8 +661,8 @@ async fn stale_on_default_branch_sends_no_notice_but_keeps_the_chip() {
     assert_eq!(activity.behind_by, Some(4));
 }
 
-/// #2141: a repo on its default branch reports `ahead_by == 0` too, so the
-/// #2131 gate is evaluated FIRST and the `ahead_by` rule never runs there.
+/// A repo on its default branch reports `ahead_by == 0` too, so the
+/// Gate is evaluated FIRST and the `ahead_by` rule never runs there.
 /// Own commits on the default branch change nothing.
 #[tokio::test]
 async fn stale_on_default_branch_with_own_commits_still_sends_no_notice() {

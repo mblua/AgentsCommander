@@ -1,9 +1,9 @@
-//! #714 Active-agent screenshot capture.
+//! Active-agent screenshot capture.
 //!
 //! Native, Greenshot-style screenshot flow: a global hotkey freezes the desktop,
 //! the user drags a rectangle on a per-monitor overlay, and the crop is saved as
 //! a PNG into the owning WG replica root of the session currently selected in
-//! `AgentsCommander`, with the absolute path copied to the clipboard.
+//! `AgentsCommander`, with the PNG image (or, if set, its absolute path) copied to the clipboard.
 //!
 //! Module layout (see plan `_plans/714-active-agent-screenshot-capture.md`):
 //! - This file owns the serializable IPC types shared with the frontend, the
@@ -117,7 +117,7 @@ pub struct ScreenshotCaptureEvent {
 pub trait ScreenshotEvents {
     fn capture_saved(&self, result: ScreenshotCaptureResult);
     fn capture_failed(&self, event: ScreenshotCaptureEvent);
-    /// #2774 A Wayland registration reached its final status (the X11, Windows and macOS
+    /// A Wayland registration reached its final status (the X11, Windows and macOS
     /// paths decide synchronously and do not emit this).
     #[cfg(target_os = "linux")]
     fn hotkey_status_changed(&self, status: ScreenshotHotkeyStatus);
@@ -147,7 +147,9 @@ pub trait ScreenshotHost:
     fn display_snapshot(&self) -> DisplayEnvSnapshot;
     fn open_overlay(&self, spec: &OverlayWindowSpec) -> Result<(), String>;
     fn destroy_capture_overlays(&self, capture_id: uuid::Uuid) -> usize;
+    fn copy_path_preferred(&self) -> impl std::future::Future<Output = bool> + Send;
     fn copy_path(&self, path: String) -> Result<(), String>;
+    fn copy_image(&self, path: String) -> Result<(), String>;
     fn focus_capture_failure(&self);
     fn spawn_background(
         &self,
@@ -191,7 +193,7 @@ pub(crate) struct OverlayPlacement {
 /// A monitor as either source can describe it. `scale` is that source's own
 /// scale factor.
 ///
-/// The rule this type exists to enforce (#2173): **tao owns the screen
+/// The rule this type exists to enforce: **tao owns the screen
 /// coordinate space** — every value handed to Tauri is derived from
 /// `tauri::Monitor` alone — and **xcap owns pixels** — the captured bitmap stays
 /// the sole authority for the crop. The xcap scale factor is used for exactly

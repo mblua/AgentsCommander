@@ -1,4 +1,4 @@
-//! #2064 Phase B - the remote-activity notifier.
+//! The remote-activity notifier.
 //!
 //! Phase A's sweeper publishes a [`RemoteTransition`] stream and `lib.rs` hands
 //! its receiver here. This module owns POLICY and DELIVERY, never the transition
@@ -272,7 +272,7 @@ fn notice_for(transition: &RemoteTransition) -> Result<InternalSystemNotice, Str
         transition.nwo.clone(),
         transition.branch.clone(),
         sha7,
-        // #2129 - branch-stale text only. CI kinds carry an empty base branch,
+        // Branch-stale text only. CI kinds carry an empty base branch,
         // which `for_remote_activity` requires to stay empty (mailbox.rs:319).
         if matches!(kind, RemoteNoticeKind::BranchStale) {
             base_branch_display(&transition.branch, &transition.base_branch)

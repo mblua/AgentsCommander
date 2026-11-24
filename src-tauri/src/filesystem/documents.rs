@@ -215,8 +215,16 @@ pub(crate) fn read_cli_outbox_text(path: &Path) -> io::Result<String> {
     std::fs::read_to_string(path)
 }
 
+/// Writes `<name>.tmp` beside `path`, then renames it over `path`, so an outbox
+/// scanner (which only takes `*.json`) never reads a half-written message.
 pub(crate) fn write_cli_outbox_message(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    std::fs::write(path, bytes)
+    let mut tmp_name = path.as_os_str().to_owned();
+    tmp_name.push(".tmp");
+    let tmp = PathBuf::from(tmp_name);
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 pub(crate) fn write_cli_session_document(path: &Path, bytes: &[u8]) -> io::Result<()> {

@@ -85,7 +85,7 @@ describe("profile utils", () => {
     expect(profileDisplayLabel(profiles(), agents, "codex", "A")).toBe("A");
   });
 
-  it("#2314: per-agent labels — own override, legacy slot fallback, order independence", () => {
+  it("per-agent labels — own override, legacy slot fallback, order independence", () => {
     const agents = [agent({ id: "codex" }), agent({ id: "claude" })];
     const p: CodingAgentProfilesConfig = {
       ...profiles(),
@@ -108,7 +108,7 @@ describe("profile utils", () => {
     expect(profileDisplayLabel(p2, agents, "codex", "B")).toBe("B-TURBO");
   });
 
-  it("#548: a fresh config (no labels, empty slot) shows the bare letter", () => {
+  it("a fresh config (no labels, empty slot) shows the bare letter", () => {
     const fresh: CodingAgentProfilesConfig = {
       schemaVersion: 2,
       profileSlots: { A: { label: "" } },
@@ -119,7 +119,7 @@ describe("profile utils", () => {
     expect(profileDisplayLabel(fresh, [agent({ id: "codex" })], "codex", "A")).toBe("A");
   });
 
-  it("#2314: resolveProfileLabel follows own > legacy slot > empty", () => {
+  it("resolveProfileLabel follows own > legacy slot > empty", () => {
     const agents = [agent({ id: "codex" }), agent({ id: "claude" })];
     const base = profiles(); // legacy slot labels: B = "full power", C = "fast"
     // 1. own label wins over everything.
@@ -147,7 +147,7 @@ describe("profile utils", () => {
     ).toBe("");
   });
 
-  it("#2314: the Rust mirror documents the new chain and no primigenio inheritance", () => {
+  it("the Rust mirror documents the new chain and no primigenio inheritance", () => {
     const source = readFileSync(
       new URL("../../src-tauri/src/config/settings.rs", import.meta.url),
       "utf8",
@@ -183,7 +183,7 @@ describe("profile utils", () => {
     expect(profileCellCommandText(undefined)).toBe("");
   });
 
-  it("composes the effective command from agent base + cell params (#597)", () => {
+  it("composes the effective command from agent base + cell params", () => {
     // Mirrors the Rust compose_effective_command edge cases.
     expect(composeEffectiveCommand("claude", "--x")).toBe("claude --x");
     expect(composeEffectiveCommand("claude", "")).toBe("claude");
@@ -207,7 +207,7 @@ describe("profile utils", () => {
     expect(isWgReplicaPath(null)).toBe(false);
   });
 
-  it("previews AC placeholder expansion for display only (3 tokens, #576)", () => {
+  it("previews AC placeholder expansion for display only (3 tokens)", () => {
     expect(hasAcPlaceholder("%AC_REPLICA_ROOT%\\.codex")).toBe(true);
     expect(hasAcPlaceholder("%AC_WORKSPACE_ROOT%\\.claude")).toBe(true);
     expect(hasAcPlaceholder("%AC_MATRIX_ROOT%\\.codex")).toBe(true);
@@ -324,7 +324,7 @@ describe("profile utils", () => {
     expect(isAcAgentPath("C:/repo/worktree")).toBe(false);
   });
 
-  it("derives the default instructions filename with parity to the Rust resolver (#529, G2)", () => {
+  it("derives the default instructions filename with parity to the Rust resolver (G2)", () => {
     // Claude family → CLAUDE.md, including wrapped/suffixed/absolute shapes and
     // — critically — commands carrying trailing flags (the all-token scan, not
     // first/last token, is what gives parity with the Rust detector here).
@@ -366,7 +366,7 @@ describe("profile utils", () => {
     ).toBe("C");
   });
 
-  it("offers a post-assign restart only for a replica-scope assign onto a live WG session (#537)", () => {
+  it("offers a post-assign restart only for a replica-scope assign onto a live WG session", () => {
     const wgPath = "C:/repo/.ac/wg-7-dev-team/__agent_dev-webpage-ui";
     const replica = (restartSessions = false) => ({ scope: "replica" as const, restartSessions });
 
@@ -389,7 +389,7 @@ describe("profile utils", () => {
   });
 });
 
-describe("profileEnvOrigin (#526/#527 env origin badges)", () => {
+describe("profileEnvOrigin (env origin badges)", () => {
   it("classifies an AgentsCommander-managed home path as system", () => {
     expect(profileEnvOrigin("CODEX_HOME", "%AC_REPLICA_ROOT%\\.codex\\agents\\codex")).toBe("system");
     expect(profileEnvOrigin("CLAUDE_CONFIG_DIR", "%AC_REPLICA_ROOT%/.claude")).toBe("system");
@@ -411,7 +411,7 @@ describe("profileEnvOrigin (#526/#527 env origin badges)", () => {
   });
 });
 
-describe("effectiveEnvProjection (#527 Env / EFFECTIVE)", () => {
+describe("effectiveEnvProjection (Env / EFFECTIVE)", () => {
   it("merges agent env (system/accepted) with profile env (profile), profile wins", () => {
     const merged = effectiveEnvProjection(
       [
@@ -436,7 +436,7 @@ describe("effectiveEnvProjection (#527 Env / EFFECTIVE)", () => {
   });
 });
 
-describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => {
+describe("profileBadgeKind (shared Config/Selection taxonomy)", () => {
   // profiles(): codex configures A (empty cmd) + C; B is unconfigured everywhere.
   it("returns MATCH for the A baseline", () => {
     expect(profileBadgeKind(profiles(), "codex", "A")).toBe("match");
@@ -492,7 +492,7 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
     expect(profileBadgeKind(config, "codex", "B")).toBe("fallback");
   });
 
-  // #1033 - the suggested context pattern (plan SS9.1).
+  // The suggested context pattern (plan SS9.1).
   //
   // The glyphs below are literals, not code-point escapes. What proves they are the
   // right code points is not this file: both constants are byte-identical to the
@@ -563,7 +563,7 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
   });
 });
 
-describe("shouldMaskEnvValue (#1052 env value masking rule)", () => {
+describe("shouldMaskEnvValue (env value masking rule)", () => {
   it("masks keys that start with PASSWORD (case-insensitive, trimmed)", () => {
     expect(shouldMaskEnvValue("PASSWORD")).toBe(true);
     expect(shouldMaskEnvValue("PASSWORD_TOKEN_API")).toBe(true);
@@ -583,12 +583,12 @@ describe("shouldMaskEnvValue (#1052 env value masking rule)", () => {
   });
 });
 
-// #1614 section 9.1 frontend tests / section 15.4. F2 (`profile-utils.ts:124`,
+// F2 (`profile-utils.ts:124`,
 // inside `deriveMatrixRoot`) and F3 (`:472`, `isWgReplicaPath`). Left
 // unrewired, both silently refuse to recognise a Room replica for profile
 // scope. The function names keep the retired word (Rule P0, out of scope, so
-// #1615 owns them); only the predicate widened.
-describe("profile-utils, Room replicas (#1614 F2/F3)", () => {
+// another issue owns them); only the predicate widened.
+describe("profile-utils, Room replicas", () => {
   it("isWgReplicaPath accepts a Room replica and still accepts a legacy one", () => {
     expect(isWgReplicaPath("C:/repo/.ac/room-7-dev-team/__agent_dev-webpage-ui")).toBe(true);
     expect(isWgReplicaPath("C:\\repo\\.ac\\room-7-dev-team\\__agent_dev-webpage-ui")).toBe(true);
@@ -618,9 +618,9 @@ describe("profile-utils, Room replicas (#1614 F2/F3)", () => {
   });
 });
 
-// #2057 - slot-delete guard helpers: D1 (what "holds" a slot) and D2 (live
+// Slot-delete guard helpers: D1 (what "holds" a slot) and D2 (live
 // agents only; result order is liveAgentIds order, i.e. settings.data.agents).
-describe("profileSlotHolders and profileCellHoldsData (#2057 slot-delete guard)", () => {
+describe("profileSlotHolders and profileCellHoldsData (slot-delete guard)", () => {
   function slotFixtures(): CodingAgentProfilesConfig {
     return {
       schemaVersion: 2,
@@ -669,7 +669,7 @@ describe("profileSlotHolders and profileCellHoldsData (#2057 slot-delete guard)"
   });
 });
 
-describe("suggestedQuotaSource (#2482 weekly quota, #2687 codex kind)", () => {
+describe("suggestedQuotaSource (weekly quota, codex kind)", () => {
   const row = "ctx 10% | 5h 3% | 7d 28%";
   const claude = { kind: "screenRegex", pattern: CLAUDE_WEEKLY_QUOTA_REGEX };
   const codex = { kind: "screenRegexRemaining", pattern: CODEX_WEEKLY_QUOTA_REGEX };
@@ -721,7 +721,7 @@ describe("suggestedQuotaSource (#2482 weekly quota, #2687 codex kind)", () => {
     expect(defaultQuotaSourceForNewAgent("codex")).toEqual(codex);
     expect(defaultQuotaSourceForNewAgent("C:\\tools\\codex.exe --model x")).toEqual(codex);
     expect(defaultQuotaSourceForNewAgent("cmd /c codex")).toEqual(codex);
-    // Claude gains no new default (#2680).
+    // Claude gains no new default.
     expect(defaultQuotaSourceForNewAgent("claude")).toBeNull();
     expect(defaultQuotaSourceForNewAgent("cmd /c claude")).toBeNull();
     expect(defaultQuotaSourceForNewAgent("")).toBeNull();
@@ -751,7 +751,7 @@ describe("suggestedQuotaSource (#2482 weekly quota, #2687 codex kind)", () => {
   });
 });
 
-describe("sessionTierBadge (#2435 weak-tier profile match)", () => {
+describe("sessionTierBadge (weak-tier profile match)", () => {
   const LABEL_TITLE = "Matched by coding-agent name, not by configuration. Effective profile: B.";
   const CMD_TITLE = "Matched by command, not by name or configuration. Effective profile: B.";
 
@@ -819,7 +819,7 @@ describe("sessionTierBadge (#2435 weak-tier profile match)", () => {
   });
 });
 
-describe("sessionOrphanNotice (#2568)", () => {
+describe("sessionOrphanNotice", () => {
   const base = { agentLabel: "Codex", effectiveProfile: "B" };
 
   it("labelAndLetter renders the name clause", () => {
@@ -904,7 +904,7 @@ describe("sessionOrphanNotice (#2568)", () => {
   });
 });
 
-describe("orphanNoticeKey (#2568)", () => {
+describe("orphanNoticeKey", () => {
   it("joins the working directory and the agent id", () => {
     const key = orphanNoticeKey({ workingDirectory: "C:\\proj\\agent", agentId: "codex" });
     expect(key).toBe("C:\\proj\\agent\u001fcodex");
@@ -928,7 +928,7 @@ describe("orphanNoticeKey (#2568)", () => {
 });
 
 
-describe("Antigravity indicator suggestions (#2836)", () => {
+describe("Antigravity indicator suggestions", () => {
   it.each([
     "agy", "antigravity", "AGY --yolo", "Antigravity --flag",
     '"C:\\Program Files\\Antigravity\\agy.exe" --yolo',
@@ -988,7 +988,7 @@ describe("Antigravity indicator suggestions (#2836)", () => {
   });
 });
 
-describe("trailing slash trim (#4445 S8786)", () => {
+describe("trailing slash trim", () => {
   it("keeps results for edge paths", () => {
     expect(deriveAcRoot("/")).toBeNull();
     expect(deriveAcRoot("C:/p/.ac//")).toBe("C:/p/.ac");

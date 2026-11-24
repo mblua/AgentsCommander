@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-// #1871 section 10.4 - the catalogue imports no store, no ipc, no presentation
+// The catalogue imports no store, no ipc, no presentation
 // module and no other component: two EXACT ALLOWLISTS over raw source, on the
 // model of no-presentation-import.test.ts. Raw source is what makes this immune
 // to import elision; `toEqual` against a written-out literal is what makes an
@@ -52,7 +52,7 @@ const ALLOWED_IMPORTS: Record<string, string[]> = {
 };
 
 /** Assertion 2: ContextMenuSurface is private to the folder. Two siblings,
- *  SessionRowMenu and #2143's SelectionCopyMenu; the surface test is black-box
+ *  SessionRowMenu and SelectionCopyMenu; the surface test is black-box
  *  through SessionRowMenu and imports nothing named ContextMenuSurface. */
 const ALLOWED_SURFACE_IMPORTERS = [
   "sidebar/components/context-menu/SelectionCopyMenu.tsx",
@@ -156,7 +156,7 @@ function endsWithContextMenuSurface(specifier: string): boolean {
   return normalized.endsWith("ContextMenuSurface");
 }
 
-describe("#1871 context-menu import boundary", () => {
+describe("context-menu import boundary", () => {
   it("context-menu/ product files import exactly the allowed specifiers", () => {
     const actual: Record<string, string[]> = {};
     for (const [file, source] of Object.entries(SOURCES)) {

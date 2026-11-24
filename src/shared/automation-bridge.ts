@@ -1023,7 +1023,7 @@ function newEventWithView<E extends Event, I extends EventInit>(
   }
 }
 
-// ---- pointer and key actions (#2691) ----
+// ---- pointer and key actions ----
 
 type UiPointerOperation = {
   kind: "down" | "move" | "up" | "cancel";
@@ -1059,7 +1059,7 @@ const UI_KEY_CHORD =
   /^(Ctrl\+)?(Alt\+)?(Shift\+)?(Meta\+)?(Escape|Enter|Space|Tab|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End)$/;
 
 function parseUiPointerOperation(value: string | null | undefined): UiPointerOperation | null {
-  if (typeof value !== "string" || !Object.prototype.hasOwnProperty.call(UI_POINTER_OPERATIONS, value)) return null;
+  if (typeof value !== "string" || !Object.hasOwn(UI_POINTER_OPERATIONS, value)) return null;
   return UI_POINTER_OPERATIONS[value] ?? null;
 }
 

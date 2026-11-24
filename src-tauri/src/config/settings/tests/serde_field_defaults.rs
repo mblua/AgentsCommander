@@ -129,7 +129,7 @@ fn telegram_network_poll_error_logging_field_defaults_are_backfilled() {
     );
 }
 
-/// Test 8 (#2265): a settings file written before this change carries no
+/// Test 8: a settings file written before this change carries no
 /// `jev*` key and must load with every documented default.
 #[test]
 fn jev_fields_default_when_missing_from_json() {
@@ -148,7 +148,7 @@ fn jev_fields_default_when_missing_from_json() {
     assert_eq!(s.jev_margin, 0.15);
 }
 
-/// Test 9 (#2265): the key default is empty (not a placeholder) and the
+/// Test 9: the key default is empty (not a placeholder) and the
 /// model default is the pinned literal, so a later floating tag is a
 /// deliberate, visible change.
 #[test]
@@ -225,7 +225,7 @@ fn rail_collapse_fields_round_trip_through_serde() {
     s.rail_favorites_collapsed = true;
 
     let json = serde_json::to_string(&s).expect("serialize");
-    // (#965) camelCase guard. A broken `rename_all` would otherwise surface only as a
+    // camelCase guard. A broken `rename_all` would otherwise surface only as a
     // silently dead frontend, since the TS side reads `railCollapsedProjects` /
     // `railFavoritesCollapsed`.
     assert!(
@@ -341,7 +341,7 @@ fn spec_board_enabled_round_trips_through_serde() {
 
 #[test]
 fn web_browser_enabled_round_trips_through_serde() {
-    // #4751 - manual opt-in key for the sidebar WWW button.
+    // Manual opt-in key for the sidebar WWW button.
     let mut s = AppSettings::default();
     assert!(!s.web_browser_enabled);
     let default_json = serde_json::to_string(&s).expect("serialize default");
@@ -397,7 +397,7 @@ fn resource_monitor_settings_round_trip_through_serde() {
 
 #[test]
 fn coordinator_clock_settings_default_when_keys_absent() {
-    // #552: an old settings.json (no coordinator-* keys) must deserialize
+    // An old settings.json (no coordinator-* keys) must deserialize
     // cleanly to the documented defaults, no migration.
     // Serialize a default, strip ONLY these coordinator keys, deserialize back.
     let mut value =
@@ -438,7 +438,7 @@ fn coordinator_auto_close_skip_telegram_assigned_round_trips() {
 
 #[test]
 fn resolve_auto_self_clear_precedence_table() {
-    // #640 §5 resolution table. Master-first kill switch, then per-agent
+    // §5 resolution table. Master-first kill switch, then per-agent
     // override, then the class-aware default computed at the call site.
     let mut s = AppSettings::default();
 
@@ -475,7 +475,7 @@ fn resolve_auto_self_clear_precedence_table() {
 
 #[test]
 fn resolve_auto_self_clear_empty_name_uses_class_default() {
-    // #640 L1: the Root derives to an empty name (no `_agent_`/`__agent_`
+    // L1: the Root derives to an empty name (no `_agent_`/`__agent_`
     // prefix); with no "" key it falls through to the class default. Same
     // path covers any name-derivation failure.
     let s = AppSettings::default();
@@ -485,7 +485,7 @@ fn resolve_auto_self_clear_empty_name_uses_class_default() {
 
 #[test]
 fn auto_self_clear_defaults_when_keys_absent() {
-    // #640: an old settings.json (no auto-self-clear keys) must deserialize
+    // An old settings.json (no auto-self-clear keys) must deserialize
     // to the documented defaults: master ON + empty per-agent map.
     let mut value =
         serde_json::to_value(AppSettings::default()).expect("serialize default to value");
@@ -518,7 +518,7 @@ fn auto_self_clear_round_trips_through_serde() {
 
 #[test]
 fn agent_auto_update_by_command_default_empty_and_round_trip_camel_case() {
-    // #1327: the per-command override map defaults to empty on a fresh
+    // The per-command override map defaults to empty on a fresh
     // settings object AND survives the serde round trip with camelCase keys.
     let defaults = AppSettings::default();
     assert!(defaults.agent_auto_update_by_command.is_empty());
@@ -537,7 +537,7 @@ fn agent_auto_update_by_command_default_empty_and_round_trip_camel_case() {
 
 #[test]
 fn agent_auto_update_by_command_absent_key_deserializes_empty() {
-    // An old settings.json without the #1327 key deserializes to an empty
+    // An old settings.json without the key deserializes to an empty
     // map (serde default), never an error.
     let mut value =
         serde_json::to_value(AppSettings::default()).expect("serialize default to value");
@@ -588,7 +588,7 @@ fn validate_resource_settings_rejects_invalid_limits() {
 
 #[test]
 fn validate_resource_settings_accepts_max_concurrent_above_legacy_cap() {
-    // #565: the old 1..=16 upper ceiling is gone. Any value >= 1 is accepted;
+    // The old 1..=16 upper ceiling is gone. Any value >= 1 is accepted;
     // the user is responsible for sizing it to their machine.
     for value in [17u32, 32, 64, 256, 10_000] {
         let s = AppSettings {
@@ -826,4 +826,49 @@ fn read_activity_log_enabled_from_path_defaults_false_when_json_malformed() {
 fn read_activity_log_enabled_only_defaults_false_when_settings_missing() {
     let path = std::env::temp_dir().join(format!("rale-no-such-file-{}.json", std::process::id()));
     assert!(!super::super::read_activity_log_enabled_from_path(&path));
+}
+
+#[test]
+fn ipc_blackbox_enabled_defaults_false_and_round_trips() {
+    let mut s = AppSettings::default();
+    assert!(!s.ipc_blackbox_enabled);
+    let mut value = serde_json::to_value(&s).expect("serialize");
+    value.as_object_mut().unwrap().remove("ipcBlackBoxEnabled");
+    let old: AppSettings = serde_json::from_value(value).expect("old file loads");
+    assert!(!old.ipc_blackbox_enabled);
+    s.ipc_blackbox_enabled = true;
+    let json = serde_json::to_string(&s).expect("serialize");
+    assert!(json.contains("\"ipcBlackBoxEnabled\":true"));
+    let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+    assert!(back.ipc_blackbox_enabled);
+}
+
+#[test]
+fn read_ipc_blackbox_enabled_from_path_reads_only_a_merged_true() {
+    let cases: [(Option<&str>, Option<&str>, bool); 5] = [
+        (Some(r#"{"ipcBlackBoxEnabled":true}"#), None, true),
+        (Some(r#"{"other":"x"}"#), None, false),
+        (Some(r#"{"ipcBlackBoxEnabled":null}"#), None, false),
+        (None, None, false),
+        (
+            Some(r#"{"ipcBlackBoxEnabled":false}"#),
+            Some(r#"{"ipcBlackBoxEnabled":true}"#),
+            true,
+        ),
+    ];
+    for (base, overlay, want) in cases {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        if let Some(b) = base {
+            std::fs::write(&path, b).unwrap();
+        }
+        if let Some(o) = overlay {
+            std::fs::write(temp.path().join("settings.50.personal.no-git.json"), o).unwrap();
+        }
+        assert_eq!(
+            super::super::read_ipc_blackbox_enabled_from_path(&path),
+            want,
+            "base={base:?} overlay={overlay:?}"
+        );
+    }
 }

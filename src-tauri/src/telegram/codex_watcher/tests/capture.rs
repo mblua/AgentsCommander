@@ -1,6 +1,6 @@
 use super::*;
 
-// ── #2232 phase 1: capture records ────────────────────────────────────
+// ── Capture records ────────────────────────────────────
 
 /// A current-format final record carrying the nested turn id the real
 /// fixture shows, so grouping has something to match.
@@ -12,7 +12,7 @@ fn current_final_record_with_turn(text: &str, turn_id: &str) -> String {
     value.to_string()
 }
 
-/// A `task_complete` closure line with the flat turn id (#2232 phase 5).
+/// A `task_complete` closure line with the flat turn id (phase 5).
 fn task_complete_record(turn_id: &str, last_agent_message: Option<&str>) -> String {
     let mut payload = serde_json::json!({"type": "task_complete", "turn_id": turn_id});
     if let Some(last) = last_agent_message {
@@ -21,7 +21,7 @@ fn task_complete_record(turn_id: &str, last_agent_message: Option<&str>) -> Stri
     serde_json::json!({"type": "event_msg", "payload": payload}).to_string()
 }
 
-/// A `turn_complete` closure line: the alias of `task_complete` (#2356).
+/// A `turn_complete` closure line: the alias of `task_complete`.
 fn turn_complete_record(turn_id: &str, last_agent_message: Option<&str>) -> String {
     let mut payload = serde_json::json!({"type": "turn_complete", "turn_id": turn_id});
     if let Some(last) = last_agent_message {
@@ -39,7 +39,7 @@ fn task_started_record(turn_id: &str) -> String {
     .to_string()
 }
 
-/// #2356 item 1: a `turn_complete` closes the turn like `task_complete`.
+/// Item 1: a `turn_complete` closes the turn like `task_complete`.
 #[test]
 fn turn_complete_alias_emits_exactly_one_record() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -65,7 +65,7 @@ fn turn_complete_alias_emits_exactly_one_record() {
     assert!(rx.try_recv().is_err());
 }
 
-/// #2356 item 2: a superseded turn never reaches the sink, even when a late
+/// Item 2: a superseded turn never reaches the sink, even when a late
 /// fragment and a matching closure follow; a healthy turn still does.
 #[test]
 fn a_superseded_turn_never_reaches_the_sink() {
@@ -97,7 +97,7 @@ fn a_superseded_turn_never_reaches_the_sink() {
     assert_eq!(turns.counters().emitted, 1);
 }
 
-/// Tests 1 and 9 (#2232 phase 5): the real fixture's nested turn id groups
+/// Tests 1 and 9 (phase 5): the real fixture's nested turn id groups
 /// with the flat id of a matching `task_complete`, and the assembled
 /// record carries the first contributing offset and the assembled digest.
 #[test]
@@ -171,7 +171,7 @@ fn final_answer_without_turn_metadata_is_final_but_not_identified() {
     assert_eq!(turns.open_turns(), 0, "nothing is held without a turn id");
 }
 
-/// Test 2 (#2232 phase 5): the extractor still rejects `task_complete`, and
+/// Test 2 (phase 5): the extractor still rejects `task_complete`, and
 /// the new closure path consumes it without emitting when it matches no
 /// accumulated final answer.
 #[test]
@@ -198,7 +198,7 @@ fn task_complete_emits_no_capture_record() {
     assert_eq!(turns.counters().emitted, 0);
 }
 
-/// Test 3 (#2232 phase 5): two records of one turn assemble in file order
+/// Test 3 (phase 5): two records of one turn assemble in file order
 /// and exactly one `CapturedRecord` reaches the sink.
 #[test]
 fn two_final_answers_of_one_turn_emit_exactly_one_record() {
@@ -237,7 +237,7 @@ fn two_final_answers_of_one_turn_emit_exactly_one_record() {
     );
 }
 
-/// Test 7 (#2232 phase 5): the flat id belongs to `task_complete` and the
+/// Test 7 (phase 5): the flat id belongs to `task_complete` and the
 /// nested one to `final_answer`; swapping them matches nothing. The final
 /// answer is then an ungrouped immediate candidate and the closure is a
 /// counted malformed skip.

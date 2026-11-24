@@ -1,4 +1,4 @@
-//! #3516 - one contained, finite, bounded-output preflight process. Reuses the version-probe
+//! One contained, finite, bounded-output preflight process. Reuses the version-probe
 //! owner, so the run returns only after the native proof that the process tree is gone.
 
 use std::process::Stdio;

@@ -75,7 +75,7 @@ fn wg_replica_root_resolves_to_fqn() {
     assert_ne!(from, crate::config::root_agent::ROOT_AGENT_SENDER);
 }
 
-/// #1614 requirement (D), section 9.1 "API and snapshot fixture twins".
+/// Requirement (D), section 9.1 "API and snapshot fixture twins".
 ///
 /// This file takes ZERO production edits: it carries no prefix predicate
 /// and treats the FQN as opaque. That claim is what this twin turns from
@@ -103,7 +103,7 @@ fn room_replica_root_resolves_to_fqn() {
     assert_ne!(from, crate::config::root_agent::ROOT_AGENT_SENDER);
 }
 
-/// #1614 (D): a Room replica and a legacy Workgroup replica at the same
+/// A Room replica and a legacy Workgroup replica at the same
 /// slot number are two DISTINCT peers, because every identity path keys on
 /// the full directory name and never on the prefix or the number (the
 /// mixed root of section 5.11, residual R1).

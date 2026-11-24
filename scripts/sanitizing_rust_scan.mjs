@@ -827,7 +827,7 @@ function workspaceEntryAllowed(state, key, value) {
   }
   return true;
 }
-// #4639: root release profile, only keys and values that cannot change cfg or targets.
+// Root release profile, only keys and values that cannot change cfg or targets.
 const RELEASE_PROFILE = { lto: /^(?:false|true|"thin"|"fat"|"off")$/,
   'codegen-units': /^[1-9]\d{0,2}$/, strip: /^(?:false|true|"none"|"debuginfo"|"symbols")$/,
   panic: /^"(?:unwind|abort)"$/ };
@@ -876,9 +876,26 @@ function manifestsUnsupported(tree, readBlob) {
   return unsupported;
 }
 // Same per-path cut as the caller's `continue` for paths outside src-tauri/src/.
-function rustFileUnsupported(path, scan, mods) {
+// A plain `#[path = "lit"]` in an integration-test file that names another existing file under
+// src-tauri/tests/ only shares test code between test crates; it cannot reach the lib module tree.
+export function testLocalPath(path, scan, attribute, tree) {
+  if (!path.startsWith('src-tauri/tests/') || attribute.meta.name !== 'path' ||
+      attribute.signals.length !== 1) return false;
+  const strings = scan.tokens.slice(attribute.first, attribute.last + 1)
+    .filter(t => t.kind === 'string');
+  if (strings.length !== 1 || typeof strings[0].value !== 'string') return false;
+  const parts = path.split('/').slice(0, -1);
+  for (const part of strings[0].value.split('/')) {
+    if (part === '..') parts.pop();
+    else if (part !== '.' && part !== '') parts.push(part);
+  }
+  const target = parts.join('/');
+  return target.startsWith('src-tauri/tests/') && tree.has(target);
+}
+function rustFileUnsupported(path, scan, mods, tree) {
   let unsupported = false;
-  if (scan.attributes.some(a => a.signals.some(m => m.name === 'path')) ||
+  if (scan.attributes.some(a => a.signals.some(m => m.name === 'path') &&
+      !testLocalPath(path, scan, a, tree)) ||
       scan.tokens.some(t => t.name === 'include' && scan.tokens[t.index + 1]?.text === '!'))
     unsupported = true;
   if (scan.tokens.some(t => t.name === 'mod' && !mods.some(i => i.first === t.index)))
@@ -928,7 +945,7 @@ export function createRustScanner(tree, readBlob) {
     const scan = scanRust(path, readBlob(entry));
     scans.set(path, scan);
     const mods = scan.items.filter(i => i.kind === 'mod');
-    if (rustFileUnsupported(path, scan, mods)) unsupported = true;
+    if (rustFileUnsupported(path, scan, mods, tree)) unsupported = true;
     if (!path.startsWith('src-tauri/src/')) continue;
     if (addModTargets(incoming, tree, path, mods)) unsupported = true;
   }

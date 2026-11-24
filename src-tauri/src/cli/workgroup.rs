@@ -319,12 +319,12 @@ fn add(args: WorkgroupAddArgs) -> Result<(), String> {
 }
 
 fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
-    // #1065 Stage F: activated with the sole production token; no lock-order test barrier.
+    // Activated with the sole production token; no lock-order test barrier.
     let activation = crate::config::seed_manifest::ManifestActivationToken::production();
     remove_hooked(args, Some(&activation), |_| {})
 }
 
-/// CLI workgroup removal with the #1063 project-only lock order.
+/// CLI workgroup removal with the project-only lock order.
 ///
 /// Workgroup deletion is a project-only mutation: it acquires the project
 /// seed-manifest gate before the atomic rename and NEVER acquires the
@@ -334,7 +334,7 @@ fn remove(args: WorkgroupRemoveArgs) -> Result<(), String> {
 /// error. `remove` is synchronous, so no guard ever crosses `.await`.
 ///
 /// `activation` is `Some(ManifestActivationToken::production())` in production
-/// (#1065 Stage F); tests may pass `Some(for_test())` or `None`.
+/// and tests may pass `Some(for_test())` or `None`.
 /// `after_project_acquired` is a `#[cfg(test)]` inversion barrier that fires after
 /// the project gate is held; production passes a no-op.
 fn remove_hooked(
@@ -376,7 +376,7 @@ fn remove_hooked(
     match cli_remove_refresh_decision(outcome)? {
         RemoveRefreshDecision::EmitWorkgroupRemoved => {}
     }
-    // (#621) Drop the workgroup's coordinator_clocks keys. CLI is its own process,
+    // Drop the workgroup's coordinator_clocks keys. CLI is its own process,
     // so load+save the on-disk map directly (the startup prune backstops the
     // GUI-running-concurrently race).
     if let Some(project_name) = project_path.file_name().and_then(|n| n.to_str()) {

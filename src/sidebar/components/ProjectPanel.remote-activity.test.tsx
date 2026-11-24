@@ -14,7 +14,7 @@ import { replicaVolatileStore } from "../stores/replica-volatile";
 import { remoteActivityByPath, remoteActivityStore } from "../stores/remote-activity";
 import type { CiState, StalenessState } from "../../shared/types";
 
-// #2064 Phase C — the CI ring and the stale bar on the orchestrator repo chip.
+// The CI ring and the stale bar on the orchestrator repo chip.
 //
 // These render the real ProjectPanel through the FakeTransport harness and assert the
 // DOM, per the frontend-visual-verification discipline. They cover the CLASS and the
@@ -124,7 +124,7 @@ function publish(ci: CiState, staleness: StalenessState, behindBy: number | null
   });
 }
 
-/** Marks the repo dirty through the channel #1028 owns, which this phase must not
+/** Marks the repo dirty through the channel the dirty badge owns, which this phase must not
  *  disturb: the two signals have to be additive. */
 function markDirty(): void {
   replicaVolatileStore.applyDiscoveryBranchUpdate(REPLICA_PATH, "main", [REPO_PATH], ["main"], [
@@ -132,7 +132,7 @@ function markDirty(): void {
   ]);
 }
 
-describe("ProjectPanel remote-activity chip (#2064 Phase C)", () => {
+describe("ProjectPanel remote-activity chip (Phase C)", () => {
   let stubs: (() => void) | null = null;
 
   beforeEach(() => {

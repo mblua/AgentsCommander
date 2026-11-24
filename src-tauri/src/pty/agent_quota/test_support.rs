@@ -93,7 +93,7 @@ impl SourcesFake {
         self.configure_on(agent_id, agent_id, spec);
     }
 
-    /// #2566 - an agent on a named account key, for the shared-command cases.
+    /// An agent on a named account key, for the shared-command cases.
     pub(crate) fn configure_on(&self, agent_id: &str, account_key: &str, spec: SourceSpec) {
         self.specs.lock().unwrap().insert(
             agent_id.to_string(),

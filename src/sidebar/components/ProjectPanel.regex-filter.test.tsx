@@ -108,7 +108,7 @@ function findByTestId<T extends Element>(root: ParentNode, testId: string): T {
   return element as T;
 }
 
-/** #4785 - the shared filter controls (row, magnifier, input), mounted in `beforeEach`. */
+/** The shared filter controls (row, magnifier, input), mounted in `beforeEach`. */
 function filterControls(root: ParentNode = document) {
   return {
     row: findByTestId<HTMLDivElement>(root, "sidebar.regexFilter.row"),
@@ -117,7 +117,7 @@ function filterControls(root: ParentNode = document) {
   };
 }
 
-/** #4785 - transport that loads the default test project. */
+/** Transport that loads the default test project. */
 function projectFake() {
   const fake = new FakeTransport();
   fake.resolve("new_project", { path: projectPath, registered: true, created: false });
@@ -152,7 +152,7 @@ describe("ProjectPanel regex filter", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
-    // #4785 - the one sidebar filter control, mounted beside every panel.
+    // The one sidebar filter control, mounted beside every panel.
     const filterRoot = document.body.appendChild(document.createElement("div"));
     disposeFilter = render(
       () => (
@@ -313,7 +313,7 @@ describe("ProjectPanel regex filter", () => {
         expect(rendered.root.textContent).not.toContain("RUNNING");
       });
 
-      // #1790 option A: the word is no longer rendered but is still part of the
+      // Option A: the word is no longer rendered but is still part of the
       // running-peer match text. "dev-rust RUNNING" cannot be produced by any
       // other haystack of this row, so the chip surviving this query proves the
       // peer haystack is still live. The no-match query in between makes the
@@ -596,7 +596,7 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
-  it("does not match an exited replica by stale waiting/pending flags (#689)", async () => {
+  it("does not match an exited replica by stale waiting/pending flags", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve("discover_project", projectDiscovery());
@@ -730,10 +730,10 @@ describe("ProjectPanel regex filter", () => {
     );
 
     sessionsStore.setSessions([
-      // No agent label resolves, not a coordinator and no repos. Before #1730
+      // No agent label resolves, not a coordinator and no repos. Before the change
       // SessionItem gated the whole meta block on
       // `sessionAgentLabel() || (isCoordinator && ... && gitRepos.length > 0)`, so this
-      // row's profile badge was NOT rendered. #1730 deleted that gate: the badge is
+      // row's profile badge was NOT rendered. The change deleted that gate: the badge is
       // rendered on this row now, and the filter must therefore match it.
       session({
         id: "nolabel-session",
@@ -748,7 +748,7 @@ describe("ProjectPanel regex filter", () => {
         effectiveProfile: "B",
         profileFallbackApplied: true,
       }),
-      // Coordinator with repos: this row rendered its badge before #1730 as well.
+      // Coordinator with repos: this row rendered its badge before the change as well.
       session({
         id: "coordrepo-session",
         name: "AgentsCommander_ac/__agent_coordrepo",
@@ -768,7 +768,7 @@ describe("ProjectPanel regex filter", () => {
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => expect(rendered.root.textContent).toContain("nolabel"));
-      // #1730 - the strip is unconditional, so both badges are on screen.
+      // The strip is unconditional, so both badges are on screen.
       expect(rendered.root.textContent).toContain("A->B");
       expect(rendered.root.textContent).toContain("C->D");
 
@@ -829,7 +829,7 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
-  it("matches an agent row by its coding-agent badge resolved from agentId, per row (#515)", async () => {
+  it("matches an agent row by its coding-agent badge resolved from agentId, per row", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve(
@@ -907,7 +907,7 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
-  it("matches an agent row by its visible profile letter when the meta badge is shown (#515)", async () => {
+  it("matches an agent row by its visible profile letter when the meta badge is shown", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve(
@@ -962,7 +962,7 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
-  it("matches a coordinator quick-access row by its visible task title (#515)", async () => {
+  it("matches a coordinator quick-access row by its visible task title", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
     fake.resolve(
@@ -1010,9 +1010,9 @@ describe("ProjectPanel regex filter", () => {
     }
   });
 
-  it("matches a shut-down replica by its persisted Coding Agent label and Profile letter (#733/#515)", async () => {
-    // #733 makes a gray replica show its persisted Coding Agent + Profile badges;
-    // #515 requires the filter to match what is visible. Both rows are dormant
+  it("matches a shut-down replica by its persisted Coding Agent label and Profile letter", async () => {
+    // One change makes a gray replica show its persisted Coding Agent + Profile badges;
+    // another requires the filter to match what is visible. Both rows are dormant
     // members (no session): dev-webpage-ui carries a persisted codex/Z, dev-rust
     // carries nothing. Neither "codex" nor "z" appears anywhere in dev-webpage-ui's
     // row text except its badges, so a match proves the persisted label + letter

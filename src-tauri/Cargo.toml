@@ -14,7 +14,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_norway = "0.9.42"
 sha2 = "0.10"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = [
+    "fs", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time",
+] }
 portable-pty = "=0.9.0"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -24,7 +26,7 @@ env_logger = "0.11"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 dirs = "6"
-reqwest = { version = "0.12", features = ["json", "blocking", "multipart"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
 base64 = "0.22"
 getrandom = "=0.3.4"
 terminal-snapshot-renderer = { path = "../crates/terminal-snapshot-renderer", features = ["render"] }
@@ -48,14 +50,17 @@ if-addrs = "0.15"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# #714 Native screenshot capture on Windows lives in this table. Linux (#1842)
-# and macOS (#2079) have their own tables below; every other target compiles the
-# `screenshot::unsupported` stub and never links these.
-[target.'cfg(windows)'.dependencies]
+# #714 (Windows), #1842 (Linux) and #2079 (macOS) native screenshot capture.
+# One table so Cargo resolves identical versions and features on all three;
+# every other target compiles the `screenshot::unsupported` stub and never
+# links these.
+[target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dependencies]
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-clipboard-manager = "2.3.2"
 xcap = "0.9.6"
 image = "0.25.10"
+
+[target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Security",
     "Win32_System_Console",
@@ -76,15 +81,7 @@ windows-sys = { version = "0.59", features = [
     "Wdk_System_SystemInformation",
 ] }
 
-# #1842 Linux/X11 screenshot capture. A byte-copy of the four screenshot lines
-# above, so Cargo resolves identical versions and features for all targets.
-# NOT moved into [dependencies]: macOS has its own byte-copy table below
-# (#2079). windows-sys stays Windows-only.
 [target.'cfg(target_os = "linux")'.dependencies]
-tauri-plugin-global-shortcut = "2.3.2"
-tauri-plugin-clipboard-manager = "2.3.2"
-xcap = "0.9.6"
-image = "0.25.10"
 # #2774 Wayland portal; same version/features rfd already resolves
 ashpd = { version = "=0.11.1", default-features = false, features = ["async-std"] }
 # #4248 Linux WebView snapshot (window.snapshot) and examples/linux_snapshot; exact versions
@@ -93,13 +90,6 @@ webkit2gtk = "=2.0.2"
 gio = "=0.18.4"
 glib = "=0.18.5"
 cairo-rs = { version = "=0.18.5", features = ["png"] }
-
-# #2079 macOS screenshot capture. A byte copy of the Linux table above.
-[target.'cfg(target_os = "macos")'.dependencies]
-tauri-plugin-global-shortcut = "2.3.2"
-tauri-plugin-clipboard-manager = "2.3.2"
-xcap = "0.9.6"
-image = "0.25.10"
 
 # #2817 The reentrancy harness needs a real tao window on its own HWND. The
 # default-features and the feature set are the same as what

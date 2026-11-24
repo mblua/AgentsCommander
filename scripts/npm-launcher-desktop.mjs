@@ -6,7 +6,7 @@ export function runShortcutChecks(requireFromWork, desktopContext) {
   const {
     workDir, test, skip, expectEqual, assert, expectExit,
   } = desktopContext;
-  // --- Windows Start Menu shortcut (issue #2053) ---
+  // --- Windows Start Menu shortcut ---
   const shortcutMod = requireFromWork(path.join(workDir, 'windows-shortcut.js'));
   const globalWinEnv = { npm_config_global: 'true', APPDATA: path.join(workDir, 'appdata') };
 
@@ -71,7 +71,7 @@ export function runMacAliasChecks(requireFromWork, desktopContext) {
   const {
     workDir, test, skip, expectEqual, assert, assertThrows, makeBundle,
   } = desktopContext;
-  // --- macOS ~/Applications alias (issue #2065) ---
+  // --- macOS ~/Applications alias ---
   const aliasMod = requireFromWork(path.join(workDir, 'macos-alias.js'));
   const macHome = path.join(workDir, 'mac-home');
   const globalMacEnv = { npm_config_global: 'true', HOME: macHome };
@@ -174,7 +174,7 @@ export function runLinuxEntryChecks(requireFromWork, desktopContext) {
     workDir, binDir, NPM_DIR, REPO_ROOT, test, expectEqual, assert, assertThrows,
     expectExit, assertIncludes, runInstall, assertNoInstallLeftovers,
   } = desktopContext;
-  // --- Linux application menu entry (issue #2066) ---
+  // --- Linux application menu entry ---
   const desktopMod = requireFromWork(path.join(workDir, 'linux-desktop-entry.js'));
   const linuxHome = path.join(workDir, 'linux-home');
   const globalLinuxEnv = { npm_config_global: 'true', HOME: linuxHome };
@@ -276,7 +276,7 @@ export function runLinuxEntryChecks(requireFromWork, desktopContext) {
       'L5: npm/icon.png must be a byte copy of src-tauri/icons/128x128.png');
   });
 
-  // --- the linux branch of install.js, end to end (issue #2066) ---
+  // --- the linux branch of install.js, end to end ---
   const linuxFixture = 'linux-raw';
   fs.writeFileSync(path.join(workDir, linuxFixture), 'fixture linux executable placeholder\n');
   const linuxJobs = [

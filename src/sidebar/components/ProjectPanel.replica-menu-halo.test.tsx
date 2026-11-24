@@ -19,7 +19,7 @@ import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import type { AcDiscoveryResult, Session } from "../../shared/types";
 
-// #3027: right-clicking a replica row marks that exact row with a halo while
+// Right-clicking a replica row marks that exact row with a halo while
 // the replica context menu is open.
 
 // A variable base keeps the real file: URL under jsdom (see AgentUpdateOverlay.test.tsx).
@@ -90,7 +90,7 @@ function rowTop(el: HTMLElement): number {
 type FakeObserver = { callback: ResizeObserverCallback; observed: Element[]; disconnect: () => void };
 let observers: FakeObserver[] = [];
 
-describe("ProjectPanel replica context menu origin halo (#3027)", () => {
+describe("ProjectPanel replica context menu origin halo", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
   let previousObserver: typeof ResizeObserver;
@@ -205,7 +205,7 @@ describe("ProjectPanel replica context menu origin halo (#3027)", () => {
     expect(document.querySelectorAll(".replica-menu-halo")).toHaveLength(1);
   });
 
-  it("follows position-only changes without events and leaves stable styles untouched (#3069)", async () => {
+  it("follows position-only changes without events and leaves stable styles untouched", async () => {
     await setupPanel();
     const frames = installDeterministicAnimationFrames();
     const raf = vi.spyOn(window, "requestAnimationFrame");
@@ -791,9 +791,9 @@ describe("ProjectPanel replica context menu origin halo (#3027)", () => {
   });
 });
 
-// The harness fixture that gives jsdom replica rows visible bounds (#3027 B1).
+// The harness fixture that gives jsdom replica rows visible bounds.
 // Independent of the describe above: no ProjectPanel, no per-row spy.
-describe("installBrowserDomStubs replica menu geometry fixture (#3027)", () => {
+describe("installBrowserDomStubs replica menu geometry fixture", () => {
   const cleanups: Array<() => void> = [];
   const install = (options?: { replicaMenuGeometry?: boolean }) => {
     const cleanup = installBrowserDomStubs(options);

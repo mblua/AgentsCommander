@@ -17,7 +17,7 @@ import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import { automationIdPart as AP } from "./replica-repo-badges";
 
-// #592: the profile-drift "outdated" badge must surface on a WG replica row, not
+// The profile-drift "outdated" badge must surface on a WG replica row, not
 // only on the sidebar SessionItem. The backend marks profileOutdated in
 // list_sessions (loaded cell hash != current config); the row reads the SAME store
 // value the status dot reads. Rendered through the real ProjectPanel + FakeTransport
@@ -28,7 +28,7 @@ const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
 const replicaPath = `${workgroupPath}\\__agent_dev-webpage-ui`;
 const replicaName = "dev-webpage-ui";
 const sessionName = `wg-2-dev-team/${replicaName}`;
-// #2435 - a second replica with no session: the dormant row.
+// A second replica with no session: the dormant row.
 const dormantName = "dormant-ui";
 const dormantPath = `${workgroupPath}\\__agent_${dormantName}`;
 
@@ -87,7 +87,7 @@ async function mount() {
   return rendered;
 }
 
-describe("ProjectPanel replica profile-outdated badge (#592)", () => {
+describe("ProjectPanel replica profile-outdated badge", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -128,7 +128,7 @@ describe("ProjectPanel replica profile-outdated badge (#592)", () => {
   });
 });
 
-describe("ProjectPanel replica tier badge (#2435)", () => {
+describe("ProjectPanel replica tier badge", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -191,7 +191,7 @@ describe("ProjectPanel replica tier badge (#2435)", () => {
   });
 });
 
-describe("ProjectPanel replica orphan notice (#2568)", () => {
+describe("ProjectPanel replica orphan notice", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

@@ -345,7 +345,7 @@ function replicaSession(roomName: string, overrides: Partial<Session> = {}): Ses
   });
 }
 
-// #2202 - the CI half of the rail. The replica's configured `repoPaths` carries
+// The CI half of the rail. The replica's configured `repoPaths` carries
 // the EXACT string the remote-activity payload is keyed by (the map normalizes
 // nothing), and the store replaces the WHOLE map per update, so every repo of
 // interest is published in ONE call.
@@ -670,7 +670,7 @@ describe("RoomGroupRail", () => {
     }
   });
 
-  it("shows the working dot on All and on the group whose workgroup is running (#746)", async () => {
+  it("shows the working dot on All and on the group whose workgroup is running", async () => {
     const { rendered } = mountPreparedRail([replicaSession("wg-1-dev-team")]);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
@@ -690,7 +690,7 @@ describe("RoomGroupRail", () => {
     }
   });
 
-  it("shows the working dot on Ungrouped when an ungrouped workgroup is running (#746)", async () => {
+  it("shows the working dot on Ungrouped when an ungrouped workgroup is running", async () => {
     const { rendered } = mountPreparedRail([replicaSession("wg-3-docs-team")]);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
@@ -700,7 +700,7 @@ describe("RoomGroupRail", () => {
     }
   });
 
-  it("keeps every dot off for waiting/pending agents, matching the counter (#746)", async () => {
+  it("keeps every dot off for waiting/pending agents, matching the counter", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
     sessionsStore.setSessions([
@@ -718,7 +718,7 @@ describe("RoomGroupRail", () => {
     }
   });
 
-  it("focuses and selects the new row's name input after Add group (#746)", async () => {
+  it("focuses and selects the new row's name input after Add group", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
 
@@ -741,7 +741,7 @@ describe("RoomGroupRail", () => {
       });
 
       // Typing must not drop focus: <Index> keeps the row's DOM stable while
-      // updateGroup replaces the row object per keystroke (the #614 trap).
+      // updateGroup replaces the row object per keystroke (the keyed-row trap).
       input(added, "B");
       input(added, "Ba");
       await waitFor(() => {
@@ -754,7 +754,7 @@ describe("RoomGroupRail", () => {
     }
   });
 
-  it("#777 pins the Non-stop button after Ungrouped with the live counter + running dot", async () => {
+  it("pins the Non-stop button after Ungrouped with the live counter + running dot", async () => {
     const fake = new FakeTransport();
     fake.resolve(
       "get_project_groups",
@@ -778,7 +778,7 @@ describe("RoomGroupRail", () => {
     }
   });
 
-  it("#777 hides the Non-stop button when show=false", async () => {
+  it("hides the Non-stop button when show=false", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig({ nonStop: { ...defaultNonStop(), show: false } }));
     fake.onInvoke("update_project_groups", (args) => args.config);
@@ -792,7 +792,7 @@ describe("RoomGroupRail", () => {
     }
   });
 
-  it("#2036 excludes Alert me!-only rooms from the Ungrouped counter", async () => {
+  it("excludes Alert me!-only rooms from the Ungrouped counter", async () => {
     const fake = new FakeTransport();
     fake.resolve(
       "get_project_groups",
@@ -820,7 +820,7 @@ describe("RoomGroupRail", () => {
     }
   });
 
-  it("#2036 keeps a hidden Alert me!-only room out of Ungrouped", async () => {
+  it("keeps a hidden Alert me!-only room out of Ungrouped", async () => {
     const fake = new FakeTransport();
     fake.resolve(
       "get_project_groups",
@@ -1073,7 +1073,7 @@ describe("RoomGroupRail", () => {
   });
 });
 
-// #1614 section 9.1 frontend tests / section 15.4. F4 (`RoomGroupRail.tsx:67`,
+// Section 9.1 frontend tests / section 15.4. F4 (`RoomGroupRail.tsx:67`,
 // `roomNumber`, the rail SORT KEY) and F5 (`:72`, `roomTooltipLabel`, the visible
 // tooltip row). Left unrewired, F4 collapses every Room to
 // `Number.MAX_SAFE_INTEGER` and sorts it last, and F5 shows the raw directory
@@ -1083,7 +1083,7 @@ describe("RoomGroupRail", () => {
 // The legacy `wg-*` projects above are deliberately untouched (Rule P2): the
 // label is an IDENTITY, so decision D7 requires a Room to read ROOM1 and a
 // legacy Workgroup to keep reading WG1 in the very same rail.
-describe("RoomGroupRail, Rooms (#1614 F4/F5)", () => {
+describe("RoomGroupRail, Rooms", () => {
   beforeEach(() => {
     resetUiStoresForTests();
   });
@@ -1167,7 +1167,7 @@ describe("RoomGroupRail, Rooms (#1614 F4/F5)", () => {
     expect(roomTooltipLabel("not-an-entity")).toBe("not-an-entity");
   });
 
-  it("#2202 counts a CI-only room in the counter, the dot and the tooltip", async () => {
+  it("counts a CI-only room in the counter, the dot and the tooltip", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig({ groups: [] }));
     publishCi([[ciRepoPath("wg-1-dev-team"), "running"]]);
@@ -1192,7 +1192,7 @@ describe("RoomGroupRail, Rooms (#1614 F4/F5)", () => {
     }
   });
 
-  it("#2202 shows the replica row and the CI row for a room that is both", async () => {
+  it("shows the replica row and the CI row for a room that is both", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig({ groups: [] }));
     sessionsStore.setSessions([replicaSession("wg-1-dev-team")]);
@@ -1216,7 +1216,7 @@ describe("RoomGroupRail, Rooms (#1614 F4/F5)", () => {
     }
   });
 
-  it("#2202 leaves the counter at 0/1 when the CI repo belongs to a non-coordinator", async () => {
+  it("leaves the counter at 0/1 when the CI repo belongs to a non-coordinator", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig({ groups: [] }));
     publishCi([[ciRepoPath("wg-1-dev-team"), "running"]]);
@@ -1237,7 +1237,7 @@ describe("RoomGroupRail, Rooms (#1614 F4/F5)", () => {
     }
   });
 
-  it("#2202 sorts the tooltip by room number across both row kinds", async () => {
+  it("sorts the tooltip by room number across both row kinds", async () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig({ groups: [] }));
     // wg2 works, wg1 only runs CI. Room number wins over row kind: an

@@ -356,6 +356,7 @@ The two `gitSweep*` dials are manual-only (no UI) and are read from the in-memor
 | `coordSortByActivity` | bool | `false` | Sort the orchestrator quick-access list by most-recent activity. |
 | `screenshotCaptureHotkey` | string | `"Ctrl+Q"` | Native global hotkey for screenshot capture. One modifier plus one key; only `Ctrl` (or `Control`) and a single letter or digit are accepted. Windows, macOS, Linux X11 and Wayland (on Hyprland a key binding is needed, see `screenshotHyprlandBind`). See [Screenshot capture](../features/screenshot-capture.md). |
 | `screenshotHyprlandBind` | bool | `false` | Linux Hyprland with the Omarchy layout: AgentsCommander keeps its own marked block in `~/.config/hypr/bindings.lua` binding the screenshot key; off removes it. See [Wayland: the key binding on Hyprland](../features/screenshot-capture.md#wayland-the-key-binding-on-hyprland). |
+| `screenshotCopyPath` | bool | `false` | Off: a confirmed screenshot puts the PNG image on the clipboard. On: puts its absolute path as text. The PNG is always saved. |
 | `sidebarCompactHotkey` | string | `"Ctrl+Shift+E"` | Hotkey that toggles the compact sidebar. Accepted range `Ctrl+Shift+<A-Z>` (parts are case-insensitive; the first part may be `Ctrl` or `Control`), excluding the reserved letters `W`, `R`, `C`, `V`. An invalid value blocks the save with an error naming the field; it is not repaired. |
 | `roomNumberMask` | string | `"#"` | Mask for numbering **newly created** room directories: one `#` per zero-padded digit. `"#"` (the default) gives `room-1-<team>`, `"##"` gives `room-01-<team>`. A number wider than the mask is never truncated, so `"##"` with room 100 gives `room-100-<team>`. Accepted: 1 to 9 `#` characters and nothing else; the value is judged byte-identical, so a leading space is rejected. An invalid value blocks the save with an error naming the field; it is not repaired. Existing rooms are never renamed. |
 | `mainResourceMonitorAttached` | bool | `false` | Whether the Resource Monitor occupies the main central pane instead of the terminal. Restored on startup. |
@@ -682,6 +683,7 @@ See [Menu guard](../features/menu-guard.md).
 |---|---|---|---|
 | `logLevel` | string \| null | `null` | One of `error`, `warn`, `info`, `debug`, `trace`. Applied live, no restart. An invalid value, a legacy filter string, or `null` falls back to `info`. The `RUST_LOG` env var, if set, overrides this and freezes the live selector until restart. |
 | `activityLogEnabled` | bool | `false` | Enable the activity log. |
+| `ipcBlackBoxEnabled` | bool | `false` | Run the renderer IPC black box (#1652) in every window. Read once at start: a change applies on the next restart. The backend IPC observer runs regardless. |
 
 See [Activity log](../features/activity-log.md).
 

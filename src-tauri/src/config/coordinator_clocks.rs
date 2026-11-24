@@ -223,12 +223,12 @@ impl CoordinatorClocks {
         self.map.get(fqn).and_then(|e| e.last_user_message_at)
     }
 
-    /// (#580) Last-real-activity clock accessor.
+    /// Last-real-activity clock accessor.
     pub fn last_activity_at(&self, fqn: &str) -> Option<DateTime<Utc>> {
         self.map.get(fqn).and_then(|e| e.last_activity_at)
     }
 
-    /// (#580) Advance `last_activity_at` for `fqn` to `candidate` iff it is newer
+    /// Advance `last_activity_at` for `fqn` to `candidate` iff it is newer
     /// than the stored value (monotonic forward). Returns true (and dirties the
     /// store) only when it actually moved, so an idle team (stable candidate) does
     /// not churn the file each tick. Preserves `last_user_message_at` / `auto_closed_at`.
@@ -247,13 +247,13 @@ impl CoordinatorClocks {
         self.map.get(fqn).and_then(|e| e.auto_closed_at)
     }
 
-    /// #552 Mark this coordinator's team auto-closed at `now`. Idempotent:
+    /// Mark this coordinator's team auto-closed at `now`. Idempotent:
     /// returns `true` only on the transition None -> Some, so the caller emits
     /// the event once. Preserves `last_user_message_at` (the badge keeps
     /// counting on the dormant row).
     pub fn mark_auto_closed(&mut self, fqn: &str, now: DateTime<Utc>) -> bool {
         let entry = self.map.entry(fqn.to_string()).or_default();
-        // #588 manual close wins: never auto-mark a coordinator the user closed by
+        // Manual close wins: never auto-mark a coordinator the user closed by
         // hand (stops a concurrent tick re-setting auto_closed_at + emitting a stray
         // coordinator_auto_close_changed).
         if entry.manually_closed_at.is_some() {
@@ -267,7 +267,7 @@ impl CoordinatorClocks {
         true
     }
 
-    /// #552 Clear the auto-closed marker on reopen. Returns `true` only on the
+    /// Clear the auto-closed marker on reopen. Returns `true` only on the
     /// transition Some -> None, so the caller emits the clear event once.
     /// Preserves `last_user_message_at`.
     pub fn clear_auto_closed(&mut self, fqn: &str) -> bool {
@@ -281,12 +281,12 @@ impl CoordinatorClocks {
         false
     }
 
-    /// #588 Manual-close marker accessor.
+    /// Manual-close marker accessor.
     pub fn manually_closed_at(&self, fqn: &str) -> Option<DateTime<Utc>> {
         self.map.get(fqn).and_then(|e| e.manually_closed_at)
     }
 
-    /// #588 Mark this coordinator manually-closed at `now`. Idempotent: returns
+    /// Mark this coordinator manually-closed at `now`. Idempotent: returns
     /// `true` only on the None -> Some transition so the caller emits once. Clears
     /// `auto_closed_at` ON THE TRANSITION (mutual-exclusion that also keeps the
     /// dirty flag honest; manual is the deliberate action). Preserves
@@ -302,7 +302,7 @@ impl CoordinatorClocks {
         true
     }
 
-    /// #588 Clear the manual-close marker on reopen. Returns `true` only on the
+    /// Clear the manual-close marker on reopen. Returns `true` only on the
     /// Some -> None transition so the caller emits the clear once. Preserves
     /// `last_user_message_at`.
     pub fn clear_manually_closed(&mut self, fqn: &str) -> bool {
@@ -316,12 +316,12 @@ impl CoordinatorClocks {
         false
     }
 
-    /// (#756) Fresh-intent accessor.
+    /// Fresh-intent accessor.
     pub fn start_fresh_at(&self, fqn: &str) -> Option<DateTime<Utc>> {
         self.map.get(fqn).and_then(|e| e.start_fresh_at)
     }
 
-    /// (#756) Mark a fresh-conversation boundary for `fqn` at `now`. Idempotent:
+    /// Mark a fresh-conversation boundary for `fqn` at `now`. Idempotent:
     /// returns `true` only on the None -> Some transition (the FIRST boundary
     /// time is preserved), so the caller logs/persists once. Preserves every
     /// other field.
@@ -335,7 +335,7 @@ impl CoordinatorClocks {
         true
     }
 
-    /// (#756) Drop the fresh intent once a post-boundary transcript exists
+    /// Drop the fresh intent once a post-boundary transcript exists
     /// (typed input or AC-injected content). Returns `true` only on the
     /// Some -> None transition. Preserves every other field.
     pub fn clear_start_fresh(&mut self, fqn: &str) -> bool {
@@ -357,13 +357,13 @@ impl CoordinatorClocks {
         std::mem::take(&mut self.dirty)
     }
 
-    /// (#621) Remove every key for one workgroup: all FQNs prefixed
+    /// Remove every key for one workgroup: all FQNs prefixed
     /// `"<project>:<wg>/"`. Returns the number of keys removed; dirties the store
     /// iff any were removed. The prefix is reconstructed exactly from the on-disk
     /// project folder name + workgroup dir name (no hashing), so it is precise and
     /// can never touch another workgroup. The trailing '/' stops a short wg name
     /// from matching a longer sibling (`wg-1/` must not match `wg-12/coord`).
-    /// (#621 LOW-1) The compare is case-INSENSITIVE: the key carries the spawn
+    /// The compare is case-INSENSITIVE: the key carries the spawn
     /// `working_directory` case while the caller passes `project_path.file_name()`,
     /// and the prune + Windows FS are case-insensitive; an exact match would
     /// `Ok(0)`-silently miss a case-drifted project. Case-insensitive project+wg
@@ -373,7 +373,7 @@ impl CoordinatorClocks {
         self.retain_keys(|k| !key_has_prefix_ignore_ascii_case(k, &prefix))
     }
 
-    /// (#621) Retain only keys for which `keep` returns true. Returns the number
+    /// Retain only keys for which `keep` returns true. Returns the number
     /// removed; dirties the store iff any were removed. Backbone for
     /// `remove_workgroup` and the startup prune.
     pub fn retain_keys<F: FnMut(&str) -> bool>(&mut self, mut keep: F) -> usize {
@@ -387,7 +387,7 @@ impl CoordinatorClocks {
     }
 }
 
-/// (#621 LOW-1) ASCII-case-insensitive prefix test that never panics on a non-char
+/// ASCII-case-insensitive prefix test that never panics on a non-char
 /// boundary (`get(..n)` returns None) and never allocates. `eq_ignore_ascii_case`
 /// matches Windows FS / project-resolution case-insensitivity; project + wg names
 /// are ASCII in practice, and a non-ASCII boundary simply yields "no match" (keep),
@@ -449,7 +449,7 @@ pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(),
         clock_io::ensure_clock_parent(dir).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
-    // (#621 MED-2) Unique temp per write: two concurrent saves in one process
+    // Unique temp per write: two concurrent saves in one process
     // (auto-close tick + off-tick workgroup-remove) must not share a temp path,
     // or interleaved writes produce a corrupt file that the next load() wipes.
     let tmp = path.with_extension(format!(
@@ -471,13 +471,13 @@ pub fn save_map_to(path: &Path, map: &HashMap<String, ClockEntry>) -> Result<(),
         return Err(error.to_string());
     }
     // Reuse sessions_persistence::rename_with_retry for the Windows AV/indexer
-    // hold retry (#280/#291). Discard the rich diagnostics on error.
+    // hold retry. Discard the rich diagnostics on error.
     crate::config::sessions_persistence::rename_with_retry(&tmp, path)
         .map_err(|(msg, _diag)| msg)?;
     Ok(())
 }
 
-/// (#621) GUI-path helper: remove a workgroup's keys from the in-memory store
+/// GUI-path helper: remove a workgroup's keys from the in-memory store
 /// (authoritative for the running app) and persist iff something changed. Returns
 /// keys removed. Used by `delete_workgroup` and `delete_team`.
 pub fn remove_workgroup_in_state(state: &CoordinatorClocksState, project: &str, wg: &str) -> usize {
@@ -499,7 +499,7 @@ pub fn remove_workgroup_in_state(state: &CoordinatorClocksState, project: &str, 
     removed
 }
 
-/// (#621) CLI-path helper: the CLI runs in its own process with no in-memory
+/// CLI-path helper: the CLI runs in its own process with no in-memory
 /// store, so load -> remove -> save the on-disk map directly. Best-effort; returns
 /// Ok(0) when no config dir resolves. NOTE: if the GUI is running concurrently it
 /// owns the in-memory map and may re-persist the key on its next flush; the
@@ -513,20 +513,20 @@ pub fn remove_workgroup_on_disk(project: &str, wg: &str) -> Result<usize, String
     Ok(removed)
 }
 
-/// (#621) Conservative startup backstop: drop clock keys whose workgroup dir is
+/// Conservative startup backstop: drop clock keys whose workgroup dir is
 /// CONFIRMED gone on disk, EXCEPT any key that belongs to a persisted session.
 /// Locks `state`, prunes, persists iff anything changed. Never fails startup
 /// (logs on save error). Cleans historical orphans + anything a concurrent/
 /// standalone CLI remove left behind.
 ///
-/// (#621 MED-1) The `live_fqns` keep-set is built from `sessions.json` BEFORE the
+/// The `live_fqns` keep-set is built from `sessions.json` BEFORE the
 /// lock and makes the prune immune to FQN homonyms + temporarily-unregistered
 /// projects: a clock key is NEVER pruned while a session with that FQN is
 /// persisted. This literally enforces the issue's "never delete state of a live
 /// workgroup" constraint. The prune runs in `lib.rs` before the restore, but
 /// `load_sessions_raw()` is a read-only snapshot, safe to read here.
 ///
-/// (#621 I4) The std `Mutex` is held across the per-key `is_dir` fs-IO inside
+/// The std `Mutex` is held across the per-key `is_dir` fs-IO inside
 /// `prune_with`/`should_keep_clock_key`. Benign: this runs single-threaded in
 /// `run()` BEFORE `.manage(coordinator_clocks)` and `.setup()`, so nothing else
 /// touches the store yet. Do NOT relocate this onto a hot path / shared-state tick
@@ -558,7 +558,7 @@ pub fn prune_orphaned_workgroups_and_persist(
     }
 }
 
-/// (#621) FQN keep-set from the persisted session snapshot (read-only). Same
+/// FQN keep-set from the persisted session snapshot (read-only). Same
 /// function (`agent_fqn_from_path`) + same input (`working_directory`) that seeds
 /// the clock keys, so a live coordinator's session maps to exactly its clock key.
 /// Member sessions add harmless extra entries (their FQNs never equal a clock key).
@@ -569,7 +569,7 @@ fn persisted_session_fqns() -> HashSet<String> {
         .collect()
 }
 
-/// (#621) Testable prune core: returns keys removed. A key is KEPT iff it belongs
+/// Testable prune core: returns keys removed. A key is KEPT iff it belongs
 /// to a persisted session (MED-1) OR `should_keep_clock_key` keeps it. Split out so
 /// tests can inject `candidates` + `live_fqns` without touching real sessions.json.
 pub fn prune_with(
@@ -580,7 +580,7 @@ pub fn prune_with(
     clocks.retain_keys(|key| live_fqns.contains(key) || should_keep_clock_key(key, candidates))
 }
 
-/// (#621) Keep-decision for one clock key during the startup prune. CONSERVATIVE:
+/// Keep-decision for one clock key during the startup prune. CONSERVATIVE:
 /// returns true (KEEP) on ANY uncertainty. Returns false (PRUNE) only when the key
 /// is a WG-replica FQN whose project resolves to EXACTLY ONE registered project,
 /// that project's workspace dir exists, and the specific `<wg>` dir under it is

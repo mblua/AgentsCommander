@@ -1,4 +1,4 @@
-//! #2774 Wayland portal capture tests (no D-Bus: the pick result is injected).
+//! Wayland portal capture tests (no D-Bus: the pick result is injected).
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -147,7 +147,15 @@ impl ScreenshotHost for WaylandHost {
         0
     }
 
+    async fn copy_path_preferred(&self) -> bool {
+        false
+    }
+
     fn copy_path(&self, _path: String) -> Result<(), String> {
+        panic!("wayland test uses image mode")
+    }
+
+    fn copy_image(&self, _path: String) -> Result<(), String> {
         self.push("clipboard");
         Ok(())
     }
@@ -260,7 +268,7 @@ async fn unreadable_sources_fail_and_focus() {
     png(&thin, 1, 5);
     let big = dir.join("big.png");
     png(&big, 4, 4);
-    // User-granted exception (#2774 P02 only): a symlink to a valid PNG.
+    // User-granted exception: a symlink to a valid PNG.
     let link = dir.join("link.png");
     std::os::unix::fs::symlink(&big, &link).unwrap();
 
@@ -335,7 +343,7 @@ fn host_record_is_reused_only_for_the_same_owner() {
     assert_eq!(cached_result(Some(&failed), ":1.9"), None);
 }
 
-// ── #2774 P03 shortcut registration ────────────────────────────────────────
+// ── P03 shortcut registration ────────────────────────────────────────
 
 #[derive(Clone, Default)]
 struct FakeBackend {

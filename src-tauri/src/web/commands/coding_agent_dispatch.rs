@@ -22,7 +22,7 @@ pub(super) async fn dispatch_coding_agent_command(
     args: &Value,
 ) -> Result<Value, String> {
     match cmd {
-        // #2306 P2 - ordered move of a registered coding agent. The inner holds
+        // Ordered move of a registered coding agent. The inner holds
         // the settings write guard; the broadcast runs after it returns, so the
         // guard is released before `broadcast_all`.
         "move_coding_agent" => {
@@ -40,7 +40,7 @@ pub(super) async fn dispatch_coding_agent_command(
             .await
         }
 
-        // #2542 - one-step reorder; same guard/broadcast ordering as the move.
+        // One-step reorder; same guard/broadcast ordering as the move.
         "reorder_coding_agent" => {
             let id = require_str(args, "id")?;
             let expected_ids: Vec<String> = require_json(args, "expectedIds")?;
@@ -55,7 +55,7 @@ pub(super) async fn dispatch_coding_agent_command(
             .await
         }
 
-        // --- Coding-agent profiles (#859 web transport parity) ---
+        // --- Coding-agent profiles (web transport parity) ---
         // Desktop registers these in the Tauri invoke_handler, but the browser
         // websocket router did not route them, so the CODING AGENT modal hit the
         // `Unknown command` fallback (e.g. when a closed coordinator falls
@@ -105,7 +105,7 @@ pub(super) async fn dispatch_coding_agent_command(
             apply_coding_agent_profile_selection_command(state, args).await
         }
 
-        // #1941 - the scoped selection-lock API shares the desktop inner
+        // The scoped selection-lock API shares the desktop inner
         // implementation and the same owned selection-operation boundary: reads
         // acquire the turn for a consistent snapshot, mutations broadcast their
         // event payload before releasing it.
@@ -161,7 +161,7 @@ async fn set_replica_selection_default_command(
     .await
 }
 
-/// #2306 P2 - browser route body for `move_coding_agent`, factored so a test
+/// Browser route body for `move_coding_agent`, factored so a test
 /// can drive it with a temp-path saver (the real one resolves the process
 /// config dir). Broadcasts `coding_agent_settings_updated` with the same payload
 /// the Tauri command emits, after the inner releases the settings write guard.
@@ -191,7 +191,7 @@ pub(super) async fn move_coding_agent_route_with_saver(
     serde_json::to_value(ids).map_err(|e| e.to_string())
 }
 
-/// #2542 - browser route body for `reorder_coding_agent`, mirroring
+/// Browser route body for `reorder_coding_agent`, mirroring
 /// `move_coding_agent_route_with_saver`: broadcasts the move's event payload
 /// after the inner releases the settings write guard.
 pub(super) async fn reorder_coding_agent_route_with_saver(
@@ -230,7 +230,7 @@ async fn set_instance_profile_override_command(
         .get("profile")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    // #1940 - clone the handles/request into the owned selection
+    // Clone the handles/request into the owned selection
     // operation so the guarded write and its broadcast stay serialized
     // with the desktop paths and the self-switch persist/restart.
     let state = state.clone();
@@ -258,7 +258,7 @@ async fn preview_coding_agent_profile_selection_command(
 ) -> Result<Value, String> {
     let request: crate::commands::config::PreviewCodingAgentProfileSelectionRequest =
         require_json(args, "request")?;
-    // #1941 - the preview takes the owned selection turn for a consistent
+    // The preview takes the owned selection turn for a consistent
     // operation boundary, exactly like its sibling selection arms: a read
     // queued behind a mutation waits (and may time out at the transport
     // without canceling the mutation) instead of observing half-settled
@@ -285,7 +285,7 @@ async fn apply_coding_agent_profile_selection_command(
 ) -> Result<Value, String> {
     let request: crate::commands::config::ApplyCodingAgentProfileSelectionRequest =
         require_json(args, "request")?;
-    // #1940 - the whole apply runs under the owned selection operation
+    // The whole apply runs under the owned selection operation
     // turn, and its broadcast happens before that turn is released.
     let state = state.clone();
     run_owned_selection_operation(move || async move {

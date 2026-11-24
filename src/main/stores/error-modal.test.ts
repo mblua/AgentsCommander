@@ -74,7 +74,7 @@ describe("errorModalStore", () => {
     expect(errorModalStore.current).toBe(a);
   });
 
-  it("#3037 keeps already-queued entries of any typeId (store applies no mute filter)", () => {
+  it("keeps already-queued entries of any typeId (store applies no mute filter)", () => {
     const [a, b] = mkEntries(2);
     errorModalStore.enqueue([a, b]);
     const lateSameType = { ...mkEntry(2), typeId: a.typeId };

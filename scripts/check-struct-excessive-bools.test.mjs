@@ -1,4 +1,4 @@
-// #4143: struct_excessive_bools ratchet tests. Small embedded fixtures only.
+// Struct_excessive_bools ratchet tests. Small embedded fixtures only.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -427,7 +427,7 @@ test('test-debt runs the self-test and committed ratchet blocking', () => {
   assert.match(jobBody('test-debt'), /node-version: 22/);
 });
 
-// #4192: trivia starting exactly at the 4096-character prefix cap must fail closed, not hang.
+// Trivia starting exactly at the 4096-character prefix cap must fail closed, not hang.
 // Each case runs in a child with a 5 s timeout: a synchronous loop cannot be interrupted here.
 function declarationInChild(text, index) {
   const url = new URL('./check-struct-excessive-bools.mjs', import.meta.url).href;

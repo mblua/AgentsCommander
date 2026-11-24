@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 pub struct AgentUpdateGate {
     pub(crate) state: Mutex<GateState>,
     pub(crate) release: tokio::sync::Notify,
-    /// #1551 - serializes `answer_prompt` (classify -> persist -> settle) per gate.
+    /// Serializes `answer_prompt` (classify -> persist -> settle) per gate.
     /// A tokio mutex because it is held across the persist await; the std `state`
     /// lock is never held across an await.
     pub(crate) answer_serial: tokio::sync::Mutex<()>,
@@ -26,7 +26,7 @@ pub struct AgentUpdateGate {
     pub(crate) wait_registered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
-/// #1551 - a registered-but-unanswered prompt: the answer channel plus the label
+/// A registered-but-unanswered prompt: the answer channel plus the label
 /// the closure event has to carry.
 pub(crate) struct PendingPrompt {
     pub(crate) tx: tokio::sync::oneshot::Sender<bool>,
@@ -43,17 +43,17 @@ pub(crate) struct GateState {
     pub(crate) pending: HashMap<String, PendingPrompt>,
     /// Currently registered-but-unanswered prompt, for the snapshot.
     pub(crate) pending_prompt: Option<AgentUpdatePrompt>,
-    /// #1551 - commands whose update sequence is running, in start order.
+    /// Commands whose update sequence is running, in start order.
     pub(crate) running: Vec<AgentUpdateCommandRef>,
-    /// #1551 - the policy the winning answer recorded, per prompted command.
+    /// The policy the winning answer recorded, per prompted command.
     pub(crate) answered: BTreeMap<String, bool>,
-    /// #1551 - this boot's pass, in pass order (catalog order).
+    /// This boot's pass, in pass order (catalog order).
     pub(crate) nodes: Vec<AgentUpdateNode>,
     pub(crate) controls: HashMap<String, TargetControl>,
     pub(crate) cancel_all_requested: bool,
 }
 
-/// #1551 - where one prompted command stands, as `answer_prompt` classifies it.
+/// Where one prompted command stands, as `answer_prompt` classifies it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptState {
     NotPrompted,
@@ -63,7 +63,7 @@ pub enum PromptState {
     Answered(bool),
 }
 
-/// #1551 - a pending prompt taken out of the gate by an answer. Its sender is
+/// A pending prompt taken out of the gate by an answer. Its sender is
 /// handed back UNSENT so the caller can emit the closure BEFORE releasing the
 /// prompt loop.
 pub struct ClaimedPrompt {
@@ -89,7 +89,7 @@ impl ClaimedPrompt {
     }
 }
 
-/// #1551 - the outcome of recording an answer inside the gate's serial section.
+/// The outcome of recording an answer inside the gate's serial section.
 pub enum AnswerClaim {
     Claimed(ClaimedPrompt),
     Recorded,
@@ -162,7 +162,7 @@ impl AgentUpdateGate {
         rx
     }
 
-    /// #1551 - the single removal of a pending entry: takes it out of the map and
+    /// The single removal of a pending entry: takes it out of the map and
     /// clears the snapshot's prompt when it names `command`. Every remover
     /// (`drop_pending`, `resolve_answer`, `claim_answer`) goes through here, so
     /// the entry has exactly one owner.
@@ -179,7 +179,7 @@ impl AgentUpdateGate {
     }
 
     /// Timeout path: the prompt expired without an answer. Clears the pending
-    /// prompt so a snapshot cannot resurrect it. #1551: returns the closed
+    /// prompt so a snapshot cannot resurrect it. Returns the closed
     /// prompt's reference iff THIS call removed the entry, and the caller then
     /// owns the single `agent_update_prompt_closed` emission for that prompt.
     pub fn drop_pending(&self, command: &str) -> Option<AgentUpdateCommandRef> {
@@ -199,7 +199,7 @@ impl AgentUpdateGate {
     /// timeout (round-3 F1 pin: a dead receiver must never report "applied
     /// this boot").
     ///
-    /// #1551: kept for its pinned semantics; production answers go through
+    /// Kept for its pinned semantics; production answers go through
     /// `answer_prompt`, which records the policy and owns the closure.
     pub fn resolve_answer(&self, command: &str, enabled: bool) -> bool {
         let mut state = self
@@ -212,7 +212,7 @@ impl AgentUpdateGate {
         pending.tx.send(enabled).is_ok()
     }
 
-    /// #1551 - one lock take, never sends. Records the persisted policy and, when
+    /// One lock take, never sends. Records the persisted policy and, when
     /// the prompt is still pending, CLAIMS it: the entry leaves the map here, so
     /// the closure has exactly one owner, and the sender is handed back unsent so
     /// the caller can emit the closure BEFORE releasing the loop. It records
@@ -260,7 +260,7 @@ impl AgentUpdateGate {
         }
     }
 
-    /// #1551 - classification for `answer_prompt`, one lock take. `answered` is
+    /// Classification for `answer_prompt`, one lock take. `answered` is
     /// checked first: once a policy is recorded, no further answer may persist.
     pub fn prompt_state(&self, command: &str) -> PromptState {
         let state = self
@@ -285,7 +285,7 @@ impl AgentUpdateGate {
         PromptState::NotPrompted
     }
 
-    /// #1551 - one command's update sequence starts: it joins `running` (once),
+    /// One command's update sequence starts: it joins `running` (once),
     /// its node records the pre-update install state, and the node is returned as
     /// the `agent_update_command_started` payload. A command with no node (only
     /// reachable from a test) yields a synthesized node that is NOT inserted.
@@ -319,7 +319,7 @@ impl AgentUpdateGate {
         }
     }
 
-    /// #1551 - one command's update sequence ended: it leaves `running` and its
+    /// One command's update sequence ended: it leaves `running` and its
     /// result is upserted, in ONE lock take, so no snapshot can observe a command
     /// in both `running` and `results`.
     pub fn mark_command_finished(&self, result: AgentUpdateResult) {
@@ -343,7 +343,7 @@ impl AgentUpdateGate {
         }
     }
 
-    /// #1551 - round 5: the pass starts with its node set in ONE lock take, so no
+    /// Round 5: the pass starts with its node set in ONE lock take, so no
     /// snapshot can observe started without nodes.
     pub fn mark_started_with_nodes(&self, nodes: Vec<AgentUpdateNode>) {
         let mut state = self
@@ -365,7 +365,7 @@ impl AgentUpdateGate {
         state.nodes = nodes;
     }
 
-    /// #1551 - round 5: a prompted target leaves the pass (answer No, or expiry).
+    /// Round 5: a prompted target leaves the pass (answer No, or expiry).
     /// Returns the ref iff THIS call removed the node, so the loop emits
     /// `agent_update_command_skipped` exactly once per skipped command.
     pub fn mark_command_skipped(&self, command: &str) -> Option<AgentUpdateCommandRef> {
@@ -385,7 +385,7 @@ impl AgentUpdateGate {
         })
     }
 
-    /// #1551 - true once `mark_finished` ran: at the end of a real pass, or at the
+    /// True once `mark_finished` ran: at the end of a real pass, or at the
     /// quiet-boot guard drop. Never reset.
     pub fn is_finished(&self) -> bool {
         self.state

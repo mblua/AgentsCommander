@@ -20,7 +20,7 @@ use crate::session::profile::CodingAgentKind;
 use crate::telegram::bridge::{self, BridgeHandle, ReaderDest, ReaderDestSender, ReaderTask};
 use crate::telegram::types::{BridgeInfo, BridgeStatus, TelegramBotConfig};
 
-/// Who is asking for a session's transcript reader (#2232 phase 4 section 5).
+/// Who is asking for a session's transcript reader.
 ///
 /// A demand is a `(session_id, consumer)` pair. Adding one **never** restarts a
 /// running reader; releasing the last one cancels it and closes the session's
@@ -33,7 +33,7 @@ pub enum ReaderConsumer {
     Room,
 }
 
-/// How many times a `(session_id, consumer)` demand has been released (#2516).
+/// How many times a `(session_id, consumer)` demand has been released.
 ///
 /// Every release moves it, including one that removed nothing, so a raise that
 /// sampled it before resolving readiness can tell, under the bridge lock, that
@@ -82,14 +82,14 @@ pub struct TelegramBridgeManager {
     bridges: HashMap<Uuid, BridgeHandle>,
     bot_assignments: HashMap<String, Uuid>,
     output_senders: OutputSenderMap,
-    /// #2232 phase 4: the per-session readers and their demands. Separate from
+    /// The per-session readers and their demands. Separate from
     /// `bridges`, because a reader outlives every bot attached to it.
     readers: HashMap<Uuid, ReaderEntry>,
     next_reader_id: u64,
     /// The single registry created in `lib.rs` (phase 3 section 5.1). The
     /// manager closes a session's entry when the last demand is released.
     captures: Arc<CaptureRegistry>,
-    /// #2516: release counters per `(session, consumer)`. Never pruned: pruning
+    /// Release counters per `(session, consumer)`. Never pruned: pruning
     /// on `reader_release_all` would reset the epoch a racing raise sampled.
     demand_epochs: HashMap<(Uuid, ReaderConsumer), u64>,
     #[cfg(test)]
@@ -141,7 +141,7 @@ impl BridgeShutdown {
         }
     }
 
-    /// #3317 - proof variant of `wait_or_abort`: same deadline, but an aborted task is
+    /// Proof variant of `wait_or_abort`: same deadline, but an aborted task is
     /// then awaited too. True only if every task ended `Ok` or cancelled; a panicked task
     /// is false. Never returns while a task still runs.
     pub(crate) async fn wait_until_stopped(self) -> bool {
@@ -202,7 +202,7 @@ impl TelegramBridgeManager {
         }
     }
 
-    // ── Reader demands (#2232 phase 4 section 5) ──────────────────────────
+    // ── Reader demands (phase 4 section 5) ──────────────────────────
 
     /// The shared capture registry, so the supervisor can `open` a session's
     /// endpoints before spawning its reader.
@@ -366,7 +366,7 @@ impl TelegramBridgeManager {
         })
     }
 
-    // The 8-argument signature is the frozen plan spec (#1549 §5.4): the PTY-bridge
+    // The 8-argument signature is the frozen plan spec (§5.4): the PTY-bridge
     // chain threads `agent_kind` as a loose parameter by design (no struct grouping).
     #[allow(
         clippy::too_many_arguments,
@@ -383,7 +383,7 @@ impl TelegramBridgeManager {
         reader_mode: bool,
         agent_kind: Option<CodingAgentKind>,
     ) -> Result<BridgeInfo, AppError> {
-        // #2232 phase 4 section 5: attaching is **idempotent**. A persisted bot
+        // Phase 4 section 5: attaching is **idempotent**. A persisted bot
         // re-attaching and a local auto-attach no longer treat "a bridge
         // already exists" as an error when it is the same bot on the same
         // session; they simply re-register the same demand.
@@ -531,7 +531,7 @@ impl TelegramBridgeManager {
             senders.clear();
         }
         self.bot_assignments.clear();
-        // #2232 phase 4 section 5: shutdown releases **both** demands, so every
+        // Phase 4 section 5: shutdown releases **both** demands, so every
         // reader is cancelled and its capture entry dropped.
         for (session_id, entry) in self.readers.drain() {
             entry.cancel.cancel();

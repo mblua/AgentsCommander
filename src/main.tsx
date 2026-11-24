@@ -1,4 +1,5 @@
 import "./shared/styles/scrollbars.css";
+import "./shared/styles/select.css";
 import "./shared/console-capture";
 import { render } from "solid-js/web";
 import { WindowErrorBoundary } from "./shared/window-error-boundary";
@@ -30,10 +31,10 @@ if (isTauri) {
 
 void initLogLevelForWindow();
 
-// #1652 - installed for EVERY window: which windows kept ticking and which
-// stopped is itself evidence, and all windows share one origin's localStorage,
-// so each keys its record by its own webview label.
-void installIpcBlackBox();
+// #1652 / #1707 - installed for EVERY window, but it runs only when the
+// backend's boot snapshot of `ipcBlackBoxEnabled` is true (a save applies on the
+// next start). Each window keys its record by its own webview label.
+void installIpcBlackBox(BlackBoxAPI.enabled);
 
 const isLegacyDetached =
   windowType === "terminal" && params.get("detached") === "true";
@@ -101,7 +102,7 @@ if (!isTauri) {
   // #1652 - one harvester per app start. The main window always exists, and
   // scanning from exactly one window is what keeps a single previous-run record
   // from being reported by several windows at once. `harvestIpcBlackBox` awaits
-  // the install above internally, so this line does not need to.
+  // the install started above, so this line does not need to.
   void harvestIpcBlackBox(BlackBoxAPI.report);
   render(
     () => (

@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::path::Path;
 
-/// #2348 - serialize one placement component with the same error shape as the
+/// Serialize one placement component with the same error shape as the
 /// whole-object serializer, so a (theoretically impossible) serialization failure
 /// aborts the save instead of writing a partial pair.
 pub(crate) fn serialize_settings_component<T: serde::Serialize>(
@@ -44,7 +44,7 @@ pub(crate) fn serialize_settings_component<T: serde::Serialize>(
     })
 }
 
-/// #2348 - central `Preserve` handling for the placement pair. A present disk
+/// Central `Preserve` handling for the placement pair. A present disk
 /// VALUE is authoritative; a missing key and an explicit `null` both mean "no
 /// disk truth" (the same reading `read_project_paths_from_disk` uses for the
 /// `Option` fields), so neither erases a caller value synthesized by the
@@ -136,7 +136,7 @@ pub(crate) fn preflight_duplicate_agents(
     Ok(candidate.get("agents").cloned())
 }
 
-/// The #1077 project-aware atomic writer. Builds the output object per `mode`,
+/// the project-aware atomic writer. Builds the output object per `mode`,
 /// writes it atomically, then re-decodes the exact written value so the returned
 /// `AppSettings` carries fresh runtime projections + hidden state (never the
 /// possibly-stale caller state). See §4.2/§4.3.
@@ -476,7 +476,7 @@ pub(crate) fn apply_registered_main_disk_fields(
     }
     replace_project_projection(out, &Map::new());
 
-    // #1173: a whole-settings writer cannot opt in or re-enable an explicit
+    // A whole-settings writer cannot opt in or re-enable an explicit
     // value, and a present malformed gate is an error. An absent file or a
     // valid object with an absent legacy key materializes true: the default-on
     // phase deliberately reverses the shipped absent-key rule. Only the
@@ -507,7 +507,7 @@ pub(crate) fn apply_registered_main_disk_fields(
         Value::Bool(terminal_snapshots_enabled),
     );
 
-    // #2348: main-window placement is owned by the narrow placement command.
+    // Main-window placement is owned by the narrow placement command.
     // `Preserve` never regresses it: for each key independently, a PRESENT disk
     // value is authoritative, and an absent disk key leaves the caller value
     // alone. An absent legacy `mainGeometry`

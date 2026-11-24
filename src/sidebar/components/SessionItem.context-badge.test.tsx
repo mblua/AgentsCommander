@@ -14,7 +14,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { sessionsStore } from "../stores/sessions";
 import type { AgentConfig, AppSettings, Session } from "../../shared/types";
 
-// #1033 - the CTX badge on the sidebar's own session rows. The listener, the
+// The CTX badge on the sidebar's own session rows. The listener, the
 // hydration and the projection are covered against the real App in
 // App.context-badge.workflow.test.tsx; this pins THIS surface's gate and wiring,
 // which is the half that cannot be shared and is therefore the half that drifts.
@@ -54,7 +54,7 @@ async function renderRow(settings: AppSettings, sessionProps: Partial<Session> =
   return rendered;
 }
 
-describe("SessionItem CTX badge (#1033)", () => {
+describe("SessionItem CTX badge", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -138,7 +138,7 @@ describe("SessionItem CTX badge (#1033)", () => {
     }
   });
 
-  // Pins the gate at the only place #1033 could break #1031's key-by-id rule: two
+  // Pins the gate at the only place the badge could break the key-by-id rule: two
   // agents share a command, only one configures a pattern.
   it("keys the gate by agent id and never by command", async () => {
     const rendered = await renderRow(
@@ -170,9 +170,9 @@ describe("SessionItem CTX badge (#1033)", () => {
   });
 });
 
-// #2482 p6 - the weekly-quota fill on the origin agent chip. quotaChipAttrs (p4)
+// The weekly-quota fill on the origin agent chip. quotaChipAttrs (p4)
 // decides fill vs plain; this pins that SessionItem spreads it onto the chip.
-describe("SessionItem agent chip weekly-quota fill (#2482)", () => {
+describe("SessionItem agent chip weekly-quota fill", () => {
   let cleanupDom: (() => void) | null = null;
   const otherSessionId = "s2";
 

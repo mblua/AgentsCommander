@@ -34,7 +34,7 @@ pub(crate) enum StartupErrorKind {
         app_outbox_path: PathBuf,
         source: io::Error,
     },
-    /// #2714 - a fatal outcome of the startup naming migration: an expired lock
+    /// A fatal outcome of the startup naming migration: an expired lock
     /// budget with no winner, an I/O error, or an unreadable journal.
     NamingMigration {
         scope: String,
@@ -97,7 +97,7 @@ pub fn preflight_config_startup(owner: &StartupMigrationSummary) -> Result<(), S
     preflight_config_startup_for(owner, config::config_dir().as_deref())
 }
 
-/// #2714 - the scope key of the one naming migration that runs at startup.
+/// The scope key of the one naming migration that runs at startup.
 pub(crate) const INSTANCE_FAMILIES_SCOPE: &str = "instance-families";
 
 /// The summary `run()` logs once `init_logger` has run: the migration runs

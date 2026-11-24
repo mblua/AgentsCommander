@@ -13,7 +13,7 @@ use crate::filesystem::agent_files;
 use std::path::Path;
 
 /// Ensures the on-disk default skill file exists and, if it is a pristine copy of a defective
-/// version we shipped ourselves, repairs it in place (#909).
+/// version we shipped ourselves, repairs it in place.
 ///
 /// The two arms are deliberately asymmetric and must stay that way. The **`NotFound` arm** creates
 /// the
@@ -119,7 +119,7 @@ pub(crate) fn ensure_default_skill_file(
 }
 
 // -------------------------------------------------------------------------------------------
-// #909: repair of pristine stale default skill files.
+// Repair of pristine stale default skill files.
 // -------------------------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Eq)]
@@ -171,7 +171,7 @@ pub(crate) enum BoundedRead {
 ///
 /// Build-machine dependent, because `content.len()` is `include_str!`'s length, and
 /// `.gitattributes`
-/// carries no `*.md` rule (#914). No fixture may hard-code the result.
+/// carries no `*.md` rule. No fixture may hard-code the result.
 pub(crate) fn max_migratable_len(content: &str, legacy_snapshots: &[&str]) -> u64 {
     let longest = legacy_snapshots
         .iter()
@@ -226,7 +226,7 @@ pub(crate) fn short_sha256(text: &str) -> String {
     digest[..16].to_string()
 }
 
-/// #909: an on-disk default skill file that is a byte-exact copy (modulo line endings and
+/// An on-disk default skill file that is a byte-exact copy (modulo line endings and
 /// surrounding whitespace) of a previously shipped, defective version is repaired in place.
 /// Anything
 /// else is treated as a user edit and left alone.
@@ -337,7 +337,7 @@ pub(crate) fn migrate_default_skill_file(
 
 /// Writes `content` VERBATIM (never the normalized form: four pre-existing tests assert
 /// `read_to_string(seeded) == content` byte for byte) through a temp file, and publishes with
-/// `atomic_replace_existing`, the #664 overwrite primitive.
+/// `atomic_replace_existing`, the overwrite primitive.
 pub(crate) fn atomic_write_default_skill(
     root_dir: &Path,
     skills_root: &Path,

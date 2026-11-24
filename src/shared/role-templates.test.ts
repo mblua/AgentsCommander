@@ -150,7 +150,7 @@ describe("applyTemplatePrefill", () => {
   });
 
   it("replaces_previous_template_values_on_second_selection_278", () => {
-    // Regression for #278: after picking Geographer, picking Historian must
+    // Regression: after picking Geographer, picking Historian must
     // overwrite both fields because nothing in between marked them dirty.
     const afterFirst = applyTemplatePrefill(geographer, {
       name: "",
@@ -249,7 +249,7 @@ describe("sourceLabel", () => {
   });
 });
 
-describe("slugifyTemplateName dash trim (#4456 S8786)", () => {
+describe("slugifyTemplateName dash trim", () => {
   it.each([
     ["", ""],
     ["-", ""],

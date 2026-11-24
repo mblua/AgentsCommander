@@ -187,7 +187,7 @@ fn seed_profile_case(dir: &Path, protected: bool) -> ProfileCase {
     let overlay_path = dir.join("settings.50.personal.no-git.json");
     let overlay_before = std::fs::read(&overlay_path).unwrap();
     let mut expected_raw = disk(&path)["codingAgentProfiles"].clone();
-    // Independent #2450 preimages for these two fixed seed rows.
+    // Independent preimages for these two fixed seed rows.
     expected_raw["identityByAgent"] = json!({
         "codex":"460361e30eb7c7a5", "claude":"57bf1d23533f9c40"
     });

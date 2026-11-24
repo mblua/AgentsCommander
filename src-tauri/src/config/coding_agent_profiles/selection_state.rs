@@ -138,7 +138,7 @@ pub struct ReplicaSelectionExpectation {
     pub profile_override_source: Option<String>,
 }
 
-/// #1939 - strict, read-only view of a replica's stored selection.
+/// Strict, read-only view of a replica's stored selection.
 ///
 /// `Invalid` is a diagnostic, never a permissive state: invalid/duplicate JSON,
 /// a non-object `tooling`, a non-boolean `selectionLocked`, or `true` with an
@@ -220,7 +220,7 @@ impl ReplicaSelectionState {
     }
 }
 
-/// #1939 - which policy a selection write applies. There is deliberately no
+/// Which policy a selection write applies. There is deliberately no
 /// free `bool`: every caller names an intent, so none can bypass the lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionWriteIntent {
@@ -241,14 +241,14 @@ pub enum SelectionWriteIntent {
     BulkForceReviewed,
 }
 
-/// #1939 - a lock flip, tracked separately from the publication itself.
+/// A lock flip, tracked separately from the publication itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionLockTransition {
     UnlockedToLocked,
     LockedToUnlocked,
 }
 
-/// #1939 - outcome of a guarded selection mutation.
+/// Outcome of a guarded selection mutation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectionWriteOutcome {
     /// True when the guarded callback applied a semantic change.
@@ -275,8 +275,8 @@ impl SelectionWriteOutcome {
     };
 }
 
-/// #1939 - call-local typed marker carrying a no-publish guard outcome back
-/// through the #1938 funnel's `Err` channel. The marker decides; the error text
+/// Call-local typed marker carrying a no-publish guard outcome back
+/// through the guard funnel's `Err` channel. The marker decides; the error text
 /// is never inspected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SelectionGuardMarker {
@@ -381,7 +381,7 @@ pub(crate) fn selection_state_from_value(config: &Value, identity: &str) -> Repl
     }
 }
 
-/// #1939 - strict read-only view of `replica_dir`'s stored selection. Uses the
+/// Strict read-only view of `replica_dir`'s stored selection. Uses the
 /// existing strict reader (bounded path-safe read, duplicate-free JSON, object
 /// and identity validation); every strict-read failure becomes `Invalid`.
 pub fn read_replica_selection_state(replica_dir: &Path) -> ReplicaSelectionState {
@@ -393,7 +393,7 @@ pub fn read_replica_selection_state(replica_dir: &Path) -> ReplicaSelectionState
     }
 }
 
-/// #1939 - Matrix creation default: `tooling.replicaSelectionDefault`.
+/// Matrix creation default: `tooling.replicaSelectionDefault`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicaSelectionDefault {
     pub coding_agent_id: String,
@@ -482,7 +482,7 @@ pub(super) fn parse_replica_selection_default(
     Ok(Some(normalized))
 }
 
-/// #1939 - read the Matrix creation default from one atomic JSON snapshot.
+/// Read the Matrix creation default from one atomic JSON snapshot.
 ///
 /// A missing Matrix config, missing `tooling`, or missing
 /// `tooling.replicaSelectionDefault` all mean "old creation behavior"
@@ -520,8 +520,8 @@ pub fn read_replica_selection_default(
         .map_err(|error| format!("Matrix config {}: {}", config_path.display(), error))
 }
 
-/// #1939 - validate a default and write `tooling.replicaSelectionDefault` under
-/// the #1938 sidecar. `expected_prior` is the CAS value read before the call; a
+/// Validate a default and write `tooling.replicaSelectionDefault` under
+/// the selection sidecar. `expected_prior` is the CAS value read before the call; a
 /// mismatch is a stale error and publishes nothing.
 pub fn write_replica_selection_default(
     matrix_dir: &Path,
@@ -561,7 +561,7 @@ pub fn write_replica_selection_default(
     Ok(SelectionWriteOutcome::WRITTEN)
 }
 
-/// #1939 - materialize a validated Matrix default into a first-creation replica
+/// Materialize a validated Matrix default into a first-creation replica
 /// config object. The caller owns the surrounding guarded write.
 pub(crate) fn apply_replica_selection_default(
     config: &mut Value,

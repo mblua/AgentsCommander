@@ -66,7 +66,7 @@ fn rotated_reads() -> usize {
 /// would otherwise have dropped, and report what the map holds for `id`
 /// without releasing the lock. Observing under the same guard is what makes
 /// an already-stale seed checkable: a parallel test that takes the lock
-/// between a write and a separate read would prune the entry first (#2212).
+/// between a write and a separate read would prune the entry first.
 fn seed_coalescer(
     id: Uuid,
     stamped: Instant,

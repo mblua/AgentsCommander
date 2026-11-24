@@ -842,7 +842,7 @@ impl<H: MailboxHost> PtyDispatcher<'_, H> {
                     Some(Stop::StoreTransient) => C::StoreTransient,
                     Some(Stop::Expired) => C::Expired,
                     Some(Stop::LeaseLost) => C::LeaseLost,
-                    Some(Stop::Terminal) => unreachable!(),
+                    Some(Stop::Terminal) => unreachable!("Terminal is matched by the outer arm"),
                     None => C::SpawnFailedSafe,
                 };
                 finish_pty_input_before_boundary(

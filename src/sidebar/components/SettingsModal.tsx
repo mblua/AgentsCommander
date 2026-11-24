@@ -22,15 +22,8 @@ import type {
   QuotaSourceConfig,
 } from "../../shared/types";
 import { agentsUnreadableNotice } from "../../shared/types";
-import {
-  SettingsAPI,
-  TelegramAPI,
-  ReposAPI,
-  CodingAgentsAPI,
-  PtyAPI,
-  assertCodingAgentMoveOrder,
-  onCodingAgentSettingsUpdated,
-} from "../../shared/ipc";
+import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI, PtyAPI } from "../../shared/ipc";
+import { assertCodingAgentMoveOrder, onCodingAgentSettingsUpdated } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
 import { validateScreenshotHotkeySyntax } from "../../shared/screenshot-hotkey";
 import { letterFromCaptureEvent, parseAppHotkey } from "../../shared/app-hotkey";
@@ -47,8 +40,11 @@ import { createAgentDragReorder } from "./settings/agentDragReorder";
 import { GripIcon } from "./settings/GripIcon";
 import { PreflightFields } from "./settings/PreflightFields";
 import { PreflightTestPanel } from "./settings/PreflightTestPanel";
+import { CodingAgentsTransfer, type TransferImportHandler } from "./settings/CodingAgentsTransfer";
 import WatchersSettings, { WATCHER_PREVIEW_DEBOUNCE_MS } from "./settings/WatchersSettings";
 import ContextHistorySettings, * as ctxHistory from "./settings/ContextHistorySettings";
+import ScreenshotSettings from "./settings/ScreenshotSettings";
+import IpcBlackBoxSetting from "./settings/IpcBlackBoxSetting";
 import { selectSessionWindow } from "../../shared/context-history";
 import {
   TIMEOUT_SAVE_ERROR, isTimeoutKeyOfAgent, parseTimeoutInput, timeoutKey,
@@ -1800,7 +1796,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const displayedProfileCellCommand = (agentId: string, letter: string): string => {
     const key = profileCellKey(agentId, letter);
-    if (Object.prototype.hasOwnProperty.call(profileCellText, key)) {
+    if (Object.hasOwn(profileCellText, key)) {
       return profileCellText[key] ?? "";
     }
     return profileCell(agentId, letter)?.command ?? "";
@@ -1808,7 +1804,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
   const cellEnvRows = (agentId: string, letter: string): ProfileCellEnvRow[] => {
     const key = profileCellKey(agentId, letter);
-    if (Object.prototype.hasOwnProperty.call(profileCellEnvRows, key)) {
+    if (Object.hasOwn(profileCellEnvRows, key)) {
       return profileCellEnvRows[key] ?? [];
     }
     const env = profileCell(agentId, letter)?.env ?? {};
@@ -1861,7 +1857,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       })),
     );
 
-  const addAgent = (preset?: Omit<AgentConfig, "id">) => {
+  const addAgent = (preset?: Omit<AgentConfig, "id"> & { id?: string }) => {
     if (!settings.data) return;
     setDraftDirty(true);
     const agent: AgentConfig = preset
@@ -1880,6 +1876,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     if (seeded) setQuotaSource(agent.id, seeded);
     else pendingQuotaSeed.add(agent.id);
     setActiveAgentId(agent.id);
+  };
+
+  const importCodingAgents: TransferImportHandler = (added, profiles) => {
+    setSettings("data", "codingAgentProfiles", profiles);
+    for (const agent of added) addAgent(agent);
   };
 
   /** #1965 — a preset captured from an older catalog generation must not be
@@ -1944,8 +1945,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const chatId = await TelegramAPI.sendTest(bot.token);
       updateBot(index, "chatId", chatId);
       setTestResult({ id: bot.id, ok: true });
-    } catch (e: any) {
-      setTestResult({ id: bot.id, ok: false, msg: e?.toString() });
+    } catch (e: unknown) {
+      setTestResult({ id: bot.id, ok: false, msg: (e as { toString(): string } | null | undefined)?.toString() });
     }
     setTestingBot(null);
   };
@@ -2676,23 +2677,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   data-ac-testid="settings.general.screenshotCaptureHotkey"
                 />
               </label>
-              <label data-ac-setting="screenshotHyprlandBind" class="settings-checkbox-field">
-                <input
-                  type="checkbox"
-                  class="settings-checkbox"
-                  checked={settings.data!.screenshotHyprlandBind ?? false}
-                  onChange={(e) =>
-                    updateField("screenshotHyprlandBind", e.currentTarget.checked)
-                  }
-                  data-ac-testid="settings.general.screenshotHyprlandBind"
-                />
-                <span class="settings-label">Add the screenshot shortcut to Hyprland for me</span>
-              </label>
-              <div class="settings-hint">
-                Linux with Hyprland (Omarchy): AgentsCommander writes its own marked lines in
-                ~/.config/hypr/bindings.lua and keeps them in step with the key above. Turn off
-                to remove them.
-              </div>
+              <ScreenshotSettings
+                hyprlandBind={settings.data!.screenshotHyprlandBind ?? false}
+                copyPath={settings.data!.screenshotCopyPath ?? false}
+                onHyprlandBind={(on) => updateField("screenshotHyprlandBind", on)}
+                onCopyPath={(on) => updateField("screenshotCopyPath", on)}
+              />
               <label data-ac-setting="sidebarCompactHotkey" class="settings-field">
                 <span class="settings-label">Compact sidebar hotkey</span>
                 <input
@@ -3429,26 +3419,24 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   class="settings-checkbox"
                   checked={settings.data!.activityLogEnabled}
                   disabled={saving()}
-                  onChange={(e) =>
-                    updateField("activityLogEnabled", e.currentTarget.checked)
-                  }
+                  onChange={(e) => updateField("activityLogEnabled", e.currentTarget.checked)}
                   data-ac-testid="settings.general.activityLogEnabled"
                   data-ac-role="checkbox"
-                  data-ac-state={
-                    settings.data!.activityLogEnabled ? "checked" : "unchecked"
-                  }
+                  data-ac-state={settings.data!.activityLogEnabled ? "checked" : "unchecked"}
                 />
                 <span>Record activity log (activity.jsonl)</span>
               </label>
-              <div
-                class="settings-hint"
-                data-ac-testid="settings.general.activityLogEnabled.hint"
-              >
+              <div class="settings-hint" data-ac-testid="settings.general.activityLogEnabled.hint">
                 Writes a diagnostic timeline (app start/stop, heartbeat, session busy/idle
                 edges) that no other feature reads. Applies on the next launch; the current
                 session is unaffected. Existing activity.jsonl files are left untouched.
                 Disabled by default.
               </div>
+              <IpcBlackBoxSetting
+                checked={settings.data!.ipcBlackBoxEnabled ?? false}
+                disabled={saving()}
+                onChange={(on) => updateField("ipcBlackBoxEnabled", on)}
+              />
             </div>
           </>)}
       </div>
@@ -4905,6 +4893,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
         <div class="settings-compare-wrap">
           <div class="settings-compare-toolbar">
+            <CodingAgentsTransfer data={settings.data} onImport={importCodingAgents} />
             <select
               class="settings-input settings-rail-count-select"
               value={railCount() === 2 ? "2" : "1"}
@@ -5318,7 +5307,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   updateField("contextHistorySessionWindows", counts);
                   const colour = settings.data!.contextHistoryColorSessions;
                   if (colour === undefined || !counts.includes(colour)) {
-                    updateField("contextHistoryColorSessions", counts[counts.length - 1]);
+                    updateField("contextHistoryColorSessions", counts.at(-1));
                   }
                 }}
                 onColorSessions={(sessions) => updateField("contextHistoryColorSessions", sessions)}

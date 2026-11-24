@@ -26,7 +26,7 @@ const RULE_SHEETS = SHEETS.filter((p) => p !== IMPORT_LIST);
 const rulesOf = (path: string): ScannedRule[] => scanRules(mask(read(path.slice(4))));
 const GLOBAL = rulesOf("src/shared/styles/scrollbars.css");
 
-describe("#2579 global Noir scrollbars", () => {
+describe("global Noir scrollbars", () => {
   it("G1 values", () => {
     const bar = ruleFor(GLOBAL, "::-webkit-scrollbar");
     expect(declValue(bar, "width")).toBe("4px");
@@ -39,7 +39,7 @@ describe("#2579 global Noir scrollbars", () => {
     expect(declValue(thumb, "border-radius")).toBe("2px");
   });
 
-  it("G2 exclusivity: no standard scrollbar property in any of the 23 sheets", () => {
+  it("G2 exclusivity: no standard scrollbar property in any of the 24 sheets", () => {
     // The list is pinned so a new or renamed sheet cannot slip past G2/G3.
     expect(SHEETS).toEqual([
       "src/browser/styles/browser.css",
@@ -49,6 +49,7 @@ describe("#2579 global Noir scrollbars", () => {
       "src/screenshot-overlay/styles/screenshot-overlay.css",
       "src/shared/styles/external-link-confirm.css",
       "src/shared/styles/scrollbars.css",
+      "src/shared/styles/select.css",
       "src/shared/styles/toast.css",
       "src/sidebar/components/settings/preflightTest.css",
       "src/sidebar/styles/agent-picker-modal.css",

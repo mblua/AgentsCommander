@@ -23,7 +23,7 @@ pub async fn screenshot_get_overlay_state(
     crate::screenshot::overlay_state(&app, state.inner(), &capture_id, monitor_id).await
 }
 
-/// Confirm a selection: crop, save the PNG into the replica root, copy the path,
+/// Confirm a selection: crop, save the PNG into the replica root, copy the image (or path),
 /// and tear down overlays. Backend owns all cleanup.
 #[tauri::command]
 pub async fn screenshot_confirm_selection(
@@ -255,11 +255,32 @@ impl crate::screenshot::ScreenshotHost for AppHandle {
         destroyed
     }
 
+    async fn copy_path_preferred(&self) -> bool {
+        match self.state::<SettingsState>().current_read().await {
+            Ok(current) => current.screenshot_copy_path,
+            Err(error) => {
+                log::warn!("[screenshot] settings read failed: {error}");
+                false
+            }
+        }
+    }
+
     fn copy_path(&self, path: String) -> Result<(), String> {
         use tauri_plugin_clipboard_manager::ClipboardExt;
 
         self.clipboard()
             .write_text(path)
+            .map_err(|error| error.to_string())
+    }
+
+    fn copy_image(&self, path: String) -> Result<(), String> {
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+
+        let path = std::path::Path::new(&path);
+        let bytes = crate::filesystem::screenshot_files::read_saved_screenshot(path)?;
+        let image = tauri::image::Image::from_bytes(&bytes).map_err(|error| error.to_string())?;
+        self.clipboard()
+            .write_image(&image)
             .map_err(|error| error.to_string())
     }
 

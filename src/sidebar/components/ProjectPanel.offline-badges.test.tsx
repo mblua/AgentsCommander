@@ -16,7 +16,7 @@ import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import type { AcAgentReplica, AgentConfig } from "../../shared/types";
 
-// #733 — a shut-down replica (gray, no live session) must still advertise its
+// A shut-down replica (gray, no live session) must still advertise its
 // last Coding Agent + Profile. The row's three badge helpers now fall back to the
 // persisted replica config (currentCodingAgentId/currentProfile, filled at
 // discovery from disk) when session() is undefined, mirroring repoBadges(). Per
@@ -103,7 +103,7 @@ async function mount(discoveryResult: ReturnType<typeof discovery>, settings = s
   return rendered;
 }
 
-describe("ProjectPanel offline Coding Agent + Profile badges (#733)", () => {
+describe("ProjectPanel offline Coding Agent + Profile badges", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -157,7 +157,7 @@ describe("ProjectPanel offline Coding Agent + Profile badges (#733)", () => {
   });
 
   it("shows the AUTO-CLOSED pill together with the persisted Coding Agent + Profile badges", async () => {
-    // Auto-closed coordinators are DESTROYED (no live session), so before #733
+    // Auto-closed coordinators are DESTROYED (no live session), so before the fix
     // their agent/profile badges vanished with the session. The pill and the
     // persisted badges must now coexist.
     const rendered = await mount(

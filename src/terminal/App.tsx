@@ -142,7 +142,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
     if (selection.mode !== "live") return true;
 
     try {
-      // #1455 - captured BEFORE the await: it is the ordering token the bind
+      // Captured BEFORE the await: it is the ordering token the bind
       // compares a later local write against.
       const expectedTaskSeq = terminalStore.taskWriteSeq;
       const sessions = await SessionAPI.list();
@@ -253,7 +253,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
   const loadLockedSession = async (): Promise<void> => {
     const generation = observedConnection.generation;
     try {
-      // #1455 - see reconcileSelection.
+      // See reconcileSelection.
       const expectedTaskSeq = terminalStore.taskWriteSeq;
       const sessions = await SessionAPI.list();
       if (disposed || observedConnection.generation !== generation || observedConnection.state !== "connected") return;

@@ -36,12 +36,12 @@ const FLUSH_DELAY_MS: u64 = 500;
 /// directory (callers resolve via `commands::session::resolve_claude_projects_dir`
 /// so wrapper-driven `CLAUDE_CONFIG_DIR` overrides like `claude-mb` are honored).
 ///
-/// `transcript_id` is the transcript id AC minted at spawn (#2454). When it is
+/// `transcript_id` is the transcript id AC minted at spawn. When it is
 /// known and `<id>.jsonl` is absent at the first poll, the first attach waits
 /// for that file instead of taking the newest one by mtime.
 ///
 /// `dest` carries the Telegram destination, consulted **only** when it changes
-/// — at attach and at detach (#2232 phase 4 section 6). `None` is a room-only
+/// — at attach and at detach. `None` is a room-only
 /// reader: no logger is built, nothing is sent, and the records still reach
 /// `sink`.
 #[allow(clippy::too_many_arguments, reason = "owns all watch inputs")]
@@ -71,7 +71,7 @@ pub fn spawn_watch_task(
     })
 }
 
-/// The first-attach decision of the Claude reader (#2454).
+/// The first-attach decision of the Claude reader.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum AttachDecision {
     /// The minted transcript was absent at the first poll and still is, and
@@ -80,7 +80,7 @@ enum AttachDecision {
     /// The reader was waiting and the minted transcript has appeared. The
     /// fresh-spawn case, and only it.
     Pinned(PathBuf),
-    /// The newest `.jsonl` by mtime, exactly as before #2454.
+    /// The newest `.jsonl` by mtime.
     Mtime(PathBuf),
     /// The reader was waiting, the deadline expired and the minted transcript
     /// is still absent: attach exactly like `Mtime`. Its own variant so the
@@ -91,7 +91,7 @@ enum AttachDecision {
 }
 
 /// What [`decide_attach`] reads. Whether the pinned file is the newest is
-/// `pinned == newest`; requirement 4 of #2454 makes the answer irrelevant.
+/// `pinned == newest`; the attach rule makes the answer irrelevant.
 #[derive(Clone, Copy, Debug)]
 struct AttachInputs<'a> {
     transcript_id: Option<&'a str>,
@@ -129,16 +129,14 @@ fn decide_attach(inputs: AttachInputs<'_>) -> AttachDecision {
     }
 }
 
-/// Whether this poll consults [`decide_attach`] (#2454 p3b requirement 4).
-///
-/// Only until the reader's first attach: after it, a vanished transcript
-/// leaves `current_file` empty again, and re-running the decision would pin a
-/// restored file whose content this reader already consumed.
+/// Whether this poll consults [`decide_attach`]: only until the reader's first
+/// attach. After it, a vanished transcript leaves `current_file` empty again, and
+/// re-running the decision would pin a restored file this reader already consumed.
 fn runs_first_attach_decision(first_attach_done: bool, has_current_file: bool) -> bool {
     !first_attach_done && !has_current_file
 }
 
-/// Where a reader sends Telegram messages (#2232 phase 4 section 6).
+/// Where a reader sends Telegram messages.
 ///
 /// Deliberately **not** shared with `codex_watcher`, which declares its own:
 /// section 10 forbids either watcher gaining a reference the other does not
@@ -280,9 +278,7 @@ fn extract_assistant_text(line: &str) -> Option<String> {
 ///
 /// `reader_seq` is a per-reader counter starting at 0: the record keeps the
 /// value it was built with and the counter advances once per produced record.
-/// `attach` carries the reader's epoch and its observation of the file
-/// (#2232 phase 3); phase 1 hardcoded `epoch: 0` and had nowhere to put the
-/// observation.
+/// `attach` carries the reader's epoch and its observation of the file.
 // Eight parameters: phase 1's seven plus the attachment. Grouping them into a
 // builder would hide which of them the record copies verbatim, which is the one
 // thing the phase-1 tests read this function for.
@@ -340,7 +336,7 @@ fn deliver_capture_record(
 /// Capture and deliver every accepted record among `new_lines`, in order.
 ///
 /// The caller appends `record.text` and a newline to the Telegram buffer,
-/// exactly as the pre-#2232 code appended the extractor text.
+/// exactly as the extractor path appended the extractor text.
 fn capture_live_lines(
     new_lines: Vec<(u64, String)>,
     session_id: &str,
@@ -375,7 +371,7 @@ fn capture_live_lines(
 /// lines are not tracked by the kernel, so `record_start` is `None`.
 ///
 /// `origin` is [`RecordOrigin::Preamble`] for an attach by mtime and
-/// [`RecordOrigin::Live`] for a pinned attach (#2454): a pinned file did not
+/// [`RecordOrigin::Live`] for a pinned attach: a pinned file did not
 /// exist when the reader started, so its content is this spawn's own output.
 /// The `None` start is kept on purpose; the scan reads a capped tail window, so
 /// any offset it produced would be a guess.
@@ -480,9 +476,16 @@ struct ClaudeReader {
     line_remainder: String,
     dir_warned: bool,
     pin_id: Option<String>,
-    first_poll: bool,
-    first_attach_done: bool,
+    attach_phase: AttachPhase,
     wait_deadline: Option<Instant>,
+}
+
+/// First-attach progress, moving only forward: `FirstPoll`, `Waiting`, `Attached`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttachPhase {
+    FirstPoll,
+    Waiting,
+    Attached,
 }
 
 impl ClaudeReader {
@@ -495,7 +498,7 @@ impl ClaudeReader {
         event_port: Arc<dyn TelegramEvents>,
         sink: Option<UnboundedSender<Arc<CapturedRecord>>>,
     ) -> Self {
-        // #2232 phase 4 section 8: with no bot demand no diagnostic is built, so
+        // With no bot demand no diagnostic is built, so
         // `BridgeLogger::new` — which truncates the **global** diagnostic files
         // (`telegram/output.rs:140`) — is never called for a room-only reader. On a
         // hot attach the loggers are born at that moment, which is when they are
@@ -515,14 +518,14 @@ impl ClaudeReader {
             buffer: String::new(),
             last_buffer_add: Instant::now(),
             flush_delay: Duration::from_millis(FLUSH_DELAY_MS),
-            // #2232 phase 4 section 4.2: the supervisor passes the live sender in, so
+            // The supervisor passes the live sender in, so
             // the records of a room-only reader reach `CaptureRegistry` with no bot
             // anywhere. With `None` the emit is a no-op.
             capture_tx: sink,
             reader_seq: 0,
-            // #2232 phase 3: the reader's own epoch and file observation. Both are
+            // The reader's own epoch and file observation. Both are
             // computed only when a sink is attached, so a room without the flag keeps
-            // the pre-#2232 syscall count.
+            // its baseline syscall count.
             observer: ReaderObservations::default(),
             // The first sweep of a rotated transcript is a backfill, not a live turn
             // (section 8.3). Declared divergence: Telegram does send that content
@@ -534,10 +537,8 @@ impl ClaudeReader {
             file_offset: 0,
             line_remainder: String::new(),
             dir_warned: false,
-            // #2454: the minted transcript id, consulted until the first attach.
-            pin_id: transcript_id,
-            first_poll: true,
-            first_attach_done: false,
+            pin_id: transcript_id, // The minted transcript id, consulted until the first attach.
+            attach_phase: AttachPhase::FirstPoll,
             wait_deadline: None,
         }
     }
@@ -628,60 +629,59 @@ impl ClaudeReader {
 
     /// The file this poll should read, and whether it is a pinned attach.
     fn attach_target(&mut self, newest: Option<PathBuf>) -> (Option<PathBuf>, bool) {
-        // #2454: the first attach goes through `decide_attach`; after
-        // it, rotation follows the newest mtime exactly as before.
+        // The first attach goes through `decide_attach`; later ones follow the newest mtime.
         let mut pinned_attach = false;
-        let latest =
-            if runs_first_attach_decision(self.first_attach_done, self.current_file.is_some()) {
-                let pinned = self
-                    .pin_id
-                    .as_deref()
-                    .and_then(|id| find_pinned_jsonl(&self.project_dir, id));
-                let decision = decide_attach(AttachInputs {
-                    transcript_id: self.pin_id.as_deref(),
-                    pinned: pinned.as_deref(),
-                    newest: newest.as_deref(),
-                    first_poll: self.first_poll,
-                    deadline_expired: self.wait_deadline.is_some_and(|d| Instant::now() >= d),
-                });
-                self.first_poll = false;
-                let waiting = matches!(decision, AttachDecision::Wait);
-                if waiting && self.wait_deadline.is_none() {
-                    self.wait_deadline =
-                        Some(Instant::now() + Duration::from_secs(PINNED_ATTACH_WAIT_SECS));
-                    log::info!(
-                        "[JSONL_ATTACH] session {} waiting up to {}s for {}",
-                        self.session_id,
-                        PINNED_ATTACH_WAIT_SECS,
-                        self.project_dir
-                            .join(format!(
-                                "{}.jsonl",
-                                self.pin_id.as_deref().unwrap_or_default()
-                            ))
-                            .display()
-                    );
+        let attached = self.attach_phase == AttachPhase::Attached;
+        let latest = if runs_first_attach_decision(attached, self.current_file.is_some()) {
+            let pinned = self
+                .pin_id
+                .as_deref()
+                .and_then(|id| find_pinned_jsonl(&self.project_dir, id));
+            let decision = decide_attach(AttachInputs {
+                transcript_id: self.pin_id.as_deref(),
+                pinned: pinned.as_deref(),
+                newest: newest.as_deref(),
+                first_poll: self.attach_phase == AttachPhase::FirstPoll,
+                deadline_expired: self.wait_deadline.is_some_and(|d| Instant::now() >= d),
+            });
+            self.attach_phase = AttachPhase::Waiting;
+            let waiting = matches!(decision, AttachDecision::Wait);
+            if waiting && self.wait_deadline.is_none() {
+                self.wait_deadline =
+                    Some(Instant::now() + Duration::from_secs(PINNED_ATTACH_WAIT_SECS));
+                log::info!(
+                    "[JSONL_ATTACH] session {} waiting up to {}s for {}",
+                    self.session_id,
+                    PINNED_ATTACH_WAIT_SECS,
+                    self.project_dir
+                        .join(format!(
+                            "{}.jsonl",
+                            self.pin_id.as_deref().unwrap_or_default()
+                        ))
+                        .display()
+                );
+            }
+            match decision {
+                AttachDecision::Pinned(path) => {
+                    pinned_attach = true;
+                    Some(path)
                 }
-                match decision {
-                    AttachDecision::Pinned(path) => {
-                        pinned_attach = true;
-                        Some(path)
-                    }
-                    AttachDecision::Mtime(path) => Some(path),
-                    // Runs once: this attach ends the decision loop.
-                    AttachDecision::MtimeFallback(path) => {
-                        log::warn!(
-                            "[JSONL_ATTACH] session {} pinned transcript absent after {}s; \
+                AttachDecision::Mtime(path) => Some(path),
+                // Runs once: this attach ends the decision loop.
+                AttachDecision::MtimeFallback(path) => {
+                    log::warn!(
+                        "[JSONL_ATTACH] session {} pinned transcript absent after {}s; \
                          falling back to newest by mtime",
-                            self.session_id,
-                            PINNED_ATTACH_WAIT_SECS
-                        );
-                        Some(path)
-                    }
-                    AttachDecision::Wait | AttachDecision::Nothing => None,
+                        self.session_id,
+                        PINNED_ATTACH_WAIT_SECS
+                    );
+                    Some(path)
                 }
-            } else {
-                newest
-            };
+                AttachDecision::Wait | AttachDecision::Nothing => None,
+            }
+        } else {
+            newest
+        };
         (latest, pinned_attach)
     }
 
@@ -718,7 +718,9 @@ impl ClaudeReader {
             );
         }
         self.current_file = latest;
-        self.first_attach_done |= self.current_file.is_some();
+        if self.current_file.is_some() {
+            self.attach_phase = AttachPhase::Attached;
+        }
         self.current_file_mtime = self
             .current_file
             .as_ref()
@@ -741,8 +743,7 @@ impl ClaudeReader {
 
     /// The first attach's §J preamble scan over `p`.
     fn first_attach_scan(&mut self, p: &Path, pinned_attach: bool) {
-        // #2454 requirement 5: a pinned attach is this
-        // spawn's own output, so it is `Live`.
+        // A pinned attach is this spawn's own output, so it is `Live`.
         let origin = if pinned_attach {
             RecordOrigin::Live
         } else {

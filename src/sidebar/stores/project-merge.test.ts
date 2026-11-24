@@ -3,7 +3,7 @@ import type { AcAgentReplica, AcDiscoveryResult, AcLoopSummary, AcWorkgroup } fr
 import type { ProjectState } from "./project";
 import { deepEqual, mergeDiscoveryResult } from "./project-merge";
 
-// #748 — the identity-preserving discovery merge. Object references drive the
+// The identity-preserving discovery merge. Object references drive the
 // reference-keyed <For>s in ProjectPanel: every ref preserved here is a DOM row
 // NOT disposed/re-created on reload (and a click over it NOT lost).
 
@@ -92,7 +92,7 @@ function snapshot(): AcDiscoveryResult {
   });
 }
 
-describe("mergeDiscoveryResult (#748)", () => {
+describe("mergeDiscoveryResult", () => {
   it("returns the existing project object itself for an identical snapshot", () => {
     const existing = makeProject(snapshot());
 
@@ -178,7 +178,7 @@ describe("mergeDiscoveryResult (#748)", () => {
   });
 });
 
-describe("deepEqual (#748)", () => {
+describe("deepEqual", () => {
   it("treats an undefined-valued key and a missing key as equal (optional fields)", () => {
     expect(deepEqual({ a: 1, b: undefined }, { a: 1 })).toBe(true);
     expect(deepEqual({ a: 1 }, { a: 1, b: undefined })).toBe(true);

@@ -198,7 +198,7 @@ describe("BrowserApp workflow", () => {
         expect(rendered.root.querySelector(".browser-layout")).not.toBeNull();
         expect(rendered.root.querySelector(".browser-sidebar")).not.toBeNull();
         expect(rendered.root.querySelector(".browser-terminal")).not.toBeNull();
-        // #840 — web defaults to the sidebar on the right (mirrors desktop).
+        // Web defaults to the sidebar on the right (mirrors desktop).
         expect(rendered.root.querySelector(".sidebar-body")?.getAttribute("data-rail-side")).toBe("right");
         expect(
           rendered.root.querySelector(".browser-layout")?.classList.contains("browser-sidebar-right")

@@ -1,5 +1,5 @@
-// #2410 - generic guard: every class token used in markup must have a CSS rule.
-// Origin defect: #2409 (a literal class in new markup with no stylesheet rule).
+// Generic guard: every class token used in markup must have a CSS rule.
+// Origin defect: (a literal class in new markup with no stylesheet rule).
 //
 // Used classes are PARSER-BACKED (TypeScript compiler API, same approach as
 // sidebar/watchdog/context-menu-import-boundary.test.ts). Sites collected:
@@ -222,7 +222,7 @@ function loadRealTree() {
 const fx = (text: string, path = "fixture.tsx"): SourceFile[] => [{ path, text }];
 const usedIn = (text: string, path?: string) => [...extractUsedClasses(fx(text, path)).keys()].sort();
 
-describe("class coverage guard (#2410)", () => {
+describe("class coverage guard", () => {
   it("self-test: positive control flags unstyled fixture classes", () => {
     const used = extractUsedClasses(
       fx('const A = () => <div class="zz-probe other" classList={{ "zz-list": x }} />;'),

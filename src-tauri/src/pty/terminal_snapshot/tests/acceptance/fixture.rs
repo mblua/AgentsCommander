@@ -66,8 +66,7 @@ impl FixtureBackend {
             .fanout
             .registration_token_for_session(id)
             .expect("fixture token");
-        self.fanout
-            .handle_output(&token, &id.to_string(), output.to_vec());
+        self.fanout.handle_output(&token, &id.to_string(), output);
     }
 
     pub(super) fn counts(&self, id: Uuid) -> BackendLookupCounts {
@@ -225,7 +224,7 @@ impl ReplicaPaths {
             r#"{"identity":"../../_agent_worker"}"#,
         )
         .expect("tampered replica config");
-        // #2317: sibling Room trees beside the legacy workgroup. The same
+        // Sibling Room trees beside the legacy workgroup. The same
         // project, team config and agent matrices are reused, so the existing
         // wg sessions and tests stay untouched; only the room directories and
         // their replica configs are new.

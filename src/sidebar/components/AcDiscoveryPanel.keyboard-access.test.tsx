@@ -12,7 +12,7 @@ import {
 import { acDiscoveryTransport, agentRowSel, filterSel, replicaRowSel } from "./ac-discovery-fixture";
 import { ROW_KEY_PROXY_CLASS } from "./RowKeyProxy";
 
-// #2659 - the agent and replica rows open the Coding Agent picker by keyboard
+// The agent and replica rows open the Coding Agent picker by keyboard
 // through their row key proxy; mouse click and right-click are unchanged.
 
 const press = (key: string) => (row: HTMLElement) => {
@@ -21,7 +21,7 @@ const press = (key: string) => (row: HTMLElement) => {
   proxy!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
 };
 
-describe("AcDiscoveryPanel row keyboard access (#2659)", () => {
+describe("AcDiscoveryPanel row keyboard access", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport>;
 

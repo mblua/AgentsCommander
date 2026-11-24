@@ -294,7 +294,7 @@ pub(super) fn perform_config_seed_with_clock_and_hooks(
         os_marker(candidate.os_specific),
         src.display()
     );
-    // #1596: pi's bash tool runs through `shellPath`; project `.pi/settings.json`
+    // Pi's bash tool runs through `shellPath`; project `.pi/settings.json`
     // overrides the global one, so an absent-only seed routes pi through Git Bash
     // on Windows. Best-effort: failure logs and never changes the seed outcome.
     #[cfg(windows)]
@@ -420,7 +420,7 @@ fn select_seed_candidate(
 ) -> Result<&ConfigSeedCandidate, ConfigSeedReport> {
     // 1. Pick the winning tier by source-folder presence (highest precedence first).
     //    The four legacy tiers are unchanged (readable dir wins and overwrites).
-    //    The #769 P2 CatalogDefault tier is gated ABSENT-ONLY + NON-EMPTY here, so
+    //    The P2 CatalogDefault tier is gated ABSENT-ONLY + NON-EMPTY here, so
     //    it never overwrites an existing replica config and an empty/absent master
     //    reads as "not present".
     let mut selected = seed
@@ -454,7 +454,7 @@ fn select_seed_candidate(
         }
     }
     let Some(candidate) = selected else {
-        // #598: seeding is active but no template exists at any tier. This is a
+        // Seeding is active but no template exists at any tier. This is a
         // benign no-op (nothing to copy), but a SILENT one confused users who
         // enabled the feature, created no template, and saw nothing happen. Log
         // it at info with the exact candidate paths so they know WHERE to create
@@ -500,7 +500,7 @@ pub(super) fn destination_absent_no_follow(path: &Path) -> Result<bool, String> 
     }
 }
 
-/// #1596: absent-only, best-effort seed of pi's project-level `shellPath` to
+/// Absent-only, best-effort seed of pi's project-level `shellPath` to
 /// Git Bash on Windows. pi merges project settings over global settings, so a
 /// project `.pi/settings.json` routes the pi bash tool through bash.exe even
 /// when the global settings name pwsh. An existing `settings.json` (operator-

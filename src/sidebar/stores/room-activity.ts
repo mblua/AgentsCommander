@@ -8,7 +8,7 @@ import { roomIsRawActive } from "../components/room-session-source";
 
 const ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT = 15;
 
-// #4805 - temp rooms get the same idle confirmation as project rooms.
+// Temp rooms get the same idle confirmation as project rooms.
 const activityProjects = () => [...projectStore.projects, ...tempRoomsStore.railProjects()];
 
 export function roomActivityKey(projectPath: string, roomPath: string): string | null {

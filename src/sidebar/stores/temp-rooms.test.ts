@@ -1,4 +1,4 @@
-// #4805 - the temp-room list store and its one-project rail projection.
+// The temp-room list store and its one-project rail projection.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __setTransportForTests } from "../../shared/ipc";
 import { FakeTransport } from "../../shared/testing/fake-transport";
@@ -16,7 +16,7 @@ const room = (n: string, taskTitle: string | null = null): TempRoomInfo => ({
   taskTitle,
 });
 
-describe("#4805 tempRoomsStore", () => {
+describe("tempRoomsStore", () => {
   let fake: FakeTransport;
   let restore: () => void;
 

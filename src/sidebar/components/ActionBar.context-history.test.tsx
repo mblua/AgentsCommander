@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// #4049 - both platforms are explicit: the seam flips the platform per test.
+// Both platforms are explicit: the seam flips the platform per test.
 const platform = vi.hoisted(() => ({ tauri: true }));
 vi.mock("../../shared/platform", () => ({
   get isTauri() { return platform.tauri; },
@@ -50,7 +50,7 @@ function setup(value: AppSettings): FakeTransport {
   return fake;
 }
 
-describe("ActionBar CTX visibility follows contextHistoryEnabled (#4049)", () => {
+describe("ActionBar CTX visibility follows contextHistoryEnabled", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { declarations, declValue, scanRules, type ScannedRule } from "./css-test-helpers";
 
-// #2236 phase 3 (#2283) - compact sidebar CSS, pinned as bytes on disk. jsdom applies no
+// Compact sidebar CSS, pinned as bytes on disk. jsdom applies no
 // stylesheet and performs no layout: flushness and row height are D20 runtime gates. The sheet
 // is CRLF, so comments are blanked with line breaks kept. Pins 2-4 merge every exact block
 // carrying a selector, because base and phase blocks are separate and a first-match parser passes.
@@ -28,7 +28,7 @@ const PLAIN_STYLES = ["deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit
 const PLAIN_INLINE = ["border", "border-left", "border-right", "margin", "margin-left", "margin-right"];
 const bannerFor = (style: string): string => `[data-sidebar-style="${style}"] .root-agent-banner`;
 
-// The lift rule names exactly these six, the #2271 dot included; the component
+// The lift rule names exactly these six, the status dot included; the component
 // census that catches a seventh control is phase 9's test 4d.
 const LIFTED = [
   ".root-agent-banner > .session-item-mic-cancel",
@@ -89,7 +89,7 @@ const specificityOf = (selector: string): number[] => [
 const compareSpecificity = (a: number[], b: number[]): number =>
   a.reduce((diff, value, index) => diff || value - b[index], 0);
 
-describe("#2236 phase 3 compact sidebar CSS bytes", () => {
+describe("phase 3 compact sidebar CSS bytes", () => {
   it("1+5. compact removes the scrollable and the banner rule touches no padding", () => {
     const removable = one(COMPACT_SCROLLABLE);
     expect(declValue(removable.body, "display")).toBe("none");

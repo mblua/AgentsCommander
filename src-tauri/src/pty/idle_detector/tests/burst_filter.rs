@@ -1,12 +1,12 @@
 use super::*;
 
 // -----------------------------------------------------------------
-// #2124 - the idle-burst filter (T1-T8, T11, T13 of the plan).
+// The idle-burst filter (T1-T8, T11, T13 of the plan).
 // -----------------------------------------------------------------
 
 /// The common fixture: a detector whose `on_busy` counts calls, one session
 /// registered with the shipped burst tuning, 30 minutes of accumulated
-/// silence and the #260 busy state standing, so any count must clear it.
+/// silence and the busy state standing, so any count must clear it.
 struct BurstFixture {
     detector: Arc<IdleDetector>,
     id: Uuid,

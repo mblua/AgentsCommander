@@ -17,7 +17,7 @@ import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import type { Session } from "../../shared/types";
 
-// #4752 P05: the Unleash/Leash item in the replica menu, its dialog and restart.
+// The Unleash/Leash item in the replica menu, its dialog and restart.
 
 const projectPath = "C:\\Project";
 const wgPath = `${projectPath}\\.ac\\wg-1-dev-team`;
@@ -29,7 +29,7 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const byTestId = (id: string) => document.querySelector<HTMLElement>(`[data-ac-testid="${id}"]`);
 const menu = () => document.querySelector<HTMLElement>(".session-context-menu");
 
-describe("ProjectPanel Unleash menu item (#4752)", () => {
+describe("ProjectPanel Unleash menu item", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

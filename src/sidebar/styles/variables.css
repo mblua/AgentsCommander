@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   /* Sidebar colors — Noir theme default */
   --sidebar-bg: #0a0a0f;
   --sidebar-fg: #d0d0d8;
@@ -52,11 +53,11 @@
   --radius-sm: 4px;
   --radius-md: 6px;
 
-  /* Layout - #2236 D1/D3: the compact rail width, the single CSS owner of
+  /* Layout: the compact rail width, the single CSS owner of
      the number the group rail, the compact pane and the toggle read. */
   --ac-rail-width: 68px;
 
-  /* #1796 - selected-row rail. App.tsx and SettingsModal publish the first two as
+  /* Selected-row rail. App.tsx and SettingsModal publish the first two as
      inline custom properties on <html>, which beat these. --ac-rail-delta is how
      much wider the rail is than the width the winning rule used to draw, so
      `padding-left: max(0px, calc(<original> - var(--ac-rail-delta)))` keeps row
@@ -66,7 +67,7 @@
   --ac-selected-rail-color: #FFFFFF;
   --ac-rail-delta: calc(var(--ac-selected-rail-width) - 3px);
 
-  /* #2744 - these four were read as var(--x, <dark literal>) across the
+  /* These four were read as var(--x, <dark literal>) across the
      stylesheets and defined nowhere, so the dark fallback won in both modes.
      Every consumer passes the identical fallback (see the census in this
      phase and token-fallback-parity.test.ts, which keeps that true), so the
@@ -79,7 +80,8 @@
 }
 
 html.light-theme {
-  /* #2744 - the rail is white for the dark surface; on the light selected row
+  color-scheme: light;
+  /* The rail is white for the dark surface; on the light selected row
      (--sidebar-active #dcdce4) white reaches 1.36 and the bar disappears.
      #1A1A2E is the accepted light "primary text" value and reaches 12.51.
      This declaration only wins when applySelectedRowRail publishes nothing,

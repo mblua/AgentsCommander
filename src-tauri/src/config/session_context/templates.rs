@@ -164,7 +164,7 @@ pub(crate) fn cleanup_failed_context_template(path: &Path) {
 }
 
 pub(crate) fn resolve_ac_root_context_dir(agent_root: &Path) -> Option<PathBuf> {
-    // #979 F.2: the `ac-root-agent` -> parent fallback is deleted. This is NOT
+    // The `ac-root-agent` -> parent fallback is deleted. This is NOT
     // sufficient on its own and is NOT what protects the project global.
     // `find_ac_root` is the first branch and matches ANY `.ac` ancestor,
     // and `config_dir()` sits inside a `.ac` tree in the dev and workgroup
@@ -175,7 +175,7 @@ pub(crate) fn resolve_ac_root_context_dir(agent_root: &Path) -> Option<PathBuf> 
     find_ac_root(agent_root)
 }
 
-/// #1737 (D22) - the single site in this file that renders an overlay
+/// The single site in this file that renders an overlay
 /// diagnostic. Twin of `settings.rs`'s `report_overlay_diagnostics`; the same
 /// three-line match, so the "one site per source file" claim holds for both files.
 pub(crate) fn report_overlay_diagnostic(
@@ -188,7 +188,7 @@ pub(crate) fn report_overlay_diagnostic(
     }
 }
 
-/// #1737: render a rejected `.local.md` override through its typed diagnostic
+/// Render a rejected `.local.md` override through its typed diagnostic
 /// (D9, D22) and fall back to the base content.
 pub(crate) fn context_local_override(base: &Path) -> Option<String> {
     let override_value = crate::config::local_overlay::read_markdown_override(base);
@@ -201,14 +201,14 @@ pub(crate) fn context_local_override(base: &Path) -> Option<String> {
     }
 }
 
-/// #1737: the operator's `.local.md` override for a managed context template read
+/// The operator's `.local.md` override for a managed context template read
 /// from `agent_root`'s context directory, or `None`.
 pub(crate) fn read_context_local_override(agent_root: &str, filename: &str) -> Option<String> {
     let context_dir = resolve_ac_root_context_dir(Path::new(agent_root))?;
     context_local_override(&context_dir.join(filename))
 }
 
-/// #1737: the `.local.md` override for a resolved context file, but only for the
+/// The `.local.md` override for a resolved context file, but only for the
 /// three managed context templates. Every other context file is read verbatim.
 pub(crate) fn managed_template_local_override(base: &Path) -> Option<String> {
     let name = base.file_name()?.to_str()?;
@@ -341,7 +341,7 @@ where
     read_context_template(agent_root, filename)
 }
 
-/// #1065 Stage F: read/sync a managed project context template under the project
+/// Read/sync a managed project context template under the project
 /// seed-manifest gate, recording any create/recognized-update at its commit point
 /// (plan sections 5.2/6.3). Ordering by gate state:
 /// * held: synchronize (write) under the gate, then record the publication.
@@ -399,7 +399,7 @@ pub(crate) fn read_or_create_context_recorded(
     }
 }
 
-/// #1065 Stage F: read a managed project context template WITHOUT synchronizing it,
+/// Read a managed project context template WITHOUT synchronizing it,
 /// used when the project gate is contended so the write is skipped rather than
 /// racing a cooperating writer. A managed template that is still absent yields
 /// `Ok(None)` (the caller uses the in-memory default); it is never created ungated.
@@ -525,7 +525,7 @@ pub(crate) fn strip_yaml_frontmatter(content: &str) -> &str {
     content
 }
 
-/// #1065 Stage F: self-heal a stale generated global context template under the
+/// Self-heal a stale generated global context template under the
 /// project seed-manifest gate, recording the resulting publication (plan sections
 /// 5.2/6.3). Ordering by gate state:
 /// * held: heal (atomic replace) under the gate, then record the publication.
@@ -579,7 +579,7 @@ pub(crate) fn heal_stale_global_recorded(
     }
 }
 
-/// Best-effort on-disk self-heal (#664). The caller has already classified the
+/// Best-effort on-disk self-heal. The caller has already classified the
 /// workspace global-context template as `StaleGenerated`, i.e. a provably
 /// UNMODIFIED generated legacy default for these paths. Rewrite it to the
 /// current tokenized default so future sessions read a clean template and
@@ -794,7 +794,7 @@ pub(crate) const MANDATORY_GLOBAL_CONTEXT_PLACEHOLDERS: &[&str] = &[
 /// The unique top-level Markdown heading that each mandatory coarse placeholder's
 /// rendered block emits. Used by the append-fallback to detect a legacy *inline*
 /// template (section written without its coarse token) so the fallback does not
-/// emit a second copy (#658). Returns `None` for anything not in the mandatory
+/// emit a second copy. Returns `None` for anything not in the mandatory
 /// set. The headings were verified against each block's source; none collides
 /// with another token's section.
 pub(crate) fn mandatory_section_heading(placeholder: &str) -> Option<&'static str> {
@@ -811,7 +811,7 @@ pub(crate) fn mandatory_section_heading(placeholder: &str) -> Option<&'static st
     })
 }
 
-/// #1369 (C4): pre-rename spellings that still SATISFY a mandatory placeholder.
+/// Pre-rename spellings that still SATISFY a mandatory placeholder.
 /// A template on disk carrying only the legacy token must not receive a second,
 /// appended copy of the same block; the replace chain fills the legacy token in
 /// place. Empty for every other placeholder.
@@ -828,7 +828,7 @@ pub(crate) fn mandatory_placeholder_aliases(placeholder: &str) -> &'static [&'st
 /// Self-discovery prose references "`## Inter-Agent Messaging`" inside backticks
 /// mid-line, so a raw `contains` would false-positive and skip a genuinely-
 /// missing messaging section. A truly-incomplete template (section heading
-/// absent) returns false here, so the safety-net append still fires (#658).
+/// absent) returns false here, so the safety-net append still fires.
 ///
 /// `## GOLDEN RULE` is matched by prefix because its rendered heading carries a
 /// trailing descriptor; every other heading is matched exactly.
@@ -849,10 +849,10 @@ pub(crate) fn mandatory_section_present_inline(template: &str, placeholder: &str
 /// append loop runs (the loop's own `push_str(placeholder)` re-introduces `{{`
 /// coarse tokens mid-iteration, which would corrupt `has_any_placeholder`).
 /// Used by `coarse_section_dedup_safe` to decide whether an inline copy is
-/// current for THIS agent (#658 round-3).
+/// current for THIS agent.
 pub(crate) struct TemplateTokenSignals {
     /// The original template carried at least one `{{placeholder}}` => it is a
-    /// tokenized template (current default or the #658 inline hybrid), NOT a
+    /// tokenized template (current default or the inline hybrid), NOT a
     /// fully-baked legacy-rendered template whose inline copies hold another
     /// agent's literal values.
     pub(crate) has_any_placeholder: bool,
@@ -880,7 +880,7 @@ impl TemplateTokenSignals {
 
 /// Whether the append-fallback may DEDUP (skip appending) `placeholder` when its
 /// section heading is already present inline. Encodes the dedup-safety invariant
-/// (#658, section 3): dedup only when the inline copy is guaranteed current for
+/// Dedup only when the inline copy is guaranteed current for
 /// THIS agent. A genuinely-baked or Root-sensitive section returns false here so
 /// the current block is re-appended instead of trusting the stale inline copy.
 pub(crate) fn coarse_section_dedup_safe(
@@ -909,7 +909,7 @@ pub(crate) fn coarse_section_dedup_safe(
         // is absent, so any inline copy is a baked/stale list -> never dedup,
         // always append the current block.
         "{{SKILLS_SECTION}}" | "{{AGENT_REPOS}}" => false,
-        // #1605: never dedup an inline `## Host Platform Rules` copy: the block is
+        // Never dedup an inline `## Host Platform Rules` copy: the block is
         // platform- and file-dependent, so an inline baked copy can be stale or
         // platform-wrong; appending the current block is the safe side (mirrors
         // SKILLS_SECTION/AGENT_REPOS). No existing template generation carries the

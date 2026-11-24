@@ -260,9 +260,9 @@ async fn read_restart_source<R: tauri::Runtime>(
             || crate::config::root_agent::is_root_agent_path(&session.working_directory),
         telegram_bot_id: session.telegram_bot_id.clone(),
         stored_requested_profile: session.requested_profile.clone(),
-        // (#630/#631) honor an unconsumed durable fresh intent
+        // Honor an unconsumed durable fresh intent
         stored_start_fresh: session.start_fresh_on_restore,
-        // (#747) candidate raised-hand carry across the reopen
+        // Candidate raised-hand carry across the reopen
         stored_communication: session.communication.clone(),
         old_status: session.status.clone(),
         old_selected,
@@ -338,7 +338,7 @@ async fn prepare_restart<R: tauri::Runtime>(
             stored_requested_profile,
         )
         .await?;
-        // #2434 - prepare (isolated CODEX_HOME, OpenCode config dir) outside the
+        // Prepare (isolated CODEX_HOME, OpenCode config dir) outside the
         // settings guard and BEFORE any teardown: a failure aborts the restart and
         // leaves the old session running.
         if let Some(spawn) = resolved_spawn.as_ref() {
@@ -354,7 +354,7 @@ async fn prepare_restart<R: tauri::Runtime>(
             (shell, clean_args, stored_agent_label)
         };
 
-        // (#630/#631) Fresh on an explicit "Restart Session" (None -> true), OR if the
+        // Fresh on an explicit "Restart Session" (None -> true), OR if the
         // session still carries an unconsumed durable fresh intent. Root agents are
         // scoped out (separate restore path ignores the marker, §8): they are never
         // stamped below, so `stored_start_fresh` is false for root and this reduces to
@@ -434,7 +434,7 @@ fn ensure_restart_restore_authority<R: tauri::Runtime>(
     Ok(())
 }
 
-/// #3532 P03: close the old observation before teardown (bounded, fail-soft).
+/// P03: close the old observation before teardown (bounded, fail-soft).
 /// `observed` is false for dormant and Root sessions, which never notify
 /// history. Returns the ingress and intent that
 /// [`restart_history_teardown_failed`] needs.
@@ -456,7 +456,7 @@ async fn restart_history_boundary<R: tauri::Runtime>(
     Some((history, history_intent))
 }
 
-/// #3532 P03: reopen the old observation as a partial segment if teardown failed.
+/// P03: reopen the old observation as a partial segment if teardown failed.
 fn restart_history_teardown_failed(
     history: Option<&(crate::history_runtime::HistoryIngress, uuid::Uuid)>,
     uuid: uuid::Uuid,
@@ -489,10 +489,10 @@ async fn read_restart_selection(
 ) -> Result<selection::RestartSelection, String> {
     let selected_requested_profile =
         effective_restart_requested_profile(requested_profile, stored_requested_profile);
-    // #537 read-side / #2434: resolve the launch agent through the one matched
+    // Read-side: resolve the launch agent through the one matched
     // selection drift also reads, and resolve its spawn under a single settings
     // read guard. No await is held across the guard; it is dropped at the end of
-    // this block. The #1271 host-shell snapshot is copied from the SAME guard so
+    // this block. The host-shell snapshot is copied from the SAME guard so
     // program and args can never pair across a configuration change.
     let cfg = settings
         .current_read()

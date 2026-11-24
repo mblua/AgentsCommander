@@ -12,7 +12,7 @@ fn builtin_agent_support_table_matches_embedded_default_keys_in_order() {
 
 #[test]
 pub(crate) fn builtin_agent_support_ships_only_muse_disabled() {
-    // R2: #1999 flips muse off; every other row still ships enabled.
+    // R2: muse ships off; every other row still ships enabled.
     let disabled: Vec<&str> = BUILTIN_AGENT_SUPPORT
         .iter()
         .filter(|(_, on)| !*on)
@@ -48,7 +48,7 @@ fn support_override_scopes_to_closure_and_restores_shipped_table() {
 
 #[test]
 fn desupported_row_dropped_from_seeded_manifest_and_corrupt_is_unavailable() {
-    // R4 + #1967 P4: the read gate drops a de-supported row from a seeded
+    // R4 + P4: the read gate drops a de-supported row from a seeded
     // manifest; a corrupt persisted file is `baseInvalid` (no self-heal) and
     // its bytes are preserved.
     with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
@@ -143,7 +143,7 @@ fn desupported_row_dropped_from_load_catalog_for_settings_primary() {
 
 #[test]
 fn no_embedded_donor_backfills_a_custom_key_bound_to_a_builtin_command() {
-    // #1967 P4: the embedded default is no longer a runtime command donor.
+    // P4: the embedded default is no longer a runtime command donor.
     // A custom key bound to the builtin `claude` command, in a manifest with
     // no updateCommands, reads as empty and the persisted bytes are kept;
     // the de-supported table changes nothing about that.
@@ -245,7 +245,7 @@ fn managed_catalog_migration_backup_keeps_a_desupported_key_verbatim() {
 
 #[test]
 fn managed_catalog_false_row_is_part_of_the_revision_and_refreshes_only_the_base() {
-    // #1968/#1999: the shipped false muse row is part of the managed
+    // The shipped false muse row is part of the managed
     // revision, so a base seeded all-enabled refreshes to the enabled
     // shipped set; the user-owned local layer is never touched and the key
     // stays hidden either way.
@@ -359,7 +359,7 @@ fn desupported_master_skips_legacy_tree_copy_too() {
 
 #[test]
 fn managed_catalog_all_masters_present_ignores_desupported_master() {
-    // R13 (#1968): only the MASTER existence optimization remains, and it
+    // R13: only the MASTER existence optimization remains, and it
     // requires only SUPPORTED masters, so a claude-off install is steady
     // without `.claude`. The catalog itself always validates under the
     // gate/lock; no existence-only shortcut may skip that (proven by the
@@ -403,7 +403,7 @@ fn managed_catalog_all_masters_present_ignores_desupported_master() {
 
 #[test]
 fn managed_catalog_steady_state_takes_the_gate_and_keeps_bytes() {
-    // #1968: the existence-only catalog shortcut is gone. A second
+    // The existence-only catalog shortcut is gone. A second
     // tokenized initialization takes the project gate (lock file appears)
     // and the catalog lock, yet an unedited base at the shipped revision is
     // NOT rewritten: byte identity is preserved.

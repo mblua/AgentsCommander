@@ -180,7 +180,7 @@ struct PendingSession {
     credential_binding: Option<ContainerCredentialBinding>,
     logical_resource_slot: Option<ResourceLogicalAgentSlot>,
     attach_notify: Option<Arc<Notify>>,
-    // #930 - dest of a copied host credential, threaded so every teardown funnel
+    // Dest of a copied host credential, threaded so every teardown funnel
     // can delete it. None when copy-in was not applicable.
     container_credential_path: Option<PathBuf>,
 }
@@ -287,10 +287,10 @@ pub struct ContainerTransportBackend {
     runtime_settings_override: Option<crate::config::settings::AppSettings>,
     #[cfg(test)]
     issued_tickets_for_test: Arc<Mutex<HashMap<Uuid, String>>>,
-    /// #2158 - per-backend hook run right after a Resize is published, without locks.
+    /// Per-backend hook run right after a Resize is published, without locks.
     #[cfg(test)]
     resize_published_hook: Arc<Mutex<Option<ResizePublishedHook>>>,
-    /// #2158 - spy: how many times the real prepublish resize mark ran.
+    /// Spy: how many times the real prepublish resize mark ran.
     #[cfg(test)]
     resize_marks_for_test: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -555,7 +555,7 @@ impl PtyBackend for ContainerTransportBackend {
     }
 
     fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), AppError> {
-        // #2158 - the resize mark is taken after the queue slot is reserved and before the
+        // The resize mark is taken after the queue slot is reserved and before the
         // frame is published, so the bridge's repaint can never precede it.
         self.send_marked_text_frame(
             id,
@@ -662,7 +662,7 @@ impl PtyBackend for ContainerTransportBackend {
         }
     }
 
-    /// #1171 - the same read as `get_screen_rows` above, on the seam that can also say
+    /// The same read as `get_screen_rows` above, on the seam that can also say
     /// "nothing changed", and with the same oracle: parser-absent IS this backend's liveness
     /// answer, so it maps to `Gone` rather than to `Missing`.
     ///

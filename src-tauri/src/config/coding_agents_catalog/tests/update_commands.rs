@@ -2,8 +2,8 @@ use super::*;
 
 #[test]
 fn load_catalog_never_invents_update_commands_for_legacy_entries() {
-    // A catalog seeded before the update-command era (#1325) carries no
-    // updateCommands. #1967 P4: nothing is backfilled in memory - the
+    // A catalog seeded before the update-command era carries no
+    // updateCommands. P4: nothing is backfilled in memory - the
     // commands stay empty until the P5 migration persists defaults - the
     // persisted bytes are untouched, and the report explains the pending
     // migration per entry.
@@ -123,7 +123,7 @@ fn load_catalog_mixed_duplicate_sequences_keep_persisted_values() {
 
 #[test]
 fn embedded_default_ships_update_commands_for_all_but_cursor_and_muse() {
-    // #1318/#1325/#1546 drift guard: claude, pi, codex, hermes, opencode,
+    // Drift guard: claude, pi, codex, hermes, opencode,
     // and antigravity ship the update command; cursor, grok and Muse ship
     // none; every entry defaults autoUpdate to false.
     let catalog = embedded_default_catalog();

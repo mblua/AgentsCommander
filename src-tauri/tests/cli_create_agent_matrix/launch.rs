@@ -1,5 +1,5 @@
-use std::path::Path;
-use std::process::Stdio;
+use std::path::{Path, PathBuf};
+use std::process::{Output, Stdio};
 
 use super::{
     assert_same_path, assert_single_project_refresh_request, command_for_binary,
@@ -7,7 +7,7 @@ use super::{
     spawn_lock, write_settings, Tmp,
 };
 
-/// #1163: watch `config_dir/session-requests/` for the CLI's request file and
+/// Watch `config_dir/session-requests/` for the CLI's request file and
 /// answer it with a `<id>.result.json` sidecar exactly like the running app
 /// would. Runs in a background thread; returns once the result is written.
 /// Result sidecars (`*.result.json`) are never treated as requests.
@@ -56,9 +56,17 @@ fn watch_and_answer_session_request(
     }
 }
 
-#[test]
-fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
-    let tmp = Tmp::new("cli-create-agent-matrix-launch");
+/// A temp project with a copied CLI binary and one `codex` agent whose
+/// launch command is `agent_command`.
+struct LaunchFixture {
+    _tmp: Tmp,
+    bin: PathBuf,
+    config_dir: PathBuf,
+    project: PathBuf,
+}
+
+fn launch_fixture(tmp_name: &str, agent_command: &str) -> LaunchFixture {
+    let tmp = Tmp::new(tmp_name);
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     let project = project_with_workspace(tmp.path());
@@ -70,23 +78,26 @@ fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
             "agents": [{
                 "id": "codex",
                 "label": "Codex",
-                "command": "codex --ask-for-approval never",
+                "command": agent_command,
                 "color": "#000000"
             }],
             "projectPaths": [tmp.path().to_string_lossy().to_string()]
         }),
     );
+    LaunchFixture {
+        _tmp: tmp,
+        bin,
+        config_dir,
+        project,
+    }
+}
 
-    // #1163: a watcher stands in for the running app and confirms the launch.
-    let watcher_config_dir = config_dir.clone();
-    let watcher = std::thread::spawn(move || {
-        watch_and_answer_session_request(&watcher_config_dir, "created", Some("sess-1"), None);
-    });
-
-    let mut command = command_for_binary(&bin);
+/// Runs `<subcommand> --project ProjectAlpha --name Architect ... --launch <launch>`.
+fn run_create_with_launch(bin: &Path, subcommand: &str, launch: &str) -> Output {
+    let mut command = command_for_binary(bin);
     command
         .args([
-            "create-agent-matrix",
+            subcommand,
             "--project",
             "ProjectAlpha",
             "--name",
@@ -94,7 +105,7 @@ fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
             "--description",
             "Build plans",
             "--launch",
-            "codex",
+            launch,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -103,9 +114,11 @@ fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
         let _guard = spawn_lock();
         command.spawn().expect("spawn binary")
     };
-    let out = child.wait_with_output().expect("collect output");
-    watcher.join().expect("watcher answered");
+    child.wait_with_output().expect("collect output")
+}
 
+/// Asserts a zero exit and returns stdout parsed as JSON.
+fn successful_json(out: &Output) -> serde_json::Value {
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -113,9 +126,27 @@ fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    serde_json::from_slice(&out.stdout).expect("stdout should be JSON")
+}
 
-    let json: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
+#[test]
+fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
+    let fixture = launch_fixture(
+        "cli-create-agent-matrix-launch",
+        "codex --ask-for-approval never",
+    );
+    let config_dir = &fixture.config_dir;
+
+    // A watcher stands in for the running app and confirms the launch.
+    let watcher_config_dir = config_dir.clone();
+    let watcher = std::thread::spawn(move || {
+        watch_and_answer_session_request(&watcher_config_dir, "created", Some("sess-1"), None);
+    });
+
+    let out = run_create_with_launch(&fixture.bin, "create-agent-matrix", "codex");
+    watcher.join().expect("watcher answered");
+
+    let json = successful_json(&out);
     assert_eq!(json["launched"], true);
     assert_eq!(json["launchStatus"], "launched");
     assert_eq!(json["launchAgent"], "codex");
@@ -123,7 +154,7 @@ fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
 
     // The request is still on disk: the CLI consumes only the result sidecar
     // (which it deletes), never the request.
-    let requests = session_request_paths(&config_dir);
+    let requests = session_request_paths(config_dir);
     assert_eq!(requests.len(), 1, "expected exactly one session request");
     assert!(
         !config_dir
@@ -141,37 +172,23 @@ fn create_agent_matrix_launch_reports_launched_when_app_confirms() {
     let request: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&requests[0]).expect("read request"))
             .expect("request json");
-    let agent_dir = project.join(".ac").join("_agent_architect");
+    let agent_dir = fixture.project.join(".ac").join("_agent_architect");
     assert_same_path(request["cwd"].as_str().expect("cwd"), &agent_dir);
     assert_eq!(request["sessionName"], "ProjectAlpha/architect");
     assert_eq!(request["agentId"], "codex");
 
-    assert_single_project_refresh_request(&config_dir, &project);
+    assert_single_project_refresh_request(config_dir, &fixture.project);
 }
 
 #[test]
 fn create_agent_matrix_launch_rejection_is_reported() {
-    let tmp = Tmp::new("cli-create-agent-matrix-launch-rejected");
-    let bin = copy_binary_into(tmp.path());
-    let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_workspace(tmp.path());
-    write_settings(
-        &config_dir,
-        serde_json::json!({
-            "defaultShell": "powershell.exe",
-            "defaultShellArgs": [],
-            "agents": [{
-                "id": "codex",
-                "label": "Codex",
-                "command": "codex --ask-for-approval never",
-                "color": "#000000"
-            }],
-            "projectPaths": [tmp.path().to_string_lossy().to_string()]
-        }),
+    let fixture = launch_fixture(
+        "cli-create-agent-matrix-launch-rejected",
+        "codex --ask-for-approval never",
     );
 
-    // #1163: the app answers with a rejection (e.g. the sessionRace gate).
-    let watcher_config_dir = config_dir.clone();
+    // The app answers with a rejection (e.g. the sessionRace gate).
+    let watcher_config_dir = fixture.config_dir.clone();
     let watcher = std::thread::spawn(move || {
         watch_and_answer_session_request(
             &watcher_config_dir,
@@ -181,42 +198,13 @@ fn create_agent_matrix_launch_rejection_is_reported() {
         );
     });
 
-    let mut command = command_for_binary(&bin);
-    command
-        .args([
-            "create-agent-matrix",
-            "--project",
-            "ProjectAlpha",
-            "--name",
-            "Architect",
-            "--description",
-            "Build plans",
-            "--launch",
-            "codex",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = {
-        let _guard = spawn_lock();
-        command.spawn().expect("spawn binary")
-    };
-    let out = child.wait_with_output().expect("collect output");
+    let out = run_create_with_launch(&fixture.bin, "create-agent-matrix", "codex");
     watcher.join().expect("watcher answered");
 
     // Matrix creation stays independent of the launch result: exit 0 and all
     // matrix fields present.
-    assert!(
-        out.status.success(),
-        "exit {:?}\nstdout: {}\nstderr: {}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let json: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
-    let agent_dir = project.join(".ac").join("_agent_architect");
+    let json = successful_json(&out);
+    let agent_dir = fixture.project.join(".ac").join("_agent_architect");
     assert_same_path(json["agentPath"].as_str().expect("agentPath"), &agent_dir);
     assert_eq!(json["agentName"], "ProjectAlpha/architect");
     assert_same_path(
@@ -237,188 +225,57 @@ fn create_agent_matrix_launch_rejection_is_reported() {
 
 #[test]
 fn create_agent_matrix_whitespace_launch_command_warns_without_request() {
-    let tmp = Tmp::new("cli-create-agent-matrix-blank-launch");
-    let bin = copy_binary_into(tmp.path());
-    let config_dir = config_dir_for_bin(&bin);
-    let _project = project_with_workspace(tmp.path());
-    write_settings(
-        &config_dir,
-        serde_json::json!({
-            "defaultShell": "powershell.exe",
-            "defaultShellArgs": [],
-            "agents": [{
-                "id": "codex",
-                "label": "Codex",
-                "command": "   \t  ",
-                "color": "#000000"
-            }],
-            "projectPaths": [tmp.path().to_string_lossy().to_string()]
-        }),
-    );
+    let fixture = launch_fixture("cli-create-agent-matrix-blank-launch", "   \t  ");
 
-    let mut command = command_for_binary(&bin);
-    command
-        .args([
-            "create-agent-matrix",
-            "--project",
-            "ProjectAlpha",
-            "--name",
-            "Architect",
-            "--description",
-            "Build plans",
-            "--launch",
-            "codex",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = {
-        let _guard = spawn_lock();
-        command.spawn().expect("spawn binary")
-    };
-    let out = child.wait_with_output().expect("collect output");
+    let out = run_create_with_launch(&fixture.bin, "create-agent-matrix", "codex");
 
-    assert!(
-        out.status.success(),
-        "exit {:?}\nstdout: {}\nstderr: {}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let json: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
+    let json = successful_json(&out);
     assert_eq!(json["launched"], false);
     assert!(json["launchAgent"].is_null());
     assert!(String::from_utf8_lossy(&out.stderr).contains("empty command"));
     assert!(
-        session_request_paths(&config_dir).is_empty(),
+        session_request_paths(&fixture.config_dir).is_empty(),
         "blank command must not write a launch request"
     );
 }
 
 #[test]
 fn create_agent_matrix_empty_launch_request_warns_without_request() {
-    let tmp = Tmp::new("cli-create-agent-matrix-empty-launch-request");
-    let bin = copy_binary_into(tmp.path());
-    let config_dir = config_dir_for_bin(&bin);
-    let _project = project_with_workspace(tmp.path());
-    write_settings(
-        &config_dir,
-        serde_json::json!({
-            "defaultShell": "powershell.exe",
-            "defaultShellArgs": [],
-            "agents": [{
-                "id": "codex",
-                "label": "Codex",
-                "command": "codex --ask-for-approval never",
-                "color": "#000000"
-            }],
-            "projectPaths": [tmp.path().to_string_lossy().to_string()]
-        }),
+    let fixture = launch_fixture(
+        "cli-create-agent-matrix-empty-launch-request",
+        "codex --ask-for-approval never",
     );
 
-    let mut command = command_for_binary(&bin);
-    command
-        .args([
-            "create-agent-matrix",
-            "--project",
-            "ProjectAlpha",
-            "--name",
-            "Architect",
-            "--description",
-            "Build plans",
-            "--launch",
-            "",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = {
-        let _guard = spawn_lock();
-        command.spawn().expect("spawn binary")
-    };
-    let out = child.wait_with_output().expect("collect output");
+    let out = run_create_with_launch(&fixture.bin, "create-agent-matrix", "");
 
-    assert!(
-        out.status.success(),
-        "exit {:?}\nstdout: {}\nstderr: {}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let json: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
+    let json = successful_json(&out);
     assert_eq!(json["launched"], false);
     assert!(json["launchAgent"].is_null());
     assert!(String::from_utf8_lossy(&out.stderr).contains("not found in settings"));
     assert!(
-        session_request_paths(&config_dir).is_empty(),
+        session_request_paths(&fixture.config_dir).is_empty(),
         "empty launch request must not write a launch request"
     );
 }
 
 #[test]
 fn create_agent_project_mode_blank_launch_command_warns_without_request() {
-    let tmp = Tmp::new("cli-create-agent-project-blank-launch");
-    let bin = copy_binary_into(tmp.path());
-    let config_dir = config_dir_for_bin(&bin);
-    let project = project_with_workspace(tmp.path());
-    write_settings(
-        &config_dir,
-        serde_json::json!({
-            "defaultShell": "powershell.exe",
-            "defaultShellArgs": [],
-            "agents": [{
-                "id": "codex",
-                "label": "Codex",
-                "command": "",
-                "color": "#000000"
-            }],
-            "projectPaths": [tmp.path().to_string_lossy().to_string()]
-        }),
-    );
+    let fixture = launch_fixture("cli-create-agent-project-blank-launch", "");
 
-    let mut command = command_for_binary(&bin);
-    command
-        .args([
-            "create-agent",
-            "--project",
-            "ProjectAlpha",
-            "--name",
-            "Architect",
-            "--description",
-            "Build plans",
-            "--launch",
-            "codex",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = {
-        let _guard = spawn_lock();
-        command.spawn().expect("spawn binary")
-    };
-    let out = child.wait_with_output().expect("collect output");
+    let out = run_create_with_launch(&fixture.bin, "create-agent", "codex");
 
-    assert!(
-        out.status.success(),
-        "exit {:?}\nstdout: {}\nstderr: {}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let json: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("stdout should be JSON");
+    let json = successful_json(&out);
     assert_eq!(json["launched"], false);
     assert!(json["launchAgent"].is_null());
     assert_eq!(json["agentName"], "ProjectAlpha/architect");
     assert!(String::from_utf8_lossy(&out.stderr).contains("empty command"));
-    assert!(project.join(".ac").join("_agent_architect").is_dir());
+    assert!(fixture
+        .project
+        .join(".ac")
+        .join("_agent_architect")
+        .is_dir());
     assert!(
-        session_request_paths(&config_dir).is_empty(),
+        session_request_paths(&fixture.config_dir).is_empty(),
         "blank command must not write a launch request"
     );
 }

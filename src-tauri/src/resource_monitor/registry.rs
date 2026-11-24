@@ -61,17 +61,16 @@ pub trait ProcessTreeBackend: Send + Sync + 'static {
 
     /// Reports the tree as the OS snapshot saw it. Identity resolution here is
     /// corpse-TOLERANT: an exited-but-still-queryable process keeps its identity
-    /// (see #1438 G1); liveness filtering belongs to `observe_identity`.
+    /// while dead; liveness filtering belongs to `observe_identity`.
     fn observe_tree(&self, root: ProcessIdentity) -> Result<ObservedProcessTree, ResourceError>;
     /// `Ok(Some(identity))` means a live process with that identity exists now. An
     /// exited process that is still queryable through open handles MUST yield
-    /// `Ok(None)` (#1438).
+    /// `Ok(None)`.
     fn observe_identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, ResourceError>;
     /// MUST return `Ok(Terminated)` when the target verifiably exited, including when
     /// other handles keep the corpse queryable. `Err` is reserved for a target that
     /// demonstrably survives or cannot be verified. Every `TerminateOutcome` variant a
-    /// real backend can produce needs at least one real-process test producing it
-    /// (#1438 Decision 3).
+    /// real backend can produce needs at least one real-process test producing it.
     fn terminate_verified(
         &self,
         process: &ObservedProcess,
@@ -190,13 +189,13 @@ struct ResourceAgentGroup {
     kill_started_at: Option<Instant>,
     last_error: Option<String>,
     permit_released: bool,
-    /// #559 - consecutive samples where `observe_tree` reported the root missing.
+    /// Consecutive samples where `observe_tree` reported the root missing.
     /// Reaped only after two strikes so a single enumeration fluke never frees a
     /// live agent's slot. Reset to 0 whenever the root is observed alive or merely
     /// unreadable, so the counter is consecutive-only by design (a momentarily
     /// unreadable root means the pid still exists, i.e. possibly alive).
     missing_root_strikes: u8,
-    /// #559 - when this group entered Terminated, used to bound retained
+    /// When this group entered Terminated, used to bound retained
     /// terminated rows (prune oldest first) without unbounded map growth.
     terminated_at: Option<Instant>,
 }
@@ -206,7 +205,7 @@ pub struct AgentLaunchPermit {
     generation: u64,
 }
 
-/// #1151 - outcome of `retry_orphaned_quarantine`. `Skipped` performs ZERO backend
+/// Outcome of `retry_orphaned_quarantine`. `Skipped` performs ZERO backend
 /// calls, so an ineligible group costs nothing and cannot be confused with a cleanup
 /// that ran and found the group already gone.
 #[derive(Debug, Clone)]
@@ -215,7 +214,7 @@ pub(crate) enum QuarantineRetryOutcome {
     Skipped(QuarantineRetrySkip),
 }
 
-/// #1151 - why an orphan quarantine retry did not run. `NotRegistered` is defensive
+/// Why an orphan quarantine retry did not run. `NotRegistered` is defensive
 /// only: a Quarantined row can never be removed from the group map, so a UUID sampled
 /// as Quarantined in the same tick is always still there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,7 +446,7 @@ impl ResourceMonitorState {
         if !inner.pending_permits.remove(&permit.generation) {
             return Err("resource monitor launch permit was not pending".to_string());
         }
-        // #559 (H3) - a relaunch of the same wg/role must not leave its prior
+        // A relaunch of the same wg/role must not leave its prior
         // Terminated row behind as a duplicate. Only dedup concrete identities so
         // unrelated non-WG launches (workgroup = agent = None) are never merged.
         if workgroup.is_some() || agent.is_some() {
@@ -455,7 +454,7 @@ impl ResourceMonitorState {
                 !(matches!(g.state, ResourceGroupState::Terminated)
                     && g.workgroup == workgroup
                     && g.agent == agent
-                    // #566 - also match project so two different projects running
+                    // Also match project so two different projects running
                     // the same wg/role never dedup against each other's Terminated
                     // row. PREDICATE only; the gate above stays (wg|agent) so
                     // unrelated non-WG launches are never merged (preserves #559).
@@ -484,7 +483,7 @@ impl ResourceMonitorState {
                 terminated_at: None,
             },
         );
-        // #1151 - no flow reuses a session UUID today (relaunch and restart both allocate
+        // No flow reuses a session UUID today (relaunch and restart both allocate
         // a new one), so this insert should only ever replace a Terminated row the dedup
         // above chose to keep. If it ever replaces a live or Quarantined one, that row's
         // permit accounting is lost silently and the cap drifts. Diagnostic only:
@@ -525,7 +524,7 @@ impl ResourceMonitorState {
         self.inner.lock().map_or(0, |inner| active_count(&inner))
     }
 
-    /// #559 (H2) - true if a quarantined group is eligible for another cleanup retry
+    /// (H2) - true if a quarantined group is eligible for another cleanup retry
     /// (its last cleanup attempt is older than the backoff). `kill_started_at` is
     /// refreshed by `kill_group` at the start of every attempt, so the backoff spaces
     /// attempts from the start of the previous one. A Quarantined group always has
@@ -543,7 +542,7 @@ impl ResourceMonitorState {
         }
     }
 
-    /// #1151 - on the real impl, not inside `mod tests`, so watchdog.rs's tests can reach
+    /// On the real impl, not inside `mod tests`, so watchdog.rs's tests can reach
     /// it. Mirrors `PtyManager::new_for_test` (pty/manager.rs), which is `#[cfg(test)]
     /// pub(crate)` on the real impl for exactly this cross-module need.
     ///
@@ -590,7 +589,7 @@ impl ResourceMonitorState {
             }
         }
 
-        // #559 (H1) - confirm each reap candidate with a direct identity syscall
+        // (H1) - confirm each reap candidate with a direct identity syscall
         // OUTSIDE the lock before the irreversible reap. observe_identity opens the
         // pid directly, so it does not depend on toolhelp-enumeration completeness
         // (closes G1) and is a fresh check at reap time (closes G2). Reap only when
@@ -614,7 +613,7 @@ impl ResourceMonitorState {
             }
         };
 
-        // #559 (H3) - bound retained Terminated rows after the reap, so a row reaped
+        // (H3) - bound retained Terminated rows after the reap, so a row reaped
         // this tick still renders as Terminated but the map cannot grow without limit.
         self.prune_terminated_groups();
 
@@ -669,28 +668,28 @@ fn join_errors(errors: Vec<String>) -> Option<String> {
     (!errors.is_empty()).then(|| errors.join("; "))
 }
 
-/// #559 - result of a snapshot-path sample merge: the warning to surface (if any)
+/// Result of a snapshot-path sample merge: the warning to surface (if any)
 /// and, when the strike threshold is reached, the root identity nominated for reap.
 struct SampleOutcome {
     warning: Option<String>,
     reap_candidate: Option<ProcessIdentity>,
 }
 
-/// #559 - consecutive missing-root samples required before a group is NOMINATED for
+/// Consecutive missing-root samples required before a group is NOMINATED for
 /// reap. A pre-filter only; the reap itself is gated by a direct `observe_identity`
 /// confirm (see `snapshot()`), so this threshold never authorizes a reap on its own.
 const REAP_STRIKES: u8 = 2;
 
-/// #559 - upper bound on retained Terminated (released-permit) rows kept for
+/// Upper bound on retained Terminated (released-permit) rows kept for
 /// recent-history display. Deliberately a fixed bound, independent of the
-/// active-slot cap `max_concurrent_agent_processes` (#565): eviction here never
+/// active-slot cap `max_concurrent_agent_processes`: eviction here never
 /// affects `active_count`, so it does not need to track the configurable cap.
 const MAX_TERMINATED_RETAINED: usize = 16;
 
-/// #559 - minimum interval between cleanup retries for a single quarantine.
+/// Minimum interval between cleanup retries for a single quarantine.
 const QUARANTINE_RETRY_BACKOFF: Duration = Duration::from_secs(15);
 
-/// #647 D: true if any error carries the EXACT `ACCESS_DENIED` code (`win32 error 5`),
+/// D: true if any error carries the EXACT `ACCESS_DENIED` code (`win32 error 5`),
 /// so "win32 error 50/53/567" do NOT match. Errors are formatted "...win32 error {code}".
 fn has_access_denied_signature(errors: &[String]) -> bool {
     errors.iter().any(|e| {

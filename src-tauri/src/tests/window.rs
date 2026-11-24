@@ -1,6 +1,6 @@
 use super::*;
 
-// ── #2348 - the extracted window-placement helpers ───────────────────────
+// ── The extracted window-placement helpers ───────────────────────
 
 fn issue_2348_geometry(x: f64, y: f64, width: f64, height: f64) -> WindowGeometry {
     WindowGeometry {

@@ -1,13 +1,13 @@
 use super::*;
 
-/// #1883 — both mailbox injection sites must log a menu-guard deferral at
-/// debug (never into the #264 Application Error sink) and every real PTY
+/// Both mailbox injection sites must log a menu-guard deferral at
+/// debug (never into the Application Error sink) and every real PTY
 /// write failure at ERROR. One test, one sequential drain per phase, so the
 /// process-wide sink is observed without racing another drainer.
 #[tokio::test]
 async fn both_injection_sites_defer_silently_and_report_real_pty_failures() {
     crate::logging::init_logger();
-    // #1883 — hold the shared sink-drain lock for the whole test so no
+    // Hold the shared sink-drain lock for the whole test so no
     // other library test drainer (the sync loggate test uses
     // `blocking_lock()`) can steal these canaries between log and drain.
     let _drain_guard = crate::logging::ERROR_SINK_TEST_DRAIN_LOCK.lock().await;
@@ -629,7 +629,7 @@ async fn deliver_wake_supported_established_command_keeps_spawn_path() {
     assert!(hooks.destroy_calls.lock().unwrap().is_empty());
 }
 
-// ── #1635-2 wake dispatch honoring: agent+profile at spawn, receipt, no-write ──
+// ── wake dispatch honoring: agent+profile at spawn, receipt, no-write ──
 
 /// Install profile cells for the fixture's agents (codex/claude). Cells map
 /// agent id -> (letter, enabled); the cell command is `codex --<lower>` so

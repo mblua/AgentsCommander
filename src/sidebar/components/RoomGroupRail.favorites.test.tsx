@@ -114,7 +114,7 @@ function nonStopFavoriteKeys(): string[] {
   );
 }
 
-/** (#1257 C7) The obvious `[data-ac-testid^="workgroupGroups.favorite"]` is WRONG:
+/** (C7) The obvious `[data-ac-testid^="workgroupGroups.favorite"]` is WRONG:
  *  it also matches `workgroupGroups.favorites.header`, which renders first and
  *  breaks the order assertion against a correct implementation. Use the
  *  prefix-exact union of the two BUTTON prefixes; the trailing dots are what make
@@ -185,7 +185,7 @@ function railFake(mainConfig: WorkgroupGroupsConfig = groupsConfig()): FakeTrans
   return fake;
 }
 
-/** Seed `projectStore`, which is what `selectFromRail` reads for the #810
+/** Seed `projectStore`, which is what `selectFromRail` reads for the
  *  auto-focus (`collapseAllExceptKnown(owner, projectStore.projects…)`) — NOT the
  *  `projects` prop. Without this the auto-focus list is empty and collapse-others
  *  silently no-ops. */
@@ -232,7 +232,7 @@ async function prepareReorderTargets() {
   return { rail, ui, rust, docs };
 }
 
-describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
+describe("RoomGroupRail favorites + collapsible rail", () => {
   beforeEach(() => {
     resetUiStoresForTests();
   });
@@ -246,7 +246,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
 
   describe("Option B: a group click never touches rail collapse (RC-2)", () => {
     // THE B REGRESSION TEST. Never delete it. This is the user's ruling, encoded:
-    // the rail folds ONLY on an explicit header click, while the #810 auto-focus
+    // the rail folds ONLY on an explicit header click, while the auto-focus
     // keeps driving the ProjectPanel exactly as before.
     it("issues no set_rail_collapse and leaves every header expanded, while the ProjectPanel auto-focus still fires", async () => {
       const fake = railFake();
@@ -268,7 +268,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
         );
         expect(target("workgroupGroups.button.ui")).toBeTruthy();
 
-        // ...but the ProjectPanel's #810 auto-focus is untouched: it still collapses
+        // ...but the ProjectPanel's auto-focus is untouched: it still collapses
         // the other project's CARD and expands the owner's.
         expect(projectCollapseStore.isProjectCollapsed(otherProjectPath)).toBe(true);
         expect(projectCollapseStore.isProjectCollapsed(projectPath)).toBe(false);
@@ -425,7 +425,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
       try {
         await waitFor(() => expect(target("workgroupGroups.button.nonstop")).toBeTruthy());
 
-        // (#1257) `nonstop` left this list deliberately: it IS favoritable now, and
+        // `nonstop` left this list deliberately: it IS favoritable now, and
         // C2/C3 pin that. All and Ungrouped stay out permanently because they have
         // no persisted record to hold the flag (they are the showAll/showUngrouped
         // booleans), so this assertion keeps its value for them.
@@ -444,7 +444,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
     });
   });
 
-  describe("the Non-stop pseudo-group is favoritable (#1257)", () => {
+  describe("the Non-stop pseudo-group is favoritable", () => {
     it("offers Favorite on the Non-stop entry, renders it in Favorites, and KEEPS it in its project section", async () => {
       const fake = railFake(groupsConfig({ nonStop: { ...defaultNonStop(), show: true } }));
       const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
@@ -464,7 +464,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
         expect(saved.nonStop?.favorite).toBe(true);
         expect(lastUpdatedGroupIds(fake)).toEqual(["ui", "rust", "docs"]);
 
-        // (#1257 D13) The Favorites entry renders BOLD, because `RailButton` applies
+        // (D13) The Favorites entry renders BOLD, because `RailButton` applies
         // `workgroup-group-rail-title-system` to every non-"group" selection and
         // `nonStopButtonFor` must keep `selection: {kind:"nonstop"}`. Accepted
         // decision, pinned here so a later reviewer does not file it as a defect.
@@ -507,7 +507,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
       try {
         await waitFor(() => expect(target("workgroupGroups.button.ui")).toBeTruthy());
 
-        // (#1257 D3) Hidden, not cleared: a visible favorite while Non-stop is off
+        // (D3) Hidden, not cleared: a visible favorite while Non-stop is off
         // would be a ghost button that `normalizeSelection` bounces to All on click.
         expect(maybeTarget("workgroupGroups.favorites")).toBeNull();
         expect(maybeTarget("workgroupGroups.button.nonstop")).toBeNull();
@@ -555,11 +555,11 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
       try {
         await waitFor(() => expect(nonStopFavoriteKeys()).toEqual(["Project"]));
 
-        // (#1257) SCOPE: this pins the FAVORITES ids only. The project section in this
+        // SCOPE: this pins the FAVORITES ids only. The project section in this
         // same DOM emits `workgroupGroups.button.nonstop` TWICE - once for the group
         // whose id is literally "nonstop" (`key: group.id`, :139) and once for the
         // pseudo-button (`key: "nonstop"`, :343), both through
-        // `projectRailTestIds(button.key)` (:592). That collision predates #1257, is
+        // `projectRailTestIds(button.key)` (:592). That collision predates the rail, is
         // reproducible on `main` with no favorites involved, and is deliberately NOT
         // asserted here. Do not "fix" it as part of this issue.
         expect(favoriteButtonKeys()).toEqual(["Project.nonstop"]);
@@ -596,7 +596,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
       );
       const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
-        // (#1257 D4) First within its own project's block, mirroring the project
+        // (D4) First within its own project's block, mirroring the project
         // section's own order (All, Ungrouped, Non-stop, then groups).
         await waitFor(() =>
           expect(favoriteRowKeys()).toEqual([
@@ -642,7 +642,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
         await waitFor(() => expect(target("workgroupGroups.button.ui")).toBeTruthy());
         expect(maybeTarget("workgroupGroups.favorites")).toBeNull();
 
-        // (#1257 D3) The other half of D3: an implementation that CLEARS the flag on
+        // (D3) The other half of D3: an implementation that CLEARS the flag on
         // hide would pass the "hidden" test above and still violate the decision.
         const config = workgroupGroupsStore.config(projectPath);
         workgroupGroupsStore.applyExternalUpdate(projectPath, {
@@ -731,7 +731,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
     });
   });
 
-  describe("the D2 match cap reaches the Favorites call site (#2036)", () => {
+  describe("the D2 match cap reaches the Favorites call site", () => {
     it("counts a 160-code-point astral room in a favorited group's counter", async () => {
       // 160 code points but 320 UTF-16 units: legal under the store's charLength
       // cap, so the shared groupMatchesWorkgroup must use the same reading at this

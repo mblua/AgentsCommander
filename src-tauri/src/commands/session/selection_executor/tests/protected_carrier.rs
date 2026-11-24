@@ -352,6 +352,13 @@ struct CarrierChild {
 }
 
 impl CarrierChild {
+    fn fail_deadline(&mut self) -> ! {
+        let kill = self.child.kill();
+        let wait = self.child.wait();
+        self.reaped = wait.is_ok();
+        self.retain_failure(&format!("child deadline; kill={kill:?}; wait={wait:?}"));
+    }
+
     fn retain_failure(&mut self, reason: &str) -> ! {
         let directory = self.directory.take().unwrap().keep();
         let stdout = std::fs::read_to_string(directory.join("stdout.txt")).unwrap_or_default();
@@ -430,12 +437,7 @@ pub(crate) async fn run_isolated(name: &str, body: impl std::future::Future<Outp
             Ok(None) if started.elapsed() < std::time::Duration::from_secs(120) => {
                 tokio::task::yield_now().await;
             }
-            Ok(None) => {
-                let kill = owner.child.kill();
-                let wait = owner.child.wait();
-                owner.reaped = wait.is_ok();
-                owner.retain_failure(&format!("child deadline; kill={kill:?}; wait={wait:?}"));
-            }
+            Ok(None) => owner.fail_deadline(),
             Err(error) => owner.retain_failure(&format!("child poll: {error}")),
         }
     };

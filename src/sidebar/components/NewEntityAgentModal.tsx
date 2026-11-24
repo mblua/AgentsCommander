@@ -125,9 +125,9 @@ const NewEntityAgentModal: Component<{
       props.onClose();
       // intentionally do NOT clear creating() — modal unmounts; any in-flight
       // keydown event in the close transition stays guarded.
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("create_agent_matrix failed:", e);
-      setError(typeof e === "string" ? e : e.message || "Failed to create agent");
+      setError(typeof e === "string" ? e : (e as Error).message || "Failed to create agent");
       setCreating(false);
     }
   };

@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { formatAgentMessageStamp, formatClockTime } from "./time-format";
 
 /**
- * #1171 test 76: `at` parses with `new Date(value)` and the clock is zero-padded 24-hour
+ * `at` parses with `new Date(value)` and the clock is zero-padded 24-hour
  * `HH:MM:SS`, not the viewer's locale.
  */
-describe("formatClockTime (#1171)", () => {
+describe("formatClockTime", () => {
   it("zero-pads to a fixed-width 24-hour clock", () => {
     // Built from local parts so the assertion does not depend on the runner's timezone;
     // what is being pinned is the FORMAT, not the conversion.
@@ -41,12 +41,12 @@ describe("formatClockTime (#1171)", () => {
 });
 
 /**
- * #1682 - the terminal status strip's stamp: local `MM-DD HH:MM`, no year and no
+ * The terminal status strip's stamp: local `MM-DD HH:MM`, no year and no
  * seconds, and the empty string rather than a placeholder when there is nothing
  * to show. Inputs are built from LOCAL parts so the assertions pin the FORMAT and
  * not the runner's timezone.
  */
-describe("formatAgentMessageStamp (#1682)", () => {
+describe("formatAgentMessageStamp", () => {
   it("renders MM-DD HH:MM from local parts", () => {
     const at = new Date(2026, 7, 31, 21, 29);
     expect(formatAgentMessageStamp(at.toISOString())).toBe("08-31 21:29");

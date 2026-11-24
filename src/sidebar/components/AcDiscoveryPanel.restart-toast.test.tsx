@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// AcDiscoveryPanel has no importer in src/ today (#2573 plan F-A), so it is
+// AcDiscoveryPanel has no importer in src/ today, so it is
 // rendered directly: no App route reaches this menu.
 import { describe, expect } from "vitest";
 import AcDiscoveryPanel from "./AcDiscoveryPanel";
@@ -16,7 +16,7 @@ function restartButton(): HTMLButtonElement | undefined {
   );
 }
 
-describe("AcDiscoveryPanel Restart Session toast (#2573)", () => {
+describe("AcDiscoveryPanel Restart Session toast", () => {
   describeRestartToast({
     failName: "restart_session_from_the_discovery_menu_shows_the_plain_error_toast",
     okName: "a_successful_discovery_restart_shows_no_toast",

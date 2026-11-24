@@ -234,7 +234,7 @@ fn a_write_failure_is_swallowed() {
     assert!(!agent_help_shipped_path(&settings_path).exists());
 }
 
-// ---- #2133 (P6) - the remote validator, caps, cache and stamp. ----
+// ---- The remote validator, caps, cache and stamp. ----
 
 fn remote_with_entries(entries: Vec<(String, AgentHelpEntry)>) -> String {
     let file = AgentHelpFile {
@@ -490,7 +490,7 @@ fn the_shipped_agent_help_passes_the_remote_validator() {
     assert_eq!(&validated, shipped_agent_help());
 }
 
-// ---- #2133 (P7) - the published URL and file. ----
+// ---- The published URL and file. ----
 
 #[test]
 fn the_remote_agent_help_url_pins_the_schema_version_and_source_ref() {

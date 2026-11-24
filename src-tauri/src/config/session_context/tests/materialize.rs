@@ -565,7 +565,7 @@ fn materialize_root_context_recreates_missing_boundary_audit_skill() {
 
 #[test]
 fn materialize_root_context_never_consumes_a_ac_ancestor_global_template() {
-    // #979 G.6, the inverse of the deleted
+    // G.6, the inverse of the deleted
     // `materialize_root_context_uses_standalone_sibling_global_template`. An old
     // Root config still carrying the token, plus a custom global under a `.ac`
     // ancestor (the dev/WG layout, where `config_dir()` lives inside `.ac`): the
@@ -666,7 +666,7 @@ fn materialize_agent_context_file_ignores_standalone_agent_named_directory() {
     );
 }
 
-// ── #621 context-cache GC sweep tests ────────────────────────────────────
+// ── context-cache GC sweep tests ────────────────────────────────────
 
 #[test]
 fn sweep_removes_stale_keeps_fresh_and_non_cache() {
@@ -716,7 +716,7 @@ fn sweep_missing_dir_is_noop() {
 
 #[test]
 fn sweep_keeps_file_with_future_mtime() {
-    // (#621 LOW-3d) clock skew: a file whose mtime is AHEAD of `now` makes
+    // Clock skew: a file whose mtime is AHEAD of `now` makes
     // `now.duration_since(mtime)` return Err -> KEEP (never delete on skew).
     use std::time::{Duration, SystemTime};
     let tmp = tempfile::tempdir().expect("temp dir");

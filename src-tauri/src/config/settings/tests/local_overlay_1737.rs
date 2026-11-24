@@ -40,7 +40,7 @@ pub(super) fn disk_object(path: &Path) -> Map<String, Value> {
     }
 }
 
-/// #1757 - the folder-trust entry exactly as a materialized codex
+/// The folder-trust entry exactly as a materialized codex
 /// `blockingMenus` array carries it. NOT built from `agent_json`, whose
 /// hardcoded empty array would make T10 pass with or without the guard.
 pub(super) fn folder_trust_entry() -> Value {
@@ -228,7 +228,7 @@ const S6_FIXTURE_JSON: &str = r##"{
 /// AC-7's control, captured by running `s6_normalized_non_project_settings`
 /// on the pinned base `ac845616` BEFORE the first edit of this change
 /// (delivery gate 8). Two capture runs produced byte-identical files.
-/// #2317 (phase 2) deliberately reverses the shipped absent-key gate
+/// (phase 2) deliberately reverses the shipped absent-key gate
 /// rule, so an absent-key fixture now pins `terminalSnapshotsEnabled`
 /// true instead of the false the pinned base captured. Explicit-false
 /// coverage lives in the dedicated gate tests, not in this control.
@@ -237,13 +237,13 @@ const S6_FIXTURE_JSON: &str = r##"{
 /// remaining key is pinned. The fixture pins `defaultShell`,
 /// `defaultShellArgs` and `agents` (no `#[serde(default)]`) and the two
 /// profile-aware ports, so the platform this runs on is not load-bearing.
-/// #1905: re-captured after phase 3 - the loader no longer materializes
+/// Re-captured after phase 3 - the loader no longer materializes
 /// `blockingMenus` and the export strips every array (claude's explicit `[]`
 /// is pristine and is dropped), so the control carries no `blockingMenus`.
-/// #2236: re-captured after adding `sidebarCompactHotkey` (phase 4, #2281),
+/// Re-captured after adding `sidebarCompactHotkey` (phase 4, #2281),
 /// which is always serialized, using `print_s6_normalized_non_project_settings`
 /// with two byte-identical JSON captures.
-/// #2306 P1: re-captured - the loader finalizes every registered agent to
+/// P1: re-captured - the loader finalizes every registered agent to
 /// an explicit contiguous `order`, so the control carries codex at 0 and
 /// claude at 1.
 const EXPECTED_NON_PROJECT_SETTINGS_JSON: &str =
@@ -258,7 +258,7 @@ fn s6_normalized_non_project_settings() -> String {
     let raw = std::fs::read_to_string(&path).unwrap();
     let mut value: Value = serde_json::from_str(&raw).unwrap();
     let object = value.as_object_mut().unwrap();
-    // #2716 (B3) 6.1: the two groups live in the agents file; a missing or
+    // (B3) 6.1: the two groups live in the agents file; a missing or
     // unparseable one panics, so the control never goes vacuous on them.
     let sidecar_raw = std::fs::read_to_string(super::super::agents_instance_path(&path))
         .expect("S6: the agents file is missing");
@@ -286,7 +286,7 @@ fn s6_normalized_non_project_settings() -> String {
     serde_json::to_string_pretty(&sorted).unwrap()
 }
 
-/// #2236: prints the S6 control so the fixture can be re-captured without a
+/// Prints the S6 control so the fixture can be re-captured without a
 /// scratch edit. Ignored by default; it asserts nothing.
 #[test]
 #[ignore = "capture helper: run with --ignored to re-capture the fixture"]
@@ -300,28 +300,30 @@ fn a_no_overlay_save_writes_the_control_captured_on_the_pinned_base() {
     let mut expected: Value = serde_json::from_str(EXPECTED_NON_PROJECT_SETTINGS_JSON).unwrap();
     let object = expected.as_object_mut().unwrap();
     assert!(!object.contains_key("codingAgentInstallEnabled"));
-    // #2800 extends the schema; the historical captured control stays intact.
+    // Extends the schema; the historical captured control stays intact.
     object.insert("codingAgentInstallEnabled".to_string(), Value::Bool(false));
     assert!(!object.contains_key("containerOptionsEnabled"));
-    // #3062 adds a default-false field without changing the historical control.
+    // Adds a default-false field without changing the historical control.
     object.insert("containerOptionsEnabled".to_string(), Value::Bool(false));
+    assert!(!object.contains_key("screenshotCopyPath"));
+    object.insert("screenshotCopyPath".to_string(), Value::Bool(false));
     assert!(!object.contains_key("responseCloseEnabled"));
     assert!(!object.contains_key("responseCloseIdleSeconds"));
     object.insert("responseCloseEnabled".to_string(), Value::Bool(true));
     object.insert("responseCloseIdleSeconds".to_string(), Value::from(30));
     assert!(!object.contains_key("roomIdleConfirmationSeconds"));
-    // #3123 adds a default-15 field; preserve the historical captured control.
+    // Adds a default-15 field; preserve the historical captured control.
     object.insert("roomIdleConfirmationSeconds".to_string(), Value::from(15));
-    // #4091 P08 retired contextHistoryColorDays; the projection never carries it.
+    // P08 retired contextHistoryColorDays; the projection never carries it.
     assert!(!object.contains_key("contextHistoryColorDays"));
     assert!(!object.contains_key("contextHistoryEnabled"));
     assert!(!object.contains_key("contextHistoryRetentionDays"));
-    // #4049 adds the default-off switch and default-30 retention.
+    // Adds the default-off switch and default-30 retention.
     object.insert("contextHistoryEnabled".to_string(), Value::Bool(false));
     object.insert("contextHistoryRetentionDays".to_string(), Value::from(30));
     assert!(!object.contains_key("contextHistorySessionWindows"));
     assert!(!object.contains_key("contextHistoryColorSessions"));
-    // #4091 adds the default session windows and their last-member colour.
+    // Adds the default session windows and their last-member colour.
     object.insert(
         "contextHistorySessionWindows".to_string(),
         json!([25, 100, 300]),
@@ -391,7 +393,7 @@ fn a_no_overlay_save_writes_the_control_captured_on_the_pinned_base() {
     assert_eq!(s6_normalized_non_project_settings(), expected);
 }
 
-/// #4091: the defaults-plus-overlay loader keeps an absent colour absent until
+/// The defaults-plus-overlay loader keeps an absent colour absent until
 /// normalization, and keeps an explicit valid colour.
 #[test]
 fn alternate_loader_resolves_absent_colour_to_the_last_overlay_window() {
