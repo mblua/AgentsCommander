@@ -467,6 +467,9 @@ pub struct AppSettings {
     /// `~/.config/hypr/bindings.lua`. Off by default; turning it off removes the block.
     #[serde(default)]
     pub screenshot_hyprland_bind: bool,
+    /// #5178 When true, a confirmed screenshot copies its PNG path as text, not the image.
+    #[serde(default)]
+    pub screenshot_copy_path: bool,
     /// #2281 Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E". Stored
     /// byte-identical to what the user typed; an invalid value blocks the save.
     #[serde(default = "default_sidebar_compact_hotkey")]

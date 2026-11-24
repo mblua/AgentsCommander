@@ -305,6 +305,8 @@ fn a_no_overlay_save_writes_the_control_captured_on_the_pinned_base() {
     assert!(!object.contains_key("containerOptionsEnabled"));
     // Adds a default-false field without changing the historical control.
     object.insert("containerOptionsEnabled".to_string(), Value::Bool(false));
+    assert!(!object.contains_key("screenshotCopyPath"));
+    object.insert("screenshotCopyPath".to_string(), Value::Bool(false));
     assert!(!object.contains_key("responseCloseEnabled"));
     assert!(!object.contains_key("responseCloseIdleSeconds"));
     object.insert("responseCloseEnabled".to_string(), Value::Bool(true));

@@ -37,6 +37,7 @@ fn fields_1(s: &AppSettings, d: &mut fmt::DebugStruct<'_, '_>) {
     d.field("raise_terminal_on_click", &s.raise_terminal_on_click);
     d.field("screenshot_capture_hotkey", &s.screenshot_capture_hotkey);
     d.field("screenshot_hyprland_bind", &s.screenshot_hyprland_bind);
+    d.field("screenshot_copy_path", &s.screenshot_copy_path);
     d.field("sidebar_compact_hotkey", &s.sidebar_compact_hotkey);
     d.field("room_number_mask", &s.room_number_mask);
     d.field("voice_to_text_enabled", &s.voice_to_text_enabled);
@@ -164,6 +165,7 @@ fn all_fields_listed(s: &AppSettings) {
         restart_resume_wake_working_agents: _, sidebar_always_on_top: _, team_idle_beep_enabled: _,
         sounds_enabled: _, raise_terminal_on_click: _, screenshot_capture_hotkey: _,
         screenshot_hyprland_bind: _, sidebar_compact_hotkey: _, room_number_mask: _,
+        screenshot_copy_path: _,
         voice_to_text_enabled: _, gemini_api_key: _, gemini_model: _, jev_api_key: _, jev_model: _,
         jev_endpoint: _, jev_timeout_secs: _, jev_threshold: _, jev_margin: _,
         co_managed_enabled: _, coding_agent_install_enabled: _, container_options_enabled: _,

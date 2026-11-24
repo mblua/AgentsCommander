@@ -30,7 +30,7 @@ describe("generalSettingsIndex", () => {
   });
 
   it("matches section and category names", () => {
-    expect(keys("hotkeys")).toEqual(["screenshotCaptureHotkey", "screenshotHyprlandBind", "sidebarCompactHotkey"]);
+    expect(keys("hotkeys")).toEqual(["screenshotCaptureHotkey", "screenshotHyprlandBind", "screenshotCopyPath", "sidebarCompactHotkey"]);
     const network = GENERAL_SETTINGS_INDEX.filter((e) => e.category === "network").map((e) => e.key);
     expect(keys("network")).toEqual(network);
   });
@@ -48,7 +48,7 @@ describe("generalSettingsIndex", () => {
 
   it("counts results per category", () => {
     expect(countByCategory(searchGeneralSettings("hotkey"))).toEqual({
-      appearance: 3,
+      appearance: 4,
       terminal: 0,
       agents: 0,
       network: 0,
