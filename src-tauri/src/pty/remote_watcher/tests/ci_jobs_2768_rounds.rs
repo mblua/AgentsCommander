@@ -3,7 +3,6 @@ use std::sync::PoisonError;
 
 #[tokio::test]
 async fn i2768_closing_list_changes_restart_candidate() {
-    let _guard = round_test_lock().await;
     for change in ["new-completed", "new-active", "metadata", "attempt"] {
         let (h, repo) = i2768_harness();
         let mut now = Instant::now();
@@ -70,7 +69,6 @@ async fn i2768_closing_list_changes_restart_candidate() {
 }
 #[tokio::test]
 async fn i2768_lifecycle_isolation() {
-    let _guard = round_test_lock().await;
     let (h, repo) = i2768_harness();
     let alias = h.repo("alias");
     h.set_work(&[repo.clone(), alias.clone()]);
@@ -223,7 +221,6 @@ fn i2768_assert_known_ids(h: &Harness, second: &QueryKey) {
 
 #[tokio::test]
 async fn i2768_budget_accounts_for_corroboration() {
-    let _guard = round_test_lock().await;
     for point in ["active", "A", "B", "suppressed", "closing"] {
         i2768_budget_single_key(point).await;
     }
@@ -575,7 +572,6 @@ fn i2768_scripts_exhausted_jobs_panics() {
 }
 #[tokio::test]
 async fn i2768_merge_keeps_active_rows_after_stale_attempt() {
-    let _guard = round_test_lock().await;
     for bad_first in [true, false] {
         let (h, repo) = i2768_harness();
         h.sweeper.settings.write().await.ci_sweep_min_interval_secs = 10;
@@ -738,7 +734,6 @@ fn i2768_merge_errors_and_overflow_absorb_compatible_rows() {
 
 #[tokio::test]
 async fn i2768_corroboration_limits_arm_the_global_gate() {
-    let _guard = round_test_lock().await;
     for point in ["A", "B", "C"] {
         for (kind, delay) in [
             (FailureKind::RateLimited, 900),

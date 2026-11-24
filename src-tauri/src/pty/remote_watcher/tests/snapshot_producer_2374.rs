@@ -58,7 +58,6 @@ fn remote_activity_cache_producer_warning_limiter_admits_once_per_window() {
 
 #[tokio::test]
 async fn remote_activity_cache_producer_positive_wiring() {
-    let _guard = round_test_lock().await;
     let snapshot_dir = tempfile::tempdir().expect("snapshot dir");
     let settings = AppSettings {
         branch_staleness_enabled: false,
@@ -172,7 +171,6 @@ async fn remote_activity_cache_producer_positive_wiring() {
 
 #[tokio::test]
 async fn remote_activity_cache_producer_forced_write_failure_keeps_round_effects() {
-    let _guard = round_test_lock().await;
     let blocker = tempfile::tempdir().expect("blocker dir");
     let blocked_destination = blocker.path().join("not-a-directory");
     std::fs::write(&blocked_destination, b"file").expect("blocker file");
@@ -253,7 +251,6 @@ async fn remote_activity_cache_producer_forced_write_failure_keeps_round_effects
 
 #[tokio::test]
 async fn remote_activity_cache_producer_publication_time_is_not_the_round_start() {
-    let _guard = round_test_lock().await;
     let snapshot_dir = tempfile::tempdir().expect("snapshot dir");
     let settings = AppSettings {
         branch_staleness_enabled: false,
@@ -305,7 +302,6 @@ async fn remote_activity_cache_producer_publication_time_is_not_the_round_start(
 
 #[tokio::test]
 async fn remote_activity_cache_producer_missing_directory_skips_persistence_only() {
-    let _guard = round_test_lock().await;
     let settings = AppSettings {
         branch_staleness_enabled: false,
         ..AppSettings::default()

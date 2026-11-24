@@ -3,7 +3,6 @@ use std::sync::PoisonError;
 
 #[tokio::test]
 async fn ci_counts_only_runs_on_the_current_branch() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
@@ -30,7 +29,6 @@ async fn ci_counts_only_runs_on_the_current_branch() {
 
 #[tokio::test]
 async fn incident_replay_identical_branch_and_default_get_no_notice() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let default_repo = harness.repo("repo-a");
     let feature_repo = harness.repo("repo-b");
@@ -112,7 +110,6 @@ async fn incident_replay_identical_branch_and_default_get_no_notice() {
 
 #[tokio::test]
 async fn non_identical_branch_notifies_only_its_own_rooms() {
-    let _guard = round_test_lock().await;
     let settings = AppSettings {
         branch_staleness_enabled: false,
         ..AppSettings::default()
@@ -218,7 +215,6 @@ async fn non_identical_branch_notifies_only_its_own_rooms() {
 /// answer is suppressed.
 #[tokio::test]
 async fn resolved_default_branch_ci_is_suppressed() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
@@ -271,7 +267,6 @@ async fn resolved_default_branch_ci_is_suppressed() {
 
 #[tokio::test]
 async fn unresolved_default_branch_does_not_suppress() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     crate::pty::git_watcher::publish_git_status(
@@ -345,7 +340,6 @@ async fn unresolved_default_branch_does_not_suppress() {
 
 #[tokio::test]
 async fn identity_compare_failure_is_unknown() {
-    let _guard = round_test_lock().await;
     let settings = AppSettings {
         branch_staleness_enabled: false,
         ..AppSettings::default()
@@ -383,7 +377,6 @@ async fn identity_compare_failure_is_unknown() {
 
 #[tokio::test]
 async fn branch_change_on_same_commit_retires_the_key_without_a_transition() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
@@ -424,7 +417,6 @@ async fn branch_change_on_same_commit_retires_the_key_without_a_transition() {
 
 #[tokio::test]
 async fn unknown_is_transparent_and_never_expires() {
-    let _guard = round_test_lock().await;
     // 1000s clears any backoff interval the failing rounds could have set,
     // and 3600s is the phase's long-advance variant; the point is that the
     // `Unknown` rounds never expire the previous confirmed state.
@@ -478,7 +470,6 @@ async fn unknown_is_transparent_and_never_expires() {
 
 #[tokio::test]
 async fn last_confirmed_at_advances_on_every_confirmed_round() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(&[repo]);
@@ -528,7 +519,6 @@ async fn last_confirmed_at_advances_on_every_confirmed_round() {
 
 #[tokio::test]
 async fn head_sha_change_retires_the_key_without_a_transition() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
@@ -561,7 +551,6 @@ async fn head_sha_change_retires_the_key_without_a_transition() {
 
 #[tokio::test]
 async fn stale_to_current_emits_nothing() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(&[repo]);
@@ -585,7 +574,6 @@ async fn stale_to_current_emits_nothing() {
 
 #[tokio::test]
 async fn current_to_stale_emits_once_only() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     crate::pty::git_watcher::publish_git_status(
@@ -626,7 +614,6 @@ async fn current_to_stale_emits_once_only() {
 
 #[tokio::test]
 async fn stale_on_default_branch_sends_no_notice_but_keeps_the_chip() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));
@@ -666,7 +653,6 @@ async fn stale_on_default_branch_sends_no_notice_but_keeps_the_chip() {
 /// Own commits on the default branch change nothing.
 #[tokio::test]
 async fn stale_on_default_branch_with_own_commits_still_sends_no_notice() {
-    let _guard = round_test_lock().await;
     let harness = Harness::new(AppSettings::default());
     let repo = harness.repo("repo-a");
     harness.set_work(std::slice::from_ref(&repo));

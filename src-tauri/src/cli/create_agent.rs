@@ -19,12 +19,7 @@ pub(crate) use session_request::{
 pub(crate) use session_request::{is_session_request_result_path, write_session_request_result};
 pub use session_request::{SessionRequest, SessionRequestResult, SessionRequestResultStatus};
 
-/// Test-only serialization for every test that writes or consumes files in
-/// the process-shared `config_dir()/session-requests/` (the C1-C5 tests here
-/// and the M1-M5 poll tests in `phone::mailbox`). `config_dir()` is a
-/// process-wide `OnceLock`, so those tests share ONE directory; without the
-/// lock a poll test could consume (or delete) another test's request/result
-/// file mid-test.
+/// Coordinates participating CLI and poll tests sharing the session request directory.
 #[cfg(test)]
 pub(crate) static SESSION_REQUESTS_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
     std::sync::OnceLock::new();

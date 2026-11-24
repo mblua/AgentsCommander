@@ -19,17 +19,6 @@ mod run_ids_2473;
 mod snapshot_producer_2374;
 mod ts_bindings_4389;
 
-/// Round-driving tests share the process-global snapshot and the discovery
-/// maps, so they MUST NOT run concurrently with each other or with the
-/// `ac_discovery` test that pushes the room map: a peer test's GC or discovery
-/// write would clear another test's entries. The lock lives beside the maps.
-///
-/// Async-aware on purpose: a std guard held across the round's awaits is the
-/// exact shape `clippy::await_holding_lock` exists to reject.
-async fn round_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
-    crate::pty::git_watcher::DISCOVERY_TEST_LOCK.lock().await
-}
-
 fn sha_of(c: char) -> String {
     std::iter::repeat_n(c, 40).collect()
 }
@@ -807,7 +796,6 @@ fn i2768_details(h: &Harness) -> Vec<String> {
 
 #[tokio::test]
 async fn remote_owner_shared_snapshot_and_poison() {
-    let _guard = round_test_lock().await;
     let owner = Arc::new(RemoteActivityState::new());
     let first = Harness::with_remote_owner(
         AppSettings::default(),

@@ -2,7 +2,6 @@ use super::*;
 
 #[tokio::test]
 async fn i2768_missing_active_run_does_not_finish() {
-    let _guard = round_test_lock().await;
     for empty in [false, true] {
         let (h, repo) = i2768_harness();
         h.sweeper.settings.write().await.ci_sweep_min_interval_secs = 10;
@@ -79,7 +78,6 @@ async fn i2768_missing_active_run_does_not_finish() {
 
 #[tokio::test]
 async fn i2768_jobs_contradict_terminal_run() {
-    let _guard = round_test_lock().await;
     let (h, repo) = i2768_harness();
     let mut now = Instant::now();
     let mut wall = Local::now();
@@ -155,7 +153,6 @@ async fn i2768_jobs_contradict_terminal_run() {
 
 #[tokio::test]
 async fn i2768_closing_round_is_required() {
-    let _guard = round_test_lock().await;
     let (h, repo) = i2768_harness();
     let mut now = Instant::now();
     let mut wall = Local::now();
@@ -188,7 +185,6 @@ async fn i2768_closing_round_is_required() {
 }
 #[tokio::test]
 async fn i2768_stale_completed_list_does_not_finish() {
-    let _guard = round_test_lock().await;
     let (h, repo) = i2768_harness();
     let mut now = Instant::now();
     let mut wall = Local::now();
@@ -282,7 +278,6 @@ fn i2768_assert_proof_round(h: &Harness, id: u64, confirmed_wall: DateTime<Local
 
 #[tokio::test]
 async fn i2768_all_runs_finish_once() {
-    let _guard = round_test_lock().await;
     let (h, repo) = i2768_harness();
     let mut now = Instant::now();
     let mut wall = Local::now();
@@ -444,7 +439,6 @@ fn i2768_parser_filter_and_count_contract() {
 }
 #[tokio::test]
 async fn i2768_identity_and_attempt_fail_closed() {
-    let _guard = round_test_lock().await;
     for (field, value) in [
         ("head_sha", serde_json::json!(sha_of('b'))),
         ("head_branch", serde_json::json!("other")),
@@ -612,7 +606,6 @@ async fn i2768_cancelled_without_jobs() {
 
 #[tokio::test]
 async fn i2768_incomplete_evidence_never_finishes() {
-    let _guard = round_test_lock().await;
     let run = parse_ci_run_response(&i2768_row(1, "completed").to_string(), &i2768_key()).unwrap();
     for count in [0, 2, 101] {
         let mut jobs: serde_json::Value = i2768_jobs_json();
@@ -672,7 +665,6 @@ async fn i2768_incomplete_evidence_never_finishes() {
 
 #[tokio::test]
 async fn i2768_rerun_invalidates_completion() {
-    let _guard = round_test_lock().await;
     for point in ["A", "C", "closing"] {
         let (h, repo) = i2768_harness();
         let mut now = Instant::now();
@@ -977,7 +969,6 @@ async fn i2768_failed_closing_list() {
 
 #[tokio::test]
 async fn i2768_failures_preserve_known_runs() {
-    let _guard = round_test_lock().await;
     let failures = i2768_failures();
     let kinds = [
         FailureKind::Timeout,

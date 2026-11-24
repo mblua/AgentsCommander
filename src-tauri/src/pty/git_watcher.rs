@@ -899,14 +899,5 @@ impl GitSweeper {
     }
 }
 
-/// The discovery maps are process-global and are written by two test
-/// modules (`pty::remote_watcher` rounds and `commands::ac_discovery`'s push
-/// test), so those tests must serialize against each other, not merely within
-/// one module. Lives beside the maps it guards. Async-aware because the round
-/// tests hold it across their awaits; the sync `ac_discovery` test uses
-/// `blocking_lock`.
-#[cfg(test)]
-pub(crate) static DISCOVERY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 #[cfg(test)]
 mod tests;
