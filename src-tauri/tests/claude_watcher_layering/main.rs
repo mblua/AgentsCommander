@@ -193,7 +193,7 @@ fn expected_dependencies() -> BTreeSet<DependencyObservation> {
     .collect()
 }
 
-// The `config::instance_artifacts` row is the #1446 artifact registry: a
+// The `config::instance_artifacts` row is the artifact registry: a
 // pure-constants leaf with zero outgoing arcs in `src-tauri/module-arcs.txt`,
 // so an arc into it can neither create, grow, nor join any SCC (the same
 // argument `instance_gitignore_layering` records for its own row). It grants
@@ -203,7 +203,7 @@ fn expected_dependencies() -> BTreeSet<DependencyObservation> {
 // registry, so a rename breaks the build instead of silently reopening the
 // instance `.gitignore` coverage gap. The set stays equality-pinned: any
 // seventh dependency still turns this guard red.
-// #3346 moves physical log I/O to a std-only sink with no outgoing app arcs:
+// Moves physical log I/O to a std-only sink with no outgoing app arcs:
 // filesystem::telegram_logs adds no return path/cycle or transport/routing rules.
 fn expected_output_dependencies() -> BTreeSet<DependencyObservation> {
     [

@@ -1,6 +1,6 @@
 use super::*;
 
-// ── #2232 phase 1: capture records ────────────────────────────────────
+// ── Capture records ────────────────────────────────────
 
 /// A current-format final record carrying the nested turn id the real
 /// fixture shows, so grouping has something to match.

@@ -45,7 +45,7 @@ const REAL_CURRENT_CODEX_FINAL: &str = concat!(
     r#""content_item_kinds":["unknown"]}}}"#,
 );
 
-// ── #2232 phase 4: the room-only reader (tests 14 and 17) ────────────
+// ── The room-only reader (tests 14 and 17) ────────────
 
 /// A `search_root` holding today's partition with one rollout whose
 /// `session_meta.cwd` matches, plus one fresh `final_answer` record.
