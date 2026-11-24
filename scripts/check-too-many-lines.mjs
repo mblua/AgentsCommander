@@ -361,6 +361,40 @@ export function ratchet(head, base) {
   }
 }
 
+// The PR gate's path catalog: a JSON array of exact, unique, sorted Git paths that the
+// workflow uses as part of its definition. The catalog itself is a control file.
+export const PATH_CATALOG = 'scripts/pr-regression-paths.json';
+export function parsePathCatalog(text, where) {
+  requireInput(text.trim().length > 0, `${where}: empty catalog`);
+  let list;
+  try { list = JSON.parse(text); } catch { throw new InputError(`${where}: invalid JSON`); }
+  requireInput(Array.isArray(list), `${where}: not a JSON array`);
+  list.forEach((entry, i) => {
+    const parts = typeof entry === 'string' ? entry.split('/') : [''];
+    requireInput(typeof entry === 'string' && !entry.startsWith('/') &&
+      !/[\\*?[\]{}]/.test(entry) && !parts.some(p => p === '' || p === '.' || p === '..'),
+    `${where}: invalid path ${JSON.stringify(entry)}`);
+    requireInput(i === 0 || list[i - 1] < entry,
+      `${where}: paths not unique and sorted at ${JSON.stringify(entry)}`);
+  });
+  return list;
+}
+// Catalog of one snapshot tree (`s.baseTree`/`s.headTree`); absent means no data paths.
+export function snapshotCatalog(s, tree, where) {
+  const entry = tree.get(PATH_CATALOG);
+  if (!entry) return [];
+  requireInput(entry.mode === '100644' && entry.type === 'blob',
+    `${where}:${PATH_CATALOG}: not a regular file`);
+  return parsePathCatalog(String(s.readBlob(entry)), `${where}:${PATH_CATALOG}`);
+}
+function revisionCatalog(root, rev) {
+  const row = git(root, ['ls-tree', rev, '--', PATH_CATALOG]);
+  if (!row) return [];
+  const [mode, type, oid] = row.split('\t')[0].split(' ');
+  requireInput(mode === '100644' && type === 'blob', `${rev}:${PATH_CATALOG}: not a regular file`);
+  return parsePathCatalog(git(root, ['cat-file', 'blob', oid]), `${rev}:${PATH_CATALOG}`);
+}
+const catalogUnion = (root, ...revs) => new Set(revs.flatMap(rev => revisionCatalog(root, rev)));
 function protectedPath(file) {
   return /\.rs$|(^|\/)Cargo\.(toml|lock)$|(^|\/)\.cargo\/|clippy|rust-toolchain/.test(file) ||
     /^\.github\/workflows\/|^scripts\/ci-install/.test(file);
@@ -384,12 +418,16 @@ export function baselineDiff(baseRef, root = ROOT) {
     const drift = git(root, ['diff', '--no-renames', '--name-only',
       head.sourceCommit, remote, '--'])
       .split('\n').filter(Boolean);
-    requireInput(!drift.some(protectedPath), 'relevant main drift: re-adopt at current main');
+    const mainData = catalogUnion(root, head.sourceCommit, remote);
+    requireInput(!drift.some(f => protectedPath(f) || f === PATH_CATALOG || mainData.has(f)),
+      'relevant main drift: re-adopt at current main');
     const candidate = git(root, ['diff', '--no-renames', '--name-only',
       head.sourceCommit, s.headOid, '--'])
       .split('\n').filter(Boolean);
-    requireInput(!candidate.some(f => protectedPath(f) && !allowedCandidate(f)),
-      'candidate protected sources differ from adoption source');
+    const data = catalogUnion(root, head.sourceCommit, s.headOid);
+    requireInput(!candidate.some(f => f === PATH_CATALOG ||
+      (protectedPath(f) && !allowedCandidate(f) && !data.has(f))),
+    'candidate protected sources differ from adoption source');
   }
   s.assertStableHead();
 }

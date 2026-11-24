@@ -1381,11 +1381,9 @@ jobs:
       # Ubuntu mirror costs seconds instead of half an hour. A miss only means
       # apt downloads everything, as before.
       - name: Restore apt package cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: ./.github/actions/restore-pr-apt-cache
         with:
-          path: ~/apt-debs
-          key: ${{ steps.apt_key.outputs.prefix }}none
-          restore-keys: ${{ steps.apt_key.outputs.prefix }}
+          prefix: ${{ steps.apt_key.outputs.prefix }}
 
       - name: Install Tauri system dependencies
         run: bash scripts/ci-install-linux-deps.sh
@@ -1623,11 +1621,9 @@ jobs:
       # Ubuntu mirror costs seconds instead of half an hour. A miss only means
       # apt downloads everything, as before.
       - name: Restore apt package cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: ./.github/actions/restore-pr-apt-cache
         with:
-          path: ~/apt-debs
-          key: ${{ steps.apt_key.outputs.prefix }}none
-          restore-keys: ${{ steps.apt_key.outputs.prefix }}
+          prefix: ${{ steps.apt_key.outputs.prefix }}
 
       - name: Install Tauri system dependencies
         run: bash scripts/ci-install-linux-deps.sh
@@ -1722,11 +1718,9 @@ jobs:
       # Ubuntu mirror costs seconds instead of half an hour. A miss only means
       # apt downloads everything, as before.
       - name: Restore apt package cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: ./.github/actions/restore-pr-apt-cache
         with:
-          path: ~/apt-debs
-          key: ${{ steps.apt_key.outputs.prefix }}none
-          restore-keys: ${{ steps.apt_key.outputs.prefix }}
+          prefix: ${{ steps.apt_key.outputs.prefix }}
 
       - name: Install Tauri system dependencies
         run: bash scripts/ci-install-linux-deps.sh
@@ -2768,11 +2762,9 @@ jobs:
       # Ubuntu mirror costs seconds instead of half an hour. A miss only means
       # apt downloads everything, as before.
       - name: Restore apt package cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: ./.github/actions/restore-pr-apt-cache
         with:
-          path: ~/apt-debs
-          key: ${{ steps.apt_key.outputs.prefix }}none
-          restore-keys: ${{ steps.apt_key.outputs.prefix }}
+          prefix: ${{ steps.apt_key.outputs.prefix }}
 
       - name: Install Tauri system dependencies
         run: bash scripts/ci-install-linux-deps.sh
