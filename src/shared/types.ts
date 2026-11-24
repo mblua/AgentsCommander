@@ -889,8 +889,8 @@ export interface AppSettings {
   screenshotCaptureHotkey?: string;
   /** AC keeps its own key binding block in Omarchy's hypr/bindings.lua. */
   screenshotHyprlandBind?: boolean;
-  /** Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E". Validated on save;
-   * an invalid value blocks the save. */
+  screenshotCopyPath?: boolean; // #5178 copy the PNG path, not the image
+  /** Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E"; an invalid value blocks the save. */
   sidebarCompactHotkey?: string;
   /** Mask for numbering NEW room directories: one `#` per zero-padded digit.
    * Optional so a snapshot saved before the field reads as the backend default ("#"). */

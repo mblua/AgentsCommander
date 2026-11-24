@@ -3,7 +3,7 @@
 //! Native, Greenshot-style screenshot flow: a global hotkey freezes the desktop,
 //! the user drags a rectangle on a per-monitor overlay, and the crop is saved as
 //! a PNG into the owning WG replica root of the session currently selected in
-//! `AgentsCommander`, with the absolute path copied to the clipboard.
+//! `AgentsCommander`, with the PNG image (or, if set, its absolute path) copied to the clipboard.
 //!
 //! Module layout (see plan `_plans/714-active-agent-screenshot-capture.md`):
 //! - This file owns the serializable IPC types shared with the frontend, the
@@ -147,7 +147,9 @@ pub trait ScreenshotHost:
     fn display_snapshot(&self) -> DisplayEnvSnapshot;
     fn open_overlay(&self, spec: &OverlayWindowSpec) -> Result<(), String>;
     fn destroy_capture_overlays(&self, capture_id: uuid::Uuid) -> usize;
+    fn copy_path_preferred(&self) -> impl std::future::Future<Output = bool> + Send;
     fn copy_path(&self, path: String) -> Result<(), String>;
+    fn copy_image(&self, path: String) -> Result<(), String>;
     fn focus_capture_failure(&self);
     fn spawn_background(
         &self,

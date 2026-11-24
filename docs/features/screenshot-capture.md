@@ -1,6 +1,6 @@
 # Screenshot capture
 
-In-app screenshot capture lets you press a global hotkey, drag a rectangle over the frozen screen, and save a PNG inside the room replica that owns the session you are working with, with the saved path already on your clipboard.
+In-app screenshot capture lets you press a global hotkey, drag a rectangle over the frozen screen, and save a PNG inside the room replica that owns the session you are working with, with the image already on your clipboard (or its saved path, if **Paste image path instead of image** is on).
 
 Use this feature when you want to hand a coding agent a picture of what you are looking at. It is not a terminal snapshot (that reads a backend terminal viewport without touching OS pixels) and not [window capture](window-capture.md) (that captures exactly one native window from the CLI or the API). Screenshot capture works on Windows, macOS, Linux under X11, and Linux under Wayland through xdg-desktop-portal. On Wayland the desktop's own area selector replaces the AgentsCommander overlay. Every other target compiles a stub that reports the feature as unsupported and never registers the hotkey.
 
@@ -13,7 +13,7 @@ You need:
 - a session selected in the app and displayable, because the screenshot belongs to that session; and
 - that session's working directory inside a room replica (an `__agent_*` directory), because the destination is the `screenshots` folder in the replica root.
 
-A screenshot records whatever is on your monitors, including passwords, tokens, source code, and personal data. AgentsCommander saves the exact cropped pixels with no redaction, and it copies the file path to your clipboard.
+A screenshot records whatever is on your monitors, including passwords, tokens, source code, and personal data. AgentsCommander saves the exact cropped pixels with no redaction. By default it also copies those pixels to your clipboard, and a clipboard history tool may keep them; with **Paste image path instead of image** on, it copies the file path instead.
 
 ## Capture a screenshot
 
@@ -22,7 +22,7 @@ A screenshot records whatever is on your monitors, including passwords, tokens, 
    AgentsCommander captures every monitor and opens one overlay window per monitor. Each overlay shows a frozen image of that monitor, not a live view, so the screen you are photographing cannot change under you.
 3. Drag a rectangle over the area you want. A magnifier follows the pointer while you hover and while you drag, so you can place the edges precisely.
 4. Release the pointer.
-   AgentsCommander crops the frozen image, writes the PNG, copies its path to the clipboard, and closes every overlay. A success toast reads `Screenshot saved. Path copied: <path>` and clears itself after 30 seconds.
+   AgentsCommander crops the frozen image, writes the PNG, copies the image to the clipboard (or the path, if **Paste image path instead of image** is on), and closes every overlay. A success toast reads `Screenshot saved: <path>` and clears itself after 30 seconds.
 
 To abandon the capture, press `Escape` or close the overlay. Nothing is written.
 
@@ -43,7 +43,7 @@ macOS:    <room-replica-root>/screenshots/agentscommander-screenshot-<YYYYMMDD>-
 
 The timestamp is local time. The last segment is the first 8 hexadecimal characters of the session id, so two sessions capturing in the same second still get distinct names.
 
-The saved path is copied to the clipboard as text. Copying is best effort: if the clipboard is unavailable, AgentsCommander logs a warning and the capture still succeeds.
+The PNG image is copied to the clipboard, or the saved path as text if **Paste image path instead of image** is on (Settings > General > Appearance > Hotkeys). Copying is best effort: if the clipboard is unavailable, AgentsCommander logs a warning and the capture still succeeds.
 
 The app log records one line per successful capture:
 
@@ -72,13 +72,13 @@ The command prints what your shell inherited: usually `x11` or `wayland`, but it
 
 When you press the key or click the chip, the desktop's own area selector opens. There is no AgentsCommander overlay and no magnifier.
 
-- Drag a rectangle to save. The PNG goes to the same replica folder as on other systems, the path is copied to the clipboard, and the same success toast appears.
+- Drag a rectangle to save. The PNG goes to the same replica folder as on other systems, the image is copied to the clipboard (or the path, if **Paste image path instead of image** is on), and the same success toast appears.
 - Press `Escape` to cancel. Nothing is written and no message appears.
 - A second press, or a chip click, while the selector is open does nothing.
 - If the selector never answers, restart AgentsCommander.
 - Some portals also keep their own copy of the image (GNOME, for example, in `~/Pictures`). AgentsCommander never deletes it.
 
-The path is copied to the clipboard. Whether it survives after AgentsCommander quits was not verified on Wayland.
+The image is copied to the clipboard, or the path if **Paste image path instead of image** is on. Whether it survives after AgentsCommander quits was not verified on Wayland.
 
 ### The shortcut on Wayland
 
@@ -86,7 +86,7 @@ AgentsCommander registers one portal shortcut per instance, with its own id `age
 
 ## Linux X11: two behaviors that differ from Windows
 
-**The copied path may not survive closing AgentsCommander.** On X11 the clipboard is usually served by the running application, so when AgentsCommander exits the path is normally gone. A clipboard manager can change that: if one is running (KDE's Klipper, for example), it can take over the clipboard before the app exits and keep the path available. Without one, expect to lose it. The PNG file is unaffected either way. Paste the path before you quit. This is how X11 works, not a defect.
+**The copied image or path may not survive closing AgentsCommander.** On X11 the clipboard is usually served by the running application, so when AgentsCommander exits the copied image or path is normally gone. A clipboard manager can change that: if one is running (KDE's Klipper, for example), it can take over the clipboard before the app exits and keep it available. Without one, expect to lose it. The PNG file is unaffected either way. Paste before you quit. This is how X11 works, not a defect.
 
 **Pressing the hotkey a second time cancels the capture.** On Windows a second press while a capture is in flight is ignored. On Linux it closes the overlays and cancels the capture, because a window manager may decline to give the overlay keyboard focus, which would leave `Escape` undelivered. So on Linux you always have a way out: `Escape`, or the hotkey again.
 
@@ -113,7 +113,7 @@ If you start AgentsCommander from a terminal instead of Finder, macOS may ask fo
 
 **Pressing the hotkey a second time cancels the capture.** As on Linux X11, a second press while a capture is in flight closes the overlays and cancels the capture. macOS does not guarantee keyboard focus for the overlay, so `Escape` may not reach it; the hotkey always does. Only Windows ignores the second press.
 
-**The copied path survives quitting AgentsCommander.** macOS keeps clipboard contents after an application quits, so the path stays pasteable; on X11 it is usually lost. This was not verified on a real Mac.
+**The copied image or path survives quitting AgentsCommander.** macOS keeps clipboard contents after an application quits, so it stays pasteable; on X11 it is usually lost. This was not verified on a real Mac.
 
 **Two behaviors remain unverified on a real Mac:** whether the menu bar and the Dock draw above the overlay, and whether the overlay appears over an app that is fullscreen in its own Space.
 

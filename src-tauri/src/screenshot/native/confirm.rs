@@ -24,7 +24,7 @@ use super::{
 // ── Confirm ────────────────────────────────────────────────────────────────
 
 /// Crop the selection out of the stored monitor bitmap, save a PNG into the
-/// resolved replica root, copy the path to the clipboard, and tear down overlays.
+/// resolved replica root, copy the image (or path) to the clipboard, and tear down overlays.
 /// The async mutex is dropped before any file I/O. Any post-take failure destroys
 /// overlays, deletes a partial PNG, and emits a failure event.
 pub async fn confirm_selection<H: ScreenshotHost>(
@@ -68,9 +68,14 @@ pub(crate) async fn complete_confirmation<H: ScreenshotHost>(
 ) -> Result<ScreenshotCaptureResult, String> {
     let outcome = match result {
         Ok(saved) => {
-            // Best-effort clipboard copy; the PNG already exists, so a clipboard
-            // failure must not fail the capture (plan §E).
-            if let Err(e) = app.copy_path(saved.path.clone()) {
+            // Best-effort clipboard copy of the path or image; the PNG already
+            // exists, so a clipboard failure must not fail the capture (plan §E).
+            let copied = if app.copy_path_preferred().await {
+                app.copy_path(saved.path.clone())
+            } else {
+                app.copy_image(saved.path.clone())
+            };
+            if let Err(e) = copied {
                 log::warn!("[screenshot] clipboard copy failed: {e}");
             }
             app.capture_saved(saved.clone());

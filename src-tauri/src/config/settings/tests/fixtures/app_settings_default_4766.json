@@ -95,6 +95,7 @@
   "roomIdleConfirmationSeconds": 15,
   "roomNumberMask": "#",
   "screenshotCaptureHotkey": "Ctrl+Q",
+  "screenshotCopyPath": false,
   "screenshotHyprlandBind": false,
   "selectedRowRailColor": "#FFFFFF",
   "selectedRowRailWidth": "9px",
