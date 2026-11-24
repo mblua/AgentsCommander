@@ -257,13 +257,13 @@ describe("OpenAgentModal P2 selectedRepo observer fixture (#4945)", () => {
   });
 
   it("loads a variant module distinct from the ordinary component", async () => {
-    const variant = await import("@sidebar/components/OpenAgentModal");
+    const variant = await import("../components/OpenAgentModal");
     expect(variant.default).toBeTypeOf("function");
     expect(variant.default).not.toBe(OpenAgentModal);
   });
 
   it("reports the second repo's exact path on click and null after Escape", async () => {
-    const { default: Variant } = await import("@sidebar/components/OpenAgentModal");
+    const { default: Variant } = await import("../components/OpenAgentModal");
     await exerciseNavigation(Variant as ModalComponent, observed);
     expect(observed[0]).toBeNull();
     expect(observed).toContain(SECOND_REPO.path);
@@ -320,7 +320,7 @@ describe("OpenAgentModal phase 2 native row buttons (#4945)", () => {
     afterEach(() => document.removeEventListener(SELECTED_REPO_EVENT, listener));
 
     it.each(["Enter", " "])("native %j activation of the second row emits its path", async (k) => {
-      const { default: Variant } = await import("@sidebar/components/OpenAgentModal");
+      const { default: Variant } = await import("../components/OpenAgentModal");
       await mountSettled(Variant as ModalComponent);
       const second = rows()[1]!;
       second.focus();

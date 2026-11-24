@@ -37,7 +37,7 @@ function replaceExactlyOnce(code: string, anchor: string, replacement: string): 
 
 const VARIANTS: Variant[] = [
   {
-    specifier: "@sidebar/components/ActionBar",
+    specifier: "../components/ActionBar",
     suite: "ActionBar.accessibility.test.tsx",
     source: "ActionBar.tsx",
     transform: (code) =>
@@ -51,7 +51,7 @@ const VARIANTS: Variant[] = [
       ),
   },
   {
-    specifier: "@sidebar/components/OpenAgentModal",
+    specifier: "../components/OpenAgentModal",
     suite: "OpenAgentModal.accessibility.test.tsx",
     source: "OpenAgentModal.tsx",
     transform: (code) =>

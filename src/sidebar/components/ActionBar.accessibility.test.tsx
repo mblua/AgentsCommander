@@ -165,7 +165,7 @@ describe("ActionBar browser create notice (#4945 :471)", () => {
 describe("ActionBar desktop create confirmation (#4945 :511)", () => {
   async function openConfirm() {
     platform.tauri = true;
-    const { default: Variant } = await import("@sidebar/components/ActionBar");
+    const { default: Variant } = await import("../components/ActionBar");
     const mounted = await mount(Variant);
     await waitFor(() => expect(q(CONFIRM)).toBeTruthy());
     windowClicks = [];
@@ -229,7 +229,7 @@ describe("ActionBar desktop create confirmation (#4945 :511)", () => {
 describe("ActionBar ordinary desktop New Project (#4945 P3)", () => {
   it("variant and ordinary modules are distinct", async () => {
     const ordinary = await import("./ActionBar");
-    const variant = await import("@sidebar/components/ActionBar");
+    const variant = await import("../components/ActionBar");
     expect(variant.default).not.toBe(ordinary.default);
   });
 
