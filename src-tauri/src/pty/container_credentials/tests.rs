@@ -43,10 +43,9 @@ fn run_host_case(name: &str, scenario: &str, key: &str, credential: Option<&[u8]
     if let Some(bytes) = credential {
         std::fs::write(host_dir.join(".credentials.json"), bytes).expect("write cred");
     }
-    run_case(name, scenario, |command| {
-        command
-            .env(key, &host_dir)
-            .env(CASE_FIXTURE, fixture.path());
+    let root = fixture.path().to_path_buf();
+    run_case(name, scenario, vec![fixture], |command| {
+        command.env(key, &host_dir).env(CASE_FIXTURE, &root);
     });
 }
 
@@ -114,9 +113,10 @@ fn resolve_plan_ignores_relative_env_override_f6() {
         let relative = cwd.path().join("relative/not-absolute-930");
         std::fs::create_dir_all(&relative).expect("relative dir");
         std::fs::write(relative.join(".credentials.json"), b"tok").expect("write cred");
-        return run_case(NAME, "relative", |command| {
+        let dir = cwd.path().to_path_buf();
+        return run_case(NAME, "relative", vec![cwd], |command| {
             command
-                .current_dir(cwd.path())
+                .current_dir(&dir)
                 .env(key, "relative/not-absolute-930");
         });
     };

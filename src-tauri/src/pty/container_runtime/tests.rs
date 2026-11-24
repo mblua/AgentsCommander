@@ -28,7 +28,7 @@ fn resolve_container_image_uses_per_agent_then_env() {
                 .into_iter()
                 .zip([Some("env/image:latest"), Some("  "), None])
         {
-            crate::test_support::run_case(NAME, scenario, |command| match value {
+            crate::test_support::run_case(NAME, scenario, Vec::new(), |command| match value {
                 Some(value) => drop(command.env(KEY, value)),
                 None => drop(command.env_remove(KEY)),
             });

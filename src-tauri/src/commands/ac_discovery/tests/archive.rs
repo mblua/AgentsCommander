@@ -15,7 +15,7 @@ async fn archive_relative_path_matches_across_short_name_temp() {
         "::archive_relative_path_matches_across_short_name_temp"
     );
     let Some(scenario) = crate::test_support::case_child(NAME, &["short"]) else {
-        return crate::test_support::run_case(NAME, "short", |_| {});
+        return crate::test_support::run_case(NAME, "short", Vec::new(), |_| {});
     };
     let temp = tempfile::tempdir().expect("tempdir");
     let settings_path = temp.path().join("settings.json");
@@ -335,7 +335,7 @@ async fn archive_project_inner_absolutizes_relative_path_and_emits_archive_event
         "::archive_project_inner_absolutizes_relative_path_and_emits_archive_event"
     );
     let Some(scenario) = crate::test_support::case_child(NAME, &["archive"]) else {
-        return crate::test_support::run_case(NAME, "archive", |_| {});
+        return crate::test_support::run_case(NAME, "archive", Vec::new(), |_| {});
     };
     let temp = tempfile::tempdir().expect("tempdir");
     let settings_path = temp.path().join("settings.json");

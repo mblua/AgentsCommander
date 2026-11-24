@@ -7,7 +7,7 @@ fn absolutise_resolves_relative_path_against_cwd() {
         "::absolutise_resolves_relative_path_against_cwd"
     );
     let Some(scenario) = crate::test_support::case_child(NAME, &["dot"]) else {
-        return crate::test_support::run_case(NAME, "dot", |_| {});
+        return crate::test_support::run_case(NAME, "dot", Vec::new(), |_| {});
     };
     let fix = FixtureRoot::new("proj-rel");
     std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
@@ -40,7 +40,7 @@ fn absolutise_collapses_dotdot_segments_on_windows() {
         "::absolutise_collapses_dotdot_segments_on_windows"
     );
     let Some(scenario) = crate::test_support::case_child(NAME, &["dotdot"]) else {
-        return crate::test_support::run_case(NAME, "dotdot", |_| {});
+        return crate::test_support::run_case(NAME, "dotdot", Vec::new(), |_| {});
     };
     let fix = FixtureRoot::new("proj-dotdot");
     let project = fix.path().join("project");

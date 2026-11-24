@@ -121,7 +121,7 @@ pub(crate) fn case_name(path: &str) -> &str {
 /// Child side of a #5174 process case. Returns the scenario when this
 /// process is the child that runs `path`, and `None` in the ordinary parent.
 /// A marker that names another test, an unknown scenario or a libtest
-/// command line without `--exact <name>` fails the test.
+/// command line that does not select exactly `--exact <name>` fails the test.
 #[cfg(test)]
 pub(crate) fn case_child(path: &str, scenarios: &[&'static str]) -> Option<&'static str> {
     let name = case_name(path);
@@ -133,9 +133,10 @@ pub(crate) fn case_child(path: &str, scenarios: &[&'static str]) -> Option<&'sta
     };
     assert_eq!(fqn, name, "AC_5174_CASE names another test");
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let selectors: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
     assert!(
-        args.iter().any(|a| a == "--exact") && args.iter().filter(|a| *a == name).count() == 1,
-        "AC_5174_CASE child without `--exact {name}`: {args:?}"
+        args.iter().any(|a| a == "--exact") && selectors == [name],
+        "AC_5174_CASE child must select only `--exact {name}`: {args:?}"
     );
     let found = scenarios.iter().find(|s| **s == scenario).copied();
     Some(found.unwrap_or_else(|| panic!("unknown AC_5174_CASE scenario {scenario:?}")))
@@ -147,44 +148,56 @@ pub(crate) fn case_done(path: &str, scenario: &str) {
     println!("AC5174_DONE {} {scenario}", case_name(path));
 }
 
-/// Child process owned by a #5174 parent: killed and reaped on every exit.
+/// Child process owned by a #5174 parent. It holds the child logs and every
+/// parent input until the child is reaped; the reap is attempted only once.
 #[cfg(test)]
 struct CaseChild {
     process: std::process::Child,
     directory: Option<tempfile::TempDir>,
-    reaped: bool,
+    inputs: Vec<tempfile::TempDir>,
+    reaped: Option<bool>,
 }
 
 #[cfg(test)]
 impl CaseChild {
-    /// Kill, then poll up to 10 s for the reap.
+    /// Kill, then poll up to 10 s for the reap. Later calls return the first outcome.
     fn reap(&mut self) -> bool {
-        if self.reaped {
-            return true;
+        if let Some(reaped) = self.reaped {
+            return reaped;
         }
-        let _ = self.process.kill();
         let started = std::time::Instant::now();
+        let kill = self.process.kill();
+        let mut poll = Ok(None);
         while started.elapsed() < std::time::Duration::from_secs(10) {
-            match self.process.try_wait() {
-                Ok(Some(_)) => {
-                    self.reaped = true;
-                    return true;
-                }
+            poll = self.process.try_wait();
+            match poll {
                 Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
-                Err(_) => return false,
+                _ => break,
             }
         }
-        false
+        let reaped = matches!(poll, Ok(Some(_)));
+        eprintln!(
+            "#5174 reap child pid {}: kill {kill:?}, poll {poll:?}, reaped={reaped} in {:?}",
+            self.process.id(),
+            started.elapsed()
+        );
+        self.reaped = Some(reaped);
+        reaped
     }
 
-    /// Fail the parent, keeping the child logs (and, without a reap, its fixtures).
+    /// Keep the logs and every input on disk; returns the logs directory.
+    fn retain(&mut self) -> Option<std::path::PathBuf> {
+        for input in self.inputs.drain(..) {
+            eprintln!("#5174 input retained at {}", input.keep().display());
+        }
+        self.directory.take().map(tempfile::TempDir::keep)
+    }
+
+    /// Fail the parent, keeping the child logs and inputs.
     fn fail(&mut self, reason: &str) -> ! {
         let reaped = self.reap();
-        let directory = self.directory.take().expect("case directory").keep();
-        panic!(
-            "{reason}; reaped={reaped}; child logs retained at {}",
-            directory.display()
-        );
+        let directory = self.retain();
+        panic!("{reason}; reaped={reaped}; child logs retained at {directory:?}");
     }
 }
 
@@ -192,20 +205,20 @@ impl CaseChild {
 impl Drop for CaseChild {
     fn drop(&mut self) {
         if !self.reap() {
-            if let Some(directory) = self.directory.take() {
-                let _ = directory.keep();
-            }
+            self.retain();
         }
     }
 }
 
 /// Parent side of a #5174 process case: run `path` again in a child process
 /// with private cwd and environment, set only on its `Command` through
-/// `configure`, and require the child receipt for `scenario`.
+/// `configure`, and require the child receipt for `scenario`. `inputs` are
+/// the parent fixtures the child reads; they live until the child is reaped.
 #[cfg(test)]
 pub(crate) fn run_case(
     path: &str,
     scenario: &str,
+    inputs: Vec<tempfile::TempDir>,
     configure: impl FnOnce(&mut std::process::Command),
 ) {
     use std::process::{Command, Stdio};
@@ -234,13 +247,14 @@ pub(crate) fn run_case(
     let mut owner = CaseChild {
         process: command.spawn().expect("spawn case child"),
         directory: Some(directory),
-        reaped: false,
+        inputs,
+        reaped: None,
     };
     let started = Instant::now();
     let status = loop {
         match owner.process.try_wait() {
             Ok(Some(status)) => {
-                owner.reaped = true;
+                owner.reaped = Some(true);
                 break status;
             }
             Ok(None) if started.elapsed() < Duration::from_secs(45) => {
@@ -261,15 +275,20 @@ pub(crate) fn run_case(
         .as_ref()
         .map(|d| d.path().join("stdout.txt"));
     let stdout = std::fs::read_to_string(stdout.expect("case directory")).unwrap_or_default();
-    let count = |line: &str| stdout.lines().filter(|l| *l == line).count();
-    let summary = stdout
-        .lines()
-        .filter(|l| l.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;"))
-        .count();
+    let lines =
+        |prefix: &str| -> Vec<&str> { stdout.lines().filter(|l| l.starts_with(prefix)).collect() };
+    let done = format!("AC5174_DONE {name} {scenario}");
+    let result = format!("test {name} ... ok");
+    let results: Vec<&str> = lines("test ")
+        .into_iter()
+        .filter(|l| l.contains(" ... "))
+        .collect();
+    let summary = lines("test result: ");
     if !status.success()
-        || count(&format!("AC5174_DONE {name} {scenario}")) != 1
-        || count(&format!("test {name} ... ok")) != 1
-        || summary != 1
+        || lines("AC5174_DONE ") != [done.as_str()]
+        || results != [result.as_str()]
+        || summary.len() != 1
+        || !summary[0].starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;")
     {
         owner.fail("case child exit, receipt, result line or summary failed");
     }
