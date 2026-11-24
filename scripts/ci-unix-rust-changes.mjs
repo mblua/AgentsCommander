@@ -21,7 +21,26 @@ const MANIFESTS = new Set(['Cargo.toml', 'Cargo.lock', 'src-tauri/Cargo.toml',
   'crates/terminal-snapshot-renderer/Cargo.toml', 'crates/rust-source-scrub/Cargo.toml']);
 const DETECTOR = 'scripts/ci-unix-rust-changes.mjs';
 const WORKFLOW = '.github/workflows/pr-regression-gates.yml';
+const CATALOG = 'scripts/pr-regression-paths.json';
 const ROOTS = new Set(['lib.rs', 'main.rs', 'build.rs']);
+
+// The catalog is data: a JSON array of exact, unique, sorted Git paths that the
+// workflow reads as its own definition. Anything else is an error, never a match.
+function parseCatalog(text, where) {
+  if (text.length === 0) throw new Error(`${where}: empty catalog`);
+  let list;
+  try { list = JSON.parse(text); } catch { throw new Error(`${where}: invalid JSON`); }
+  if (!Array.isArray(list)) throw new Error(`${where}: not a JSON array`);
+  list.forEach((entry, i) => {
+    const parts = typeof entry === 'string' ? entry.split('/') : [''];
+    if (typeof entry !== 'string' || entry.startsWith('/') || /[\\*?[\]{}]/.test(entry)
+      || parts.some(part => part === '' || part === '.' || part === '..'))
+      throw new Error(`${where}: invalid path ${JSON.stringify(entry)}`);
+    if (i > 0 && !(list[i - 1] < entry))
+      throw new Error(`${where}: paths not unique and sorted at ${JSON.stringify(entry)}`);
+  });
+  return list;
+}
 
 function detector(repo, env = process.env) {
   const git = (args, extra = {}) => execFileSync(resolveGit(), args, {
@@ -66,9 +85,20 @@ function detector(repo, env = process.env) {
     const parent = gatedBy(rev, file);
     return parent ? `gated-by ${parent}` : null;
   }
-  function reasonFor(file, base, head) {
+  // Reads the catalog from the Git object of `rev`, never from the worktree. A
+  // tree without it (history before the catalog existed) yields no data paths.
+  function catalogAt(rev) {
+    const row = git(['ls-tree', '-z', rev, '--', CATALOG]).split('\0').filter(Boolean);
+    if (row.length === 0) return [];
+    const [meta] = row[0].split('\t');
+    const [mode, type, oid] = meta.split(' ');
+    if (row.length !== 1 || mode !== '100644' || type !== 'blob')
+      throw new Error(`${rev}:${CATALOG}: not a regular file`);
+    return parseCatalog(git(['cat-file', 'blob', oid]), `${rev}:${CATALOG}`);
+  }
+  function reasonFor(file, base, head, data) {
     if (file === DETECTOR) return 'detector';
-    if (file === WORKFLOW) return 'workflow';
+    if (file === WORKFLOW || file === CATALOG || data.has(file)) return 'workflow';
     if (MANIFESTS.has(file)) return 'manifest';
     if (!SCOPE.test(file)) return null;
     for (const rev of [head, base]) {
@@ -79,11 +109,15 @@ function detector(repo, env = process.env) {
   }
   function detect(base, head, event) {
     if (event && event !== 'pull_request') return { match: false, reasons: [], event };
+    for (const rev of [base, head])
+      git(['rev-parse', '--verify', '--quiet', `${rev}^{commit}`],
+        { stdio: ['ignore', 'pipe', 'ignore'] });
     const changed = git(['diff', '--no-renames', '--name-only', '-z', base, head])
       .split('\0').filter(Boolean);
+    const data = new Set([...catalogAt(base), ...catalogAt(head)]);
     const reasons = [];
     for (const file of changed) {
-      const reason = reasonFor(file, base, head);
+      const reason = reasonFor(file, base, head, data);
       if (reason) reasons.push(`${file}: ${reason}`);
     }
     return { match: reasons.length > 0, reasons };
@@ -105,6 +139,11 @@ function selfTest() {
       'commit', '-qm', 'fixture', '--allow-empty']);
   };
   const src = 'src-tauri/src/';
+  const DATA = '.github/actions/fixture/action.yml';
+  const NEIGHBOUR = '.github/actions/fixture/other.yml';
+  const ADDED = '.github/actions/added/action.yml';
+  const catalog = list => `${JSON.stringify(list, null, 2)}\n`;
+  const flow = file => `${file}: workflow`;
   const fixture = {
     [`${src}lib.rs`]: 'mod screenshot;\nmod plainmod;\nmod a;\n',
     [`${src}screenshot.rs`]: '#[cfg(unix)]\nmod native;\n#[cfg(windows)]\nmod win;\n',
@@ -119,6 +158,8 @@ function selfTest() {
     'Cargo.toml': '[workspace]\n', 'Cargo.lock': 'version = 4\n',
     'src-tauri/Cargo.toml': '[package]\nname = "t"\n',
     'crates/rust-source-scrub/Cargo.toml': '[package]\nname = "s"\n',
+    [DATA]: 'name: d\n', [NEIGHBOUR]: 'name: n\n',
+    [CATALOG]: catalog([DATA]),
   };
   const own = (id, file, text) => [id, { [src + file]: text }, [`${src + file}: own-cfg`]];
   const cfg = (id, file, text) => [id, { [src + file]: text }, [`${src + file}: cfg-macro`]];
@@ -161,6 +202,23 @@ function selfTest() {
     ['N4', { 'crates/session-bridge/src/lib.rs': '#[cfg(unix)]\nfn k() {}' }, []],
     ['N5', {}, []],
     ['N6', { 'crates/rust-source-scrub/tests/k.rs': '#[cfg(unix)]\nfn k() {}' }, []],
+    ['K1', { [DATA]: 'name: d2\n' }, [flow(DATA)]],
+    ['K2', { [ADDED]: 'name: a\n', [CATALOG]: catalog([ADDED, DATA]) },
+      [flow(ADDED), flow(CATALOG)]],
+    ['K3', { [DATA]: null }, [flow(DATA)]],
+    ['K4', { [CATALOG]: null }, [flow(CATALOG)]],
+    ['K5', { [CATALOG]: null, 'scripts/pr-regression-paths.old.json': catalog([DATA]) },
+      [flow(CATALOG)]],
+    ['K6', { [CATALOG]: null, [DATA]: null }, [flow(DATA), flow(CATALOG)]],
+    ['K7', { [DATA]: null, [CATALOG]: catalog([]) }, [flow(DATA), flow(CATALOG)]],
+    ['K8', { [DATA]: null, '.github/actions/fixture/renamed.yml': 'name: d\n' }, [flow(DATA)]],
+    ['N7', { [NEIGHBOUR]: 'name: n2\n' }, []],
+  ];
+  const broken = [
+    ['B1', ''], ['B2', '{"a": 1}\n'], ['B3', 'not json\n'], ['B4', catalog([DATA, DATA])],
+    ['B5', catalog([NEIGHBOUR, DATA])], ['B6', catalog(['/abs.yml'])],
+    ['B7', catalog(['.github/*.yml'])], ['B8', catalog(['a/../b.yml'])],
+    ['B9', catalog(['a\\b.yml'])], ['B10', catalog([7])],
   ];
   try {
     git(['init', '-q']);
@@ -183,19 +241,37 @@ function selfTest() {
       assert.deepEqual(detect(base, heads[id], 'pull_request'),
         { match: reasons.length > 0, reasons }, id);
     }
+    for (const [id, text] of broken) {
+      git(['reset', '--hard', base]);
+      write(CATALOG, text);
+      commit();
+      heads[id] = git(['rev-parse', 'HEAD']).trim();
+      assert.throws(() => detect(base, heads[id], 'pull_request'), /pr-regression-paths\.json/, id);
+    }
+    git(['reset', '--hard', base]);
+    fs.rmSync(path.join(repo, CATALOG));
+    write(`${CATALOG}/x`, '[]\n');
+    commit();
+    heads.B11 = git(['rev-parse', 'HEAD']).trim();
+    assert.throws(() => detect(base, heads.B11, 'pull_request'), /not a regular file/, 'B11');
+    assert.deepEqual(detect(base, heads.B1, 'push'),
+      { match: false, reasons: [], event: 'push' }, 'B12');
     const cliCases = [
       ['C1', heads.P1, 'pull_request', 'match=true\n', 0],
       ['C2', heads.N1, 'pull_request', 'match=false\n', 0],
       ['C3', heads.P1, 'push', 'match=false\n', 0],
       ['E1', 'deadbeef', 'pull_request', '', 2],
+      ['C4', heads.K4, 'pull_request', 'match=true\n', 0],
+      ['E2', heads.B3, 'pull_request', '', 2],
     ];
+    const total = cases.length + broken.length + 2 + cliCases.length;
     for (const [id, head, event, expected, status] of cliCases) {
       const output = path.join(repo, `${id}.output`);
       fs.writeFileSync(output, '');
       let code = 0, stdout = '';
       try {
         stdout = execFileSync(process.execPath, [fileURLToPath(import.meta.url),
-          '--base', 'HEAD^1', '--head', head, '--repo', repo], {
+          '--base', base, '--head', head, '--repo', repo], {
           env: { ...env, GITHUB_EVENT_NAME: event, GITHUB_OUTPUT: output },
           encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -203,8 +279,9 @@ function selfTest() {
       assert.equal(code, status, id);
       assert.equal(fs.readFileSync(output, 'utf8'), expected, id);
       if (id === 'C3') assert.ok(stdout.includes('(event push)'), id);
+      if (id === 'C4') assert.ok(stdout.includes(`  ${flow(CATALOG)}\n`), id);
     }
-    console.log('ci-unix-rust-changes self-test: 32 cases ok');
+    console.log(`ci-unix-rust-changes self-test: ${total} cases ok`);
   } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 }
 

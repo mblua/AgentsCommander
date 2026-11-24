@@ -1,0 +1,25 @@
+name: Restore PR APT cache
+description: Restore the APT package cache that cache-warm.yml saves for this runner image. Restore only; never saves.
+inputs:
+  prefix:
+    required: true
+    description: Cache key prefix computed by the calling job (image and dependency-list hash).
+outputs:
+  cache-hit:
+    description: Whether the primary key matched exactly.
+    value: ${{ steps.restore.outputs['cache-hit'] }}
+  cache-primary-key:
+    description: The primary key that was requested.
+    value: ${{ steps.restore.outputs['cache-primary-key'] }}
+  cache-matched-key:
+    description: The key of the restored cache, if any.
+    value: ${{ steps.restore.outputs['cache-matched-key'] }}
+runs:
+  using: composite
+  steps:
+    - id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/apt-debs
+        key: ${{ inputs.prefix }}none
+        restore-keys: ${{ inputs.prefix }}

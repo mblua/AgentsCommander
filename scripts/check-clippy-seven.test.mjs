@@ -232,3 +232,69 @@ test('Git committed-HEAD adoption survives inherited main drift; ratchet ignores
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('initial adoption admits catalog data paths only while the catalog is unchanged', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'i4944-seven-'));
+  const run = (...args) => execFileSync('git', args,
+    { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const write = (f, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+    fs.writeFileSync(path.join(dir, f), text);
+  };
+  const commit = () => { run('add', '-A'); run('commit', '-qm', 'fixture', '--allow-empty');
+    return run('rev-parse', 'HEAD'); };
+  const CATALOG = 'scripts/pr-regression-paths.json';
+  const DATA = '.github/actions/restore-pr-apt-cache/action.yml';
+  const NEIGHBOUR = '.github/actions/restore-pr-apt-cache/other.yml';
+  const list = paths => `${JSON.stringify(paths, null, 2)}\n`;
+  try {
+    run('init', '-q'); run('config', 'user.name', 'fixture');
+    run('config', 'user.email', 'fixture@example.invalid'); run('config', 'core.autocrlf', 'false');
+    write(file, source); const ref = commit(), refTree = run('rev-parse', 'HEAD^{tree}');
+    write('.github/workflows/clippy-seven-measurement.yml', 'temporary\n'); const r = commit();
+    const rTree = run('rev-parse', 'HEAD^{tree}');
+    const b = baseline(); b.sourceReference = ref; b.referenceTree = refTree;
+    b.sourceCommit = r; b.sourceTree = rTree;
+    // Historical main: no catalog at either end, so only the fixed owner set applies.
+    run('update-ref', 'refs/remotes/origin/main', r);
+    const candidate = changes => {
+      run('checkout', '-q', '-B', 'candidate', 'refs/remotes/origin/main');
+      write('clippy-seven.baseline.json', JSON.stringify(b));
+      for (const [f, text] of Object.entries(changes)) {
+        if (text === null) fs.rmSync(path.join(dir, f)); else write(f, text);
+      }
+      commit();
+    };
+    candidate({}); baselineDiff('origin/main', dir);
+    candidate({ [DATA]: 'name: d\n' }); fail(() => baselineDiff('origin/main', dir));
+    candidate({ [DATA]: 'name: d\n', [CATALOG]: list([DATA]) });
+    fail(() => baselineDiff('origin/main', dir));
+    // Main with the catalog and its data path.
+    run('checkout', '-q', '-B', 'main', r);
+    write(CATALOG, list([DATA])); write(DATA, 'name: d\n'); write(NEIGHBOUR, 'name: n\n');
+    run('update-ref', 'refs/remotes/origin/main', commit());
+    candidate({ [DATA]: 'name: d2\n' }); baselineDiff('origin/main', dir);
+    candidate({ [DATA]: null }); baselineDiff('origin/main', dir);
+    candidate({ '.github/workflows/pr-regression-gates.yml': 'jobs: {}\n' });
+    baselineDiff('origin/main', dir);
+    candidate({ [NEIGHBOUR]: 'name: n2\n' }); fail(() => baselineDiff('origin/main', dir));
+    candidate({ [NEIGHBOUR]: 'name: n2\n', [CATALOG]: list([NEIGHBOUR, DATA].sort()) });
+    fail(() => baselineDiff('origin/main', dir));
+    candidate({ [CATALOG]: list([]) }); fail(() => baselineDiff('origin/main', dir));
+    // A catalog that lists itself still cannot authorize its own edit.
+    candidate({ [NEIGHBOUR]: 'name: n2\n', [CATALOG]: list([NEIGHBOUR, DATA, CATALOG].sort()) });
+    fail(() => baselineDiff('origin/main', dir));
+    candidate({ [CATALOG]: null, [DATA]: 'name: d2\n' });
+    fail(() => baselineDiff('origin/main', dir));
+    // The worktree is never read: committed HEAD decides in both directions.
+    candidate({ [DATA]: 'name: d2\n' });
+    write(CATALOG, list([])); fs.rmSync(path.join(dir, DATA));
+    baselineDiff('origin/main', dir);
+    candidate({ [NEIGHBOUR]: 'name: n2\n' });
+    write(CATALOG, list([NEIGHBOUR, DATA].sort()));
+    fail(() => baselineDiff('origin/main', dir));
+  } finally {
+    assert.equal(path.dirname(dir), path.resolve(os.tmpdir()));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
