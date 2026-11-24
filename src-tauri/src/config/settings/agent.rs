@@ -16,6 +16,7 @@ use crate::config::coding_agent_files::last_used::{
     matches_source, recorded_sources, FileAgentKey, RecordedSource,
 };
 use crate::config::coding_agent_files::launch_chain::{pick_launch_file, LaunchPick};
+use crate::config::coding_agent_files::launched::LaunchedRegistry;
 use crate::config::coding_agent_files::locator::{context_for_cwd, context_key};
 use crate::config::coding_agent_files::{active_locator, ConfigContext, ConfigFileLocator};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
@@ -938,4 +939,51 @@ fn view_from<'a>(
         );
     }
     view
+}
+
+/// #4845 P14 - the agent each running non-30 launch used (L2: values of its start).
+static LAUNCHED_AGENTS: LaunchedRegistry<AgentConfig> = LaunchedRegistry::new();
+
+/// #4845 P14 - keep the launch agent's runtime values; a 30 launch removes the overlay.
+pub(crate) fn record_launch_runtime(view: &LaunchView<'_>, agent_id: &str) {
+    record_launch_runtime_in(&LAUNCHED_AGENTS, view, agent_id);
+}
+
+pub(crate) fn record_launch_runtime_in(
+    reg: &LaunchedRegistry<AgentConfig>,
+    view: &LaunchView<'_>,
+    agent_id: &str,
+) {
+    let value = match view.locator {
+        ConfigFileLocator::RegisteredInstance {} => None,
+        _ => view
+            .settings
+            .agents
+            .iter()
+            .find(|a| a.id == agent_id)
+            .cloned(),
+    };
+    reg.record(agent_id, value);
+}
+
+/// #4845 P14 - the 30 list with the recorded launch agents overlaid (runtime readers).
+pub(crate) fn runtime_agents(settings: &AppSettings) -> Cow<'_, [AgentConfig]> {
+    runtime_agents_with(settings, &LAUNCHED_AGENTS)
+}
+
+pub(crate) fn runtime_agents_with<'a>(
+    settings: &'a AppSettings,
+    reg: &LaunchedRegistry<AgentConfig>,
+) -> Cow<'a, [AgentConfig]> {
+    if reg.is_empty() {
+        return Cow::Borrowed(&settings.agents);
+    }
+    let mut agents = settings.agents.clone();
+    for (id, agent) in reg.snapshot() {
+        match agents.iter_mut().find(|a| a.id == id) {
+            Some(slot) => *slot = agent,
+            None => agents.push(agent),
+        }
+    }
+    Cow::Owned(agents)
 }

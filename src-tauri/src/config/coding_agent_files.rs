@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports, reason = "I4845 staged; removed in P14")]
 //! #4845 coding-agent config files: the acyclic core. Types for file locators, contexts,
 //! the persisted per-context selection and the file inventory, plus the pure selection
 //! helpers. Names no settings type; the settings glue lives elsewhere (P17).
@@ -12,6 +11,7 @@ use std::path::PathBuf;
 pub(crate) mod inventory;
 pub(crate) mod last_used;
 pub(crate) mod launch_chain;
+pub(crate) mod launched;
 pub(crate) mod locator;
 #[cfg(test)]
 mod tests;

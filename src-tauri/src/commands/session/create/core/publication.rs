@@ -378,20 +378,19 @@ async fn publish_tooling<R: tauri::Runtime>(
         ..
     } = ctx;
     let id = session.id;
-    // Save lastCodingAgent + codingAgents (skip for temp sessions)
-    if skip_tooling_save || crate::config::temp_rooms::is_temp_room_path(cwd) {
-        return;
-    }
-    if let Some(aid) = agent_id {
-        // Resolve label: use provided agent_label, or look up from settings by agent_id.
-        // Without this fallback, callers that pass agent_id but no label (session-requests,
-        // web remote) would write app: "Unknown" into the per-instance config.json.
-        // #2433 - computed under the settings read lock, written after it drops.
-        let write = {
+    // #4845 P14 - one view: the in-memory runtime record runs for EVERY launch (temp rooms
+    // and flagged wakes too; it is not a tooling write), the disk record below the guard.
+    // Resolve label: use provided agent_label, or look up from settings by agent_id.
+    // Without this fallback, callers that pass agent_id but no label (session-requests,
+    // web remote) would write app: "Unknown" into the per-instance config.json.
+    // #2433 - computed under the settings read lock, written after it drops.
+    let write = match agent_id {
+        Some(aid) => {
             let settings = app.state::<SettingsState>();
             let write = match settings.current_read().await {
                 Ok(cfg) => {
                     let view = launch_view(&cfg, std::path::Path::new(cwd));
+                    crate::config::settings::agent::record_launch_runtime(&view, aid);
                     Some(prepare_last_coding_agent_write_from(
                         aid,
                         agent_label.as_deref(),
@@ -405,7 +404,14 @@ async fn publish_tooling<R: tauri::Runtime>(
                 }
             };
             write
-        };
+        }
+        None => None,
+    };
+    // Save lastCodingAgent + codingAgents (skip for temp sessions)
+    if skip_tooling_save || crate::config::temp_rooms::is_temp_room_path(cwd) {
+        return;
+    }
+    if let Some(aid) = agent_id {
         if let Some(write) = write {
             if let Err(e) = save_last_coding_agent(cwd, &id.to_string(), &write) {
                 log::warn!("Failed to save lastCodingAgent: {e}");

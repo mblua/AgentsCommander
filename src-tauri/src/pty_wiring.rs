@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::config::settings::SettingsState;
+use crate::config::settings::agent::runtime_agents;
+use crate::config::settings::{AgentConfig, SettingsState};
 use crate::context_history::observation::ObservedValue;
 use crate::history_runtime::{SessionLaunch, SessionLaunchSource};
 use crate::pty::agent_quota::source::SourceSpec;
@@ -91,30 +92,32 @@ impl ContextPatternSource for ScraperPatterns {
                     return None;
                 }
             };
-            Some(
-                settings
-                    .agents
-                    .iter()
-                    .filter_map(|agent| {
-                        let regex = agent.context_regex.as_deref()?;
-                        // A blank field is the field being blank, and skipping it here is a
-                        // LOG-HYGIENE choice and nothing more: `pattern::compile` already
-                        // refuses "" and "   " for having no capture group 1, so this can never
-                        // become a pattern that matches everything - it would only warn on every
-                        // change while a user is still typing.
-                        //
-                        // Note what is trimmed and what is not: the emptiness TEST looks at a
-                        // trimmed view, the VALUE handed over is the user's string, byte for
-                        // byte. The pattern is the only defence this feature has - the engine
-                        // ships no anchoring rules of its own - so editing it can only weaken
-                        // it. Trimming would eat the leading spaces of `  Context ...`, which
-                        // ARE the column-2 anchor, and the reading would fail open.
-                        (!regex.trim().is_empty()).then(|| (agent.id.clone(), regex.to_string()))
-                    })
-                    .collect(),
-            )
+            Some(context_patterns(&runtime_agents(&settings)))
         })
     }
+}
+
+/// #4845 P14 - the scraper patterns of `agents` (the runtime list, `runtime_agents`).
+pub(crate) fn context_patterns(agents: &[AgentConfig]) -> HashMap<String, String> {
+    agents
+        .iter()
+        .filter_map(|agent| {
+            let regex = agent.context_regex.as_deref()?;
+            // A blank field is the field being blank, and skipping it here is a
+            // LOG-HYGIENE choice and nothing more: `pattern::compile` already
+            // refuses "" and "   " for having no capture group 1, so this can never
+            // become a pattern that matches everything - it would only warn on every
+            // change while a user is still typing.
+            //
+            // Note what is trimmed and what is not: the emptiness TEST looks at a
+            // trimmed view, the VALUE handed over is the user's string, byte for
+            // byte. The pattern is the only defence this feature has - the engine
+            // ships no anchoring rules of its own - so editing it can only weaken
+            // it. Trimming would eat the leading spaces of `  Context ...`, which
+            // ARE the column-2 anchor, and the reading would fail open.
+            (!regex.trim().is_empty()).then(|| (agent.id.clone(), regex.to_string()))
+        })
+        .collect()
 }
 
 /// The sink. `PtyOutputTarget` (`output.rs`) already wraps an `AppHandle` behind a plain
@@ -201,6 +204,14 @@ impl QuotaSources {
     pub(crate) fn sources_map(
         settings: &config::settings::AppSettings,
     ) -> HashMap<String, AgentQuotaSource> {
+        Self::sources_map_for(settings, &runtime_agents(settings))
+    }
+
+    /// #4845 P14 - `sources_map` over `agents` (the runtime list) for pass 2.
+    pub(crate) fn sources_map_for(
+        settings: &config::settings::AppSettings,
+        agents: &[AgentConfig],
+    ) -> HashMap<String, AgentQuotaSource> {
         use config::settings::QuotaSourceConfig;
 
         // Pass 1 - own specs.
@@ -233,8 +244,7 @@ impl QuotaSources {
             .collect();
 
         // Pass 2 - keys. No key, no entry, ever.
-        let keys: Vec<(&String, String)> = settings
-            .agents
+        let keys: Vec<(&String, String)> = agents
             .iter()
             .filter_map(|agent| {
                 config::coding_agents_catalog::command_account_key(&agent.command)
@@ -551,14 +561,7 @@ impl WatcherPatternSource for WatcherPatterns {
                 .values()
                 .any(|entry| entry.valid().is_some_and(|config| config.enabled));
             let agents: Vec<crate::pty::watchers::WatcherAgent> = if has_enabled_watcher {
-                settings
-                    .agents
-                    .iter()
-                    .map(|agent| crate::pty::watchers::WatcherAgent {
-                        id: agent.id.clone(),
-                        command: agent.command.clone(),
-                    })
-                    .collect()
+                watcher_agents(&settings, &runtime_agents(&settings))
             } else {
                 Vec::new()
             };
@@ -569,6 +572,21 @@ impl WatcherPatternSource for WatcherPatterns {
             Some(resolved)
         })
     }
+}
+
+/// #4845 P14 - the watcher view of `agents` (the runtime list). `settings` stays in the
+/// signature for the reader's shape; only `agents` is read.
+pub(crate) fn watcher_agents(
+    _settings: &config::settings::AppSettings,
+    agents: &[AgentConfig],
+) -> Vec<crate::pty::watchers::WatcherAgent> {
+    agents
+        .iter()
+        .map(|agent| crate::pty::watchers::WatcherAgent {
+            id: agent.id.clone(),
+            command: agent.command.clone(),
+        })
+        .collect()
 }
 
 /// Delivery of one coalesced batch, behind two plain `Fn`s.

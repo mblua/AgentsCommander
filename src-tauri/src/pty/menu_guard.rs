@@ -343,6 +343,7 @@ impl MenuGuard {
 
         let session_mgr = { session_mgr_state.read().await.clone() };
         let sessions = session_mgr.list_sessions().await;
+        let agents = crate::config::settings::agent::runtime_agents(settings);
 
         for session in sessions {
             let Ok(session_uuid) = Uuid::parse_str(&session.id) else {
@@ -358,7 +359,7 @@ impl MenuGuard {
             let entries: Vec<BlockingMenuEntry> = session
                 .agent_id
                 .as_deref()
-                .and_then(|aid| settings.agents.iter().find(|a| a.id == aid))
+                .and_then(|aid| agents.iter().find(|a| a.id == aid))
                 .map(|agent| self.entries_for(agent))
                 .unwrap_or_default();
 
