@@ -178,7 +178,7 @@ impl CursorReplyWorker {
                 admitted
             },
             |chunk| {
-                fanout.handle_output(&token, &id.to_string(), chunk.to_vec());
+                fanout.handle_output(&token, &id.to_string(), chunk);
                 out.lock().unwrap().extend_from_slice(chunk);
                 if chunk.ends_with(b"TAIL\x1b[6n") || chunk == b"FINAL" {
                     seen_tx.send(chunk.to_vec()).unwrap();
@@ -445,7 +445,7 @@ fn issue_3029_cursor_query_positive_control() {
                     admitted
                 },
                 |bytes| {
-                    fanout.handle_output(&token, &id.to_string(), bytes.to_vec());
+                    fanout.handle_output(&token, &id.to_string(), bytes);
                     output.extend_from_slice(bytes);
                 },
                 || {
