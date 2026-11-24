@@ -454,7 +454,7 @@ fn hold_lock(
         };
         let acquired = Instant::now();
         tx.send(()).expect("signal");
-        release.map_or_else(|| std::thread::sleep(hold), |release| drop(release.recv()));
+        release.map_or_else(|| std::thread::sleep(hold), |r| r.recv().unwrap_or(()));
         drop(lock);
         acquired.elapsed()
     });
