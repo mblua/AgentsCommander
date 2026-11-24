@@ -490,7 +490,10 @@ describe("New Room team search and optional title (#2788)", () => {
     expect((await automate("query", "newRoom.create")).disabled).toBe(true);
     await automate("setValue", "newRoom.teamSearch", "missing");
     expect((await automate("query", "newRoom.team.empty")).text).toBe("No teams match your search.");
-    expect(document.querySelector('[data-ac-testid="newRoom.team.empty"]')?.getAttribute("role")).toBe("status");
+    const status = document.querySelector('[data-ac-testid="newRoom.team.empty"]');
+    expect(status?.tagName).toBe("OUTPUT");
+    expect(status?.getAttribute("data-ac-role")).toBe("status");
+    expect(document.querySelectorAll('output[data-ac-role="status"]')).toHaveLength(1);
     expect((await automate("query", "newRoom.team.empty")).role).toBe("status");
     await projection([], -1);
     const missing = await request("query", "newRoom.team.option.0");
@@ -526,7 +529,9 @@ describe("New Room team search and optional title (#2788)", () => {
     expect(confirmed().textContent).toBe("No team selected.");
     expect(create().disabled).toBe(true);
     input(search(), "missing");
-    expect(document.querySelector('[role="status"]')?.textContent).toBe("No teams match your search.");
+    expect(document.querySelectorAll('output[data-ac-role="status"]')).toHaveLength(1);
+    expect(document.querySelector('output[data-ac-role="status"]')?.textContent)
+      .toBe("No teams match your search.");
     input(search(), "");
     expect(options()).toEqual(["Beta", "Alpha", "alphabet"]);
     expect(create().disabled).toBe(true);
@@ -538,7 +543,9 @@ describe("New Room team search and optional title (#2788)", () => {
 
   it("shows no teams accessibly and never auto-selects teams added by refresh", () => {
     const { setTeams } = mount([]);
-    expect(document.querySelector('[role="status"]')?.textContent).toBe("No teams available.");
+    expect(document.querySelectorAll('output[data-ac-role="status"]')).toHaveLength(1);
+    expect(document.querySelector('output[data-ac-role="status"]')?.textContent)
+      .toBe("No teams available.");
     expect(create().disabled).toBe(true);
     setTeams(teams(["Alpha"]));
     expect(confirmed().textContent).toBe("No team selected.");

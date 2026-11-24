@@ -702,3 +702,63 @@ describe("ActionBar sound sink alert", () => {
     dispose();
   });
 });
+
+describe("ActionBar #5061 P06 new-project dialog parity", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    mockState.isBrowser = false;
+    vi.clearAllMocks();
+  });
+
+  const count = (selector: string) => document.body.querySelectorAll(selector).length;
+  const notice = '[data-ac-testid="project.browserCreateNotice.overlay"]';
+  const noticeDialog = `${notice} [data-ac-testid="project.browserCreateNotice.dialog"]`;
+  const confirmOverlay = '[data-ac-testid="project.createConfirm.overlay"]';
+  const confirmDialog = '[data-ac-testid="project.createConfirm.dialog"]';
+
+  function openNewProject() {
+    const newOpen = document.body.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="actionBar.newOpen"]'
+    );
+    if (!newOpen) throw new Error("new/open dropdown button not rendered");
+    newOpen.click();
+    const item = document.body.querySelector<HTMLButtonElement>(
+      '[data-ac-testid="actionBar.menu.newProject"]'
+    );
+    if (!item) throw new Error("new project menu item not rendered");
+    item.click();
+  }
+
+  it("browser: one notice overlay and dialog, dismissed once, without picker or creation", () => {
+    mockState.isBrowser = true;
+    const { dispose } = renderActionBar();
+    openNewProject();
+    expect(count(notice)).toBe(1);
+    expect(count(noticeDialog)).toBe(1);
+    const dismiss = document.body.querySelectorAll<HTMLButtonElement>(
+      '[data-ac-testid="project.browserCreateNotice.dismiss"]'
+    );
+    expect(dismiss).toHaveLength(1);
+    dismiss[0].click();
+    expect(count(notice)).toBe(0);
+    expect(count(noticeDialog)).toBe(0);
+    expect(projectStore.pickAndCheck).toHaveBeenCalledTimes(0);
+    expect(projectStore.createAndLoad).toHaveBeenCalledTimes(0);
+    dispose();
+  });
+
+  it("desktop: one picker and one creation, no notice or confirm", async () => {
+    vi.mocked(projectStore.pickAndCheck).mockResolvedValue({
+      picked: "C:\\Projects\\P06",
+      hasWorkspace: false,
+    });
+    const { dispose } = renderActionBar();
+    openNewProject();
+    await vi.waitFor(() => expect(projectStore.createAndLoad).toHaveBeenCalledTimes(1));
+    expect(projectStore.pickAndCheck).toHaveBeenCalledTimes(1);
+    expect(projectStore.createAndLoad).toHaveBeenCalledWith("C:\\Projects\\P06");
+    expect(count(notice) + count(noticeDialog)).toBe(0);
+    expect(count(confirmOverlay) + count(confirmDialog)).toBe(0);
+    dispose();
+  });
+});
