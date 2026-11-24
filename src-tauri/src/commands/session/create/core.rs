@@ -641,7 +641,9 @@ async fn resolve_launch_agent<R: tauri::Runtime>(
                 .current_read()
                 .await
                 .map_err(|error| error.to_string())?;
-            resolve_actual_agent(ctx.shell, shell_args, agent_id, agent_label, &cfg)
+            let view =
+                crate::config::settings::agent::launch_view(&cfg, std::path::Path::new(ctx.cwd));
+            resolve_actual_agent(ctx.shell, shell_args, agent_id, agent_label, &view.settings)
         }
     })
 }

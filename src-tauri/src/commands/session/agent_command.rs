@@ -457,6 +457,8 @@ pub(crate) fn matched_selection(
     source_letter: Option<&str>,
 ) -> MatchedSelection {
     let dir = std::path::Path::new(cwd);
+    let view = crate::config::settings::agent::launch_view(settings, dir);
+    let settings = &*view.settings;
     // #2786 (C1) - ONE load through the shared loader serves both
     // `currentCodingAgent` and the descriptor, so they share one snapshot.
     let config = match crate::config::agent_config::read_agent_local_config_json(dir) {

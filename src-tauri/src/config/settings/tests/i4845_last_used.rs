@@ -362,3 +362,262 @@ fn old_writer_removes_source_file() {
     let config = read_agent_local_config_json(&f.agent_dir).unwrap().unwrap();
     assert_eq!(recorded_launch(&config).last_source, None);
 }
+
+// ---- P03: launch_view ----
+
+use crate::config::coding_agent_files::launch_chain::LaunchPick;
+use crate::config::coding_agent_files::CatalogLayer;
+use crate::config::settings::agent::{launch_view_at, LaunchView};
+use std::borrow::Cow;
+
+struct Proj {
+    f: Fixture,
+    root: PathBuf,
+}
+
+fn proj_named(name: &str) -> ConfigFileLocator {
+    ConfigFileLocator::Named {
+        scope: ConfigScope::Project,
+        name: name.into(),
+    }
+}
+
+/// An agent dir inside one project listed in `project_paths` (rule (b)).
+fn project() -> Proj {
+    let mut f = fixture();
+    let root = f._temp.path().join("proj");
+    f.agent_dir = root.join("agent");
+    std::fs::create_dir_all(&f.agent_dir).unwrap();
+    f.settings.project_paths = vec![dir_str(&root)];
+    Proj { f, root }
+}
+
+impl Proj {
+    fn ctx(&self) -> ConfigContext {
+        ConfigContext::Project(context_key(&dir_str(&self.root)))
+    }
+
+    fn file(&self, name: &str, agents: Value) {
+        let dir = self.root.join(".ac").join("coding-agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("ac.coding-agents-config.{name}.json"));
+        std::fs::write(path, json!({ "agents": agents }).to_string()).unwrap();
+    }
+
+    fn activate(&mut self, loc: ConfigFileLocator) {
+        let sel = with_active(None, &self.ctx(), loc);
+        self.f.settings.coding_agent_config_files = Some(sel);
+    }
+
+    fn view(&self) -> LaunchView<'_> {
+        launch_view_at(&self.f.settings, &self.f.paths, &self.f.agent_dir)
+    }
+}
+
+fn ids(view: &LaunchView<'_>) -> Vec<String> {
+    view.settings.agents.iter().map(|a| a.id.clone()).collect()
+}
+
+fn team_project() -> Proj {
+    let mut p = project();
+    p.file("team", json!([file_agent("codex", "Codex")]));
+    p.activate(proj_named("team"));
+    p
+}
+
+#[test]
+fn no_selection_no_keys_is_borrowed_and_identical() {
+    let f = fixture();
+    let view = launch_view_at(&f.settings, &f.paths, &f.agent_dir);
+    assert!(matches!(view.settings, Cow::Borrowed(s) if std::ptr::eq(s, &f.settings)));
+    assert_eq!(view.locator, ConfigFileLocator::RegisteredInstance {});
+    let cwd = dir_str(&f.agent_dir);
+    let built = crate::config::agent_command::build_configured_agent_spawn_for_cwd(
+        &f.settings,
+        "claude",
+        &cwd,
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let base = crate::config::agent_command::resolve_agent_spawn_command(
+        &f.settings,
+        "claude",
+        Some(&f.agent_dir),
+        None,
+        false,
+    )
+    .unwrap();
+    assert_eq!(format!("{built:?}"), format!("{base:?}"));
+}
+
+#[test]
+fn never_started_uses_project_active_file() {
+    let p = team_project();
+    let view = p.view();
+    assert_eq!(
+        (view.locator.clone(), view.pick.clone()),
+        (proj_named("team"), LaunchPick::Active)
+    );
+    assert_eq!(ids(&view), ["codex"]);
+}
+
+#[test]
+fn last_used_from_30_wins_over_named_active() {
+    let p = team_project();
+    p.f.launch("claude", Some(&ConfigFileLocator::RegisteredInstance {}));
+    let view = p.view();
+    assert_eq!(view.locator, ConfigFileLocator::RegisteredInstance {});
+    assert_eq!(view.pick, LaunchPick::LastUsed);
+    assert!(matches!(view.settings, Cow::Borrowed(_)));
+}
+
+#[test]
+fn last_used_removed_falls_to_active_file() {
+    let p = team_project();
+    p.f.launch("gone", Some(&ConfigFileLocator::RegisteredInstance {}));
+    let view = p.view();
+    assert_eq!(
+        (view.locator.clone(), view.pick.clone()),
+        (proj_named("team"), LaunchPick::Active)
+    );
+}
+
+#[test]
+fn edited_last_used_still_wins_with_edited_command() {
+    let p = project();
+    p.file("team", json!([file_agent("claude", "Own")]));
+    p.f.launch("claude", Some(&proj_named("team")));
+    let mut edited = file_agent("claude", "Own");
+    edited["command"] = json!("edited --flag");
+    p.file("team", json!([edited]));
+    let view = p.view();
+    assert_eq!(
+        (view.locator.clone(), view.pick.clone()),
+        (proj_named("team"), LaunchPick::LastUsed)
+    );
+    assert_eq!(view.settings.agents[0].command, "edited --flag");
+}
+
+#[test]
+fn dialog_choice_wins_over_last_launch() {
+    let p = project();
+    p.file("team", json!([file_agent("claude", "Own")]));
+    p.f.choose("claude", &proj_named("team"));
+    p.f.launch("claude", Some(&ConfigFileLocator::RegisteredInstance {}));
+    let view = p.view();
+    assert_eq!(
+        (view.locator.clone(), view.pick.clone()),
+        (proj_named("team"), LaunchPick::Choice)
+    );
+    assert_eq!(view.settings.agents[0].label, "Own");
+}
+
+#[test]
+fn bad_stored_locator_is_skipped_never_30_by_mistake() {
+    let p = project();
+    p.file("team", json!([file_agent("claude", "Own")]));
+    p.f.choose("claude", &proj_named("missing"));
+    p.f.launch("claude", Some(&proj_named("team")));
+    let view = p.view();
+    assert_eq!(
+        (view.locator.clone(), view.pick.clone()),
+        (proj_named("team"), LaunchPick::LastUsed)
+    );
+}
+
+#[test]
+fn catalog_active_file_launches_base_command() {
+    let mut f = fixture();
+    let settings_dir = f.paths.settings_path.parent().unwrap().to_path_buf();
+    let catalog = crate::config::coding_agents_catalog::independent_catalog_path(
+        &settings_dir,
+        crate::config::settings::SourceKind::CatalogPersonal,
+    )
+    .unwrap();
+    std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
+    let body = json!({"schemaVersion": 1,
+        "agents": [{"key": "cat", "label": "Cat", "color": "blue", "baseCommand": "tool --base"}]});
+    std::fs::write(&catalog, body.to_string()).unwrap();
+    f.activate(ConfigFileLocator::Layer {
+        scope: ConfigScope::Instance,
+        layer: CatalogLayer::CatalogPersonal,
+    });
+    let view = launch_view_at(&f.settings, &f.paths, &f.agent_dir);
+    assert_eq!(view.pick, LaunchPick::Active);
+    assert_eq!(view.settings.agents.len(), 1);
+    assert_eq!(view.settings.agents[0].id, "cat");
+    assert_eq!(view.settings.agents[0].command, "tool --base");
+}
+
+#[test]
+fn missing_active_file_falls_back_to_30_with_warn() {
+    let mut p = project();
+    p.activate(proj_named("missing"));
+    let view = p.view();
+    assert_eq!(view.locator, ConfigFileLocator::RegisteredInstance {});
+    let wanted = proj_named("missing");
+    assert_eq!(view.pick, LaunchPick::Fallback30 { wanted });
+    assert_eq!(ids(&view), ["claude"]);
+}
+
+#[test]
+fn restart_selection_uses_view() {
+    let p = team_project();
+    let cwd = dir_str(&p.f.agent_dir);
+    let picked =
+        crate::commands::session::matched_selection(&p.f.settings, &cwd, Some("codex"), None, None);
+    assert!(matches!(
+        picked,
+        crate::commands::session::MatchedSelection::Agent { ref agent_id, .. } if agent_id == "codex"
+    ));
+}
+
+#[test]
+fn picked_locator_round_trips_as_launch_record() {
+    let mut p = team_project();
+    p.file("other", json!([file_agent("codex", "Other")]));
+    let view = p.view();
+    let source = serde_json::to_value(&view.locator).unwrap();
+    let dir = dir_str(&p.f.agent_dir);
+    set_last_coding_agent_with_source(&dir, "codex", "Codex", None, None, Some(&source)).unwrap();
+    let config = read_agent_local_config_json(&p.f.agent_dir)
+        .unwrap()
+        .unwrap();
+    assert_eq!(recorded_launch(&config).last_source, Some(source));
+    p.activate(proj_named("other"));
+    let next = p.view();
+    assert_eq!(
+        (next.locator.clone(), next.pick.clone()),
+        (proj_named("team"), LaunchPick::LastUsed)
+    );
+}
+
+#[test]
+fn view_is_idempotent() {
+    let p = team_project();
+    let view = p.view();
+    let again = launch_view_at(&view.settings, &p.f.paths, &p.f.agent_dir);
+    assert_eq!(again.locator, view.locator);
+    assert_eq!(ids(&again), ids(&view));
+}
+
+#[test]
+fn root_agent_dir_uses_outside_projects_active_file() {
+    let mut p = team_project();
+    let root = p.root.join("rootagent");
+    std::fs::create_dir_all(&root).unwrap();
+    p.f.paths.root_agent_dir = Some(root.clone());
+    p.f.agent_dir = root;
+    p.f.named_file("solo", json!([file_agent("solo", "Solo")]));
+    let mut sel = p.f.settings.coding_agent_config_files.clone();
+    sel = Some(with_active(
+        sel.as_ref(),
+        &ConfigContext::Instance,
+        named("solo"),
+    ));
+    p.f.settings.coding_agent_config_files = sel;
+    let view = p.view();
+    assert_eq!(view.locator, named("solo"));
+    assert_eq!(ids(&view), ["solo"]);
+}

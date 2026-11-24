@@ -19,7 +19,7 @@ use crate::commands::session::create::contracts::PublicationInput;
 use crate::commands::session::create::publication::register_session_samplers;
 use crate::commands::session::lifecycle::LifecycleEntryAuthority;
 use crate::commands::session::resume_probe::build_title_prompt_appendage;
-use crate::config::coding_agent_files::ConfigFileLocator;
+use crate::config::settings::agent::launch_view;
 use crate::config::settings::SettingsState;
 use crate::pty::container_paths::ContainerEnvWarning;
 use crate::session::manager::SessionManager;
@@ -390,12 +390,15 @@ async fn publish_tooling<R: tauri::Runtime>(
         let write = {
             let settings = app.state::<SettingsState>();
             let write = match settings.current_read().await {
-                Ok(cfg) => Some(prepare_last_coding_agent_write_from(
-                    aid,
-                    agent_label.as_deref(),
-                    &cfg,
-                    &ConfigFileLocator::RegisteredInstance {},
-                )),
+                Ok(cfg) => {
+                    let view = launch_view(&cfg, std::path::Path::new(cwd));
+                    Some(prepare_last_coding_agent_write_from(
+                        aid,
+                        agent_label.as_deref(),
+                        &view.settings,
+                        &view.locator,
+                    ))
+                }
                 Err(error) => {
                     log::debug!("[session] skipping lastCodingAgent publication: {error}");
                     None

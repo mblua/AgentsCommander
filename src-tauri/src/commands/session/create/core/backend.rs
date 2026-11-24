@@ -524,7 +524,12 @@ async fn load_launch_idle_tuning(
         .await
         .map_err(|error| error.to_string())?;
     let requested_agent_id = pending.agent_id.clone();
+    let cwd = pending.session.working_directory.clone();
     match tokio::task::spawn_blocking(move || {
+        let snapshot =
+            crate::config::settings::agent::launch_view(&snapshot, std::path::Path::new(&cwd))
+                .settings
+                .into_owned();
         let catalog = crate::config::coding_agents_catalog::load_catalog_for_settings(&snapshot)
             .unwrap_or_default();
         resolve_launch_idle_tuning(
