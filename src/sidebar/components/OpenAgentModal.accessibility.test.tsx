@@ -1,14 +1,17 @@
 // @vitest-environment jsdom
-// #4945 commit 1: characterization of the current OpenAgentModal navigation.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Component } from "solid-js";
 import OpenAgentModal from "./OpenAgentModal";
-import type { RepoMatch } from "../../shared/types";
+import { homeStore } from "../../main/stores/home";
+import { SessionAPI } from "../../shared/ipc";
+import type { RepoMatch, Session } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   baseSettings,
   click,
+  input,
   renderWithFakeTransport,
+  session,
   waitFor,
 } from "../../shared/testing/ui-harness";
 
@@ -46,6 +49,31 @@ function fakeWithRepos(): FakeTransport {
   return fake;
 }
 
+function fakeWithAgent(): FakeTransport {
+  const fake = fakeWithRepos();
+  fake.resolve("get_settings", baseSettings({
+    agents: [{
+      id: "codex",
+      label: "Codex",
+      command: "codex",
+      color: "#10b981",
+      envs: [],
+      isolatedHome: false,
+    }],
+  }));
+  return fake;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function rows(): HTMLElement[] {
   return Array.from(document.querySelectorAll<HTMLElement>(".agent-modal-item"));
 }
@@ -54,6 +82,41 @@ function search(): HTMLInputElement {
   const el = document.querySelector<HTMLInputElement>(".agent-search-input");
   if (!el) throw new Error("Search input not mounted");
   return el;
+}
+
+async function expectRepoPicker(repo: RepoMatch): Promise<HTMLElement> {
+  const picker = document.querySelector<HTMLElement>(".agent-picker-modal");
+  if (!picker) throw new Error(`Expected the ${repo.name} agent picker to mount`);
+  expect(picker.querySelector(".agent-picker-context span")?.textContent).toBe(repo.name);
+  expect(document.querySelector(".agent-search-input")).toBeNull();
+  expect(rows()).toHaveLength(0);
+  await waitFor(() => {
+    expect(picker.closest(".modal-overlay")?.contains(document.activeElement)).toBe(true);
+  });
+  return picker;
+}
+
+function pickerButton(id: string): HTMLButtonElement {
+  const button = document.querySelector<HTMLButtonElement>(`[data-ac-testid="${id}"]`);
+  if (!button) throw new Error(`Picker button ${id} not mounted`);
+  return button;
+}
+
+async function applyAgent(): Promise<HTMLButtonElement> {
+  const apply = pickerButton("agentPicker.apply");
+  await waitFor(() => expect(apply.disabled).toBe(false));
+  apply.click();
+  return apply;
+}
+
+function expectBetaCreate(fake: FakeTransport) {
+  const calls = fake.callsFor("create_session");
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.args).toMatchObject({
+    cwd: SECOND_REPO.path,
+    sessionName: SECOND_REPO.name,
+    agentId: "codex",
+  });
 }
 
 function footerEsc(): string {
@@ -79,25 +142,33 @@ function hover(row: Element): void {
   row.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false, cancelable: true }));
 }
 
-async function mount(Modal: ModalComponent, initialRepo?: RepoMatch) {
-  const onClose = vi.fn();
-  const fake = fakeWithRepos();
+async function mount(
+  Modal: ModalComponent,
+  initialRepo?: RepoMatch,
+  { onClose = vi.fn(), fake = fakeWithRepos() } = {},
+) {
   const rendered = renderWithFakeTransport(
     () => <Modal onClose={onClose} initialRepo={initialRepo} />,
     fake,
   );
-  cleanups.push(rendered.cleanup);
-  return { onClose, fake, root: rendered.root };
+  let mounted = true;
+  const unmount = () => {
+    if (!mounted) return;
+    mounted = false;
+    rendered.cleanup();
+  };
+  cleanups.push(unmount);
+  return { onClose, fake, unmount };
 }
 
-async function mountSettled(Modal: ModalComponent) {
-  const mounted = await mount(Modal);
+async function mountSettled(Modal: ModalComponent, fake = fakeWithRepos()) {
+  const mounted = await mount(Modal, undefined, { fake });
   // Initial onMount search plus the debounced effect search must both settle.
   await waitFor(() => {
     expect(mounted.fake.callsFor("search_repos").length).toBeGreaterThanOrEqual(2);
     expect(rows()).toHaveLength(2);
+    expect(document.querySelector(".agent-search-spinner")).toBeNull();
   });
-  await new Promise((resolve) => setTimeout(resolve, 20));
   expect(document.activeElement).toBe(search());
   return mounted;
 }
@@ -120,17 +191,13 @@ async function exerciseNavigation(Modal: ModalComponent, observed?: Array<string
   expect(highlighted()).toEqual([0]);
 
   click(second!);
-  expect(highlighted()).toEqual([0]);
+  await expectRepoPicker(SECOND_REPO);
   if (observed) expect(observed.at(-1)).toBe(SECOND_REPO.path);
-  // Baseline: the component body is not reactive to selectedRepo, so the repo list
-  // stays mounted (no AgentPicker) and only the footer reflects the selection.
-  expect(rows()).toHaveLength(2);
-  expect(document.querySelector(".agent-picker-modal")).toBeNull();
-  expect(footerEsc()).toBe("esc back");
 
-  key(document.activeElement ?? document.body, "Escape");
+  key(document.activeElement!, "Escape");
   expect(onClose).not.toHaveBeenCalled();
   expect(footerEsc()).toBe("esc close");
+  expect(highlighted()).toEqual([0]);
   if (observed) expect(observed.at(-1)).toBeNull();
   await expectSearchRefocused();
 
@@ -138,7 +205,29 @@ async function exerciseNavigation(Modal: ModalComponent, observed?: Array<string
   expect(onClose).toHaveBeenCalledTimes(1);
 }
 
-describe("OpenAgentModal accessibility baseline (#4945)", () => {
+describe("OpenAgentModal repo navigation", () => {
+  it("row click opens the second repo picker", async () => {
+    await mountSettled(OpenAgentModal);
+    const second = rows()[1]!;
+    expect(second.textContent).toContain(SECOND_REPO.name);
+    click(second);
+    await expectRepoPicker(SECOND_REPO);
+  });
+
+  it("Search Enter opens the second repo picker", async () => {
+    await mountSettled(OpenAgentModal);
+    const searchInput = search();
+    key(searchInput, "ArrowDown");
+    expect(highlighted()).toEqual([1]);
+    expect(key(searchInput, "Enter").defaultPrevented).toBe(true);
+    await expectRepoPicker(SECOND_REPO);
+  });
+
+  it("positive control: initialRepo opens the second repo picker directly", async () => {
+    await mount(OpenAgentModal, SECOND_REPO);
+    await expectRepoPicker(SECOND_REPO);
+  });
+
   it("hover moves the highlight between distinct rows", async () => {
     await mountSettled(OpenAgentModal);
     const [first, second] = rows();
@@ -154,72 +243,109 @@ describe("OpenAgentModal accessibility baseline (#4945)", () => {
 
   it("Search ArrowDown/ArrowUp clamp to the list bounds", async () => {
     await mountSettled(OpenAgentModal);
-    const input = search();
-    const up = key(input, "ArrowUp");
+    const searchInput = search();
+    const up = key(searchInput, "ArrowUp");
     expect(up.defaultPrevented).toBe(true);
     expect(highlighted()).toEqual([0]);
-    expect(key(input, "ArrowDown").defaultPrevented).toBe(true);
+    expect(key(searchInput, "ArrowDown").defaultPrevented).toBe(true);
     expect(highlighted()).toEqual([1]);
-    key(input, "ArrowDown");
+    key(searchInput, "ArrowDown");
     expect(highlighted()).toEqual([1]);
-    key(input, "ArrowUp");
+    key(searchInput, "ArrowUp");
     expect(highlighted()).toEqual([0]);
-    key(input, "ArrowUp");
+    key(searchInput, "ArrowUp");
     expect(highlighted()).toEqual([0]);
   });
 
-  it("Search Enter selects the highlighted repo and resets highlight", async () => {
+  it("Search Enter resets highlight when returning from the picker", async () => {
     await mountSettled(OpenAgentModal);
-    const input = search();
-    key(input, "ArrowDown");
+    const searchInput = search();
+    key(searchInput, "ArrowDown");
     expect(highlighted()).toEqual([1]);
-    const enter = key(input, "Enter");
+    const enter = key(searchInput, "Enter");
     expect(enter.defaultPrevented).toBe(true);
+    await expectRepoPicker(SECOND_REPO);
+    key(document.activeElement!, "Escape");
     expect(highlighted()).toEqual([0]);
     expect(rows()).toHaveLength(2);
-    expect(footerEsc()).toBe("esc back");
+    await expectSearchRefocused();
   });
 
-  it("Search Enter after selection is ignored (no further key handling)", async () => {
+  it("the old Search input stops handling list keys after selection", async () => {
     await mountSettled(OpenAgentModal);
-    key(search(), "Enter");
-    expect(footerEsc()).toBe("esc back");
-    const down = key(search(), "ArrowDown");
+    const searchInput = search();
+    key(searchInput, "Enter");
+    await expectRepoPicker(FIRST_REPO);
+    expect(searchInput.isConnected).toBe(false);
+    const down = key(searchInput, "ArrowDown");
     expect(down.defaultPrevented).toBe(false);
-    expect(highlighted()).toEqual([0]);
+    await expectRepoPicker(FIRST_REPO);
   });
 
-  it("click selects the named row, resets highlight, keeps list mounted", async () => {
+  it("clicking the hovered row resets highlight on Cancel", async () => {
     await mountSettled(OpenAgentModal);
     const second = rows()[1]!;
     hover(second);
     expect(highlighted()).toEqual([1]);
     click(second);
+    await expectRepoPicker(SECOND_REPO);
+    pickerButton("agentPicker.cancel").click();
     expect(highlighted()).toEqual([0]);
     expect(rows()).toHaveLength(2);
-    expect(search().isConnected).toBe(true);
-    expect(document.querySelector(".agent-picker-modal")).toBeNull();
-    expect(footerEsc()).toBe("esc back");
+    await expectSearchRefocused();
   });
 
-  it("first Escape resets selection and refocuses Search, second closes once", async () => {
-    const { onClose } = await mountSettled(OpenAgentModal);
-    click(rows()[1]!);
-    search().blur();
-    expect(document.activeElement).not.toBe(search());
-    key(document.body, "Escape");
-    expect(onClose).not.toHaveBeenCalled();
-    expect(footerEsc()).toBe("esc close");
-    await expectSearchRefocused();
-    key(document.activeElement!, "Escape");
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
+  it.each(["picker", "body"])(
+    "Escape from %s restores the list and the next Escape closes once",
+    async (target) => {
+      const fake = fakeWithRepos();
+      fake.onInvoke("search_repos", ({ query }) =>
+        query === "a" ? [FIRST_REPO, SECOND_REPO] : [SECOND_REPO, FIRST_REPO],
+      );
+      const { onClose } = await mountSettled(OpenAgentModal, fake);
+      const previousSearch = search();
+      input(previousSearch, "a");
+      await waitFor(() => {
+        expect(fake.lastCall("search_repos")?.args.query).toBe("a");
+        expect(document.querySelector(".agent-search-spinner")).toBeNull();
+      });
+      const results = rows().map((row) => row.textContent);
+      hover(rows()[1]!);
+      expect(highlighted()).toEqual([1]);
+      click(rows()[1]!);
+      await expectRepoPicker(SECOND_REPO);
+
+      key(target === "picker" ? document.activeElement! : document.body, "Escape");
+      expect(onClose).not.toHaveBeenCalled();
+      expect(footerEsc()).toBe("esc close");
+      expect(rows().map((row) => row.textContent)).toEqual(results);
+      expect(highlighted()).toEqual([0]);
+      expect(search()).not.toBe(previousSearch);
+      expect(search().value).toBe("a");
+      await expectSearchRefocused();
+
+      key(search(), "Escape");
+      expect(onClose).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("Escape without a selection closes once", async () => {
     const { onClose } = await mountSettled(OpenAgentModal);
     expect(footerEsc()).toBe("esc close");
     key(search(), "Escape");
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape from body closes once while initial search is pending", async () => {
+    const fake = fakeWithRepos();
+    const pending = deferred<RepoMatch[]>();
+    fake.onInvoke("search_repos", () => pending.promise);
+    const { onClose, unmount } = await mount(OpenAgentModal, undefined, { fake });
+    expect(fake.callsFor("search_repos")).toHaveLength(1);
+    expect(key(document.body, "Escape").defaultPrevented).toBe(true);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    unmount();
+    pending.resolve([FIRST_REPO, SECOND_REPO]);
   });
 
   it("initialRepo renders AgentPicker directly without the repo list", async () => {
@@ -235,10 +361,103 @@ describe("OpenAgentModal accessibility baseline (#4945)", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("initialRepo Escape closes (esc close semantics)", async () => {
+  it.each(["picker", "body"])("initialRepo Escape from %s closes once", async (target) => {
     const { onClose } = await mount(OpenAgentModal, SECOND_REPO);
-    key(document.body, "Escape");
-    expect(onClose).toHaveBeenCalled();
+    await expectRepoPicker(SECOND_REPO);
+    key(target === "picker" ? document.activeElement! : document.body, "Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("OpenAgentModal launch", () => {
+  it("applies a valid agent once in the selected second repo", async () => {
+    const fake = fakeWithAgent();
+    fake.resolve("create_session", session());
+    const hideHome = vi.spyOn(homeStore, "hide");
+    const { onClose } = await mountSettled(OpenAgentModal, fake);
+    click(rows()[1]!);
+    await expectRepoPicker(SECOND_REPO);
+    await applyAgent();
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expectBetaCreate(fake);
+    expect(hideHome).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds the same picker on Escape and repeat Apply while create is pending", async () => {
+    const fake = fakeWithAgent();
+    const pending = deferred<Session>();
+    fake.onInvoke("create_session", () => pending.promise);
+    const { onClose } = await mountSettled(OpenAgentModal, fake);
+    click(rows()[1]!);
+    const picker = await expectRepoPicker(SECOND_REPO);
+    const apply = await applyAgent();
+    expectBetaCreate(fake);
+    expect(apply.disabled).toBe(true);
+    expect(pickerButton("agentPicker.cancel").disabled).toBe(true);
+
+    for (const target of [document.activeElement!, document.body]) {
+      key(target, "Escape");
+      expect(await expectRepoPicker(SECOND_REPO)).toBe(picker);
+      expect(onClose).not.toHaveBeenCalled();
+    }
+    apply.click();
+    key(picker, "Enter");
+    expectBetaCreate(fake);
+
+    pending.resolve(session());
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expectBetaCreate(fake);
+  });
+
+  it("restores Apply and Back after a create rejection", async () => {
+    const fake = fakeWithAgent();
+    const pending = deferred<Session>();
+    fake.onInvoke("create_session", () => pending.promise);
+    const { onClose } = await mountSettled(OpenAgentModal, fake);
+    click(rows()[1]!);
+    const picker = await expectRepoPicker(SECOND_REPO);
+    const apply = await applyAgent();
+    expectBetaCreate(fake);
+
+    pending.reject(new Error("Test create failed"));
+    await waitFor(() => {
+      expect(picker.querySelector(".agent-picker-error")?.textContent).toBe("Test create failed");
+      expect(apply.disabled).toBe(false);
+      expect(pickerButton("agentPicker.cancel").disabled).toBe(false);
+    });
+    key(document.activeElement!, "Escape");
+    await expectSearchRefocused();
+    click(rows()[0]!);
+    await expectRepoPicker(FIRST_REPO);
+    expect(onClose).not.toHaveBeenCalled();
+    expectBetaCreate(fake);
+  });
+
+  it("ignores completion from a direct picker closed during create", async () => {
+    const fake = fakeWithAgent();
+    const pending = deferred<Session>();
+    fake.onInvoke("create_session", () => pending.promise);
+    const onClose = vi.fn();
+    const hideHome = vi.spyOn(homeStore, "hide");
+    const create = vi.spyOn(SessionAPI, "create");
+    const beta = await mount(OpenAgentModal, SECOND_REPO, { fake, onClose });
+    await expectRepoPicker(SECOND_REPO);
+    await applyAgent();
+    expectBetaCreate(fake);
+
+    key(document.activeElement!, "Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
+    beta.unmount();
+    await mount(OpenAgentModal, FIRST_REPO, { onClose });
+    const alpha = await expectRepoPicker(FIRST_REPO);
+
+    pending.resolve(session());
+    await create.mock.results[0]!.value;
+    expect(await expectRepoPicker(FIRST_REPO)).toBe(alpha);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(hideHome).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -306,8 +525,7 @@ describe("OpenAgentModal phase 2 native row buttons (#4945)", () => {
     await mountSettled(OpenAgentModal);
     hover(rows()[1]!);
     expect(key(search(), "Enter").defaultPrevented).toBe(true);
-    expect(highlighted()).toEqual([0]);
-    expect(footerEsc()).toBe("esc back");
+    await expectRepoPicker(SECOND_REPO);
   });
 
   describe("observer fixture", () => {
@@ -326,6 +544,7 @@ describe("OpenAgentModal phase 2 native row buttons (#4945)", () => {
       second.focus();
       expect(key(second, k).defaultPrevented).toBe(false);
       second.click();
+      await expectRepoPicker(SECOND_REPO);
       expect(observed.at(-1)).toBe(SECOND_REPO.path);
       expect(observed).not.toContain(FIRST_REPO.path);
     });
