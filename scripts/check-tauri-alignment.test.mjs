@@ -12,7 +12,7 @@ const cargo = (crates) =>
 
 test('pairs aligned on major.minor pass, patch may differ', () => {
   const r = checkAlignment(
-    npmVersions(lock({ '@tauri-apps/api': '2.12.4', '@tauri-apps/plugin-dialog': '2.8.4' })),
+    npmVersions(lock({ '@tauri-apps/cli': '2.12.4', '@tauri-apps/plugin-dialog': '2.8.4' })),
     cargoVersions(cargo({ tauri: '2.12.5', 'tauri-plugin-dialog': '2.8.4' })),
   );
   assert.deepEqual(r.errors, []);
@@ -21,22 +21,22 @@ test('pairs aligned on major.minor pass, patch may differ', () => {
 
 test('minor skew fails with a clear message', () => {
   const r = checkAlignment(
-    npmVersions(lock({ '@tauri-apps/api': '2.11.0', '@tauri-apps/plugin-dialog': '2.8.4' })),
+    npmVersions(lock({ '@tauri-apps/cli': '2.11.0', '@tauri-apps/plugin-dialog': '2.8.4' })),
     cargoVersions(cargo({ tauri: '2.12.5', 'tauri-plugin-dialog': '2.7.0' })),
   );
   assert.equal(r.errors.length, 2);
-  assert.match(r.errors[0], /major\.minor skew: @tauri-apps\/api 2\.11\.0 <-> tauri 2\.12\.5/);
+  assert.match(r.errors[0], /major\.minor skew: @tauri-apps\/cli 2\.11\.0 <-> tauri 2\.12\.5/);
   assert.match(r.errors[1], /plugin-dialog 2\.8\.4 <-> tauri-plugin-dialog 2\.7\.0/);
 });
 
 test('major skew fails', () => {
-  const r = checkAlignment(npmVersions(lock({ '@tauri-apps/api': '1.6.0' })), cargoVersions(cargo({ tauri: '2.12.5' })));
+  const r = checkAlignment(npmVersions(lock({ '@tauri-apps/cli': '1.6.0' })), cargoVersions(cargo({ tauri: '2.12.5' })));
   assert.equal(r.errors.length, 1);
 });
 
 test('JS-only and Rust-only plugins are info, not errors', () => {
   const r = checkAlignment(
-    npmVersions(lock({ '@tauri-apps/api': '2.12.4', '@tauri-apps/plugin-os': '2.3.0' })),
+    npmVersions(lock({ '@tauri-apps/cli': '2.12.4', '@tauri-apps/plugin-os': '2.3.0' })),
     cargoVersions(cargo({ tauri: '2.12.5', 'tauri-plugin-fs': '2.7.1' })),
   );
   assert.deepEqual(r.errors, []);
@@ -44,8 +44,8 @@ test('JS-only and Rust-only plugins are info, not errors', () => {
 });
 
 test('npm core package without a tauri crate fails', () => {
-  const r = checkAlignment(npmVersions(lock({ '@tauri-apps/api': '2.12.4' })), cargoVersions(cargo({})));
-  assert.deepEqual(r.errors, ['@tauri-apps/api has no tauri crate in Cargo.lock']);
+  const r = checkAlignment(npmVersions(lock({ '@tauri-apps/cli': '2.12.4' })), cargoVersions(cargo({})));
+  assert.deepEqual(r.errors, ['@tauri-apps/cli has no tauri crate in Cargo.lock']);
 });
 
 test('nested lock entries are read by package name', () => {

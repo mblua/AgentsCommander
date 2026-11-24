@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Checks that each Tauri npm package and its Rust crate share major.minor.
 //
-// Tauri requires `@tauri-apps/api` and `@tauri-apps/cli` to match the
-// `tauri` crate, and `@tauri-apps/plugin-X` to match `tauri-plugin-X`, on
-// major.minor (patch may differ). Reads the resolved versions from
-// `package-lock.json` and `Cargo.lock` (#5153).
+// Tauri requires `@tauri-apps/cli` to match the `tauri` crate, and
+// `@tauri-apps/plugin-X` to match `tauri-plugin-X`, on major.minor (patch
+// may differ). `@tauri-apps/api` <-> `tauri` is checked by
+// src-tauri/tests/tauri_npm_version_coupling.rs, so it is not repeated here.
+// Reads the resolved versions from `package-lock.json` and `Cargo.lock` (#5153).
 //
 // Usage:
 //   node scripts/check-tauri-alignment.mjs
@@ -16,7 +17,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const NPM_CORE = ['@tauri-apps/api', '@tauri-apps/cli'];
+const NPM_CORE = ['@tauri-apps/cli'];
 const NPM_PLUGIN = '@tauri-apps/plugin-';
 const RUST_PLUGIN = 'tauri-plugin-';
 
