@@ -52,7 +52,7 @@ function scan(path: string): { controls: number; missing: string[] } {
   return { controls, missing };
 }
 
-describe("#4825 sidebar menu controls carry data-ac-testid", () => {
+describe("sidebar menu controls carry data-ac-testid", () => {
   for (const file of FILES) {
     it(`${file.path}: every control has a non-empty data-ac-testid`, () => {
       const result = scan(file.path);

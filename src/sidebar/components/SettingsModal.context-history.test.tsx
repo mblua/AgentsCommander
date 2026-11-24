@@ -42,7 +42,7 @@ const CTX_KEYS = [
 // The backend always serves a list; tests seed it like the Rust default.
 const SERVED = { contextHistorySessionWindows: [25, 100, 300], contextHistoryColorSessions: 300 };
 
-describe("SettingsModal Context Heat Map section (#4049)", () => {
+describe("SettingsModal Context Heat Map section", () => {
   beforeEach(() => {
     platform.tauri = true;
     const cleanupDom = installBrowserDomStubs();

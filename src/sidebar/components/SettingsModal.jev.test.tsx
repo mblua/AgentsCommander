@@ -90,7 +90,7 @@ function rustNumberDefault(source: string, fn: string): number {
   return Number.parseFloat(match[1]);
 }
 
-describe("SettingsModal Jev group (#2232 phase 9)", () => {
+describe("SettingsModal Jev group", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

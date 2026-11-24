@@ -17,7 +17,7 @@ function type(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-describe("SettingsModal response close (#2851)", () => {
+describe("SettingsModal response close", () => {
   let cleanupDom: (() => void) | null = null;
   beforeEach(() => { cleanupDom = installBrowserDomStubs(); resetUiStoresForTests(); });
   afterEach(() => { cleanupDom?.(); resetUiStoresForTests(); document.body.replaceChildren(); });
