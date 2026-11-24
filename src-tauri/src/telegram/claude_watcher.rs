@@ -129,11 +129,9 @@ fn decide_attach(inputs: AttachInputs<'_>) -> AttachDecision {
     }
 }
 
-/// Whether this poll consults [`decide_attach`].
-///
-/// Only until the reader's first attach: after it, a vanished transcript
-/// leaves `current_file` empty again, and re-running the decision would pin a
-/// restored file whose content this reader already consumed.
+/// Whether this poll consults [`decide_attach`]: only until the reader's first
+/// attach. After it, a vanished transcript leaves `current_file` empty again, and
+/// re-running the decision would pin a restored file this reader already consumed.
 fn runs_first_attach_decision(first_attach_done: bool, has_current_file: bool) -> bool {
     !first_attach_done && !has_current_file
 }
@@ -478,9 +476,16 @@ struct ClaudeReader {
     line_remainder: String,
     dir_warned: bool,
     pin_id: Option<String>,
-    first_poll: bool,
-    first_attach_done: bool,
+    attach_phase: AttachPhase,
     wait_deadline: Option<Instant>,
+}
+
+/// First-attach progress, moving only forward: `FirstPoll`, `Waiting`, `Attached`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttachPhase {
+    FirstPoll,
+    Waiting,
+    Attached,
 }
 
 impl ClaudeReader {
@@ -532,10 +537,8 @@ impl ClaudeReader {
             file_offset: 0,
             line_remainder: String::new(),
             dir_warned: false,
-            // The minted transcript id, consulted until the first attach.
-            pin_id: transcript_id,
-            first_poll: true,
-            first_attach_done: false,
+            pin_id: transcript_id, // The minted transcript id, consulted until the first attach.
+            attach_phase: AttachPhase::FirstPoll,
             wait_deadline: None,
         }
     }
@@ -626,60 +629,59 @@ impl ClaudeReader {
 
     /// The file this poll should read, and whether it is a pinned attach.
     fn attach_target(&mut self, newest: Option<PathBuf>) -> (Option<PathBuf>, bool) {
-        // The first attach goes through `decide_attach`; after
-        // it, rotation follows the newest mtime exactly as before.
+        // The first attach goes through `decide_attach`; later ones follow the newest mtime.
         let mut pinned_attach = false;
-        let latest =
-            if runs_first_attach_decision(self.first_attach_done, self.current_file.is_some()) {
-                let pinned = self
-                    .pin_id
-                    .as_deref()
-                    .and_then(|id| find_pinned_jsonl(&self.project_dir, id));
-                let decision = decide_attach(AttachInputs {
-                    transcript_id: self.pin_id.as_deref(),
-                    pinned: pinned.as_deref(),
-                    newest: newest.as_deref(),
-                    first_poll: self.first_poll,
-                    deadline_expired: self.wait_deadline.is_some_and(|d| Instant::now() >= d),
-                });
-                self.first_poll = false;
-                let waiting = matches!(decision, AttachDecision::Wait);
-                if waiting && self.wait_deadline.is_none() {
-                    self.wait_deadline =
-                        Some(Instant::now() + Duration::from_secs(PINNED_ATTACH_WAIT_SECS));
-                    log::info!(
-                        "[JSONL_ATTACH] session {} waiting up to {}s for {}",
-                        self.session_id,
-                        PINNED_ATTACH_WAIT_SECS,
-                        self.project_dir
-                            .join(format!(
-                                "{}.jsonl",
-                                self.pin_id.as_deref().unwrap_or_default()
-                            ))
-                            .display()
-                    );
+        let attached = self.attach_phase == AttachPhase::Attached;
+        let latest = if runs_first_attach_decision(attached, self.current_file.is_some()) {
+            let pinned = self
+                .pin_id
+                .as_deref()
+                .and_then(|id| find_pinned_jsonl(&self.project_dir, id));
+            let decision = decide_attach(AttachInputs {
+                transcript_id: self.pin_id.as_deref(),
+                pinned: pinned.as_deref(),
+                newest: newest.as_deref(),
+                first_poll: self.attach_phase == AttachPhase::FirstPoll,
+                deadline_expired: self.wait_deadline.is_some_and(|d| Instant::now() >= d),
+            });
+            self.attach_phase = AttachPhase::Waiting;
+            let waiting = matches!(decision, AttachDecision::Wait);
+            if waiting && self.wait_deadline.is_none() {
+                self.wait_deadline =
+                    Some(Instant::now() + Duration::from_secs(PINNED_ATTACH_WAIT_SECS));
+                log::info!(
+                    "[JSONL_ATTACH] session {} waiting up to {}s for {}",
+                    self.session_id,
+                    PINNED_ATTACH_WAIT_SECS,
+                    self.project_dir
+                        .join(format!(
+                            "{}.jsonl",
+                            self.pin_id.as_deref().unwrap_or_default()
+                        ))
+                        .display()
+                );
+            }
+            match decision {
+                AttachDecision::Pinned(path) => {
+                    pinned_attach = true;
+                    Some(path)
                 }
-                match decision {
-                    AttachDecision::Pinned(path) => {
-                        pinned_attach = true;
-                        Some(path)
-                    }
-                    AttachDecision::Mtime(path) => Some(path),
-                    // Runs once: this attach ends the decision loop.
-                    AttachDecision::MtimeFallback(path) => {
-                        log::warn!(
-                            "[JSONL_ATTACH] session {} pinned transcript absent after {}s; \
+                AttachDecision::Mtime(path) => Some(path),
+                // Runs once: this attach ends the decision loop.
+                AttachDecision::MtimeFallback(path) => {
+                    log::warn!(
+                        "[JSONL_ATTACH] session {} pinned transcript absent after {}s; \
                          falling back to newest by mtime",
-                            self.session_id,
-                            PINNED_ATTACH_WAIT_SECS
-                        );
-                        Some(path)
-                    }
-                    AttachDecision::Wait | AttachDecision::Nothing => None,
+                        self.session_id,
+                        PINNED_ATTACH_WAIT_SECS
+                    );
+                    Some(path)
                 }
-            } else {
-                newest
-            };
+                AttachDecision::Wait | AttachDecision::Nothing => None,
+            }
+        } else {
+            newest
+        };
         (latest, pinned_attach)
     }
 
@@ -716,7 +718,9 @@ impl ClaudeReader {
             );
         }
         self.current_file = latest;
-        self.first_attach_done |= self.current_file.is_some();
+        if self.current_file.is_some() {
+            self.attach_phase = AttachPhase::Attached;
+        }
         self.current_file_mtime = self
             .current_file
             .as_ref()
@@ -739,8 +743,7 @@ impl ClaudeReader {
 
     /// The first attach's §J preamble scan over `p`.
     fn first_attach_scan(&mut self, p: &Path, pinned_attach: bool) {
-        // A pinned attach is this
-        // spawn's own output, so it is `Live`.
+        // A pinned attach is this spawn's own output, so it is `Live`.
         let origin = if pinned_attach {
             RecordOrigin::Live
         } else {

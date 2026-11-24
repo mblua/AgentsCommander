@@ -126,7 +126,7 @@ fn scan_replaces_pre_token_minimization_global_template() {
 }
 
 /// AC-4.3: the frozen v2 global snapshot must stay byte-identical
-/// to what the #1005 S6..8f272a76 builds shipped. Expected values captured
+/// to what the S6..8f272a76 builds shipped. Expected values captured
 /// externally from the raw literal AT base commit 8f272a76, never from this
 /// const.
 #[test]
