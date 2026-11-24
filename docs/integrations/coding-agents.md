@@ -390,6 +390,18 @@ When you launch a session AC shows a dropdown listing every entry in `agents[]`.
 
 You can change the choice for a session later: right-click → **Launch with…** → pick a different agent.
 
+## Codex terminal mode
+
+Use **Scrollback** when running Codex in AgentsCommander. In this mode, the terminal handles scrollback.
+
+If your Codex version includes the terminal mode picker:
+
+1. Run `/tui` in Codex.
+2. Select **Scrollback** and press Enter.
+3. Restart the Codex process to apply the change.
+
+Launch overrides still apply. See the [official Codex terminal mode instructions](https://learn.chatgpt.com/docs/developer-commands?surface=cli#choose-the-terminal-mode-with-tui).
+
 ## Pi resume behavior
 
 AC uses Pi's direct `--continue` option, not `--resume`, which opens Pi's interactive session selector. AC injects one `--continue` immediately after the Pi executable only when all of these conditions hold:
