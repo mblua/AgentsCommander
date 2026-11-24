@@ -1,6 +1,7 @@
 //! Per-instance close probe: wait receipts, child joins and the attributable bound `C`.
 
-use super::deadline::{Gate, ReturnWait, WakeFlag, Watchdog};
+use super::deadline::ReturnWait;
+use super::watchdog::{Gate, WakeFlag, Watchdog};
 use super::*;
 use crate::pty::container_backend::ShutdownStage;
 use crate::session::selection::shutdown_cleanup::CloseProbe;
