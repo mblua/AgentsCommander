@@ -81,3 +81,9 @@ describe("context history color moved out of General", () => {
     expect(sections[sections.lastIndexOf("Window") + 1]).toBe("Hotkeys");
   });
 });
+
+describe("IPC black box search", () => {
+  it("finds the System > Logging entry by black box, freeze and ipc", () => {
+    for (const q of ["black box", "freeze", "ipc"]) expect(keys(q)).toContain("ipcBlackBoxEnabled");
+  });
+});
