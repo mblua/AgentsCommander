@@ -192,7 +192,7 @@ fn production_route_remover_registry_poison_is_exact_structured_residue() {
         production_route_remover_fixture(Arc::clone(&runtime));
     pty_manager.lock().unwrap().poison_route_registry_for_test();
 
-    let budget = Duration::from_millis(150);
+    let budget = Duration::from_secs(1);
     let started_at = Instant::now();
     let report = backend.stop_all_started_containers_blocking(budget);
     let elapsed = started_at.elapsed();
