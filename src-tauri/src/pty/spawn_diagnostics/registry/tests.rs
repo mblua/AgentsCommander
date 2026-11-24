@@ -766,17 +766,17 @@ fn scrub_merges_touching_spans_and_keeps_plain_text_unchanged() {
 #[test]
 fn thresholds_from_env_are_clamped() {
     assert_eq!(env_u64("AC_SPAWN_TEST_MISSING_KEY", 7, 100), 7);
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only,
     unsafe {
         std::env::set_var("AC_SPAWN_TEST_CLAMP", "1000000000");
     }
     assert_eq!(env_u64("AC_SPAWN_TEST_CLAMP", 512, 65_536), 65_536);
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only,
     unsafe {
         std::env::set_var("AC_SPAWN_TEST_CLAMP", "not-a-number");
     }
     assert_eq!(env_u64("AC_SPAWN_TEST_CLAMP", 512, 65_536), 512);
-    // SAFETY: same contract as before 2024; test-only, see #4451 follow-up
+    // SAFETY: same contract as before 2024; test-only,
     unsafe {
         std::env::remove_var("AC_SPAWN_TEST_CLAMP");
     }

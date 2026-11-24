@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- #1032: the rows accessor, against the real parser -------------------------
+// ---- The rows accessor, against the real parser -------------------------
 
 /// The whole transfer claim of the round-1 capture rests on this: the capture read its
 /// bytes with `contents_between`, and the engine reads them with `rows`. If those two

@@ -22,7 +22,7 @@ fn typed(type_id: &str, message: &str) -> ErrorLogEntry {
     }
 }
 
-/// #3036 — `typeId` of a synthetic record at `(target, file, line)`.
+/// `typeId` of a synthetic record at `(target, file, line)`.
 fn type_of(target: &str, file: Option<&str>, line: Option<u32>, msg: &str) -> String {
     ErrorLogEntry::from_record(
         String::new(),
@@ -194,7 +194,7 @@ fn error_log_entry_serializes_camel_case() {
     assert!(!json.contains("type_id"), "snake_case leaked: {json}");
 }
 
-// ── #3036 error-popup mute tests ────────────────────────────────
+// ── Error-popup mute tests ────────────────────────────────
 
 #[test]
 fn type_id_groups_by_emission_site_only() {
@@ -510,7 +510,7 @@ fn sink_drops_oldest_entries_past_the_cap() {
     );
 }
 
-// ── #280 §2 — app.log rotation tests ──────────────────────────────
+// ── App.log rotation tests ──────────────────────────────
 
 /// Build a synthetic `AppLogFile` rooted at `dir`. `bytes` is preloaded
 /// so the tests can drive `rotate()` directly without needing to write
@@ -657,7 +657,7 @@ fn rotate_is_idempotent_under_concurrent_invocations() {
     );
 }
 
-// ── #612 runtime log-level gate tests ───────────────────────────
+// ── Runtime log-level gate tests ───────────────────────────
 
 /// Build the fixed inner `env_logger::Logger` for the gate WITHOUT reading
 /// `RUST_LOG` (hermetic): `Builder::new()` + the exact production filter, so a
@@ -789,7 +789,7 @@ fn level_gate_atomic_flip_changes_verdict_at_runtime() {
     assert!(!admits(&gate, log::Level::Debug, "agentscommander_lib::x"));
 }
 
-/// R2 (grinch): the #264 error-sink now sits BEHIND the new gate plumbing.
+/// R2 (grinch): the error-sink now sits BEHIND the new gate plumbing.
 /// Prove an ERROR record is NOT dropped by the gate at the STRICTEST
 /// selectable level (Error) and still reaches `error_sink()` through the
 /// reused format closure (`install_format`'s #264 tee). `error_sink()` is a
@@ -807,7 +807,7 @@ fn error_record_survives_gate_at_strictest_level_and_reaches_264_sink() {
     let mut builder = env_logger::Builder::new();
     builder.parse_filters(GATE_INNER_FILTER);
     // No app.log file: an empty log_state makes the closure's file branch a
-    // no-op; the #264 tee path is independent of the file sink.
+    // no-op; the tee path is independent of the file sink.
     install_format(&mut builder, Arc::new(None::<Arc<AppLogFile>>));
     let gate = LevelGateLogger {
         inner: builder.build(),

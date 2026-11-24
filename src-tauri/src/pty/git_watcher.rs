@@ -38,7 +38,7 @@ impl GitState {
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// #1298 - read-site clamp bounds for the two sweeper dials.
+/// Read-site clamp bounds for the two sweeper dials.
 /// `SWEEP_MIN_INTERVAL_SECS` is also the floor an EMPTY round applies, which is
 /// what makes the cold start pick up work about a second after it appears.
 const SWEEP_MIN_CONCURRENCY: u8 = 1;
@@ -453,7 +453,7 @@ impl GitWatcher {
         })
     }
 
-    /// #2683 - a watcher with no event transport, for the unix `spawn_sync` tests
+    /// A watcher with no event transport, for the unix `spawn_sync` tests
     /// that cannot build a desktop app on a headless runner. It never notifies.
     #[cfg(test)]
     pub(crate) fn new_headless_for_tests(
@@ -526,7 +526,7 @@ impl GitWatcher {
                 continue;
             }
 
-            // #1298 - pure map reads. This loop no longer spawns `git`: the global
+            // Pure map reads. This loop no longer spawns `git`: the global
             // `GitSweeper` is the only polling producer, and this poll consumes its
             // published snapshot. An unpublished path reads `None`, which is the
             // same "unknown" a failed detection produced before.
@@ -541,10 +541,10 @@ impl GitWatcher {
                 .map(|(r, status)| SessionRepo {
                     label: r.label.clone(),
                     source_path: r.source_path.clone(),
-                    // #1028 - `branch` keeps its old behaviour exactly: a failed
+                    // `branch` keeps its old behaviour exactly: a failed
                     // detection reports `None`, with no hold.
                     branch: status.as_ref().and_then(|s| s.branch.clone()),
-                    // #1028 - `dirty` DOES hold across a failure, because asserting a
+                    // `dirty` DOES hold across a failure, because asserting a
                     // confident "clean" while the worktree has uncommitted work is the
                     // one error this feature must not make. Same shape in
                     // DiscoveryBranchWatcher::poll; the map behind it is shared.
@@ -602,7 +602,7 @@ impl GitWatcher {
 /// 2s timeout. On timeout the pending future is dropped; `.kill_on_drop(true)`
 /// ensures the child `git.exe` is terminated so repeated polls can't leak processes.
 ///
-/// #1298 - was one of two per-watcher methods. It is now the sweeper's single
+/// Was one of two per-watcher methods. It is now the sweeper's single
 /// wrapper, and its `DETECT_TIMEOUT` is INV-1: see `detect_git_status` above for
 /// why it must survive any later cleanup.
 ///
@@ -613,7 +613,7 @@ async fn detect_status_with_timeout(working_dir: &str, owner: &GitState) -> Opti
         Ok(result) => result,
         Err(_) => {
             let n = note_timeout(working_dir, owner);
-            // #280 §3.3 — throttle the per-path WARN. Observed rate is
+            // Throttle the per-path WARN. Observed rate is
             // ~120 timeouts/day/path; logging every one floods app.log.
             // Log the first sighting (heartbeat) and every 50th
             // thereafter (still ~2-3 WARN/day/path) — enough signal to
@@ -632,7 +632,7 @@ async fn detect_status_with_timeout(working_dir: &str, owner: &GitState) -> Opti
     }
 }
 
-/// #1298 - read-site clamp for the two sweeper dials. See plan D1: clamping here
+/// Read-site clamp for the two sweeper dials. See plan D1: clamping here
 /// rather than in `validate_and_repair_settings` is what stops the app from
 /// rewriting the user's hand-edited `settings.json`. It is NOT a hot-reload
 /// mechanism: the sweeper reads the in-memory settings state, which is loaded once
@@ -664,7 +664,7 @@ fn sweep_dials(cfg: &AppSettings) -> (usize, Duration) {
     (concurrency as usize, Duration::from_secs(interval_secs))
 }
 
-/// #1298 - the sweeper's work list: the UNION of the discovery replicas and the
+/// The sweeper's work list: the UNION of the discovery replicas and the
 /// live sessions, deduplicated by EXACT path string (INV-3, no normalization),
 /// with archived projects dropped (D2), sorted for a deterministic round order.
 /// `archived_roots` are already normalized.
@@ -711,7 +711,7 @@ pub(super) fn build_work_list(
     paths
 }
 
-/// #1298 - the single global POLLING producer of per-repo git state. Both watchers
+/// The single global POLLING producer of per-repo git state. Both watchers
 /// read the snapshot it publishes instead of spawning `git` themselves.
 ///
 /// Takes `SettingsState` rather than an event transport on purpose: the sweeper
@@ -899,7 +899,7 @@ impl GitSweeper {
     }
 }
 
-/// #2064 - the discovery maps are process-global and are written by two test
+/// The discovery maps are process-global and are written by two test
 /// modules (`pty::remote_watcher` rounds and `commands::ac_discovery`'s push
 /// test), so those tests must serialize against each other, not merely within
 /// one module. Lives beside the maps it guards. Async-aware because the round

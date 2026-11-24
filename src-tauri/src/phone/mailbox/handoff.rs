@@ -348,7 +348,7 @@ pub(crate) const SELF_SWITCH_ACTION: &str = "self-handoff-and-switch";
 /// other two so the CLI emit, the early-dispatch match, and the response body cannot drift.
 pub(crate) const SELF_RESTART_ACTION: &str = "self-handoff-and-restart";
 
-/// (#885) Bulk purge of the caller's own workgroup. Dispatched pre-routing,
+/// Bulk purge of the caller's own workgroup. Dispatched pre-routing,
 /// like the other self-scoped actions: there is no single recipient to route to.
 pub(crate) const PURGE_WG_ACTION: &str = "purge-wg";
 

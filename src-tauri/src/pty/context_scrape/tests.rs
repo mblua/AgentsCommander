@@ -833,7 +833,7 @@ async fn a_second_session_for_the_same_agent_gets_its_own_entry_and_first_emit()
     assert_eq!(h.scraper.compile_count(), 1, "one agent, one compile");
 }
 
-// ── #1088: the coalesced per-tick persist hand-off ──
+// ── The coalesced per-tick persist hand-off ──
 
 #[tokio::test]
 async fn a_changed_reading_commits_once_and_is_independent_of_badge_and_samples() {

@@ -55,7 +55,7 @@ pub(crate) use transaction::{
     empty_project_transaction, repair_fresh_project_paths_at_path,
 };
 
-// ── #1077 six-field project-path codec (JSON extraction / serialization) ────
+// ── Six-field project-path codec (JSON extraction / serialization) ────
 //
 // The three legacy primary fields keep their names/types; each gains a paired
 // `…RelativeToInstance` companion (string|null, array-aligned). On load the
@@ -105,7 +105,7 @@ pub(crate) const OVERLAY_INELIGIBLE_DISK_KEYS: &[&str] = &[
 /// (D7b) - legacy keys that exist only as a one-time migration source. AC
 /// translates each into a different key, and one of them is removed from memory by
 /// the migration itself, so an override would write a key the restore plan does not
-/// own or would resurrect a key the #248 migration exists to delete.
+/// own or would resurrect a key the migration exists to delete.
 pub(crate) const OVERLAY_INELIGIBLE_LEGACY_KEYS: &[&str] = &[
     "agentFileSourceByMenu",
     "sidebarAlwaysOnTop",
@@ -121,7 +121,7 @@ pub(crate) const OVERLAY_INELIGIBLE_LEGACY_KEYS: &[&str] = &[
 /// never be persisted into the base file. Deliberately narrower than the whole
 /// `codingAgentProfiles` key: that key has three other production writers whose
 /// payloads the operator did not override. See plan D13 and evidence 2.11.
-/// #2450: `identityByAgent` needs its own closure, since a sibling key does not
+/// `identityByAgent` needs its own closure, since a sibling key does not
 /// inherit the protection.
 pub(crate) const OVERLAY_DERIVED_ID_CLOSURES: &[DerivedIdClosure] = &[
     DerivedIdClosure {

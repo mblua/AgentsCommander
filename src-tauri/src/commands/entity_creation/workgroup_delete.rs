@@ -18,7 +18,7 @@ use tauri::{AppHandle, Manager, State};
 
 /// Delete a single workgroup directory from `{project_path}/.ac/{wg_name}/`
 /// Returns dirty repo list as an Err if any repos have uncommitted/unpushed work.
-/// Project-only gated workgroup-delete primitive (#1063, plan sections 5.4/6.3).
+/// Project-only gated workgroup-delete primitive (plan sections 5.4/6.3).
 ///
 /// Acquires the project seed-manifest gate, runs `delete` under it, prunes the
 /// workgroup config scope when the logical path was removed (`Deleted`/`Partial`),
@@ -113,7 +113,7 @@ pub async fn delete_workgroup(
         outcome,
     )
     .await?;
-    // (#621) Drop the workgroup's coordinator_clocks keys from the in-memory store
+    // Drop the workgroup's coordinator_clocks keys from the in-memory store
     // and persist immediately (this command is not on the auto-close flush tick).
     if let Some(project_name) = Path::new(&project_path)
         .file_name()
@@ -138,7 +138,7 @@ pub async fn delete_workgroup(
     Ok(())
 }
 
-// #1063: production `delete_workgroup` now runs the delete under the project gate
+// Production `delete_workgroup` now runs the delete under the project gate
 // via `gated_workgroup_delete_with` and interprets the outcome with
 // `delete_workgroup_dir_backend_with_outcome`, so this ungated convenience wrapper
 // is retained for tests only.
