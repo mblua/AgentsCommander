@@ -1,20 +1,5 @@
 use super::*;
 
-/// Runs `git init --quiet` and fails with git's stderr, so a flaky failure shows its cause.
-fn git_init_quiet(project: &std::path::Path) {
-    let output = std::process::Command::new("git")
-        .args(["init", "--quiet"])
-        .current_dir(project)
-        .output()
-        .expect("git init must execute");
-    assert!(
-        output.status.success(),
-        "git init must succeed: {}\nstderr: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 // Git-visibility conformance. AC's managed `.ac/.gitignore` ignores the manifest, but a
 // parent rule that excludes the `.ac/` directory still wins: Git does not
 // descend into an excluded directory. AC documents but does not override
@@ -31,7 +16,12 @@ fn stage_e_parent_gitignore_excluding_ac_hides_manifest() {
     // A parent repository rule excludes the whole `.ac/` directory.
     std::fs::write(project.join(".gitignore"), b"/.ac/\n").expect("write parent .gitignore");
 
-    git_init_quiet(&project);
+    let init = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&project)
+        .status()
+        .expect("git init");
+    assert!(init.success(), "git init must succeed");
 
     let verbose = std::process::Command::new("git")
         .args([
@@ -264,7 +254,12 @@ fn ensure_ac_root_gitignore_config_write_lock_rules_are_narrow() {
     ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
         .expect("ensure workspace .gitignore");
 
-    git_init_quiet(&project);
+    let init_status = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&project)
+        .status()
+        .expect("git init must execute");
+    assert!(init_status.success(), "git init must succeed");
 
     let empty_excludes = project.join("empty-global-excludes");
     std::fs::write(&empty_excludes, []).expect("create empty global excludes file");
@@ -346,7 +341,12 @@ fn ensure_ac_root_gitignore_team_config_lock_rule_is_root_anchored() {
     ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
         .expect("ensure workspace .gitignore");
 
-    git_init_quiet(&project);
+    let init_status = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&project)
+        .status()
+        .expect("git init must execute");
+    assert!(init_status.success(), "git init must succeed");
 
     let empty_excludes = project.join("empty-global-excludes");
     std::fs::write(&empty_excludes, []).expect("create empty global excludes file");
@@ -442,7 +442,12 @@ fn assert_later_user_negation_reincludes_manifest() {
     std::fs::write(ac_root.join(".gitignore"), content).expect("append user rule");
     std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
 
-    git_init_quiet(&project);
+    let init = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&project)
+        .status()
+        .expect("git init");
+    assert!(init.success());
     let verbose = std::process::Command::new("git")
         .args([
             "check-ignore",
@@ -550,6 +555,11 @@ fn repository_with_managed_manifest() -> (tempfile::TempDir, std::path::PathBuf)
     std::fs::create_dir_all(&ac_root).expect("create .ac");
     ensure_ac_root_gitignore_with_names(&ac_root, &floor_names()).expect("ensure .gitignore");
     std::fs::write(ac_root.join("seed-manifest.toml"), b"x").expect("manifest");
-    git_init_quiet(&project);
+    let init = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&project)
+        .status()
+        .expect("git init");
+    assert!(init.success());
     (tmp, project)
 }
