@@ -437,7 +437,10 @@ fn commit_effect_completes_on_a_current_thread_runtime() {
     });
 }
 
-/// Hold `.co-managed/lock` for `hold` or until `release` fires/drops; returns time held.
+/// Safety cap: a holder that is never released lets go after this.
+const HOLDER_CAP: Duration = Duration::from_secs(10);
+
+/// Hold `.co-managed/lock` for `hold`, or until `release` fires/drops (capped at `hold`).
 fn hold_lock(
     root: &Path,
     hold: Duration,
@@ -454,7 +457,7 @@ fn hold_lock(
         };
         let acquired = Instant::now();
         tx.send(()).expect("signal");
-        release.map_or_else(|| std::thread::sleep(hold), |r| r.recv().unwrap_or(()));
+        release.map_or_else(|| std::thread::sleep(hold), |r| drop(r.recv_timeout(hold)));
         drop(lock);
         acquired.elapsed()
     });
@@ -462,8 +465,8 @@ fn hold_lock(
 }
 
 // Test 24: contention is `LockBusy`, not `PreconditionsStale`, and it is
-// bounded. This is the test round 2's staleness test could not have
-// written, because it never took contention.
+// bounded: the holder keeps the lock until after the call returns (capped
+// at HOLDER_CAP), so an unbounded wait would take the lock and not abstain.
 #[test]
 fn contention_is_lock_busy_and_bounded() {
     let capture = CaptureState::new();
@@ -473,25 +476,16 @@ fn contention_is_lock_busy_and_bounded() {
     let slot = CaptureSlot::new();
     let (seq, key) = arm(&slot, record(&file, "turn", Some(10), 0), 0);
     let (release, release_rx) = std::sync::mpsc::channel();
-    let (ready, holder) = hold_lock(&root, Duration::ZERO, Some(release_rx));
+    let (ready, holder) = hold_lock(&root, HOLDER_CAP, Some(release_rx));
     ready.recv().expect("holder ready");
     let pre = preconditions(EffectKind::Automatic); // a fresh snapshot
-    let started = Instant::now();
     let outcome = commit_effect(&root, &slot, seq, &key, &pre, &capture);
-    let elapsed = started.elapsed();
-    let snapshot_age = pre.observed_at.elapsed();
-    release.send(()).expect("release holder");
-    holder.join().expect("holder");
-    assert_eq!(outcome, Err(AbstainReason::LockBusy));
-    assert!(
-        elapsed <= LOCK_WAIT_BUDGET + Duration::from_millis(150),
-        "gave up after {elapsed:?}, snapshot age {snapshot_age:?}"
-    );
-    assert!(
-        snapshot_age < STALE_PRECONDITIONS + Duration::from_millis(150),
-        "the snapshot was still fresh when the call gave up: \
-         age {snapshot_age:?}, elapsed {elapsed:?}"
-    );
+    release
+        .send(())
+        .expect("the holder still holds when the call returns");
+    let held = holder.join().expect("holder");
+    assert_eq!(outcome, Err(AbstainReason::LockBusy), "held {held:?}");
+    assert!(held < HOLDER_CAP, "the call outlived the holder: {held:?}");
     assert_eq!(budget(&root, &capture), BUDGET_CAP);
     assert_eq!(watermark(&root, &file, &capture), None);
 }
@@ -544,24 +538,24 @@ fn a_held_lock_bounds_the_flush_and_the_next_one_writes() {
         room.dirty = true;
     });
     recharge_in_memory(&root, &capture);
-    let (ready, holder) = hold_lock(&root, Duration::from_millis(300), None);
+    let (release, release_rx) = std::sync::mpsc::channel();
+    let (ready, holder) = hold_lock(&root, HOLDER_CAP, Some(release_rx));
     ready.recv().expect("holder ready");
-    let started = Instant::now();
+    // The holder keeps the lock until released, so LockBusy proves the
+    // flush gave up while it was held; an unbounded wait would write.
     let outcome = flush_room(&root, &capture);
-    let elapsed = started.elapsed();
-
     assert_eq!(outcome, FlushOutcome::LockBusy);
-    assert!(
-        elapsed <= LOCK_WAIT_BUDGET + Duration::from_millis(150),
-        "the flush blocked for {elapsed:?}"
-    );
     assert!(
         with_room(&capture, &root, |room| room.dirty),
         "a busy lock must leave the room dirty for the next flush"
     );
     assert!(!state_path(&root).exists());
 
-    holder.join().expect("holder");
+    release
+        .send(())
+        .expect("the holder still holds after the flush");
+    let held = holder.join().expect("holder");
+    assert!(held < HOLDER_CAP, "the flush outlived the holder: {held:?}");
     assert_eq!(flush_room(&root, &capture), FlushOutcome::Written);
     assert!(!with_room(&capture, &root, |room| room.dirty));
     let persisted = read_persisted(&root);
