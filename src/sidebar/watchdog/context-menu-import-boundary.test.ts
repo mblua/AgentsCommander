@@ -156,7 +156,7 @@ function endsWithContextMenuSurface(specifier: string): boolean {
   return normalized.endsWith("ContextMenuSurface");
 }
 
-describe("#1871 context-menu import boundary", () => {
+describe("context-menu import boundary", () => {
   it("context-menu/ product files import exactly the allowed specifiers", () => {
     const actual: Record<string, string[]> = {};
     for (const [file, source] of Object.entries(SOURCES)) {

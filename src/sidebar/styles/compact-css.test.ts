@@ -89,7 +89,7 @@ const specificityOf = (selector: string): number[] => [
 const compareSpecificity = (a: number[], b: number[]): number =>
   a.reduce((diff, value, index) => diff || value - b[index], 0);
 
-describe("#2236 phase 3 compact sidebar CSS bytes", () => {
+describe("phase 3 compact sidebar CSS bytes", () => {
   it("1+5. compact removes the scrollable and the banner rule touches no padding", () => {
     const removable = one(COMPACT_SCROLLABLE);
     expect(declValue(removable.body, "display")).toBe("none");

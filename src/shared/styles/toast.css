@@ -1,4 +1,4 @@
-/* Reusable toast host + items (#574). Imported at the App level (see ExternalLink
+/* Reusable toast host + items. Imported at the App level (see ExternalLink
    precedent), not self-imported by the component. */
 .toast-host {
   position: fixed;
@@ -52,7 +52,7 @@
   word-break: break-word;
 }
 
-/* #1858 — the action button had no rule at all, so it fell back to the browser
+/* The action button had no rule at all, so it fell back to the browser
    default 13.333px Arial with the global reset stripping its padding, and its
    label wrapped to two lines (a 52px toast against an error's 32px).
    `white-space: nowrap` is the declaration that stops the wrap; `font: inherit`
@@ -89,7 +89,7 @@
   opacity: 1;
 }
 
-/* #2744 - the info toast hardcoded a dark panel while its text follows
+/* The info toast hardcoded a dark panel while its text follows
    --sidebar-fg, so light mode drew #1a1a2e on rgba(31,41,55,0.94): 1.38.
    A light panel keeps the same text token and reaches 13.53. */
 html.light-theme .toast-item--info {

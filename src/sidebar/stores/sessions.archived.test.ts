@@ -36,7 +36,7 @@ function session(overrides: Partial<Session>): Session {
   };
 }
 
-describe("sessionsStore archived project filtering (#881)", () => {
+describe("sessionsStore archived project filtering", () => {
   beforeEach(() => {
     projectStore.clear();
     sessionsStore.setSessions([]);

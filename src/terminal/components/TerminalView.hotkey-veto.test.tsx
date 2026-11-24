@@ -37,7 +37,7 @@ function bytesFor(init: KeyboardEventInit): number[] {
   return bytes;
 }
 
-describe("real xterm keyboard facts (#2236 D8)", () => {
+describe("real xterm keyboard facts", () => {
   it("positive control: Ctrl+E writes 0x05", () => {
     expect(bytesFor({ key: "e", code: "KeyE", keyCode: 69, ctrlKey: true })).toEqual([0x05]);
   });

@@ -33,7 +33,7 @@ async function load(): Promise<() => Promise<void>> {
   return (await import("./log-level")).initLogLevelForWindow;
 }
 
-describe("initLogLevelForWindow (#612)", () => {
+describe("initLogLevelForWindow", () => {
   it("applies the fetched level and registers the live listener", async () => {
     getMock.mockResolvedValue({ logLevel: "trace" });
     const init = await load();

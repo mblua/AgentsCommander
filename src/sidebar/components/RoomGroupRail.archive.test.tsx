@@ -42,7 +42,7 @@ function byTestId<T extends HTMLElement = HTMLElement>(testId: string): T {
   return element;
 }
 
-describe("RoomGroupRail archive entry point (#881)", () => {
+describe("RoomGroupRail archive entry point", () => {
   beforeEach(() => {
     resetUiStoresForTests();
   });

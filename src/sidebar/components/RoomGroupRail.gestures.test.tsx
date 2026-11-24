@@ -29,7 +29,7 @@ async function withRail(body: (log: () => RailDiagnosticRecord[], node: HTMLElem
 const ofEvent = (log: RailDiagnosticRecord[], event: string) =>
   log.filter(entry => entry.event === event);
 
-describe("RoomGroupRail gesture diagnostics edges (#4695)", () => {
+describe("RoomGroupRail gesture diagnostics edges", () => {
   afterEach(() => {
     setLogLevel("info");
     resetUiStoresForTests();
