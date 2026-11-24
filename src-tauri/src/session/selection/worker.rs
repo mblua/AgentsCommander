@@ -21,7 +21,7 @@ use super::payload::SelectionCoordinatorError;
 use super::transaction::SelectionTransaction;
 use super::{
     CoordinatorInner, CoordinatorJob, LifecycleEntryOutcome, LifecycleExecutor, SelectionContext,
-    SelectionHost, SelectionResourceEffects, SelectionWindowEffects,
+    SelectionResourceEffects, SelectionWindowEffects,
 };
 
 #[cfg(test)]

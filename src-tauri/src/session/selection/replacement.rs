@@ -280,6 +280,10 @@ pub(super) struct ReplacementProgress {
     pub(super) create_reservation: Option<crate::pty::manager::CreateOwnerReservation>,
     pub(super) work_reservation: Option<crate::pty::manager::WorkDeliveryReservation>,
     pub(super) tracker: Option<crate::pty::manager::ResponseCloseState>,
+    #[expect(
+        dead_code,
+        reason = "C20 retains a separate inert copy of accepted work"
+    )]
     pub(super) accepted_work: OwnedReplacementWork,
     pub(super) cleanup: ReplacementCleanupAuthority,
     pub(super) preparing_started: bool,
