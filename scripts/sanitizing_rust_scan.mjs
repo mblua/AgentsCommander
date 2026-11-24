@@ -878,7 +878,7 @@ function manifestsUnsupported(tree, readBlob) {
 // Same per-path cut as the caller's `continue` for paths outside src-tauri/src/.
 // A plain `#[path = "lit"]` in an integration-test file that names another existing file under
 // src-tauri/tests/ only shares test code between test crates; it cannot reach the lib module tree.
-function testLocalPath(path, scan, attribute, tree) {
+export function testLocalPath(path, scan, attribute, tree) {
   if (!path.startsWith('src-tauri/tests/') || attribute.meta.name !== 'path' ||
       attribute.signals.length !== 1) return false;
   const strings = scan.tokens.slice(attribute.first, attribute.last + 1)
