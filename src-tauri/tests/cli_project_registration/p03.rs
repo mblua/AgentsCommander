@@ -602,6 +602,31 @@ fn p03_real_readers_mode(mode: usize) {
     assert_eq!(fixture.managed_bytes(), before);
 }
 
+/// The CLI waits 2 s for the settings lock. Under CI load the concurrent
+/// sibling can hold it longer, and the CLI then refuses with
+/// `lock_timed_out` (#5204), the same refusal this test expects while the lock
+/// is held. Retry only that refusal, a bounded number of times; any other
+/// failure, and a lost registration, still fail the test.
+fn run_new_project_retrying_lock_timeout(bin: &Path, project: &Path) {
+    const ATTEMPTS: usize = 3;
+    for attempt in 1..=ATTEMPTS {
+        let result = std::panic::catch_unwind(|| {
+            run_success(bin, &["new-project", project.to_str().unwrap()]);
+        });
+        let Err(payload) = result else {
+            return;
+        };
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        if attempt == ATTEMPTS || !message.contains("reason=lock_timed_out") {
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
 #[test]
 fn p03_real_new_project_initial_lock_refusal_and_concurrent_registration_retry() {
     let fixture = ReadonlyFixture::new();
@@ -631,7 +656,7 @@ fn p03_real_new_project_initial_lock_refusal_and_concurrent_registration_retry()
         let project = project.clone();
         children.push(std::thread::spawn(move || {
             start.wait();
-            run_success(&binary, &["new-project", project.to_str().unwrap()]);
+            run_new_project_retrying_lock_timeout(&binary, &project);
         }));
     }
     start.wait();
