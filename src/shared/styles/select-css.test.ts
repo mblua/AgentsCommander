@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { declProps, declValue, scanRules, soleRuleBody, type ScannedRule } from "../../sidebar/styles/css-test-helpers";
+import { declarations, declProps, declValue, scanRules, soleRuleBody, type ScannedRule } from "../../sidebar/styles/css-test-helpers";
 
 // #5140 - native <select> readable on WebKitGTK. select.css draws the arrow at
 // specificity (0,2,2); any class rule at that level or above that sets the
@@ -14,6 +14,41 @@ const mask = (css: string): string =>
 const rulesOf = (rel: string): ScannedRule[] => scanRules(mask(read(rel)));
 
 const ARROW = "html select:not([multiple]):not(.entity-select)";
+const LIGHT_ARROW = "html.light-theme select:not([multiple]):not(.entity-select)";
+// Background source of every select (Spec Board excluded: undefined tokens, covered live).
+const SOURCES: Array<[string, string]> = [
+  ["sidebar/styles/settings-modal.css", ".settings-input"],
+  ["watchers/styles/watchers.css", ".watchers-select"],
+  ["context-history/styles.css", ".ch-overlay select"],
+  ["resource-monitor/styles/resource-monitor.css", ".rm-sort-field"],
+  ["sidebar/styles/sidebar.css", ".workgroup-groups-nonstop-bot"],
+];
+
+type Rgba = [number, number, number, number];
+const tokens = (body: string): Record<string, string> =>
+  Object.fromEntries(declarations(body).filter(([p]) => p.startsWith("--")));
+const hex = (h: string): Rgba => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)).concat(1) as Rgba;
+function color(raw: string, map: Record<string, string>, depth = 0): Rgba {
+  const v = raw.trim().toLowerCase();
+  const ref = /^var\(\s*(--[\w-]+)\s*\)$/.exec(v);
+  if (ref && depth < 6) return color(map[ref[1] ?? ""] ?? "", map, depth + 1);
+  if (/^#[0-9a-f]{6}$/.test(v)) return hex(v);
+  const m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+))?\s*\)$/.exec(v);
+  if (!m) throw new Error(`unresolved color: ${raw}`);
+  return [+(m[1] ?? 0), +(m[2] ?? 0), +(m[3] ?? 0), m[4] === undefined ? 1 : +m[4]];
+}
+const over = (top: Rgba, base: Rgba): Rgba =>
+  [0, 1, 2].map((i) => (top[i] ?? 0) * top[3] + (base[i] ?? 0) * (1 - top[3])).concat(1) as Rgba;
+const lum = (c: Rgba): number =>
+  [0.2126, 0.7152, 0.0722].reduce((sum, w, i) => {
+    const s = (c[i] ?? 0) / 255;
+    return sum + w * (s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4);
+  }, 0);
+const wcag = (a: Rgba, b: Rgba): number => {
+  const [x, y] = [lum(a) + 0.05, lum(b) + 0.05];
+  return Math.max(x, y) / Math.min(x, y);
+};
+
 const CLASSES = [
   "settings-input", "settings-rail-select", "settings-rail-count-select",
   "watchers-select", "rm-sort-field", "workgroup-groups-nonstop-bot",
@@ -107,6 +142,52 @@ describe("native select contrast (#5140)", () => {
     const option = soleRuleBody(rules, "select option");
     expect(declValue(option, "background-color")).toBe("var(--sidebar-surface)");
     expect(declValue(option, "color")).toBe("var(--sidebar-fg)");
+    expect(declValue(arrow, "background-image")).toContain("%2388888f");
+    const light = soleRuleBody(rules, LIGHT_ARROW);
+    expect(declValue(light, "background-image")).toContain("%2355555c");
+  });
+
+  it("arrow and text contrast on every select background (r3)", () => {
+    const vars = rulesOf("sidebar/styles/variables.css");
+    const dark = tokens(soleRuleBody(vars, ":root"));
+    const themes = { dark, light: { ...dark, ...tokens(soleRuleBody(vars, "html.light-theme")) } };
+    const arrows = { dark: "#88888f", light: "#55555c" };
+    // Positive control: gate 3 measured #88888f on light --sidebar-hover = 2.88.
+    const hover = color(themes.light["--sidebar-hover"] ?? "", themes.light);
+    expect(wcag(hex(arrows.dark), hover)).toBeLessThan(3.0);
+    const fails: string[] = [];
+    for (const [file, sel] of SOURCES) {
+      const body = soleRuleBody(rulesOf(file), sel);
+      for (const t of ["dark", "light"] as const) {
+        const map = themes[t];
+        // rgba backgrounds are composited over --sidebar-bg; the real parent may differ.
+        const base = color(map["--sidebar-bg"] ?? "", map);
+        const bg = over(color(declValue(body, "background"), map), base);
+        // r4: a sole light-theme rule with `color` replaces the class text color.
+        const hits = t === "light" ? rulesOf(file).filter((r) => r.selectors.includes(`html.light-theme ${sel}`)) : [];
+        const lightColor = hits.length === 1 && hits[0] ? declValue(hits[0].body, "color") : undefined;
+        const fg = over(color(lightColor ?? declValue(body, "color"), map), bg);
+        const a = wcag(hex(arrows[t]), bg);
+        const x = wcag(fg, bg);
+        if (a < 3.0 || x < 4.5) fails.push(`${sel} ${t}: arrow ${a.toFixed(2)} text ${x.toFixed(2)}`);
+      }
+    }
+    expect(fails).toEqual([]);
+  });
+
+  it("Context History light select text override (r4)", () => {
+    const rules = rulesOf("context-history/styles.css");
+    const body = soleRuleBody(rules, "html.light-theme .ch-overlay select");
+    expect(declValue(body, "color")).toBe("#0052a3");
+    expect(declProps(body)).not.toContain("background");
+    expect(declProps(body)).not.toContain("background-image");
+    const vars = rulesOf("sidebar/styles/variables.css");
+    const dark = tokens(soleRuleBody(vars, ":root"));
+    const light = { ...dark, ...tokens(soleRuleBody(vars, "html.light-theme")) };
+    const bg = over(color(light["--toolbar-btn-bg"] ?? "", light), color(light["--sidebar-bg"] ?? "", light));
+    expect(wcag(hex("#0052a3"), bg)).toBeGreaterThanOrEqual(6.0);
+    // Positive control: old light --toolbar-btn-fg (#0066cc) reproduces 4.44.
+    expect(wcag(color(light["--toolbar-btn-fg"] ?? "", light), bg)).toBeLessThan(4.5);
   });
 
   it("main.tsx imports select.css", () => {

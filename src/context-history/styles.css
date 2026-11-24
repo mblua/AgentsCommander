@@ -60,6 +60,11 @@
   padding: var(--spacing-xs) var(--spacing-sm);
 }
 
+/* #5140 r4: #0066cc on --toolbar-btn-bg light is 4.44:1; #0052a3 is 6.12:1. */
+html.light-theme .ch-overlay select {
+  color: #0052a3;
+}
+
 .ch-overlay button:hover {
   background: var(--toolbar-btn-hover);
 }
