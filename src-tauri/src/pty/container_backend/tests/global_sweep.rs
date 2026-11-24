@@ -144,8 +144,7 @@ fn production_route_remover_outer_poison_is_exact_structured_residue() {
         "outer mutex poison fixture must panic"
     );
 
-    // On the poison path the sweep retries until the budget ends, so this
-    // budget is also the test run time; 1 s leaves margin for a loaded runner.
+    // Poison path retries until the budget ends: 1 s is also the run time.
     let budget = Duration::from_secs(1);
     let started_at = Instant::now();
     let report = backend.stop_all_started_containers_blocking(budget);
@@ -378,8 +377,7 @@ fn poisoned_global_sweep_route_removal_is_structured_residue() {
         Err(RouteRemovalError::LockPoisoned("ptyManager"))
     }));
 
-    // Under load 50 ms can end before the remover runs once (#1253); on the
-    // poison path this budget is also the run time, so keep it at 1 s.
+    // 50 ms could end before the remover ran once (#1253); 1 s is the run time.
     let report = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
 
     assert!(!report.terminal, "retained={:?}", report.retained);
