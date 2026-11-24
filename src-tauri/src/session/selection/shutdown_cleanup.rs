@@ -6,7 +6,10 @@
 //! strings. It owns no state itself; worker draining lives in `worker`.
 
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use tokio::task::{JoinError, JoinHandle};
+use tokio::time::error::Elapsed;
 
 use crate::pty::manager::PtyManager;
 use crate::session::manager::{PendingCreateBinding, SessionManager};
@@ -14,6 +17,66 @@ use crate::session::manager::{PendingCreateBinding, SessionManager};
 use super::admission::CriticalAdmissionKey;
 use super::replacement::{OwnedReplacementContinuation, ReplacementOwner};
 use super::CoordinatorInner;
+
+/// Test-only view of the joins and waits the bounded shutdown future performs.
+#[cfg(test)]
+pub(crate) mod probe {
+    use std::sync::Arc;
+
+    use futures::future::BoxFuture;
+
+    pub(crate) trait CloseProbe: Send + Sync {
+        /// One poll of an effective rollback or drain join, with this poll's result.
+        fn join_polled(&self, site: &'static str, id: tokio::task::Id, pending: bool);
+        /// A join that missed its deadline moved to its retained collection.
+        fn transferred(&self, site: &'static str, id: tokio::task::Id);
+        /// Await requested at the common return site, after the drain join.
+        fn return_wait(&self) -> Option<BoxFuture<'static, ()>>;
+    }
+
+    tokio::task_local! {
+        pub(crate) static CLOSE_PROBE: Arc<dyn CloseProbe>;
+    }
+
+    pub(super) fn current() -> Option<Arc<dyn CloseProbe>> {
+        CLOSE_PROBE.try_with(Arc::clone).ok()
+    }
+
+    /// Clones the callback, ends the borrow, then awaits what it returned.
+    pub(crate) async fn at_return_site() {
+        let wait = current().and_then(|probe| probe.return_wait());
+        if let Some(wait) = wait {
+            wait.await;
+        }
+    }
+}
+
+/// `timeout(remaining, &mut handle)`; tests also observe each poll of the join.
+async fn timed_join<T>(
+    site: &'static str,
+    remaining: Duration,
+    handle: &mut JoinHandle<T>,
+) -> Result<Result<T, JoinError>, Elapsed> {
+    #[cfg(test)]
+    if let Some(probe) = probe::current() {
+        let id = handle.id();
+        let observed = std::future::poll_fn(|cx| {
+            let polled = std::future::Future::poll(std::pin::Pin::new(&mut *handle), cx);
+            probe.join_polled(site, id, polled.is_pending());
+            polled
+        });
+        return tokio::time::timeout(remaining, observed).await;
+    }
+    let _ = site;
+    tokio::time::timeout(remaining, handle).await
+}
+
+#[cfg(test)]
+fn observe_transfer<T>(site: &'static str, handle: &JoinHandle<T>) {
+    if let Some(probe) = probe::current() {
+        probe.transferred(site, handle.id());
+    }
+}
 
 pub(super) async fn execute_rollback_create_parts(
     manager: SessionManager,
@@ -254,10 +317,10 @@ async fn cleanup_owned_pending_entry(
 async fn await_pending_create_cleanup(
     inner: &Arc<CoordinatorInner>,
     deadline: Instant,
-    mut cleanup: tokio::task::JoinHandle<Vec<String>>,
+    mut cleanup: JoinHandle<Vec<String>>,
 ) -> Vec<String> {
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now().into_std());
-    match tokio::time::timeout(remaining, &mut cleanup).await {
+    match timed_join("rollback", remaining, &mut cleanup).await {
         Ok(Ok(retained)) => retained,
         Ok(Err(error)) => {
             log::error!(
@@ -271,6 +334,8 @@ async fn await_pending_create_cleanup(
                 "[selection] pending-create cleanup owner retained after absolute deadline \
                     reason=pending-cleanup-await state=retained"
             );
+            #[cfg(test)]
+            observe_transfer("rollback", &cleanup);
             inner
                 .retained_rollback_tasks
                 .lock()
@@ -304,7 +369,7 @@ pub(super) async fn seal_and_drain_container_shutdown_work_after_join(
         container_backend.seal_and_drain_shutdown_work_blocking(deadline)
     });
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now().into_std());
-    match tokio::time::timeout(remaining, &mut task).await {
+    match timed_join("drain", remaining, &mut task).await {
         Ok(Ok(report)) => retained.extend(report.retained),
         Ok(Err(error)) => {
             log::error!(
@@ -318,6 +383,8 @@ pub(super) async fn seal_and_drain_container_shutdown_work_after_join(
                     deadline reason=container-drain-await state=retained"
             );
             retained.push("reason=container-drain-await state=retained".to_string());
+            #[cfg(test)]
+            observe_transfer("drain", &task);
             inner
                 .retained_cleanup_tasks
                 .lock()

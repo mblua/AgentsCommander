@@ -14,6 +14,9 @@ const GLOBAL_SWEEP_CEILING: Duration = Duration::from_secs(10);
 
 type Joined<T> = Result<Result<T, JoinError>, Elapsed>;
 
+mod deadline;
+use deadline::{CloseCase, CloseRun, Hold, ReadAt, ReturnWait};
+
 pub(super) fn build_selection_test_app(
     manager: &Arc<tokio::sync::RwLock<SessionManager>>,
     pty: &Arc<Mutex<PtyManager>>,
@@ -148,82 +151,6 @@ async fn setup_pending_container(
     }
 }
 
-struct PendingCloseOutcome {
-    shutdown_signal: Result<(), Elapsed>,
-    close_result: Joined<SelectionShutdownReport>,
-    close_elapsed: Duration,
-    close_bound: Duration,
-    close_cleanup: Option<Joined<SelectionShutdownReport>>,
-    finalizer_result: Joined<Result<SessionInfo, String>>,
-    close: JoinHandle<SelectionShutdownReport>,
-    finalizer: JoinHandle<Result<SessionInfo, String>>,
-}
-
-async fn run_pending_container_close(
-    coordinator: &SelectionCoordinator,
-    ticket: CreateFinalizationTicket,
-    restore_guard: &mut Option<RestoreBarrierGuard>,
-    capped: bool,
-    close_budget: Duration,
-) -> PendingCloseOutcome {
-    let mut finalizer = tokio::spawn(async move { ticket.finalize(Vec::new()).await });
-    let close_started = Instant::now();
-    let mut close = spawn_coordinator_close(coordinator, capped, close_budget);
-    let shutdown_signal = tokio::time::timeout(Duration::from_secs(1), async {
-        while !coordinator.inner.shutdown.is_cancelled() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await;
-    if !capped || shutdown_signal.is_err() {
-        if let Some(guard) = restore_guard.take() {
-            guard.finish();
-        }
-    }
-
-    let close_result = tokio::time::timeout(Duration::from_secs(2), &mut close).await;
-    let close_elapsed = close_started.elapsed();
-    let close_bound = if capped {
-        close_budget + Duration::from_millis(550)
-    } else {
-        Duration::from_secs(1)
-    };
-    if let Some(guard) = restore_guard.take() {
-        guard.finish();
-    }
-    // Borrow task handles so timeout cannot silently detach fixture-owned work.
-    let close_cleanup = if close_result.is_err() {
-        let cleanup = tokio::time::timeout(Duration::from_secs(5), &mut close).await;
-        if cleanup.is_err() {
-            close.abort();
-            let aborted = tokio::time::timeout(Duration::from_secs(5), &mut close).await;
-            eprintln!(
-                "coordinator cleanup exceeded five seconds; abort join={aborted:?}; \
-                 worker ownership unresolved"
-            );
-        }
-        Some(cleanup)
-    } else {
-        None
-    };
-    let finalizer_result = tokio::time::timeout(Duration::from_secs(5), &mut finalizer).await;
-    if finalizer_result.is_err() {
-        finalizer.abort();
-        let aborted = tokio::time::timeout(Duration::from_secs(5), &mut finalizer).await;
-        eprintln!("finalizer cleanup exceeded five seconds; abort join={aborted:?}");
-    }
-    PendingCloseOutcome {
-        shutdown_signal,
-        close_result,
-        close_elapsed,
-        close_bound,
-        close_cleanup,
-        finalizer_result,
-        close,
-        finalizer,
-    }
-}
-
 struct PendingSweepObservation {
     pre_stop_calls: usize,
     pre_active_stops: usize,
@@ -293,14 +220,6 @@ async fn await_retained_stop_sweep(
     container_backend: &ContainerTransportBackend,
 ) {
     await_state_eq(
-        "global sweep stops the retained handle exactly once",
-        Duration::from_secs(1),
-        || runtime.stop_calls.load(Ordering::SeqCst),
-        1,
-        String::new,
-    )
-    .await;
-    await_state_eq(
         "retained container stop is no longer active",
         Duration::from_secs(1),
         || runtime.active_stops.load(Ordering::SeqCst),
@@ -339,21 +258,10 @@ async fn await_retained_stop_sweep(
 }
 
 fn assert_pending_container_outcome(
-    capped: bool,
     pending: &Session,
-    outcome: PendingCloseOutcome,
+    run: &CloseRun,
     sweep: PendingSweepObservation,
 ) {
-    let PendingCloseOutcome {
-        shutdown_signal,
-        close_result,
-        close_elapsed,
-        close_bound,
-        close_cleanup,
-        finalizer_result,
-        close: _close,
-        finalizer: _finalizer,
-    } = outcome;
     let PendingSweepObservation {
         pre_stop_calls,
         pre_active_stops,
@@ -372,26 +280,47 @@ fn assert_pending_container_outcome(
         retained,
     } = sweep;
     eprintln!(
-        "pending-container capped={capped} close={close_result:?} \
-         close_cleanup={close_cleanup:?} terminal={} stops={stop_calls} \
-         active={active_stops} worker_accounting={worker_count} retained={retained:?}",
+        "pending-container report={:?} C={:?} limit={:?} L={:?} transfers={:?} \
+         checkpoints={:?} post={:?} terminal={} stops={stop_calls} active={active_stops} \
+         worker_accounting={worker_count} retained={retained:?}",
+        run.report,
+        run.c,
+        run.limit,
+        run.l,
+        run.transfers,
+        run.checkpoints,
+        run.post,
         global_report.terminal
     );
-    shutdown_signal.expect("pending-container shutdown signal becomes visible");
-    close_result
-        .expect("coordinator close obeys the shared shutdown deadline")
-        .expect("join coordinator close task");
+    assert_eq!(run.first_failure, None, "physical watchdog");
     assert!(
-        close_elapsed <= close_bound,
-        "coordinator close elapsed {close_elapsed:?}, bound {close_bound:?}"
+        run.report.is_some(),
+        "coordinator close returns its single report"
+    );
+    assert!(
+        run.c.is_ok(),
+        "attributable delay is traceable: {:?}",
+        run.c
     );
     assert_eq!(
-        finalizer_result
-            .expect("pending-container finalizer joins within five seconds")
-            .expect("join pending-container finalizer")
-            .expect_err("shutdown finalizer returns unavailable"),
-        SelectionCoordinatorError::Unavailable.to_string()
+        run.begin_arg,
+        Some(run.expected_arg),
+        "begin receives t0 + budget"
     );
+    assert_eq!(
+        run.drain_arg,
+        Some(run.expected_arg),
+        "drain receives t0 + budget"
+    );
+    match &run.finalizer {
+        Ok(result) => assert_eq!(
+            result
+                .as_ref()
+                .expect_err("shutdown finalizer returns unavailable"),
+            &SelectionCoordinatorError::Unavailable.to_string()
+        ),
+        Err(error) => panic!("join pending-container finalizer: {error}"),
+    }
     assert_eq!(pre_stop_calls, 0);
     assert_eq!(pre_active_stops, 0);
     assert!(!pre_transport);
@@ -424,11 +353,9 @@ fn assert_pending_container_outcome(
     assert!(retained.is_empty());
 }
 
-// Proves retained pending-handle ownership and exactly-once cleanup after close.
-// Immediate stop does not cover near-deadline success, blocked stops, or physical joins.
-pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: bool) {
+/// Prepares the pending container in real time, drives one close and sweeps once.
+async fn pending_container_case(case: CloseCase) -> CloseRun {
     let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let close_budget = Duration::from_millis(200);
     let (runtime, stop_started_rx, container_backend) =
         gated_stop_container_backend(Duration::ZERO);
     let pty = container_pty(&container_backend);
@@ -446,15 +373,14 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
     pty.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .record_route(pending.id, SessionBackendKind::ContainerTransport);
-
-    let outcome = run_pending_container_close(
-        &coordinator,
+    let domain = deadline::Domain {
+        coordinator: &coordinator,
+        manager: &manager,
+        container_backend: &container_backend,
         ticket,
-        &mut restore_guard,
-        capped,
-        close_budget,
-    )
-    .await;
+        restore_guard,
+    };
+    let run = deadline::drive_close(domain, case).await;
     let sweep = observe_pending_container_sweep(
         &runtime,
         &container_backend,
@@ -464,7 +390,129 @@ pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: boo
         stop_started_rx,
     )
     .await;
-    assert_pending_container_outcome(capped, &pending, outcome, sweep);
+    assert_pending_container_outcome(&pending, &run, sweep);
+    run
+}
+
+// Proves retained pending-handle ownership and exactly-once cleanup after close.
+// Immediate stop does not cover near-deadline success, blocked stops, or physical joins.
+pub(super) async fn assert_pending_container_shutdown_waits_for_stop(capped: bool) {
+    let run = pending_container_case(CloseCase::nominal(capped)).await;
+    let report = run.report.as_ref().expect("close report");
+    assert!(report.persistence_safe, "{report:?}");
+    assert!(report.retained.is_empty(), "{report:?}");
+    assert!(run.transfers.is_empty(), "{:?}", run.transfers);
+    assert!(run.within_bound(), "C={:?} limit={:?}", run.c, run.limit);
+}
+
+async fn assert_pending_leg_expires(hold: Hold, site: &str, reason: &str) {
+    let case = CloseCase {
+        hold,
+        ..CloseCase::nominal(true)
+    };
+    let run = pending_container_case(case).await;
+    let report = run.report.as_ref().expect("close report");
+    assert!(!report.persistence_safe, "{report:?}");
+    let count = |wanted: &str| report.retained.iter().filter(|r| *r == wanted).count();
+    assert_eq!(count(reason), 1, "{report:?}");
+    let sites: Vec<_> = run.transfers.iter().map(|(site, _)| *site).collect();
+    assert_eq!(sites.iter().filter(|s| **s == site).count(), 1, "{sites:?}");
+    if sites.contains(&"drain") {
+        assert_eq!(count("reason=container-drain-await state=retained"), 1);
+    }
+    assert!(run.within_bound(), "C={:?} limit={:?}", run.c, run.limit);
+}
+
+#[tokio::test]
+async fn pending_container_cleanup_expires_at_shared_deadline() {
+    let reason = "reason=pending-cleanup-await state=retained";
+    assert_pending_leg_expires(Hold::Rollback, "rollback", reason).await;
+}
+
+#[tokio::test]
+async fn pending_container_drain_expires_at_shared_deadline() {
+    let reason = "reason=container-drain-await state=retained";
+    assert_pending_leg_expires(Hold::Drain, "drain", reason).await;
+}
+
+#[tokio::test]
+async fn pending_container_return_bounds_are_inclusive() {
+    use ReadAt::{FromArm, FromStart};
+    use ReturnWait::{Native, TokioSleep, TokioSleepUntil};
+    let ms = Duration::from_millis;
+    let abs = |a, b| vec![FromStart(ms(a)), FromStart(ms(b))];
+    let rel = |a, b| vec![FromArm(ms(a)), FromArm(ms(b))];
+    // (capped, wait, read schedule, expected C in ms, expected L in ms)
+    let mut cases = vec![
+        (
+            true,
+            TokioSleepUntil(ms(750)),
+            abs(748, 752),
+            750,
+            Some(752),
+        ),
+        (
+            true,
+            TokioSleepUntil(ms(751)),
+            abs(748, 752),
+            751,
+            Some(752),
+        ),
+        (
+            false,
+            TokioSleepUntil(ms(1000)),
+            abs(998, 1002),
+            1000,
+            Some(1002),
+        ),
+        (
+            false,
+            TokioSleepUntil(ms(1001)),
+            abs(998, 1002),
+            1001,
+            Some(1002),
+        ),
+        (true, TokioSleep(ms(600)), rel(598, 602), 750, None),
+        (true, TokioSleep(ms(601)), rel(598, 602), 751, None),
+        (false, TokioSleep(ms(1000)), rel(998, 1002), 1000, None),
+        (false, TokioSleep(ms(1001)), rel(998, 1002), 1001, None),
+        (true, Native(ms(600)), Vec::new(), 750, None),
+        (true, Native(ms(601)), Vec::new(), 751, None),
+        (false, Native(ms(1000)), Vec::new(), 1000, None),
+        (false, Native(ms(1001)), Vec::new(), 1001, None),
+    ];
+    for request in [400, 800, 1100] {
+        for capped in [true, false] {
+            let prefix = if capped { 150 } else { 0 };
+            for wait in [TokioSleep(ms(request)), Native(ms(request))] {
+                cases.push((capped, wait, Vec::new(), prefix + request, None));
+            }
+            let absolute = TokioSleepUntil(ms(request));
+            cases.push((capped, absolute, Vec::new(), request.max(prefix), None));
+        }
+    }
+    for (capped, wait, schedule, expected_c, expected_l) in cases {
+        let case = CloseCase {
+            capped,
+            hold: Hold::None,
+            wait: Some(wait),
+            schedule,
+        };
+        let run = pending_container_case(case).await;
+        let label = format!("capped={capped} wait={wait:?} C={:?} L={:?}", run.c, run.l);
+        assert_eq!(run.c, Ok(ms(expected_c)), "{label}");
+        if let Some(l) = expected_l {
+            assert_eq!(run.l, Some(ms(l)), "{label}");
+        }
+        let limit = if capped { 750 } else { 1000 };
+        assert_eq!(run.within_bound(), expected_c <= limit, "{label}");
+        let report = run.report.as_ref().expect("close report");
+        assert!(
+            report.persistence_safe && run.transfers.is_empty(),
+            "{label} {report:?}"
+        );
+        eprintln!("RETURN_BOUND {label} verdict={}", run.within_bound());
+    }
 }
 
 fn real_container_backend(
