@@ -844,7 +844,10 @@ async fn join_after_return(
     let mut results = Vec::new();
     let mut finalizer_result = None;
     let mut finalizer_aborted = false;
+    // Re-polls every 10 ms so a watchdog failure can abort a held finalizer.
+    let mut recheck = tokio::time::interval(ms(10));
     std::future::poll_fn(|cx| {
+        while recheck.poll_tick(cx).is_ready() {}
         for (id, slot) in owned.iter_mut() {
             let Some(handle) = slot.as_mut() else {
                 continue;
