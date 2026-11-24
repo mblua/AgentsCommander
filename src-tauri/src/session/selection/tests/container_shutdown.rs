@@ -12,8 +12,6 @@ use tokio::time::error::Elapsed;
 // loaded machine (#1248).
 const GLOBAL_SWEEP_CEILING: Duration = Duration::from_secs(10);
 
-type Joined<T> = Result<Result<T, JoinError>, Elapsed>;
-
 mod deadline;
 use deadline::{CloseCase, CloseRun, Hold, ReadAt, ReturnWait};
 
