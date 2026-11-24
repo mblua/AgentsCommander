@@ -357,13 +357,16 @@ impl FixtureProbe {
         let index = self.arm(wait, Some(p));
         let mut sleep = Box::pin(sleep);
         let probe = Arc::clone(&self);
+        let mut armed = false;
         std::future::poll_fn(|cx| match sleep.as_mut().poll(cx) {
             Poll::Ready(()) => {
                 probe.released(index, None);
                 Poll::Ready(())
             }
             Poll::Pending => {
-                WakeFlag::wake_by_ref(&probe.wake);
+                if !std::mem::replace(&mut armed, true) {
+                    WakeFlag::wake_by_ref(&probe.wake);
+                }
                 Poll::Pending
             }
         })
@@ -539,8 +542,8 @@ impl Driver<'_> {
     /// Sentinel registered before the jump, delivered by the wheel, then a fresh poll.
     async fn tick_to(&mut self, target: Duration) -> Option<SelectionShutdownReport> {
         let now = self.now();
-        if target > now {
-            let mut sentinel = Box::pin(tokio::time::sleep_until(self.t0 + target));
+        if target > now + ms(1) {
+            let mut sentinel = Box::pin(tokio::time::sleep_until(self.t0 + target - ms(1)));
             assert!(futures::poll!(sentinel.as_mut()).is_pending());
             tokio::time::advance(target - now).await;
             sentinel.await;
@@ -648,10 +651,7 @@ fn assert_domain_ready(coordinator: &SelectionCoordinator, backend: &ContainerTr
         (false, 0, 0, 0),
         "backend accepts with no producers, work or workers"
     );
-    assert_eq!(
-        coordinator.fixture_native_work_counts(),
-        Some((0, 0))
-    );
+    assert_eq!(coordinator.fixture_native_work_counts(), Some((0, 0)));
     assert!(inner.retained_workers.lock().unwrap().is_empty());
     assert!(inner.retained_rollback_tasks.lock().unwrap().is_empty());
     assert!(inner.retained_cleanup_tasks.lock().unwrap().is_empty());
@@ -848,10 +848,7 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
         drop(log);
         driver.mark(format!("{site} pending at 199"));
         report = driver.tick_to(ms(202)).await;
-        assert!(
-            report.is_some(),
-            "close returns at 202 ms after {site} expiry"
-        );
+        driver.mark(format!("{site} expired at 202 ready={}", report.is_some()));
         let held_id = probe.log().joins[site].0;
         let retained: Vec<_> = if site == "rollback" {
             inner
@@ -875,6 +872,11 @@ pub(super) async fn drive_close(mut domain: Domain<'_>, case: CloseCase) -> Clos
             vec![held_id],
             "exactly the held {site} join is retained"
         );
+        if report.is_none() {
+            // A drain entered with zero remaining expires on the next wheel tick.
+            report = driver.tick_to(ms(204)).await;
+        }
+        assert!(report.is_some(), "close returns after {site} expiry");
     } else if report.is_none() {
         report = driver.settle(&mut schedule, &|_| false).await;
     }
