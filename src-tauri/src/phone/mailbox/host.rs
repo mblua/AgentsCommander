@@ -69,14 +69,38 @@ pub(crate) struct WakeCreateProbe {
     pub(crate) observe:
         Arc<dyn Fn(&'static str, Option<Uuid>) -> BoxFuture<'static, bool> + Send + Sync>,
     pub(crate) prepared: Arc<Mutex<Option<PendingCreateBinding>>>,
+    hold_input: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(test)]
-pub(crate) type WakeCreateEvents = tokio::sync::mpsc::UnboundedReceiver<(
+type WakeCreateEvent = (
     &'static str,
     Option<Uuid>,
     tokio::sync::oneshot::Sender<bool>,
-)>;
+);
+
+#[cfg(test)]
+pub(crate) struct WakeCreateEvents(tokio::sync::mpsc::UnboundedReceiver<WakeCreateEvent>);
+
+#[cfg(test)]
+impl WakeCreateEvents {
+    pub(super) async fn recv(&mut self) -> Option<WakeCreateEvent> {
+        self.0.recv().await
+    }
+
+    pub(super) async fn at(
+        &mut self,
+        stage: &str,
+        wait: std::time::Duration,
+    ) -> (Option<Uuid>, tokio::sync::oneshot::Sender<bool>) {
+        let (actual, binding, resume) = tokio::time::timeout(wait, self.recv())
+            .await
+            .expect("wake fixture deadline")
+            .unwrap();
+        assert_eq!(actual, stage);
+        (binding, resume)
+    }
+}
 
 #[cfg(test)]
 struct WakeDeadlineWarnings(Mutex<Vec<String>>);
@@ -113,6 +137,7 @@ impl WakeCreateProbe {
         log::set_logger(&WAKE_DEADLINE_WARNINGS).unwrap();
         log::set_max_level(log::LevelFilter::Warn);
         let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let hold_input = cuts.iter().any(|&(stage, _)| stage == "input");
         let cuts = Mutex::new(std::collections::VecDeque::from(cuts.to_vec()));
         let observe = Arc::new(move |stage, binding| -> BoxFuture<'static, bool> {
             let events = events.clone();
@@ -142,9 +167,80 @@ impl WakeCreateProbe {
                 budget,
                 observe,
                 prepared,
+                hold_input: Arc::new(std::sync::atomic::AtomicBool::new(hold_input)),
             },
-            receiver,
+            WakeCreateEvents(receiver),
         )
+    }
+
+    pub(super) async fn observe_input_dispatch<F: Future>(
+        app: &impl MailboxHost,
+        session_id: Uuid,
+        injection: F,
+    ) -> F::Output {
+        use std::sync::atomic::Ordering;
+
+        let Some(probe) = app
+            .wake_create_probe()
+            .filter(|probe| probe.hold_input.swap(false, Ordering::Relaxed))
+        else {
+            return injection.await;
+        };
+        // Poll the canonical injector with its actual per-session writer occupied.
+        let writer = PtyManager::acquire_input_writer(app.pty_routes(), session_id)
+            .await
+            .unwrap();
+        let mut injection = Box::pin(injection);
+        assert!(
+            futures::poll!(injection.as_mut()).is_pending(),
+            "peer injection must wait for the occupied PTY writer"
+        );
+        (probe.observe)("input", Some(session_id)).await;
+        drop(writer);
+        injection.await
+    }
+
+    pub(super) async fn assert_input_pending(app: &impl MailboxHost, id: Uuid) {
+        let mut writer = std::pin::pin!(PtyManager::acquire_input_writer(app.pty_routes(), id));
+        assert!(
+            futures::poll!(writer.as_mut()).is_pending(),
+            "the real PTY writer must be occupied at the input cut"
+        );
+    }
+
+    pub(super) fn delay_backend_return(&self, app: &impl MailboxHost) {
+        use crate::pty::backend::SessionBackendKind;
+
+        let mut pty = app.pty_routes().lock().unwrap();
+        let backend = pty.backend_for_kind(SessionBackendKind::LocalProcess);
+        *pty = PtyManager::new_for_test(Arc::new(DelayedWakeBackend {
+            backend,
+            probe: self.clone(),
+        }));
+    }
+
+    pub(super) fn assert_native_pending(
+        app: &impl MailboxHost,
+        owner: &Mutex<Option<OwnedReplacementContinuation>>,
+        id: Uuid,
+    ) {
+        use crate::pty::backend::SessionBackendKind;
+
+        let owner = owner.lock().unwrap();
+        let owner = owner.as_ref().unwrap();
+        let state = owner.fixture_observe_publication();
+        assert_eq!(state.binding.session_id(), id);
+        assert!(owner.fixture_wake_source_observation().active);
+        assert!(owner.fixture_wake_rollback().backend_submitted);
+        assert!(!state.terminal && !state.publication);
+        assert_eq!(app.selection_opt().unwrap().fixture_root_count(), Some(1));
+        let pty = app.pty_routes().lock().unwrap();
+        assert!(
+            pty.backend_for_kind(SessionBackendKind::LocalProcess)
+                .has_session(id),
+            "native spawn must already have started"
+        );
+        assert!(pty.backend_kind(id).is_none(), "spawn result still pending");
     }
 
     pub(crate) async fn assert_bound_conflict(
@@ -169,6 +265,77 @@ impl WakeCreateProbe {
         let warnings = std::mem::take(&mut *WAKE_DEADLINE_WARNINGS.0.lock().unwrap());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].ends_with(reason), "{warnings:?}");
+    }
+}
+
+#[cfg(test)]
+struct DelayedWakeBackend {
+    backend: Arc<dyn crate::pty::backend::PtyBackend>,
+    probe: WakeCreateProbe,
+}
+
+#[cfg(test)]
+impl crate::pty::backend::PtyBackend for DelayedWakeBackend {
+    fn as_any(&self) -> &dyn std::any::Any {
+        // Existing mailbox fixture helpers seed and inspect the wrapped fake.
+        self.backend.as_any()
+    }
+
+    fn spawn(
+        &self,
+        spec: crate::pty::backend::BackendSpawnSpec,
+    ) -> BoxFuture<'_, Result<(), crate::errors::AppError>> {
+        Box::pin(async move {
+            let id = spec.id;
+            let result = self.backend.spawn(spec).await;
+            (self.probe.observe)("late_native", Some(id)).await;
+            result
+        })
+    }
+
+    fn write(
+        &self,
+        authority: &crate::pty::manager::BackendWriteAuthority,
+        id: Uuid,
+        data: &[u8],
+    ) -> Result<(), crate::errors::AppError> {
+        self.backend.write(authority, id, data)
+    }
+
+    fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<(), crate::errors::AppError> {
+        self.backend.resize(id, cols, rows)
+    }
+
+    fn kill(&self, id: Uuid) -> Result<(), crate::errors::AppError> {
+        self.backend.kill(id)
+    }
+
+    fn has_session(&self, id: Uuid) -> bool {
+        self.backend.has_session(id)
+    }
+
+    fn get_screen_snapshot(&self, id: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> {
+        self.backend.get_screen_snapshot(id)
+    }
+
+    fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
+        self.backend.get_pty_size(id)
+    }
+
+    fn get_screen_rows(&self, id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+        self.backend.get_screen_rows(id)
+    }
+
+    fn register_response_watcher(&self, id: Uuid, request: String, dir: std::path::PathBuf) {
+        self.backend.register_response_watcher(id, request, dir);
+    }
+
+    fn terminate_job_for_session(&self, id: Uuid) -> bool {
+        self.backend.terminate_job_for_session(id)
+    }
+
+    fn kill_all_jobs(&self) -> (usize, usize) {
+        self.backend.kill_all_jobs()
     }
 }
 

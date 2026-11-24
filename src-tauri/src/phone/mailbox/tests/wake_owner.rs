@@ -30,7 +30,6 @@ use std::pin::Pin;
 use std::sync::OnceLock;
 use std::time::Instant;
 use tauri::{test::MockRuntime, AppHandle, Manager};
-use tokio::sync::oneshot;
 
 type WakeCoreResult = Result<OwnedPeerWakeStep, String>;
 type WakeCoreFuture = Pin<Box<dyn Future<Output = WakeCoreResult> + Send>>;
@@ -611,17 +610,11 @@ fn deadline_events(
     cuts: &[(&'static str, usize)],
 ) -> WakeCreateEvents {
     let (probe, events) = WakeCreateProbe::pause_at(Duration::from_secs(4), cuts);
+    if cuts.iter().any(|&(stage, _)| stage == "late_native") {
+        probe.delay_backend_return(app);
+    }
     assert!(app.manage(probe));
     events
-}
-
-async fn deadline_event(
-    events: &mut WakeCreateEvents,
-    stage: &str,
-) -> (Option<Uuid>, oneshot::Sender<bool>) {
-    let (actual, binding, resume) = completes(events.recv()).await.unwrap();
-    assert_eq!(actual, stage);
-    (binding, resume)
 }
 
 async fn deadline_claim(
@@ -794,7 +787,7 @@ async fn exercise_generic_conflict(fixture: &MailboxFixture, wake: &OutboxMessag
     let actor = deadline_claim(&poller, app, wake);
     tokio::pin!(actor);
     let start = if deferred {
-        let before = deadline_event(&mut events, "publication_before");
+        let before = events.at("publication_before", WAIT);
         Some(at_cut(actor.as_mut(), before).await.1)
     } else {
         None
@@ -805,7 +798,7 @@ async fn exercise_generic_conflict(fixture: &MailboxFixture, wake: &OutboxMessag
     if let Some(resume) = start {
         resume.send(false).unwrap();
     }
-    let (_, resume) = at_cut(actor.as_mut(), deadline_event(&mut events, refusal)).await;
+    let (_, resume) = at_cut(actor.as_mut(), events.at(refusal, WAIT)).await;
     assert_deadline(completes(actor).await, "generic_create");
     resume.send(false).unwrap();
     if bound {
@@ -817,12 +810,12 @@ async fn exercise_generic_conflict(fixture: &MailboxFixture, wake: &OutboxMessag
         return;
     }
     if archive {
-        let (_, resume) = deadline_event(&mut events, "archive_exit").await;
+        let (_, resume) = events.at("archive_exit", WAIT).await;
         resume.send(false).unwrap();
         let settings = app.pty_settings().read().await;
         assert_eq!(settings.archived_project_paths, archived);
     }
-    let (_, resume) = deadline_event(&mut events, "generic_exit").await;
+    let (_, resume) = events.at("generic_exit", WAIT).await;
     resume.send(false).unwrap();
     assert_generic_conflict(fixture, &wake.to).await;
     assert!(pending_ids(app).await.is_empty());
@@ -847,12 +840,12 @@ async fn check_unowned_input(
     let actor = deadline_claim(&poller, app, wake);
     tokio::pin!(actor);
     if cold {
-        let (id, resume) =
-            at_cut(actor.as_mut(), deadline_event(&mut events, "generic_exit")).await;
+        let (id, resume) = at_cut(actor.as_mut(), events.at("generic_exit", WAIT)).await;
         manager.mark_idle(id.unwrap()).await;
         resume.send(false).unwrap();
     }
-    let (_, _input) = at_cut(actor.as_mut(), deadline_event(&mut events, "input")).await;
+    let (id, _input) = at_cut(actor.as_mut(), events.at("input", WAIT)).await;
+    WakeCreateProbe::assert_input_pending(app, id.unwrap()).await;
     assert_deadline(completes(actor).await, "input");
 }
 
@@ -865,7 +858,7 @@ async fn check_generic_retained(app: &AppHandle<MockRuntime>, wake: &OutboxMessa
     let actor = deadline_claim(&poller, app, wake);
     tokio::pin!(actor);
     let cut = "pending_mutex";
-    let (binding, poison) = at_cut(actor.as_mut(), deadline_event(&mut events, cut)).await;
+    let (binding, poison) = at_cut(actor.as_mut(), events.at(cut, WAIT)).await;
     poison.send(true).unwrap();
     let error = completes(actor).await.unwrap_err();
     assert!(error.ends_with(ERR_WAKE_CREATE_RETAINED), "{error}");
@@ -881,48 +874,43 @@ async fn check_generic_retained(app: &AppHandle<MockRuntime>, wake: &OutboxMessa
 async fn wake_owner_owned_deadline_reports_dispatch_and_settles_exact_owner() {
     const NAME: &str = "wake_owner_owned_deadline_reports_dispatch_and_settles_exact_owner";
     let cases = [
-        "before_context",
-        "first_refresh",
-        "final_refresh",
-        "input",
-        "late_native",
+        ("before_context", "owned_admission"),
+        ("first_refresh", "owned_create"),
+        ("final_refresh", "work_transfer"),
+        ("input", "input"),
+        ("late_native", "owned_create"),
     ];
-    let Some(case) = run_child_cases(module_path!(), NAME, &cases).await else {
+    let names = cases.map(|(cut, _)| cut);
+    let Some(case) = run_child_cases(module_path!(), NAME, &names).await else {
         return;
     };
+    let (cut, stage) = cases[names.iter().position(|name| *name == case).unwrap()];
     let fixture = make_mailbox_fixture();
-    let (coordinator, _, _, previous) = prepare_retained_exited_respawn(&fixture).await;
     let app = fixture.app.handle();
-    let pre_context = case == "before_context";
-    let stage = match case.as_str() {
-        "before_context" => "owned_admission",
-        "first_refresh" | "late_native" => "owned_create",
-        "final_refresh" => "work_transfer",
-        _ => "input",
-    };
-    let cut = cases.into_iter().find(|name| *name == case).unwrap();
     let mut events = deadline_events(app, &[(cut, 1)]);
+    let (coordinator, _, _, previous) = prepare_retained_exited_respawn(&fixture).await;
     let (poller, control) = rollback_poller(true);
     let rollback = OwnedReplacementContinuation::install_wake_rollback_fixture();
     let producer_return = rollback.before_return.arm();
-    let source_cut = if pre_context {
-        Cut::SourceCoreEntered
-    } else {
-        Cut::BeforeBackendSpawn
-    };
-    let source = (pre_context || case == "late_native").then(|| pause_at(&control, source_cut));
+    let source = (cut == "before_context").then(|| pause_at(&control, Cut::SourceCoreEntered));
     let capture = Arc::new(CapturedCore::default());
     let wake = wake_message_to_target();
     let actor = WAKE_CORE_CAPTURE.scope(capture.clone(), deadline_claim(&poller, app, &wake));
     tokio::pin!(actor);
     if let Some(resume) = source {
-        at_recorded_cut(actor.as_mut(), &control, source_cut).await;
+        at_recorded_cut(actor.as_mut(), &control, Cut::SourceCoreEntered).await;
         assert_deadline(completes(actor).await, stage);
         resume.send(()).unwrap();
     } else {
-        let (_, resume) = at_cut(actor.as_mut(), deadline_event(&mut events, &case)).await;
-        if case == "input" {
+        let (id, resume) = at_cut(actor.as_mut(), events.at(cut, WAIT)).await;
+        if matches!(cut, "input" | "late_native") {
+            if cut == "input" {
+                WakeCreateProbe::assert_input_pending(app, id.unwrap()).await;
+            }
             assert_deadline(completes(actor).await, stage);
+            if cut == "late_native" {
+                WakeCreateProbe::assert_native_pending(app, &capture.owner, id.unwrap());
+            }
             resume.send(false).unwrap();
         } else {
             let permit = acquire_carrier_mutation_permit().await;
@@ -937,21 +925,23 @@ async fn wake_owner_owned_deadline_reports_dispatch_and_settles_exact_owner() {
     let id = observation.binding.session_id();
     let backend = rollback_backend(app);
     let backend = mock_backend(&backend);
-    if pre_context {
+    assert_eq!(
+        backend.spawn_attempts(id),
+        usize::from(cut != "before_context")
+    );
+    if cut == "before_context" {
         assert!(owner.precommit_rollback_completed());
         let before_publish = control.observe_owner(&coordinator).unwrap();
         assert_eq!(before_publish.effects_started, 1);
-        assert!(!observation.publication && backend.spawn_attempts(id) == 0);
-    } else if matches!(case.as_str(), "first_refresh" | "late_native") {
-        assert!(observation.not_started() && observation.work_attempt.is_none());
-        assert_eq!(backend.spawn_attempts(id), 1);
+        assert!(!observation.publication);
+    } else if matches!(cut, "first_refresh" | "late_native") {
+        assert!(observation.publication && observation.not_started());
+        assert!(observation.work_attempt.is_none());
         assert_eq!(backend.write_attempts.load(Ordering::SeqCst), 0);
-    } else if case == "final_refresh" {
+    } else if cut == "final_refresh" {
         assert!(observation.no_input_attempt().is_some());
         assert_eq!(observation.no_input_attempt(), observation.work_attempt);
         assert_eq!(backend.write_attempts.load(Ordering::SeqCst), 0);
-    } else {
-        assert_eq!(backend.spawn_attempts(id), 1);
     }
     producer_return.send(()).unwrap();
     completes(async {
@@ -960,7 +950,9 @@ async fn wake_owner_owned_deadline_reports_dispatch_and_settles_exact_owner() {
         }
     })
     .await;
-    if pre_context {
+    assert!(owner.fixture_observe_publication().terminal);
+    assert!(cut != "late_native" || owner.fixture_wake_rollback().backend_submitted);
+    if cut == "before_context" {
         assert_unpublished_and_reacquire(app, &wake, &fixture.target_cwd, previous, id).await;
     } else {
         let manager = app.pty_sessions().read().await.clone();

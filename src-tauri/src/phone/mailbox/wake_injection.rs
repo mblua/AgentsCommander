@@ -63,9 +63,6 @@ impl MailboxPoller {
             Option<&crate::session::selection::OwnedReplacementContinuation>,
         ),
     ) -> Result<(), String> {
-        WakeDispatch::Input.mark();
-        #[cfg(test)]
-        super::poller::observe_wake_attempt("input", Some(id)).await;
         self.inject_wake_into_pty(app, id, msg, delivery, settle, context)
             .await
     }
@@ -639,30 +636,36 @@ impl<S: MailboxHost> PtyInjection<'_, S> {
             .await;
         let attempt = admission::response_attempt(response, session_id, prepared.is_some());
         let mut diagnostic_prewrite_reached = false;
-        crate::pty::inject::inject_peer_wake_with_current_facts(
-            app,
-            session_id,
-            payload,
-            &msg.id,
-            settle,
-            None,
-            |session, current| {
-                response_diag_debug_only(|| {
-                    diagnostic_prewrite_reached = true;
-                });
-                standard_prewrite_admission(msg, session, current, pty_mgr, owned_replacement)?;
-                if let (Some(prepared), Some(attempt), Some(work)) =
-                    (prepared.as_ref(), attempt.as_ref(), response)
-                {
-                    reserve_response_request_at_write(
-                        app, current, session, prepared, work, attempt,
-                    );
-                }
-                Ok(())
-            },
-        )
-        .await
-        .map_err(|e| {
+        let injection = async {
+            WakeDispatch::Input.mark();
+            crate::pty::inject::inject_peer_wake_with_current_facts(
+                app,
+                session_id,
+                payload,
+                &msg.id,
+                settle,
+                None,
+                |session, current| {
+                    response_diag_debug_only(|| {
+                        diagnostic_prewrite_reached = true;
+                    });
+                    standard_prewrite_admission(msg, session, current, pty_mgr, owned_replacement)?;
+                    if let (Some(prepared), Some(attempt), Some(work)) =
+                        (prepared.as_ref(), attempt.as_ref(), response)
+                    {
+                        reserve_response_request_at_write(
+                            app, current, session, prepared, work, attempt,
+                        );
+                    }
+                    Ok(())
+                },
+            )
+            .await
+        };
+        #[cfg(test)]
+        let injection =
+            super::host::WakeCreateProbe::observe_input_dispatch(app, session_id, injection);
+        injection.await.map_err(|e| {
             response_diag_local!(
                 "inject",
                 if diagnostic_prewrite_reached {
@@ -746,6 +749,7 @@ impl<S: MailboxHost> PtyInjection<'_, S> {
             observer.clear_reservation = poller.clear_reservation.clone();
             Box::new(move || observer.begin_clear_observation()) as Box<dyn FnOnce() + Send>
         });
+        WakeDispatch::Input.mark();
         crate::pty::inject::inject_peer_wake_with_current_facts(
             app,
             session_id,
