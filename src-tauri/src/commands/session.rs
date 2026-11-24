@@ -2,6 +2,7 @@ use crate::app_state::DetachedSessionsState;
 use crate::config::agent_config;
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::sessions_persistence::persist_current_state;
+use crate::config::settings::agent::launch_view;
 #[cfg(test)]
 use crate::config::settings::AppSettings;
 use crate::config::settings::SettingsState;
@@ -364,8 +365,10 @@ pub async fn create_session(
         } else {
             let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
             let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
+            let view = launch_view(&cfg, cwd.as_ref());
+            let agents = &view.settings.agents;
             let al = agent_id.as_ref().and_then(|aid| {
-                cfg.agents
+                agents
                     .iter()
                     .find(|a| a.id == *aid)
                     .map(|a| a.label.clone())
@@ -722,8 +725,12 @@ pub async fn list_sessions(
         .current_read()
         .await
         .map_err(|error| error.to_string())?;
+    // #4845 P13 - each session's own file; one view per distinct cwd.
+    let mut views = std::collections::HashMap::<String, _>::new();
     for info in infos.iter_mut() {
-        info.profile_outdated = compute_profile_outdated(&cfg, info);
+        let view = views.entry(info.working_directory.clone());
+        let view = view.or_insert_with_key(|d| launch_view(&cfg, d.as_ref()).settings.into_owned());
+        info.profile_outdated = compute_profile_outdated(view, info);
     }
     Ok(infos)
 }

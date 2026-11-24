@@ -76,7 +76,12 @@ impl RestoreContext {
                     return false;
                 }
             };
-            should_auto_create_root_agent_on_first_restore(&cfg, last_coding_agent.as_deref())
+            let view =
+                crate::config::settings::agent::launch_view(&cfg, std::path::Path::new(root_path));
+            should_auto_create_root_agent_on_first_restore(
+                &view.settings,
+                last_coding_agent.as_deref(),
+            )
         };
 
         if should_auto_create {

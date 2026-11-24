@@ -44,6 +44,7 @@ mod create_gates;
 mod cwd_gates;
 mod default_shell;
 mod descriptor;
+mod i4845_root_restore_scope;
 mod launch_and_probe;
 mod lifecycle;
 mod matched_selection;

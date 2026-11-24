@@ -165,28 +165,27 @@ async fn resolve_root_agent_launch(
     request: &RootJobRequest,
 ) -> Result<RootAgentLaunch, String> {
     let last_coding_agent = crate::config::root_agent::read_last_coding_agent(root_agent_path);
-    let (shell, shell_args, agent_id, agent_label) = {
-        let settings = settings
-            .current_read()
-            .await
-            .map_err(|error| error.to_string())?;
-        resolve_root_agent_command(
-            &settings,
-            request.requested_agent_id.as_deref(),
-            last_coding_agent.as_deref(),
-        )?
-    };
+    // #4845 P13 - one guard and one view of the root agent dir (context Outside
+    // projects) for the command and the spawn.
+    let guard = settings
+        .current_read()
+        .await
+        .map_err(|error| error.to_string())?;
+    let view =
+        crate::config::settings::agent::launch_view(&guard, std::path::Path::new(root_agent_path));
+    let settings = &*view.settings;
+    let (shell, shell_args, agent_id, agent_label) = resolve_root_agent_command(
+        settings,
+        request.requested_agent_id.as_deref(),
+        last_coding_agent.as_deref(),
+    )?;
     let (resolved_spawn, resolved_agent_host_shell) = if let Some(agent_id) = agent_id.as_deref() {
         // #1271 - build the spawn and copy the configured default host shell
         // from the SAME single guard, before any await, so the pair can never
         // mix across a configuration change (Phase 1 items 1-2; mirrors the
         // restart pattern).
-        let settings = settings
-            .current_read()
-            .await
-            .map_err(|error| error.to_string())?;
         let spawn = build_configured_agent_spawn_for_cwd(
-            &settings,
+            settings,
             agent_id,
             root_agent_path,
             request.requested_profile.as_deref(),

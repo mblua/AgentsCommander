@@ -138,6 +138,8 @@ impl MailboxPoller {
                     && identity.authority_fingerprint == verified_target.authority_fingerprint
             })
         });
+        let view = crate::config::settings::agent::launch_view(settings, target_root);
+        let settings = &*view.settings;
         let mut candidates = Vec::new();
         if let Some(id) = claimed.requested_agent_id.as_ref() {
             candidates.push(id.clone());

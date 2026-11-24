@@ -152,3 +152,80 @@ fn no_selection_wake_is_identical_to_base() {
     .and_then(|cmd| cmd.agent_id);
     assert_eq!(p.wake_ids(Some("claude")), base);
 }
+
+fn claimed() -> crate::api::message_store::ClaimedPtyInputOperation {
+    crate::api::message_store::ClaimedPtyInputOperation {
+        injection_id: "i".into(),
+        sender_fqn: "project:room/sender".into(),
+        target_fqn: "project:room/target".into(),
+        op_id: "o".into(),
+        source_plane: crate::phone::types::PtyInputSourcePlane::HostCli,
+        lease_owner: "l".into(),
+        attempt: 1,
+        authority_session_id: "a".into(),
+        authority_client_id: None,
+        authority_client_generation: None,
+        sender_identity_fingerprint: "s".repeat(64),
+        target_identity_fingerprint: "t".repeat(64),
+        requested_agent_id: None,
+        expires_at: "2026-11-24T00:00:00Z".into(),
+    }
+}
+
+fn verified(path: &Path) -> crate::config::teams::VerifiedPtyInputIdentity {
+    let identity = crate::path_identity::verify_directory(path).unwrap();
+    crate::config::teams::VerifiedPtyInputIdentity {
+        canonical_fqn: "project:room/target".into(),
+        project: "project".into(),
+        workgroup: "room".into(),
+        agent: "target".into(),
+        replica_root: path.into(),
+        matrix_root: path.into(),
+        is_coordinator: false,
+        project_identity: identity.clone(),
+        ac_root_identity: identity.clone(),
+        workgroup_identity: identity.clone(),
+        replica_identity: identity.clone(),
+        matrix_identity: identity,
+        incarnation_fingerprint: "d".repeat(64),
+        authority_fingerprint: "f".repeat(64),
+    }
+}
+
+#[test]
+fn settle_and_target_lookup_find_agent_only_in_named_file() {
+    use crate::session::session::SessionStatus;
+    let mut p = proj();
+    let wrapper = json!({"id": "codex", "label": "codex", "command": "codex-shell.exe --yolo",
+        "color": "#123"});
+    let dir = p.root.join(".ac").join("coding-agents");
+    let file = json!({ "agents": [wrapper] }).to_string();
+    std::fs::write(dir.join("ac.coding-agents-config.team.json"), file).unwrap();
+    p.activate_team();
+    std::fs::write(p.agent_dir.join("config.json"), "{}").unwrap();
+    let cwd = s(&p.agent_dir);
+    let (id, spawn, _) = crate::phone::mailbox::MailboxPoller::resolve_pty_target_spawn(
+        &p.agent_dir,
+        &cwd,
+        &p.settings,
+        &claimed(),
+        &[],
+        &verified(&p.agent_dir),
+    )
+    .expect("codex from the agent's own file is the target");
+    assert_eq!(id, "codex");
+    let mut session =
+        super::make_session_info("wrapper", "member", &cwd, SessionStatus::Idle, true);
+    session.shell = spawn.shell.clone();
+    session.shell_args = spawn.shell_args.clone();
+    session.agent_id = Some(spawn.trusted_agent_id.clone());
+    session.agent_kind = Some(crate::session::profile::CodingAgentKind::Codex);
+    session.profile_content_hash = Some(spawn.profile_content_hash.clone());
+    session.trusted_configured_spawn = true;
+    assert!(
+        crate::phone::mailbox::settle::session_has_current_pty_submission_provenance(
+            &session,
+            &p.settings
+        )
+    );
+}

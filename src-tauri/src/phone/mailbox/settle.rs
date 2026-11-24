@@ -848,10 +848,12 @@ pub(crate) fn session_has_current_pty_submission_provenance(
     // #2716 (B3, option C) row 12: a read-only comparison, not a spawn, so it is
     // exempt from the builders' refusal. Membership is read from `settings.agents`
     // directly, as `compute_profile_outdated` does.
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(&session.working_directory);
+    let view = crate::config::settings::agent::launch_view(settings, std::path::Path::new(&cwd));
+    let settings = &*view.settings;
     if !settings.agents.iter().any(|agent| agent.id == agent_id) {
         return false;
     }
-    let cwd = crate::path_utils::normalize_windows_verbatim_path(&session.working_directory);
     let Ok(spawn) = crate::config::agent_command::build_agent_spawn_command(
         settings,
         agent_id,
