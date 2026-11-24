@@ -10,7 +10,13 @@ use super::*;
 #[cfg(windows)]
 #[tokio::test]
 async fn archive_relative_path_matches_across_short_name_temp() {
-    let _cwd_lock = cwd_lock().await;
+    const NAME: &str = concat!(
+        module_path!(),
+        "::archive_relative_path_matches_across_short_name_temp"
+    );
+    let Some(scenario) = crate::test_support::case_child(NAME, &["short"]) else {
+        return crate::test_support::run_case(NAME, "short", |_| {});
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let settings_path = temp.path().join("settings.json");
     let project = temp.path().join("proj-archive-relative");
@@ -51,6 +57,7 @@ async fn archive_relative_path_matches_across_short_name_temp() {
         state.read().await.project_paths.is_empty(),
         "the project must be removed from the active list"
     );
+    crate::test_support::case_done(NAME, scenario);
 }
 
 #[test]
@@ -323,7 +330,13 @@ async fn new_project_inner_broadcasts_only_when_archived_list_changes() {
 
 #[tokio::test]
 async fn archive_project_inner_absolutizes_relative_path_and_emits_archive_event() {
-    let _cwd_lock = cwd_lock().await;
+    const NAME: &str = concat!(
+        module_path!(),
+        "::archive_project_inner_absolutizes_relative_path_and_emits_archive_event"
+    );
+    let Some(scenario) = crate::test_support::case_child(NAME, &["archive"]) else {
+        return crate::test_support::run_case(NAME, "archive", |_| {});
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let settings_path = temp.path().join("settings.json");
     let project = temp.path().join("proj-archive-relative");
@@ -364,6 +377,7 @@ async fn archive_project_inner_absolutizes_relative_path_and_emits_archive_event
     assert_eq!(event["payload"]["path"], json!(path));
     assert_eq!(event["payload"]["archived"], json!(true));
     assert_eq!(event["payload"]["reason"], json!("archive"));
+    crate::test_support::case_done(NAME, scenario);
 }
 
 #[tokio::test]

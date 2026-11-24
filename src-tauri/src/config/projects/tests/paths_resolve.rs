@@ -2,7 +2,13 @@ use super::*;
 
 #[test]
 fn absolutise_resolves_relative_path_against_cwd() {
-    let _cwd_lock = cwd_lock();
+    const NAME: &str = concat!(
+        module_path!(),
+        "::absolutise_resolves_relative_path_against_cwd"
+    );
+    let Some(scenario) = crate::test_support::case_child(NAME, &["dot"]) else {
+        return crate::test_support::run_case(NAME, "dot", |_| {});
+    };
     let fix = FixtureRoot::new("proj-rel");
     std::fs::create_dir_all(fix.path().join(".ac")).unwrap();
     let prev = std::env::current_dir().unwrap();
@@ -20,6 +26,7 @@ fn absolutise_resolves_relative_path_against_cwd() {
         .replace('\\', "/")
         .to_lowercase();
     assert_eq!(normalized_persisted, normalized_fixture);
+    crate::test_support::case_done(NAME, scenario);
 }
 
 /// `..` collapse is Windows-only behaviour of `std::path::absolute`
@@ -28,7 +35,13 @@ fn absolutise_resolves_relative_path_against_cwd() {
 #[cfg(windows)]
 #[test]
 fn absolutise_collapses_dotdot_segments_on_windows() {
-    let _cwd_lock = cwd_lock();
+    const NAME: &str = concat!(
+        module_path!(),
+        "::absolutise_collapses_dotdot_segments_on_windows"
+    );
+    let Some(scenario) = crate::test_support::case_child(NAME, &["dotdot"]) else {
+        return crate::test_support::run_case(NAME, "dotdot", |_| {});
+    };
     let fix = FixtureRoot::new("proj-dotdot");
     let project = fix.path().join("project");
     std::fs::create_dir_all(project.join(".ac")).unwrap();
@@ -45,6 +58,7 @@ fn absolutise_collapses_dotdot_segments_on_windows() {
         "persisted path should not contain `..` on Windows: {}",
         r.path
     );
+    crate::test_support::case_done(NAME, scenario);
 }
 
 // ── trailing-separator dedup (Round-1 IR.3.2) ────────────────────────

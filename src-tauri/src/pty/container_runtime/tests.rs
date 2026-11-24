@@ -1,27 +1,4 @@
 use super::*;
-use std::sync::Mutex;
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-fn with_container_image_env(value: Option<&str>, test: impl FnOnce()) {
-    let _guard = ENV_LOCK.lock().unwrap();
-    let previous = std::env::var_os("AGENTSCOMMANDER_CONTAINER_IMAGE");
-    // SAFETY: ENV_LOCK is held
-    unsafe {
-        match value {
-            Some(value) => std::env::set_var("AGENTSCOMMANDER_CONTAINER_IMAGE", value),
-            None => std::env::remove_var("AGENTSCOMMANDER_CONTAINER_IMAGE"),
-        }
-    }
-    test();
-    // SAFETY: ENV_LOCK is held
-    unsafe {
-        match previous {
-            Some(value) => std::env::set_var("AGENTSCOMMANDER_CONTAINER_IMAGE", value),
-            None => std::env::remove_var("AGENTSCOMMANDER_CONTAINER_IMAGE"),
-        }
-    }
-}
 
 #[test]
 fn api_url_rejects_loopback_and_maps_wildcard_to_docker_host() {
@@ -38,27 +15,48 @@ fn api_url_rejects_loopback_and_maps_wildcard_to_docker_host() {
 
 #[test]
 fn resolve_container_image_uses_per_agent_then_env() {
-    with_container_image_env(Some("env/image:latest"), || {
-        assert_eq!(
-            resolve_container_image(Some(" per-agent/image:latest ")).unwrap(),
-            "per-agent/image:latest"
-        );
-        assert_eq!(
-            resolve_container_image(Some("  ")).unwrap(),
-            "env/image:latest"
-        );
-        assert_eq!(resolve_container_image(None).unwrap(), "env/image:latest");
-    });
-
-    with_container_image_env(Some("  "), || {
-        let err = resolve_container_image(None).unwrap_err().to_string();
-        assert!(err.contains("backend.image"), "{err}");
-    });
-
-    with_container_image_env(None, || {
-        let err = resolve_container_image(None).unwrap_err().to_string();
-        assert!(err.contains("AGENTSCOMMANDER_CONTAINER_IMAGE"), "{err}");
-    });
+    // Each scenario runs in a child whose image env is set only on its Command.
+    const NAME: &str = concat!(
+        module_path!(),
+        "::resolve_container_image_uses_per_agent_then_env"
+    );
+    const KEY: &str = "AGENTSCOMMANDER_CONTAINER_IMAGE";
+    let scenarios = ["value", "blank", "absent"];
+    let Some(scenario) = crate::test_support::case_child(NAME, &scenarios) else {
+        for (scenario, value) in
+            scenarios
+                .into_iter()
+                .zip([Some("env/image:latest"), Some("  "), None])
+        {
+            crate::test_support::run_case(NAME, scenario, |command| match value {
+                Some(value) => drop(command.env(KEY, value)),
+                None => drop(command.env_remove(KEY)),
+            });
+        }
+        return;
+    };
+    match scenario {
+        "value" => {
+            assert_eq!(
+                resolve_container_image(Some(" per-agent/image:latest ")).unwrap(),
+                "per-agent/image:latest"
+            );
+            assert_eq!(
+                resolve_container_image(Some("  ")).unwrap(),
+                "env/image:latest"
+            );
+            assert_eq!(resolve_container_image(None).unwrap(), "env/image:latest");
+        }
+        "blank" => {
+            let err = resolve_container_image(None).unwrap_err().to_string();
+            assert!(err.contains("backend.image"), "{err}");
+        }
+        _ => {
+            let err = resolve_container_image(None).unwrap_err().to_string();
+            assert!(err.contains("AGENTSCOMMANDER_CONTAINER_IMAGE"), "{err}");
+        }
+    }
+    crate::test_support::case_done(NAME, scenario);
 }
 
 #[test]
