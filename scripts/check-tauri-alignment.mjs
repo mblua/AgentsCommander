@@ -73,7 +73,9 @@ export function checkAlignment(npm, cargo) {
   }
   for (const rust of cargo.keys()) {
     if (!rust.startsWith(RUST_PLUGIN)) continue;
-    if (!npm.has(NPM_PLUGIN + rust.slice(RUST_PLUGIN.length))) infos.push(`Rust-only plugin: ${rust}`);
+    if (!npm.has(NPM_PLUGIN + rust.slice(RUST_PLUGIN.length))) {
+      infos.push(`Rust-only plugin: ${rust}`);
+    }
   }
   return { errors, infos, pairs };
 }
