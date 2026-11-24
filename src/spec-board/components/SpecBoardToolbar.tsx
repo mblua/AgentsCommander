@@ -81,7 +81,9 @@ const SpecBoardToolbar: Component = () => {
 
   return (
     <div class="spec-board-toolbar">
-      <button onClick={handleNew}>New</button>
+      <button onClick={handleNew} data-ac-testid="specBoard.new" data-ac-role="button">
+        New
+      </button>
       <button onClick={handleOpen}>Open</button>
       <button onClick={handleSave} disabled={!specBoardStore.dirty && !!specBoardStore.path}>Save</button>
       <button onClick={handleSaveAs}>Save As</button>

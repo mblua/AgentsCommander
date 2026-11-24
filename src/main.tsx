@@ -10,6 +10,7 @@ import ResourceMonitorApp from "./resource-monitor/App";
 import WatchersApp from "./watchers/App";
 import ScreenshotOverlayApp from "./screenshot-overlay/App";
 import MainApp from "./main/App";
+import { initCspProbe } from "./shared/csp-probe";
 import { initAutomationBridge } from "./shared/automation-bridge";
 import { initLogLevelForWindow } from "./shared/log-level";
 import { harvestIpcBlackBox, installIpcBlackBox } from "./shared/ipc-blackbox";
@@ -25,6 +26,7 @@ const root = document.getElementById("root");
 if (!root) throw new Error("Root element not found");
 
 if (isTauri) {
+  void initCspProbe();
   void initAutomationBridge();
 }
 
