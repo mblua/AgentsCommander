@@ -9,6 +9,14 @@ fn physical_binding_test_settings(dir: &std::path::Path) -> AppSettings {
 type BindingSessionMgr = Arc<tokio::sync::RwLock<SessionManager>>;
 type BindingPtyMgr = Arc<Mutex<crate::pty::manager::PtyManager>>;
 
+fn binding_test_managers() -> (BindingSessionMgr, BindingPtyMgr) {
+    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+        Arc::new(ScriptedSpawnBackend::default()),
+    )));
+    (session_mgr, pty_mgr)
+}
+
 async fn create_user_claude_session(
     app: &tauri::App<tauri::test::MockRuntime>,
     session_mgr: &BindingSessionMgr,
@@ -175,14 +183,30 @@ async fn assert_seedless_restored(
     assert!(stored.coding_agent_binding_seed.is_none());
 }
 
+async fn assert_seedless_new_birth(
+    manager: &SessionManager,
+    case: &str,
+    new: &crate::session::session::SessionInfo,
+    birth: &crate::session::manager::CodingAgentBinding,
+) {
+    let new_binding = manager
+        .coding_agent_binding(Uuid::parse_str(&new.id).unwrap())
+        .await;
+    if case == "removed" {
+        assert!(new.agent_id.is_none());
+        assert!(new_binding.is_none());
+    } else {
+        assert_eq!(new.agent_id.as_deref(), Some("claude"));
+        let new_binding = new_binding.unwrap();
+        assert!(new_binding.seed.is_none());
+        assert_ne!(new_binding.id, birth.id);
+    }
+}
+
 #[tokio::test]
 async fn derived_agent_id_binding_creation_restart_and_plain_shell() {
     let cwd = tempfile::tempdir().unwrap();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let backend = Arc::new(ScriptedSpawnBackend::default());
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend,
-    )));
+    let (session_mgr, pty_mgr) = binding_test_managers();
     let physical = tempfile::tempdir().unwrap();
     let app = session_test_app(
         physical_binding_test_settings(physical.path()),
@@ -193,26 +217,14 @@ async fn derived_agent_id_binding_creation_restart_and_plain_shell() {
     for index in 0..2 {
         let work = cwd.path().join(format!("binding-{index}"));
         std::fs::create_dir(&work).unwrap();
-        let info = super::super::create_session_inner(
-            app.handle(),
+        let info = create_user_claude_session(
+            &app,
             &session_mgr,
             &pty_mgr,
-            "claude".into(),
-            Vec::new(),
-            work.to_string_lossy().to_string(),
-            Some(format!("binding-{index}")),
-            Some("claude".into()),
-            None,
-            true,
-            Vec::new(),
-            true,
-            None,
-            None,
-            None,
-            CreateSelectionIntent::User,
+            &work,
+            format!("binding-{index}"),
         )
-        .await
-        .unwrap();
+        .await;
         assert_eq!(info.agent_id.as_deref(), Some("claude"));
         let id = Uuid::parse_str(&info.id).unwrap();
         let manager = session_mgr.read().await.clone();
@@ -245,20 +257,7 @@ async fn derived_agent_id_binding_creation_restart_and_plain_shell() {
         b"preserve foreign bytes"
     );
     let old_id = Uuid::parse_str(&births[0].0.id).unwrap();
-    let settings = app.state::<crate::config::settings::SettingsState>();
-    let restarted = super::super::restart_session_inner_with_activation(
-        app.handle(),
-        &session_mgr,
-        &pty_mgr,
-        settings.inner(),
-        old_id,
-        None,
-        None,
-        Some(false),
-        true,
-    )
-    .await
-    .unwrap();
+    let restarted = restart_binding_session(&app, &session_mgr, &pty_mgr, old_id).await;
     assert_ne!(restarted.id, births[0].0.id);
     let after = manager
         .coding_agent_binding(Uuid::parse_str(&restarted.id).unwrap())
@@ -276,6 +275,18 @@ async fn derived_agent_id_binding_creation_restart_and_plain_shell() {
     close_test_coordinator(&app).await;
 }
 
+fn edit_claude_execution(draft: &mut AppSettings) {
+    draft.agents[0].command = "claude --different-execution".into();
+    draft.agents[0]
+        .envs
+        .push(crate::config::settings::CodingAgentEnv {
+            key: "BINDING_REVISION_TEST".into(),
+            value: "edited".into(),
+            source: Default::default(),
+            enabled: true,
+        });
+}
+
 #[tokio::test]
 async fn derived_agent_id_binding_save_replace_create_uses_post_edit_revision() {
     let physical = tempfile::tempdir().unwrap();
@@ -283,10 +294,7 @@ async fn derived_agent_id_binding_save_replace_create_uses_post_edit_revision() 
     let current = physical_binding_test_settings(physical.path());
     let before = crate::config::settings::bootstrap_binding_revision(&current, "claude").unwrap();
     let cwd = tempfile::tempdir().unwrap();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        Arc::new(ScriptedSpawnBackend::default()),
-    )));
+    let (session_mgr, pty_mgr) = binding_test_managers();
     let app = session_test_app(current, session_mgr.clone(), pty_mgr.clone());
     let settings = app.state::<crate::config::settings::SettingsState>();
     let mut births: Vec<(
@@ -296,15 +304,7 @@ async fn derived_agent_id_binding_save_replace_create_uses_post_edit_revision() 
     for index in 0..2 {
         let mut draft = settings.read().await.clone();
         if index == 1 {
-            draft.agents[0].command = "claude --different-execution".into();
-            draft.agents[0]
-                .envs
-                .push(crate::config::settings::CodingAgentEnv {
-                    key: "BINDING_REVISION_TEST".into(),
-                    value: "edited".into(),
-                    source: Default::default(),
-                    enabled: true,
-                });
+            edit_claude_execution(&mut draft);
         }
         let written =
             crate::config::settings::save_settings_to_path_preserving_project_paths(&draft, &path)
@@ -368,11 +368,7 @@ async fn derived_agent_id_binding_save_replace_create_uses_post_edit_revision() 
 #[tokio::test]
 async fn derived_agent_id_binding_wake_restore_preserves_birth_seed_and_origin() {
     let cwd = tempfile::tempdir().unwrap();
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-    let backend = Arc::new(ScriptedSpawnBackend::default());
-    let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-        backend,
-    )));
+    let (session_mgr, pty_mgr) = binding_test_managers();
     let physical = tempfile::tempdir().unwrap();
     let app = session_test_app(
         physical_binding_test_settings(physical.path()),
@@ -450,10 +446,7 @@ async fn derived_agent_id_binding_seedless_restore_and_new_birth_preserve_compat
             expected_error
         );
         let cwd = tempfile::tempdir().unwrap();
-        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
-            Arc::new(ScriptedSpawnBackend::default()),
-        )));
+        let (session_mgr, pty_mgr) = binding_test_managers();
         let app = session_test_app(cfg, session_mgr.clone(), pty_mgr.clone());
         let transaction =
             crate::session::selection::SelectionTransaction::for_test(app.handle().clone());
@@ -492,18 +485,7 @@ async fn derived_agent_id_binding_seedless_restore_and_new_birth_preserve_compat
             "seedless new birth".into(),
         )
         .await;
-        let new_binding = manager
-            .coding_agent_binding(Uuid::parse_str(&new.id).unwrap())
-            .await;
-        if case == "removed" {
-            assert!(new.agent_id.is_none());
-            assert!(new_binding.is_none());
-        } else {
-            assert_eq!(new.agent_id.as_deref(), Some("claude"));
-            let new_binding = new_binding.unwrap();
-            assert!(new_binding.seed.is_none());
-            assert_ne!(new_binding.id, birth.id);
-        }
+        assert_seedless_new_birth(&manager, case, &new, &birth).await;
         if case == "removed" {
             let restarted = restart_binding_session(
                 &app,

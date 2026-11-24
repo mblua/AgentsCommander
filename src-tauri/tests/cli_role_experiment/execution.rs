@@ -35,19 +35,12 @@ fn role_experiment_run_without_dry_run_has_no_side_effects() {
 
 #[test]
 fn role_experiment_dry_run_writes_planned_artifacts() {
-    let tmp = Tmp::new("role-exp-dry-run");
-    let bin = copy_binary_into(tmp.path());
-    let config_dir = config_dir_for_bin(&bin);
-    write_settings(&config_dir, tmp.path());
-    let project = project_with_source(tmp.path());
-    init_experiment(&bin);
-    let suite = tmp.path().join("prompts.jsonl");
-    write_prompt_suite(&suite);
-    let workspace = project.join(".ac");
-    let before = ac_snapshot(&workspace);
+    let fixture = RunFixture::new("role-exp-dry-run");
+    let (bin, suite, workspace) = (&fixture.bin, &fixture.suite, &fixture.workspace);
+    let before = ac_snapshot(workspace);
 
     let json = run_ok(
-        &bin,
+        bin,
         &[
             "role-experiment",
             "run",
@@ -72,12 +65,8 @@ fn role_experiment_dry_run_writes_planned_artifacts() {
     assert_eq!(json["data"]["seed"], 12345);
     assert_eq!(json["data"]["seedProvided"], true);
     assert_eq!(json["data"]["attemptCount"], 8);
-    let run_dir = workspace
-        .join("experiments")
-        .join("techlead-test")
-        .join("runs")
-        .join("20260601-181500");
-    let after = ac_snapshot(&workspace);
+    let run_dir = techlead_run_dir(workspace);
+    let after = ac_snapshot(workspace);
     let new_paths: Vec<String> = after
         .keys()
         .filter(|path| !before.contains_key(*path))
@@ -107,23 +96,53 @@ fn role_experiment_dry_run_writes_planned_artifacts() {
             .unwrap();
     assert_eq!(report_artifact["format"], "json");
     assert!(report_artifact.get("artifacts").is_none());
-    assert_eq!(
-        report_artifact["artifactPaths"]["run"],
-        dry_run_canonical_string(&run_dir.join("run.json"))
-    );
-    assert_eq!(
-        report_artifact["artifactPaths"]["attempts"],
-        dry_run_canonical_string(&run_dir.join("attempts.jsonl"))
-    );
-    assert_eq!(
-        report_artifact["artifactPaths"]["reportJson"],
-        dry_run_canonical_string(&run_dir.join("report.json"))
-    );
-    assert_eq!(
-        report_artifact["artifactPaths"]["reportMarkdown"],
-        dry_run_canonical_string(&run_dir.join("report.md"))
-    );
+    for (key, file) in [
+        ("run", "run.json"),
+        ("attempts", "attempts.jsonl"),
+        ("reportJson", "report.json"),
+        ("reportMarkdown", "report.md"),
+    ] {
+        assert_eq!(
+            report_artifact["artifactPaths"][key],
+            dry_run_canonical_string(&run_dir.join(file))
+        );
+    }
     assert_dry_run_planned_attempts(&run_dir);
+}
+
+struct RunFixture {
+    _tmp: Tmp,
+    bin: PathBuf,
+    suite: PathBuf,
+    workspace: PathBuf,
+}
+
+impl RunFixture {
+    fn new(name: &str) -> Self {
+        let tmp = Tmp::new(name);
+        let bin = copy_binary_into(tmp.path());
+        let config_dir = config_dir_for_bin(&bin);
+        write_settings(&config_dir, tmp.path());
+        let project = project_with_source(tmp.path());
+        init_experiment(&bin);
+        let suite = tmp.path().join("prompts.jsonl");
+        write_prompt_suite(&suite);
+        let workspace = project.join(".ac");
+        Self {
+            _tmp: tmp,
+            bin,
+            suite,
+            workspace,
+        }
+    }
+}
+
+fn techlead_run_dir(workspace: &std::path::Path) -> PathBuf {
+    workspace
+        .join("experiments")
+        .join("techlead-test")
+        .join("runs")
+        .join("20260601-181500")
 }
 
 fn dry_run_canonical_string(path: &std::path::Path) -> String {
@@ -399,19 +418,12 @@ fn role_experiment_execute_rejects_parallel_and_cleanup_mvp() {
 
 #[test]
 fn role_experiment_fake_executor_writes_execution_artifacts_without_team_config() {
-    let tmp = Tmp::new("role-exp-fake-executor");
-    let bin = copy_binary_into(tmp.path());
-    let config_dir = config_dir_for_bin(&bin);
-    write_settings(&config_dir, tmp.path());
-    let project = project_with_source(tmp.path());
-    init_experiment(&bin);
-    let suite = tmp.path().join("prompts.jsonl");
-    write_prompt_suite(&suite);
-    let workspace = project.join(".ac");
-    let teams_before = team_snapshot(&workspace);
+    let fixture = RunFixture::new("role-exp-fake-executor");
+    let (bin, suite, workspace) = (&fixture.bin, &fixture.suite, &fixture.workspace);
+    let teams_before = team_snapshot(workspace);
 
     let json = run_fake_ok(
-        &bin,
+        bin,
         &[
             "role-experiment",
             "run",
@@ -448,17 +460,13 @@ fn role_experiment_fake_executor_writes_execution_artifacts_without_team_config(
         serde_json::to_vec(&json["data"]["artifacts"]["reportMarkdown"]).unwrap(),
         serde_json::to_vec(&"report.md").unwrap(),
     );
-    let run_dir = workspace
-        .join("experiments")
-        .join("techlead-test")
-        .join("runs")
-        .join("20260601-181500");
+    let run_dir = techlead_run_dir(workspace);
     let run_artifact: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(run_dir.join("run.json")).unwrap()).unwrap();
     assert_eq!(run_artifact["execution"]["executor"], "fake");
     assert_eq!(run_artifact["workgroup"]["retained"], true);
     let workgroup_path = PathBuf::from(run_artifact["workgroup"]["path"].as_str().unwrap());
-    let workspace = std::fs::canonicalize(&workspace).unwrap();
+    let workspace = std::fs::canonicalize(workspace).unwrap();
     assert!(workgroup_path.starts_with(&workspace));
     assert!(workgroup_path
         .file_name()
@@ -467,6 +475,10 @@ fn role_experiment_fake_executor_writes_execution_artifacts_without_team_config(
         .starts_with("room-"));
     assert_eq!(team_snapshot(&workspace), teams_before);
 
+    assert_fake_attempts_completed(&run_dir, &workgroup_path);
+}
+
+fn assert_fake_attempts_completed(run_dir: &std::path::Path, workgroup_path: &std::path::Path) {
     let attempts: Vec<serde_json::Value> = std::fs::read_to_string(run_dir.join("attempts.jsonl"))
         .unwrap()
         .lines()
@@ -477,7 +489,7 @@ fn role_experiment_fake_executor_writes_execution_artifacts_without_team_config(
         .all(|attempt| attempt["status"] == "completed"));
     for attempt in &attempts {
         let replica = PathBuf::from(attempt["replicaRoot"].as_str().unwrap());
-        assert!(replica.starts_with(&workgroup_path));
+        assert!(replica.starts_with(workgroup_path));
         assert!(!replica.to_string_lossy().contains("\\.ac\\_agent_"));
         assert!(attempt["sessionId"].is_null());
         assert!(attempt["transcriptPath"].is_null());
