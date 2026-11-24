@@ -91,7 +91,7 @@ impl SourceReadContext {
         ))
         .map_err(|_| SourcePreparationError::ContextUnavailable)?;
         let SourceRevision::Bytes { sha256 } = source_bytes_revision(&bytes) else {
-            unreachable!()
+            unreachable!("source_bytes_revision always returns SourceRevision::Bytes")
         };
         Ok(Self {
             settings_path: config.join(SETTINGS_FILE_NAME),
