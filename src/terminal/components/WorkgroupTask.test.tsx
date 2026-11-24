@@ -44,7 +44,7 @@ async function renderWithCwd(cwd: string, fake = new FakeTransport()): Promise<{
   return rendered;
 }
 
-describe("WorkgroupTask, F6 dual-prefix gate (#1614)", () => {
+describe("WorkgroupTask, F6 dual-prefix gate", () => {
   beforeEach(() => {
     resetUiStoresForTests();
     terminalStore.resetForTests();
@@ -106,7 +106,7 @@ describe("WorkgroupTask, F6 dual-prefix gate (#1614)", () => {
   });
 });
 
-describe("WorkgroupTask, frontmatter title parsing (#2608)", () => {
+describe("WorkgroupTask, frontmatter title parsing", () => {
   beforeEach(() => {
     resetUiStoresForTests();
     terminalStore.resetForTests();

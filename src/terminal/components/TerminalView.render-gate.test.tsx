@@ -293,7 +293,7 @@ function bytes(writes: unknown[]): number[][] {
   return writes.map((write) => Array.from(write as Uint8Array));
 }
 
-describe("TerminalView snapshot render gate (#955)", () => {
+describe("TerminalView snapshot render gate", () => {
   let cleanupDom: (() => void) | null = null;
   let warn: ReturnType<typeof vi.spyOn>;
   let debug: ReturnType<typeof vi.spyOn>;
