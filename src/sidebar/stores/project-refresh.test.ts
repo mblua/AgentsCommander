@@ -55,7 +55,7 @@ describe("project refresh path matching", () => {
   });
 });
 
-describe("OS-shape aware normalization (#1077)", () => {
+describe("OS-shape aware normalization", () => {
   it("preserves case for POSIX-shaped paths so case-only variants stay distinct", () => {
     expect(normalizeProjectPathForCompare("/Repo/A")).toBe("/Repo/A");
     expect(normalizeProjectPathForCompare("/repo/A")).toBe("/repo/A");

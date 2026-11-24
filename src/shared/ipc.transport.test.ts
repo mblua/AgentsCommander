@@ -151,7 +151,7 @@ describe("shared ipc transport seam", () => {
     }
   });
 
-  it("#2716: agentsLayerUnreadable and agentsFilePath survive the get_settings transport", async () => {
+  it("agentsLayerUnreadable and agentsFilePath survive the get_settings transport", async () => {
     const ipc = await import("./ipc");
     const fake = new FakeTransport();
     fake.resolve("get_settings", {
@@ -169,7 +169,7 @@ describe("shared ipc transport seam", () => {
     }
   });
 
-  it("#2306: overlayOwnsAgents survives the get_settings transport", async () => {
+  it("overlayOwnsAgents survives the get_settings transport", async () => {
     const ipc = await import("./ipc");
     const fake = new FakeTransport();
     fake.resolve("get_settings", { ...settingsSnapshot(), overlayOwnsAgents: true });
@@ -182,7 +182,7 @@ describe("shared ipc transport seam", () => {
     }
   });
 
-  it("#2306: moveCodingAgent invokes the narrow command with the exact payload", async () => {
+  it("moveCodingAgent invokes the narrow command with the exact payload", async () => {
     const ipc = await import("./ipc");
     const fake = new FakeTransport();
     fake.resolve("move_coding_agent", ["claude", "codex"]);
@@ -203,7 +203,7 @@ describe("shared ipc transport seam", () => {
     }
   });
 
-  it("#2543: reorderCodingAgent invokes reorder_coding_agent with the exact payload", async () => {
+  it("reorderCodingAgent invokes reorder_coding_agent with the exact payload", async () => {
     const ipc = await import("./ipc");
     const fake = new FakeTransport();
     fake.resolve("reorder_coding_agent", ["codex", "claude", "gemini"]);
@@ -226,7 +226,7 @@ describe("shared ipc transport seam", () => {
     }
   });
 
-  it("#2306: derives and enforces the exact requested adjacent move order", async () => {
+  it("derives and enforces the exact requested adjacent move order", async () => {
     const ipc = await import("./ipc");
     expect(ipc.expectedCodingAgentMoveOrder(["a", "b", "c", "d", "e"], "c", "up")).toEqual([
       "a",
@@ -610,7 +610,7 @@ describe("shared ipc transport seam", () => {
   });
 });
 
-describe("agent-update ipc contract (#1551)", () => {
+describe("agent-update ipc contract", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.resetModules();
@@ -722,7 +722,7 @@ describe("agent-update ipc contract (#1551)", () => {
   });
 });
 
-describe("selection-lock transport contract (#1942)", () => {
+describe("selection-lock transport contract", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -1118,7 +1118,7 @@ describe("selection-lock transport contract (#1942)", () => {
   });
 });
 
-describe("loop ipc payload contract (#2289)", () => {
+describe("loop ipc payload contract", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.resetModules();
@@ -1251,7 +1251,7 @@ describe("loop ipc payload contract (#2289)", () => {
   });
 });
 
-describe("tolerant configuration readers (#3019)", () => {
+describe("tolerant configuration readers", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.resetModules();

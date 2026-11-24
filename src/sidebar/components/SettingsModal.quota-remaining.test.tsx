@@ -34,7 +34,7 @@ function row(root: HTMLElement, i: number): HTMLElement {
   return el;
 }
 
-describe("SettingsModal weekly quota remaining (#2681)", () => {
+describe("SettingsModal weekly quota remaining", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

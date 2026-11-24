@@ -54,7 +54,7 @@ async function renderRow(settings: AppSettings, sessionProps: Partial<Session> =
   return rendered;
 }
 
-describe("SessionItem CTX badge (#1033)", () => {
+describe("SessionItem CTX badge", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -172,7 +172,7 @@ describe("SessionItem CTX badge (#1033)", () => {
 
 // The weekly-quota fill on the origin agent chip. quotaChipAttrs (p4)
 // decides fill vs plain; this pins that SessionItem spreads it onto the chip.
-describe("SessionItem agent chip weekly-quota fill (#2482)", () => {
+describe("SessionItem agent chip weekly-quota fill", () => {
   let cleanupDom: (() => void) | null = null;
   const otherSessionId = "s2";
 

@@ -27,7 +27,7 @@ describe("COORD_IDLE_CLASS", () => {
     expect(COORD_IDLE_CLASS).toEqual({ ok: "green", warn: "yellow", stale: "red" });
   });
 
-  it("preserves the pre-#882 minute boundary class behavior", () => {
+  it("preserves the original minute boundary class behavior", () => {
     const t = thresholds(30, 60);
 
     expect(COORD_IDLE_CLASS[coordinatorIdleBadge(minsAgo(29), NOW, t)!.level]).toBe("green");

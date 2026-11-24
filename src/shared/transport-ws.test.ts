@@ -167,7 +167,7 @@ describe("WsTransport connection generations", () => {
   });
 });
 
-describe("WsTransport backend-owned completion (#1942)", () => {
+describe("WsTransport backend-owned completion", () => {
   const BACKEND_OWNED_COMMANDS = [
     "apply_coding_agent_profile_selection",
     "apply_selection_lock_removal",
@@ -393,7 +393,7 @@ describe("WsTransport listener isolation", () => {
   });
 });
 
-describe("WsTransport URL and reconnect jitter (#2646)", () => {
+describe("WsTransport URL and reconnect jitter", () => {
   const VALID = "123e4567-e89b-42d3-a456-426614174000";
 
   beforeEach(() => {

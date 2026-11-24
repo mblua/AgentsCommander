@@ -88,7 +88,7 @@ function textButton(root: ParentNode, label: string): HTMLButtonElement {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("#4827 sidebar replica ids are unique per window", () => {
+describe("sidebar replica ids are unique per window", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
@@ -265,7 +265,7 @@ function decorationDiscovery(proj: string): AcDiscoveryResult {
   return result;
 }
 
-describe("#4841 row decorations and header badges are unique per window", () => {
+describe("row decorations and header badges are unique per window", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

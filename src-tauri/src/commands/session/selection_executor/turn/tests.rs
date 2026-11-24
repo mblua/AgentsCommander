@@ -262,6 +262,10 @@ async fn caller_settles(tasks: &dyn SelectionTasks) -> bool {
     let operation = run_owned_selection_operation_with_tasks(tasks, move || async move {
         entered.send(()).unwrap();
         released.await.unwrap();
+        // One Pending point before `settled`: a caller dropped while this poll was
+        // still running only sets the abort flag, which takes effect here, so the
+        // abort-on-drop mutant can never report settlement.
+        tokio::task::yield_now().await;
         let held = body_turn.try_write().is_err();
         let _ = settled.send(held);
         Ok(())

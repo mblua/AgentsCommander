@@ -75,7 +75,7 @@ const type = (p: Picker, text: string) => {
 };
 const activeId = (p: Picker) => input(p).getAttribute("aria-activedescendant");
 
-describe("PreflightTargetPicker (#3832)", () => {
+describe("PreflightTargetPicker", () => {
   let p: Picker | null = null;
 
   afterEach(() => {
@@ -218,7 +218,7 @@ function target(path: string, over: Partial<PreflightTestTarget> = {}): Prefligh
   return { ...row(path, false), ...over };
 }
 
-describe("picker helpers (#3832)", () => {
+describe("picker helpers", () => {
   it.each([
     ["C:\\p\\.ac\\room\\__agent_dev", "__agent_dev"],
     ["/home/p/.ac/room/__agent_qa/", "__agent_qa"],

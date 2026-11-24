@@ -37,7 +37,7 @@ async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-describe("agentUpdateOverviewStore (#1551)", () => {
+describe("agentUpdateOverviewStore", () => {
   let fake: FakeTransport;
   let restore: () => void;
 

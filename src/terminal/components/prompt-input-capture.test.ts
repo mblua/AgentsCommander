@@ -47,7 +47,7 @@ describe("updatePromptCapture", () => {
     });
   });
 
-  it("strips a BEL-terminated OSC-4 colour reply that precedes typed text (#533)", () => {
+  it("strips a BEL-terminated OSC-4 colour reply that precedes typed text", () => {
     // OpenCode answers an OSC-4 palette query on the input channel; previously
     // only the leading ESC was dropped and "]4;0;rgb:..." leaked into the prompt.
     const oscReply = "\x1b]4;0;rgb:1a1a/1a1a/2e2e\x07";

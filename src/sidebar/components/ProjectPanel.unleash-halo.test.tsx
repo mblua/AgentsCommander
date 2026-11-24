@@ -39,7 +39,7 @@ const agent = (name: string, path: string, unleashed: boolean) => ({
   unleashed,
 });
 
-describe("ProjectPanel unleashed halo class (#4752)", () => {
+describe("ProjectPanel unleashed halo class", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 

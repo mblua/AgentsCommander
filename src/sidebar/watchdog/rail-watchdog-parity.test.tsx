@@ -93,7 +93,7 @@ function nonStopButton(): HTMLElement {
   return button;
 }
 
-describe("#882 rail/watchdog working parity", () => {
+describe("rail/watchdog working parity", () => {
   let restoreTransport: (() => void) | null = null;
   let cleanupRender: (() => void) | null = null;
 

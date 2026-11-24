@@ -25,7 +25,7 @@ import {
 
 const WATCHERS_BTN = '[data-ac-testid="statusBar.watchers"]';
 
-describe("the StatusBar watcher-activity button (#1171)", () => {
+describe("the StatusBar watcher-activity button", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

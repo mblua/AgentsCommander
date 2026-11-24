@@ -38,7 +38,7 @@ const BACKEND_SOURCES = import.meta.glob<string>("../../src-tauri/src/**/*.rs", 
   eager: true,
 });
 
-describe("pty spawn viewport (#973)", () => {
+describe("pty spawn viewport", () => {
   let restoreTransport: (() => void) | null = null;
 
   beforeEach(() => {

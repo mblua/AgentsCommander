@@ -16,7 +16,7 @@ const room = (n: string, taskTitle: string | null = null): TempRoomInfo => ({
   taskTitle,
 });
 
-describe("#4805 tempRoomsStore", () => {
+describe("tempRoomsStore", () => {
   let fake: FakeTransport;
   let restore: () => void;
 

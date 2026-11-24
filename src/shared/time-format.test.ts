@@ -5,7 +5,7 @@ import { formatAgentMessageStamp, formatClockTime } from "./time-format";
  * `at` parses with `new Date(value)` and the clock is zero-padded 24-hour
  * `HH:MM:SS`, not the viewer's locale.
  */
-describe("formatClockTime (#1171)", () => {
+describe("formatClockTime", () => {
   it("zero-pads to a fixed-width 24-hour clock", () => {
     // Built from local parts so the assertion does not depend on the runner's timezone;
     // what is being pinned is the FORMAT, not the conversion.
@@ -46,7 +46,7 @@ describe("formatClockTime (#1171)", () => {
  * to show. Inputs are built from LOCAL parts so the assertions pin the FORMAT and
  * not the runner's timezone.
  */
-describe("formatAgentMessageStamp (#1682)", () => {
+describe("formatAgentMessageStamp", () => {
   it("renders MM-DD HH:MM from local parts", () => {
     const at = new Date(2026, 7, 31, 21, 29);
     expect(formatAgentMessageStamp(at.toISOString())).toBe("08-31 21:29");

@@ -1023,7 +1023,7 @@ function newEventWithView<E extends Event, I extends EventInit>(
   }
 }
 
-// ---- pointer and key actions (#2691) ----
+// ---- pointer and key actions ----
 
 type UiPointerOperation = {
   kind: "down" | "move" | "up" | "cancel";

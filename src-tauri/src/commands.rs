@@ -5,6 +5,7 @@ pub(crate) mod agent_creator;
 pub(crate) mod audio_sink;
 pub(crate) mod co_managed;
 pub(crate) mod codex_resolver;
+pub(crate) mod coding_agents_transfer;
 pub(crate) mod config;
 pub(crate) mod context_history;
 pub(crate) mod entity_creation;
