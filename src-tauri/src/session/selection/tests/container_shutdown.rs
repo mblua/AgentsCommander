@@ -835,6 +835,26 @@ async fn assert_real_container_cleanup(
     if fail_worker_spawn {
         container_backend.clear_shutdown_worker_spawn_failure_for_test();
     }
+    // The global sweep skips in-flight cleanup attempts, so a fallback attempt
+    // that has not settled yet would spend the sweep's whole budget waiting.
+    await_state_eq(
+        "retained cleanup attempts settle before the global sweep",
+        Duration::from_secs(5),
+        || {
+            container_backend
+                .retained_cleanup_contexts_for_test()
+                .iter()
+                .any(|context| context.contains("inFlight=true"))
+        },
+        false,
+        || {
+            format!(
+                "retained={:?}",
+                container_backend.retained_cleanup_contexts_for_test()
+            )
+        },
+    )
+    .await;
     let global_report = pty
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
