@@ -347,7 +347,7 @@ fn scan_once_calls_archived_candidate_filter() {
     );
 }
 
-/// #4048: `state` must not reference its parent's types (cycle 1fefd2ca).
+/// `state` must not reference its parent's types (cycle 1fefd2ca).
 fn state_source_is_free_of_parent_types(state: &str) -> bool {
     !state.contains("SchedulerContext") && !state.contains("UnresolvedLoopTarget")
 }

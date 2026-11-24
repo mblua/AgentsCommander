@@ -4,7 +4,7 @@ use super::resolve_agent_target::make_project_fixture;
 use super::resolve_agent_target::FixtureRoot;
 use super::*;
 
-// ── #299 logical_path_resolve unit tests ──────────────────────────
+// ── Logical_path_resolve unit tests ──────────────────────────
 
 #[test]
 fn logical_path_resolve_resolves_parent_dirs() {
@@ -31,7 +31,7 @@ fn logical_path_resolve_strips_current_dir() {
     assert_eq!(logical_path_resolve(p), "/a/b/c");
 }
 
-// ── #299 identity_compare_key unit tests ──────────────────────────
+// ── Identity_compare_key unit tests ──────────────────────────
 
 #[test]
 fn identity_compare_key_equal_for_stale_paths_pointing_to_same_target() {
@@ -203,7 +203,7 @@ fn resolve_agent_target_origin_and_bare_passthrough() {
     );
 }
 
-/// Issue #134: filesystem directory names like `__agent_shipper` are never
+/// filesystem directory names like `__agent_shipper` are never
 /// valid peer FQNs. They must reject early with `LooksLikeFilesystemDir`
 /// regardless of where they appear (bare, after a project prefix, after a
 /// WG-local prefix, or fully qualified).
