@@ -366,7 +366,7 @@ Rust handlers live in `src-tauri/src/commands/`; the frontend invokes them throu
 | NonStopAPI | `commands/non_stop.rs` | non-stop mode |
 | CoManagedAPI | `commands/co_managed.rs` | `co_managed_get`, `co_managed_set_enabled`, `co_managed_effective_state` |
 | ContextHistoryAPI | `commands/context_history.rs` | `get_context_history_report`, `get_context_history_agent_detail` |
-| BlackBoxAPI | `commands/ipc_blackbox.rs` | `ipc_blackbox_report` |
+| BlackBoxAPI | `commands/ipc_blackbox.rs` | `ipc_blackbox_report`, `ipc_blackbox_enabled` |
 | QuitAPI | `commands/quit_gate.rs` | `quit_gate_register`, `quit_gate_resolve` |
 | SessionAPI | `commands/session_warnings.rs` | `drain_session_warnings` |
 | WebBrowserAPI | `commands/web_browser.rs` | `web_browser_show`, `web_browser_navigate` |
