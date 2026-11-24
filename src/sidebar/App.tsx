@@ -655,9 +655,6 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
   const surfaceSessionWarning = (warning: SessionWarning) => {
     if (disposed) return;
-    console.warn(
-      `Session warning for ${warning.sessionId} (${warning.key}/${warning.kind}): ${warning.message}`
-    );
     void showSessionWarningToast(warning, () => disposed);
   };
 

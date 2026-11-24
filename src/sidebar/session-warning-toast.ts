@@ -60,6 +60,9 @@ export async function showSessionWarningToast(
   warning: SessionWarning,
   isDisposed: () => boolean,
 ): Promise<void> {
+  console.warn(
+    `Session warning for ${warning.sessionId} (${warning.key}/${warning.kind}): ${warning.message}`
+  );
   const id = warning.sessionId;
   let listed: Session[] = [];
   let live = sessionsStore.sessions.find((s) => s.id === id);
