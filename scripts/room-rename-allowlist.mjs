@@ -130,7 +130,7 @@ const GATES = {
 // MOVE, whatever else it looks like.
 const FROZEN = {
   "src-tauri/src/config/session_context.rs": [
-    [3735, 3736], // LEGACY_GIT_SCOPE_*_BEFORE_1072, frozen by #1072
+    [3735, 3736], // LEGACY_GIT_SCOPE_*_BEFORE_1072, frozen
     [3769, 4025], // legacy_rendered_default_context_for_generation, whole body
   ],
   "src-tauri/src/config/root_agent.rs": [

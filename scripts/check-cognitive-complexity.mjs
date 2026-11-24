@@ -2371,11 +2371,11 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
       && ['windows', 'linux', 'macos'].every((platform) =>
         entry.sites[platform]?.length === 1 && entry.sites[platform][0] === anchor);
   });
-  if (!exactSites) return false; // #3527 condition-2
+  if (!exactSites) return false; // condition 2
   const actual = removals.map(historical3527TupleKey).sort();
   const expected = historical3527Tuples().map(historical3527TupleKey)
     .sort(compareLexically);
-  if (!historical3527Equal(actual, expected)) return false; // #3527 condition-3
+  if (!historical3527Equal(actual, expected)) return false; // condition 3
   const selected = new Set(HISTORICAL_3527_SITES.map(([id]) => id));
   const equalMetadata = historical3527Equal(historical3527Without(baseDocument, 'entries'),
     historical3527Without(headDocument, 'entries'));
@@ -2383,10 +2383,10 @@ function historical3527Shrink({ baseRef, baseDocument, headDocument, diffSet,
     || !headById.has(entry.id)
     || historical3527Equal(historical3527Without(entry, 'sites'),
       historical3527Without(headById.get(entry.id), 'sites')));
-  if (!equalMetadata || !equalEntries) return false; // #3527 equality
+  if (!equalMetadata || !equalEntries) return false; // equality
   try {
     if (runGit(['rev-parse', baseRef + ':' + BASELINE_FILE]).trim()
-        !== HISTORICAL_3527_BASELINE) return false; // #3527 baseline-pin
+        !== HISTORICAL_3527_BASELINE) return false; // baseline pin
     return HISTORICAL_3527_PINS.every(([file, pin]) => {
       if (diffSet.has(file) || !existsWorkspace(file)) return false;
       readWorkspace(file);
