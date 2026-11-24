@@ -242,7 +242,7 @@ fn keeps_bare_uuid_without_secret_context() {
     }
 }
 
-/// #4319 — `{:?}` of a Telegram bot config never shows the token, while
+/// `{:?}` of a Telegram bot config never shows the token, while
 /// serialization still writes it.
 #[test]
 fn telegram_bot_config_debug_redacts_token() {

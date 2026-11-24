@@ -1,6 +1,6 @@
 use super::*;
 
-/// #1446: `config::instance_artifacts` is the artifact registry that
+/// `config::instance_artifacts` is the artifact registry that
 /// `config::instance_gitignore` derives every static rule from, and the reason
 /// that reference is allowed in production code is that this module has **zero
 /// outgoing arcs**. A node with no way out is a trivial SCC however many modules
@@ -223,7 +223,7 @@ fn the_root_agent_dir_name_constant_is_defined_exactly_once() {
     );
 }
 
-/// #2713: `config::naming_migration` is called from the crate root in B1b, and
+/// `config::naming_migration` is called from the crate root in B1b, and
 /// the crate root is a member of the one cyclic SCC. A module the root calls
 /// joins that SCC the moment it names any member, so this leaf may name the
 /// `instance_artifacts` owner (as `super::instance_artifacts` from the parent and

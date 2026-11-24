@@ -415,7 +415,12 @@ async fn real_loopback_websocket_is_closed_and_reaped_by_generation_stop() {
     .await
     .expect("generation stop did not reap loopback websocket");
     server_result.expect("loopback server task panicked");
-    assert_eq!(read_result.expect("read client EOF"), 0);
+    // Windows reports an aborted loopback close as WSAECONNRESET (10054), not EOF.
+    match read_result {
+        Ok(0) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        other => panic!("client must see EOF or reset after generation stop, got {other:?}"),
+    }
     assert!(admission.is_empty());
 }
 

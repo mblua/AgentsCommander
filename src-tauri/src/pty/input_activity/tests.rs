@@ -17,7 +17,7 @@ const NON_CONTRIBUTING_CHUNKS: &[(&str, &[u8])] = &[
     ("SGR mouse-move report", b"\x1b[<35;80;24M"),
 ];
 
-/// One row of the #871 classification matrix.
+/// One row of the classification matrix.
 struct MatrixRow {
     label: &'static str,
     chunk: &'static [u8],
@@ -29,7 +29,7 @@ struct MatrixRow {
     contributed: bool,
 }
 
-/// The #871 classification matrix rows pinned below.
+/// the classification matrix rows pinned below.
 const MATRIX_ROWS: &[MatrixRow] = &[
     MatrixRow {
         label: "printable run",
