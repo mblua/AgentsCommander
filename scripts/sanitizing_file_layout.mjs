@@ -1,4 +1,5 @@
 import { gateCli, isMain } from './sanitizing_baseline.mjs';
+import { testLocalPath } from './sanitizing_rust_scan.mjs';
 import {
   runMeasuredGate,
   metric,
@@ -24,7 +25,7 @@ const rules = [
 const newFileRules = rules.slice(0, 5);
 const inUniverse = p => /^src-tauri\/(?:src|tests)\/.*\.rs$/.test(p);
 const extraChecks = () => {};
-function testAttributeLine(m, path, scan) {
+function testAttributeLine(m, path, scan, tree) {
   let testLine;
   for (const a of scan.attributes) for (const meta of a.signals) {
     const r = resolveAlias(scan,meta.name,a.scope);
@@ -32,7 +33,8 @@ function testAttributeLine(m, path, scan) {
       /(?:^|::)test$/.test(r.path ?? meta.name)) {
       testLine ??= a.line; warning(m, path, a.line, r);
     }
-    if (meta.name === 'path') hit(m, 'path', a.line);
+    // Same cut as gate 04: a test-local #[path] only shares code between test crates.
+    if (meta.name === 'path' && !testLocalPath(path, scan, a, tree)) hit(m, 'path', a.line);
   }
   return testLine;
 }
@@ -59,11 +61,11 @@ function globImports(m, path, scan, ts) {
     hit(m, 'glob', use?.line ?? 1);
   }
 }
-function measure(path, scan) {
+function measure(path, scan, { tree }) {
   const m = metric(), integration = path.startsWith('src-tauri/tests/') || /(?:^|\/)tests\//.test(
     path);
   if (path.endsWith('/mod.rs')) hit(m, 'mod_rs', 1);
-  const testLine = testAttributeLine(m, path, scan);
+  const testLine = testAttributeLine(m, path, scan, tree);
   if (testLine && !path.endsWith('/tests.rs') && !integration) hit(m, 'test_files', testLine);
   const ts = scan.tokens;
   for (const item of scan.items) modVisibility(m, path, ts, item);
