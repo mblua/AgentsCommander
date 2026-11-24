@@ -1,4 +1,4 @@
-// #3532 P06 / #4091 - TypeScript mirror of the schema-version-3 context-history DTOs
+// TypeScript mirror of the schema-version-3 context-history DTOs
 // served by the four `get_context_history_*` commands. Field names, nulls and
 // enum spellings follow the Rust serde output exactly; the frontend never
 // recomputes a mean, a selection or a scope from these values.
@@ -21,7 +21,7 @@ export interface ReportQuery {
   model: LaunchFilter;
   effort: LaunchFilter;
   cursor: string | null;
-  /** #4091 count mode: newest N sessions per scope before `toUtcMs`; null is date mode. */
+  /** Count mode: newest N sessions per scope before `toUtcMs`; null is date mode. */
   sessionCount?: number | null;
 }
 
@@ -48,7 +48,7 @@ export type InitialKind = "confirmed_zero_transition" | "first_observed" | "unkn
 export interface RequestedPeriod {
   fromUtcMs: number;
   toUtcMs: number;
-  /** #4091 Requested count in count mode; null in date mode. */
+  /** Requested count in count mode; null in date mode. */
   sessionCount: number | null;
   selection: "recent_sessions" | "session_started";
 }
@@ -86,12 +86,12 @@ export interface Aggregate {
   positiveSum: number;
   mean: number | null;
   sessionsCount: number;
-  /** #4091 `recordsCount / sessionsCount` from the backend; never derived here. */
+  /** `recordsCount / sessionsCount` from the backend; never derived here. */
   recordsPerSession: number | null;
   incomplete: boolean;
 }
 
-/** #4091 Requested versus available sessions of one scope in count mode. */
+/** Requested versus available sessions of one scope in count mode. */
 export interface ScopeWindowCoverage {
   teamAttribution: TeamAttribution;
   teamIds: string[];
@@ -99,7 +99,7 @@ export interface ScopeWindowCoverage {
   availableSessions: number;
 }
 
-/** #4091 The newest `requestedSessions` sessions of a known scope. */
+/** The newest `requestedSessions` sessions of a known scope. */
 export interface SessionWindowBucket extends Aggregate {
   requestedSessions: number;
 }
@@ -206,7 +206,7 @@ export interface SidebarScope {
 export interface SidebarEntry {
   runtimeSessionId: string;
   scope: SidebarScope;
-  /** #4091 One bucket per configured count, in order. */
+  /** One bucket per configured count, in order. */
   sessionWindows: SessionWindowBucket[] | null;
 }
 
@@ -240,7 +240,7 @@ export function isHistoryIpcError(value: unknown): value is HistoryIpcError {
   return typeof candidate.code === "string" && typeof candidate.message === "string";
 }
 
-/** #4091 "Last N sessions" ("Last session" for 1), noting fewer available. */
+/** "Last N sessions" ("Last session" for 1), noting fewer available. */
 export function sessionWindowLabel(requested: number, available?: number | null): string {
   const base = requested === 1 ? "Last session" : `Last ${requested} sessions`;
   if (available === undefined || available === null || available >= requested) return base;
@@ -248,7 +248,7 @@ export function sessionWindowLabel(requested: number, available?: number | null)
 }
 
 /**
- * #4091 Resolves the colour window: `preferred` when it is a configured
+ * Resolves the colour window: `preferred` when it is a configured
  * count, otherwise the last configured count; plus its bucket, if served.
  */
 export function selectSessionWindow(
@@ -264,7 +264,7 @@ export function selectSessionWindow(
   return { requestedSessions, bucket };
 }
 
-/** #4091 Backend records per session with one decimal; "—" when absent. */
+/** Backend records per session with one decimal; "—" when absent. */
 export function formatRecordsPerSession(value: number | null | undefined): string {
   if (value === undefined || value === null) return "—";
   return value.toFixed(1);

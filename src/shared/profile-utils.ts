@@ -61,7 +61,7 @@ export function resolveProfileLabel(
   agentId: string | null | undefined,
   letter: string,
 ): string {
-  // #2306 - no first-agent (primigenio) inheritance: the fallback chain is own
+  // No first-agent (primigenio) inheritance: the fallback chain is own
   // per-agent label -> legacy shared slot label -> empty (bare letter). `agents`
   // stays in the signature so call sites are untouched; it is no longer read.
   const labels = profiles.profileLabelsByAgent;
@@ -191,7 +191,7 @@ export function profileConfiguredElsewhere(
 }
 
 /**
- * #2057 (D1) - a cell "holds" a profile slot when deleting that slot would
+ * A cell "holds" a profile slot when deleting that slot would
  * destroy something the user entered: an enabled cell changes launch behaviour
  * even with an empty command (see cellForLetter), and a disabled cell can still
  * carry a command, env or notes. A disabled, fully empty cell does not hold it.
@@ -205,7 +205,7 @@ export function profileCellHoldsData(cell: ProfileCellConfig | null | undefined)
 }
 
 /**
- * #2057 (D1/D2) - ids of the live coding agents that hold `letter`, in
+ * Ids of the live coding agents that hold `letter`, in
  * `liveAgentIds` order (`settings.data.agents` order). Ids absent from
  * `liveAgentIds` are dead data with no UI that could clear them, so they are
  * not holders and the slot stays deletable; the slot delete removes them.
@@ -361,7 +361,7 @@ export function hasEnabledEnvKey(rows: CodingAgentEnv[], key: string): boolean {
 }
 
 /**
- * #1052 - env value display rule. A row's value is masked only when its key
+ * Env value display rule. A row's value is masked only when its key
  * starts with PASSWORD, matched case-insensitively on the trimmed key. Reuses
  * envKeyCompare (trim + uppercase) so the rule stays consistent with the rest
  * of the env-key handling. Display-only; values are stored as plaintext.
@@ -479,7 +479,7 @@ export function suggestedContextRegex(command: string): string | null {
   return null;
 }
 
-/** #2482 - a STARTING POINT for the 7-day quota pattern, not a guarantee: the
+/** A STARTING POINT for the 7-day quota pattern, not a guarantee: the
  *  statusline format is the user's own configuration, not something Claude Code
  *  fixes, so this matches only the common `... | 7d 28%` shape. The trailing `%` is
  *  REQUIRED, for the reason `context_scrape/rows.rs` pins: a narrow terminal truncates
@@ -487,7 +487,7 @@ export function suggestedContextRegex(command: string): string | null {
  *  reports a confidently wrong number instead of failing closed. */
 export const CLAUDE_WEEKLY_QUOTA_REGEX = String.raw`(?:^|[ |])7d (\d{1,3})%`;
 
-/** #2687 - Codex's weekly-quota row reads REMAINING, e.g. `Context 52% used · weekly 87% left`.
+/** Codex's weekly-quota row reads REMAINING, e.g. `Context 52% used · weekly 87% left`.
  *  The leading alternation accepts start-of-row or the character before the word, which on
  *  the observed row is the space after Codex's separator. The trailing ` left` is REQUIRED,
  *  for the reason `context_scrape/rows.rs` pins: a narrow terminal truncates the row
@@ -527,7 +527,7 @@ export function suggestedQuotaSource(command: string): SuggestedQuotaSource | nu
   return null;
 }
 
-/** #2680 - the task adds a default for a new Codex agent and forbids any new default for
+/** The task adds a default for a new Codex agent and forbids any new default for
  *  Claude, so the restriction is a named function with its own test. */
 export function defaultQuotaSourceForNewAgent(
   command: string,
@@ -613,7 +613,7 @@ export function sessionProfileBadge(
 }
 
 /**
- * #2435 - second badge for a profile matched by a weak tier (label or command
+ * Second badge for a profile matched by a weak tier (label or command
  * instead of the content hash). `null` means "add no second badge": hash tier,
  * absent, null or unknown tier, or no effective letter to print. The original
  * letter is deliberately never shown. Separate from `sessionProfileBadge` so
@@ -646,7 +646,7 @@ const ORPHAN_NOTICE_CLAUSE: Record<string, string> = {
 };
 
 /**
- * #2568 - the row notice for a stored coding-agent reference that was not
+ * The row notice for a stored coding-agent reference that was not
  * found, so another profile was adopted in its place. `null` means "no
  * notice": no tier, an unknown tier, no label or letter to print, or a hash
  * match on the same letter. The hash tier compares the two letters instead of
@@ -669,7 +669,7 @@ export function sessionOrphanNotice(
 }
 
 /**
- * #2568 - dismissal key for the orphan notice: one per agent per app run. It
+ * Dismissal key for the orphan notice: one per agent per app run. It
  * holds no session id, so a relaunch of the agent keeps the dismissal.
  */
 export function orphanNoticeKey(

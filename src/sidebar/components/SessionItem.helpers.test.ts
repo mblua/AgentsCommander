@@ -14,7 +14,7 @@ import {
 // The SessionItem JSX ternaries moved into these helpers. The expected
 // strings are byte-equal to the old inline templates (double spaces included).
 
-describe("SessionItem helpers (#2611)", () => {
+describe("SessionItem helpers", () => {
   it("sessionRowState reads `inactive` only when not active", () => {
     const inactive = vi.fn(() => true);
     expect(sessionRowState(true, inactive)).toBe("active");

@@ -262,7 +262,7 @@ async function driveFramesUntil(
   );
 }
 
-describe("TerminalView PTY spawn size (#973)", () => {
+describe("TerminalView PTY spawn size", () => {
   let cleanupDom: (() => void) | null = null;
   // Installed in beforeEach, so every test in this file drives the animation
   // frame queue itself. Definite assignment, with a null-safe restore below in

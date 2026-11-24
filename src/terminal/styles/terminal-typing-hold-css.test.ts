@@ -28,7 +28,7 @@ function declValue(body: string, prop: string): string {
   return found;
 }
 
-describe("typing-hold padlock CSS (#2379)", () => {
+describe("typing-hold padlock CSS", () => {
   it("dims the open padlock with the status-bar foreground", () => {
     const body = ruleBody(".status-bar-btn-typing-hold .status-bar-typing-hold-icon");
     expect(declValue(body, "color")).toBe("var(--statusbar-fg)");

@@ -44,7 +44,7 @@ const rowIds = (menu: HTMLElement) =>
     el.getAttribute("data-ac-testid"),
   );
 
-describe("#4779 SessionRowMenu disabled items", () => {
+describe("SessionRowMenu disabled items", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
   });

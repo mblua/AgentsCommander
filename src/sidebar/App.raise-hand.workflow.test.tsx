@@ -80,7 +80,7 @@ function setupRaiseHandTransport(fake: FakeTransport, sessions: Session[]): void
   fake.resolve("telegram_list_bridges", []);
 }
 
-describe("SidebarApp raise-hand communication workflow (#676)", () => {
+describe("SidebarApp raise-hand communication workflow", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -149,7 +149,7 @@ describe("SidebarApp raise-hand communication workflow (#676)", () => {
     }
   });
 
-  it("renders a hydrated raise-hand slot for a dormant (exited) restored coordinator (#747)", async () => {
+  it("renders a hydrated raise-hand slot for a dormant (exited) restored coordinator", async () => {
     const fake = new FakeTransport();
     setupRaiseHandTransport(fake, [
       coordSession({
@@ -170,7 +170,7 @@ describe("SidebarApp raise-hand communication workflow (#676)", () => {
     }
   });
 
-  it("carries the raise-hand slot across the reopen event sequence (#747)", async () => {
+  it("carries the raise-hand slot across the reopen event sequence", async () => {
     const newSessionId = "coord-session-reopened";
     const fake = new FakeTransport();
     setupRaiseHandTransport(fake, [

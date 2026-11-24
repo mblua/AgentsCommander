@@ -45,7 +45,7 @@ const fakeWidth = (font: string, text: string): number => {
   return text === "l" || text === "i" ? 3.11 : 13.21;
 };
 
-describe("createTerminalOptions fontFamily (#4244)", () => {
+describe("createTerminalOptions fontFamily", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("drops preferred fonts that do not measure monospace", () => {

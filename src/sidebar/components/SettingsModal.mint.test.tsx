@@ -58,7 +58,7 @@ function target<T extends Element>(root: ParentNode, testId: string): T {
   return element;
 }
 
-describe("SettingsModal API client mint UI (#853)", () => {
+describe("SettingsModal API client mint UI", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

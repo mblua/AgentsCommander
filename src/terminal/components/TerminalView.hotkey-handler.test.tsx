@@ -71,7 +71,7 @@ function installClipboard(): void {
 }
 const hotkey = () => key({ key: "E", code: "KeyE", ctrlKey: true, shiftKey: true });
 
-describe("TerminalView hotkey handler (#2236 D9a)", () => {
+describe("TerminalView hotkey handler (D9a)", () => {
   let cleanupDom: (() => void) | null = null;
   let cleanupRender: (() => void) | null = null;
 

@@ -35,7 +35,7 @@ function unreadableFake(unreadable: boolean, agents: AgentConfig[] = []): FakeTr
 const byTestId = (root: HTMLElement, id: string) =>
   root.querySelector<HTMLElement>(`[data-ac-testid="${id}"]`);
 
-describe("unreadable agents file notice (#2716)", () => {
+describe("unreadable agents file notice", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

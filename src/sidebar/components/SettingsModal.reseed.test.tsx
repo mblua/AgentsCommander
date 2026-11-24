@@ -90,7 +90,7 @@ function reseedBtn(root: HTMLElement, key: string): HTMLButtonElement | null {
   return root.querySelector<HTMLButtonElement>(`[data-ac-testid="settings.agent.reseedDefault.${key}"]`);
 }
 
-describe("SettingsModal re-seed default configuration (#769 Phase 2)", () => {
+describe("SettingsModal re-seed default configuration (Phase 2)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

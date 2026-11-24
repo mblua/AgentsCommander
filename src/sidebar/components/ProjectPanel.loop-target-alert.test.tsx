@@ -86,7 +86,7 @@ function byTestId<T extends HTMLElement = HTMLElement>(testId: string): T | null
   return document.querySelector<T>(`[data-ac-testid="${testId}"]`);
 }
 
-describe("ProjectPanel Loop target notice (#2171)", () => {
+describe("ProjectPanel Loop target notice", () => {
   let cleanupDom: (() => void) | null = null;
   let warn: ReturnType<typeof vi.spyOn> | null = null;
 
@@ -289,7 +289,7 @@ describe("ProjectPanel Loop target notice (#2171)", () => {
     }
   });
 
-  it("T-C5 disables the Loop from the notice and closes it (#2733)", async () => {
+  it("T-C5 disables the Loop from the notice and closes it", async () => {
     const fake = new FakeTransport();
     setupProject(fake);
     fake.resolve("list_unresolved_loop_targets", [alert()]);
@@ -313,7 +313,7 @@ describe("ProjectPanel Loop target notice (#2171)", () => {
     }
   });
 
-  it("T-C6 keeps the notice open with a row error when disabling fails (#2733)", async () => {
+  it("T-C6 keeps the notice open with a row error when disabling fails", async () => {
     const fake = new FakeTransport();
     setupProject(fake);
     fake.resolve("list_unresolved_loop_targets", [alert()]);

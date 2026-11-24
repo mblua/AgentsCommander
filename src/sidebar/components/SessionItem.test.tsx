@@ -72,7 +72,7 @@ function badge(root: ParentNode): HTMLElement {
   return el;
 }
 
-describe("SessionItem profile badge tooltip (#548)", () => {
+describe("SessionItem profile badge tooltip", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -111,7 +111,7 @@ describe("SessionItem profile badge tooltip (#548)", () => {
     }
   });
 
-  it("#2314: no longer inherits the first agent's label when the agent has none", async () => {
+  it("no longer inherits the first agent's label when the agent has none", async () => {
     const settings = baseSettings({ agents: TWO_AGENTS, codingAgentProfiles: profiles({ codex: { B: "turbo" } }) });
     const rendered = await renderRow({ agentId: "claude", agentLabel: "Claude Code", requestedProfile: "B", effectiveProfile: "B", profileFallbackApplied: false }, settings);
     try {
@@ -216,7 +216,7 @@ describe("SessionItem profile badge tooltip (#548)", () => {
   });
 });
 
-describe("SessionItem coordinator repo folder menu (#708)", () => {
+describe("SessionItem coordinator repo folder menu", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -471,7 +471,7 @@ describe("SessionItem coordinator repo folder menu (#708)", () => {
   });
 });
 
-describe("SessionItem profile-outdated badge (#592)", () => {
+describe("SessionItem profile-outdated badge", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -524,7 +524,7 @@ describe("SessionItem profile-outdated badge (#592)", () => {
 // The badge must be one constant style in every row. jsdom does not apply
 // sidebar.css, so the pin is on the emitted classes and attributes, which is what
 // the CSS keys off: exactly `ac-discovery-badge agent`, no data-agent, no running.
-describe("SessionItem coding-agent badge is style-invariant (#1167)", () => {
+describe("SessionItem coding-agent badge is style-invariant", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -572,7 +572,7 @@ describe("SessionItem coding-agent badge is style-invariant (#1167)", () => {
 // pin here is on the emitted DOM: the chip's text and title, its position in
 // the strip, its double-click, and the voice states that suppress its
 // neighbours but never the chip.
-describe("SessionItem identity chip (#1730)", () => {
+describe("SessionItem identity chip", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -617,7 +617,7 @@ describe("SessionItem identity chip (#1730)", () => {
     ],
   };
 
-  it("renders the strip in the #1730 order with the chip after the drift badge", async () => {
+  it("renders the strip in the fixed order with the chip after the drift badge", async () => {
     sessionsStore.setSessionContext(MAXIMAL_ID, 42);
     const rendered = await renderRow(MAXIMAL_ROW, chipSettings());
     try {
@@ -801,7 +801,7 @@ describe("SessionItem identity chip (#1730)", () => {
   });
 });
 
-describe("SessionItem tier badge (#2435)", () => {
+describe("SessionItem tier badge", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -888,7 +888,7 @@ describe("SessionItem tier badge (#2435)", () => {
   });
 });
 
-describe("SessionItem orphan notice (#2568)", () => {
+describe("SessionItem orphan notice", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -960,7 +960,7 @@ describe("SessionItem orphan notice (#2568)", () => {
   });
 
   // Reuses this block's DOM and store lifecycle.
-  describe("row keyboard access (#2659)", () => {
+  describe("row keyboard access", () => {
     const press = (el: Element, key: string) =>
       el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
     const row = (root: ParentNode, id: string) =>

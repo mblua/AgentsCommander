@@ -127,7 +127,7 @@ async function openDeleteModal() {
 const enter = (el: HTMLElement) =>
   el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 
-describe("#4805 TemporaryRoomsPanel groups and TASK title", () => {
+describe("TemporaryRoomsPanel groups and TASK title", () => {
   let cleanupDom: (() => void) | null = null;
   let cleanups: (() => void)[] = [];
   const track = <T extends { rendered: { cleanup: () => void } }>(r: T): T => {

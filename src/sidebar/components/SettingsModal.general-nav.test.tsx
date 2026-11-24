@@ -78,7 +78,7 @@ const PRE_EXISTING_TESTIDS = `
   .trim()
   .split(/\s+/);
 
-describe("SettingsModal General categories + search (#2704)", () => {
+describe("SettingsModal General categories + search", () => {
   // The returned function is Vitest's per-test teardown (runs where afterEach did).
   beforeEach(() => {
     const cleanupDom = installBrowserDomStubs();

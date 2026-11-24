@@ -261,7 +261,7 @@ function mount(
   return handle;
 }
 
-describe("#1871 SessionRowMenu catalogue", () => {
+describe("SessionRowMenu catalogue", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
   });
