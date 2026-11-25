@@ -4266,7 +4266,7 @@ html.light-theme .ac-discovery-badge.running-peer {
 .project-load-status[data-ac-state="error"] .ac-empty-hint {
   color: var(--status-error, #e06c75);
   font-style: normal;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .ac-wg-header {

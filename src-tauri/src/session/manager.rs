@@ -640,70 +640,92 @@ impl SessionManager {
         } else {
             state.revision
         };
-        let mut removed = 0usize;
-        let mut removed_selection = clear_surviving;
-        let mut removed_ids: Vec<Uuid> = Vec::new();
-        for &id in ids {
-            if dispositions.get(&id) != Some(&CarrierDisposition::Foreign) {
-                continue;
-            }
-            let Some(session) = state.sessions.get(&id) else {
-                continue;
-            };
-            if !matches!(session.status, SessionStatus::Exited(_)) {
-                continue;
-            }
-            if state.pending_create.contains_key(&id) {
-                continue;
-            }
-            state.sessions.remove(&id);
-            retire_coding_agent_binding(&mut state, id);
-            removed += 1;
-            removed_ids.push(id);
-            if state.selection.id() == Some(id) {
-                removed_selection = true;
-            }
+        let (removed, removed_selected) = remove_foreign_exited(&mut state, ids, &dispositions);
+        if !clear_surviving && !removed_selected {
+            return removed;
         }
-        if !removed_ids.is_empty() {
-            state
-                .order
-                .retain(|candidate| !removed_ids.contains(candidate));
+        let surviving = state.selection.id().filter(|_| clear_surviving);
+        if let Some(row) = surviving
+            .and_then(|id| state.sessions.get_mut(&id))
+            .filter(|row| row.status == SessionStatus::Active)
+        {
+            row.status = SessionStatus::Running;
         }
-        if removed_selection {
-            if clear_surviving {
-                if let Some(id) = state.selection.id() {
-                    if let Some(row) = state.sessions.get_mut(&id) {
-                        if row.status == SessionStatus::Active {
-                            row.status = SessionStatus::Running;
-                        }
-                    }
-                }
-            }
-            state.revision = next_revision;
-            let next = state.order.iter().copied().find(|candidate| {
-                !state.pending_create.contains_key(candidate)
-                    && dispositions.get(candidate) == Some(&CarrierDisposition::Foreign)
-            });
-            if let Some(next_id) = next {
-                if let Some(session) = state.sessions.get_mut(&next_id) {
-                    session.status = SessionStatus::Active;
-                }
-                state.selection = SessionSelection::live(
-                    state.epoch,
-                    state.revision,
-                    SelectionCause::BackgroundCleanup,
-                    next_id,
-                );
-            } else {
-                state.selection = SessionSelection::none(
-                    state.epoch,
-                    state.revision,
-                    SelectionCause::BackgroundCleanup,
-                );
-            }
+        state.revision = next_revision;
+        let next = next_cleanup_selection(&state, &dispositions);
+        if let Some(session) = next.and_then(|id| state.sessions.get_mut(&id)) {
+            session.status = SessionStatus::Active;
         }
+        select_after_cleanup(&mut state, next);
         removed
     }
+}
+
+/// Removes the `Foreign`, exited, non-pending sessions among `ids`.
+/// Returns how many were removed and whether the selected one was among them.
+fn remove_foreign_exited(
+    state: &mut SessionManagerState,
+    ids: &[Uuid],
+    dispositions: &HashMap<Uuid, CarrierDisposition>,
+) -> (usize, bool) {
+    let mut removed = 0usize;
+    let mut removed_selection = false;
+    let mut removed_ids: Vec<Uuid> = Vec::new();
+    for &id in ids {
+        if dispositions.get(&id) != Some(&CarrierDisposition::Foreign) {
+            continue;
+        }
+        let Some(session) = state.sessions.get(&id) else {
+            continue;
+        };
+        if !matches!(session.status, SessionStatus::Exited(_)) {
+            continue;
+        }
+        if state.pending_create.contains_key(&id) {
+            continue;
+        }
+        state.sessions.remove(&id);
+        retire_coding_agent_binding(state, id);
+        removed += 1;
+        removed_ids.push(id);
+        if state.selection.id() == Some(id) {
+            removed_selection = true;
+        }
+    }
+    if !removed_ids.is_empty() {
+        state
+            .order
+            .retain(|candidate| !removed_ids.contains(candidate));
+    }
+    (removed, removed_selection)
+}
+
+/// First remaining `Foreign`, non-pending session in order, if any.
+fn next_cleanup_selection(
+    state: &SessionManagerState,
+    dispositions: &HashMap<Uuid, CarrierDisposition>,
+) -> Option<Uuid> {
+    state.order.iter().copied().find(|candidate| {
+        !state.pending_create.contains_key(candidate)
+            && dispositions.get(candidate) == Some(&CarrierDisposition::Foreign)
+    })
+}
+
+/// Points the selection at `next` (or at none) after a background cleanup.
+fn select_after_cleanup(state: &mut SessionManagerState, next: Option<Uuid>) {
+    state.selection = match next {
+        Some(next_id) => SessionSelection::live(
+            state.epoch,
+            state.revision,
+            SelectionCause::BackgroundCleanup,
+            next_id,
+        ),
+        None => SessionSelection::none(
+            state.epoch,
+            state.revision,
+            SelectionCause::BackgroundCleanup,
+        ),
+    };
 }
 
 fn verify_input_authority(
