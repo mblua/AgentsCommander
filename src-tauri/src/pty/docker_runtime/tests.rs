@@ -439,62 +439,169 @@ fn ambiguous_start_cleanup_failure_is_retained_and_retried_once() {
     );
 }
 
-#[test]
-fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
-    let runtime = DockerRuntime::new();
-    let ready = Arc::new(std::sync::Barrier::new(3));
-    let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
-    let spawn_reader = |name: &'static str| {
-        let ready = Arc::clone(&ready);
-        let release = Arc::clone(&release);
-        let active = Arc::clone(&runtime.process_state.active_readers);
-        std::thread::Builder::new()
-            .name(name.to_string())
-            .spawn(move || {
-                let _active = ActiveDockerReaderGuard::new(active);
-                ready.wait();
-                let (released, changed) = &*release;
-                let mut released = released
-                    .lock()
+struct RescueGuardForTest<T> {
+    rescue: Option<Box<dyn FnOnce()>>,
+    worker: Option<std::thread::JoinHandle<T>>,
+}
+
+impl<T> RescueGuardForTest<T> {
+    fn join_worker(&mut self) -> Option<std::thread::Result<T>> {
+        self.worker.take().map(std::thread::JoinHandle::join)
+    }
+
+    fn rescue_and_join(&mut self) -> Option<std::thread::Result<T>> {
+        if let Some(rescue) = self.rescue.take() {
+            rescue();
+        }
+        self.join_worker()
+    }
+}
+
+impl<T> Drop for RescueGuardForTest<T> {
+    fn drop(&mut self) {
+        let _ = self.rescue_and_join();
+    }
+}
+
+fn release_blocked_readers(release: &(Mutex<bool>, std::sync::Condvar)) {
+    let (released, changed) = release;
+    *released
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    changed.notify_all();
+}
+
+fn wait_for_retained_readers_to_finish(runtime: &DockerRuntime) {
+    let limit = Instant::now() + Duration::from_secs(5);
+    loop {
+        let handles = runtime.process_state.retained_reader_handles_for_test();
+        let finished = handles
+            .iter()
+            .all(|handles| *handles == (Some(true), Some(true)));
+        if runtime.active_reader_count() == 0 && finished {
+            return;
+        }
+        assert!(
+            Instant::now() < limit,
+            "released readers did not finish: {handles:?}"
+        );
+        std::thread::yield_now();
+    }
+}
+
+type ReaderRelease = Arc<(Mutex<bool>, std::sync::Condvar)>;
+type BlockedReader = std::thread::JoinHandle<std::io::Result<CappedCommandStream>>;
+type CollectionWait = (Instant, Duration, usize);
+type CollectionOutcome = (DockerCommandOwner, Option<bool>, Instant);
+
+fn spawn_blocked_reader(
+    name: &'static str,
+    ready: &Arc<std::sync::Barrier>,
+    release: &ReaderRelease,
+    runtime: &DockerRuntime,
+) -> BlockedReader {
+    let ready = Arc::clone(ready);
+    let release = Arc::clone(release);
+    let active = Arc::clone(&runtime.process_state.active_readers);
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            let _active = ActiveDockerReaderGuard::new(active);
+            ready.wait();
+            let (released, changed) = &*release;
+            let mut released = released
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            while !*released {
+                released = changed
+                    .wait(released)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                while !*released {
-                    released = changed
-                        .wait(released)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
-                Ok(CappedCommandStream::default())
-            })
-            .expect("spawn deterministic blocked Docker reader")
-    };
-    let mut owner = DockerCommandOwner {
-        child: None,
-        stdout: Some(spawn_reader("blocked-docker-stdout")),
-        stderr: Some(spawn_reader("blocked-docker-stderr")),
-        session_id: None,
-        reason: "docker-command-reader",
-        program: "docker-reader-fixture".to_string(),
-        active_child: None,
-    };
-    ready.wait();
-    assert_eq!(runtime.active_reader_count(), 2);
+            }
+            Ok(CappedCommandStream::default())
+        })
+        .expect("spawn deterministic blocked Docker reader")
+}
 
-    let budget = Duration::from_millis(300);
-    let started_at = Instant::now();
-    assert!(owner.collect_output_until(started_at + budget).is_none());
-    let error = runtime
-        .process_state
-        .retain_reader_owner_at_deadline(owner)
-        .to_string();
-    let elapsed = started_at.elapsed();
+struct ClockedCollection {
+    waits: Arc<Mutex<Vec<CollectionWait>>>,
+    first_wait_seen: std::sync::mpsc::Receiver<()>,
+    done_seen: std::sync::mpsc::Receiver<()>,
+}
 
-    assert!(
-        error.contains("readers exceeded the absolute deadline"),
-        "{error}"
-    );
-    assert!(
-        elapsed <= budget + Duration::from_millis(300),
-        "blocked reader return exceeded its absolute deadline: {elapsed:?}"
-    );
+fn spawn_clocked_collection(
+    owner: DockerCommandOwner,
+    runtime: &DockerRuntime,
+    started_at: Instant,
+    deadline: Instant,
+) -> (
+    ClockedCollection,
+    std::thread::JoinHandle<CollectionOutcome>,
+) {
+    let clock = Arc::new(Mutex::new(started_at));
+    let waits = Arc::new(Mutex::new(Vec::new()));
+    let (first_wait, first_wait_seen) = std::sync::mpsc::channel();
+    let (done, done_seen) = std::sync::mpsc::channel();
+    let worker_clock = Arc::clone(&clock);
+    let worker_waits = Arc::clone(&waits);
+    let readers = Arc::clone(&runtime.process_state.active_readers);
+    let worker = std::thread::Builder::new()
+        .name("docker-reader-collection-test".to_string())
+        .spawn(move || {
+            let mut owner = owner;
+            let now = || *worker_clock.lock().unwrap();
+            let wait = |requested: Duration| {
+                let mut current = worker_clock.lock().unwrap();
+                let active = readers.load(std::sync::atomic::Ordering::SeqCst);
+                worker_waits
+                    .lock()
+                    .unwrap()
+                    .push((*current, requested, active));
+                let _ = first_wait.send(());
+                *current += requested;
+            };
+            let result = owner.collect_output_until_with_clock(deadline, &now, &wait);
+            let _ = done.send(());
+            (owner, result.map(|result| result.is_ok()), now())
+        })
+        .expect("spawn Docker reader collection test");
+    let collection = ClockedCollection {
+        waits,
+        first_wait_seen,
+        done_seen,
+    };
+    (collection, worker)
+}
+
+fn await_collection_or_rescue(
+    collection: &ClockedCollection,
+    rescue: &mut RescueGuardForTest<CollectionOutcome>,
+    deadline: Instant,
+) {
+    if let Err(error) = collection
+        .first_wait_seen
+        .recv_timeout(Duration::from_secs(5))
+    {
+        let outcome = rescue
+            .rescue_and_join()
+            .map(|joined| joined.map(|(_, result, at)| (result, at == deadline)));
+        panic!(
+            "collection never armed its bounded wait with both readers blocked: {error:?}; \
+            worker returned {outcome:?}"
+        );
+    }
+    if let Err(error) = collection.done_seen.recv_timeout(Duration::from_secs(5)) {
+        let waits = collection.waits.lock().unwrap().clone();
+        let outcome = rescue
+            .rescue_and_join()
+            .map(|joined| joined.map(|(_, result, at)| (result, at == deadline)));
+        panic!(
+            "collection did not return after its first wait: {error:?}; waits {waits:?}; \
+            worker returned {outcome:?}"
+        );
+    }
+}
+
+fn assert_reader_deadline_context(runtime: &DockerRuntime) {
     assert_eq!(runtime.active_child_count(), 0);
     assert_eq!(runtime.active_reader_count(), 2);
     let contexts = runtime.retained_cleanup_contexts();
@@ -520,17 +627,275 @@ fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
         "lastError=readers exceeded the absolute deadline program=docker-reader-fixture"
     ));
     assert!(!diagnostic.contains("00000000-0000-0000-0000-000000000000"));
+    assert_eq!(
+        runtime.process_state.retained_reader_handles_for_test(),
+        vec![(Some(false), Some(false))]
+    );
+}
 
-    let (released, changed) = &*release;
-    *released
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-    changed.notify_all();
+#[test]
+fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
+    let runtime = DockerRuntime::new();
+    let ready = Arc::new(std::sync::Barrier::new(3));
+    let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let owner = DockerCommandOwner {
+        child: None,
+        stdout: Some(spawn_blocked_reader(
+            "blocked-docker-stdout",
+            &ready,
+            &release,
+            &runtime,
+        )),
+        stderr: Some(spawn_blocked_reader(
+            "blocked-docker-stderr",
+            &ready,
+            &release,
+            &runtime,
+        )),
+        session_id: None,
+        reason: "docker-command-reader",
+        program: "docker-reader-fixture".to_string(),
+        active_child: None,
+    };
+    ready.wait();
+    assert_eq!(runtime.active_reader_count(), 2);
+    let poll = DockerProcessState::COMMAND_POLL_FOR_TEST;
+    let epsilon = Duration::from_millis(1);
+    let started_at = Instant::now();
+    let deadline = started_at + poll * 3 + epsilon;
+    let (collection, worker) = spawn_clocked_collection(owner, &runtime, started_at, deadline);
+    let rescue_release = Arc::clone(&release);
+    let mut rescue = RescueGuardForTest {
+        rescue: Some(Box::new(move || release_blocked_readers(&rescue_release))),
+        worker: Some(worker),
+    };
+    await_collection_or_rescue(&collection, &mut rescue, deadline);
+    let (owner, result, finished_at) = rescue
+        .join_worker()
+        .expect("collection worker present")
+        .expect("join collection worker");
+    assert_eq!(result, None, "collection produced a result before the cut");
+    assert_eq!(finished_at, deadline);
+    let waits = collection.waits.lock().unwrap().clone();
+    assert_eq!(waits.first(), Some(&(started_at, poll, 2)));
+    assert_eq!(waits.last(), Some(&(deadline - epsilon, epsilon, 2)));
+    assert_eq!(waits.len(), 4, "{waits:?}");
+    assert!(owner
+        .stdout
+        .as_ref()
+        .is_some_and(|reader| !reader.is_finished()));
+    assert!(owner
+        .stderr
+        .as_ref()
+        .is_some_and(|reader| !reader.is_finished()));
+    let error = runtime
+        .process_state
+        .retain_reader_owner_at_deadline(owner)
+        .to_string();
+    assert!(
+        error.contains("readers exceeded the absolute deadline"),
+        "{error}"
+    );
+    assert_reader_deadline_context(&runtime);
+
+    rescue.rescue_and_join();
+    wait_for_retained_readers_to_finish(&runtime);
     runtime
         .process_state
         .retry_until(Instant::now() + Duration::from_secs(1));
-    assert_eq!(runtime.active_reader_count(), 0);
     assert!(runtime.retained_cleanup_contexts().is_empty());
+    assert!(runtime
+        .process_state
+        .retained_reader_handles_for_test()
+        .is_empty());
+}
+
+fn retained_retry_snapshot(runtime: &DockerRuntime) -> String {
+    let contexts = runtime
+        .retained_cleanup_contexts()
+        .iter()
+        .map(|context| (context.state, context.in_flight, context.last_error.clone()))
+        .collect::<Vec<_>>();
+    format!(
+        "contexts={contexts:?} handles={:?} readers={}",
+        runtime.process_state.retained_reader_handles_for_test(),
+        runtime.active_reader_count()
+    )
+}
+
+fn expect_single_retry_context(runtime: &DockerRuntime, state: &str) -> Result<(), String> {
+    let contexts = runtime.retained_cleanup_contexts();
+    let [context] = contexts.as_slice() else {
+        return Err(format!(
+            "expected one context: {}",
+            retained_retry_snapshot(runtime)
+        ));
+    };
+    let matches = context.owner == "dockerCommand"
+        && context.session_id.is_none()
+        && context.reason == "docker-command-reader"
+        && context.program.as_deref() == Some("docker-retry-fixture")
+        && context.state == state
+        && context.in_flight == (state == "inFlight")
+        && context.last_error.as_deref() == Some("retained retry fixture error")
+        && !context
+            .diagnostic()
+            .contains("00000000-0000-0000-0000-000000000000");
+    if matches {
+        Ok(())
+    } else {
+        Err(format!(
+            "expected {state} context: {}",
+            retained_retry_snapshot(runtime)
+        ))
+    }
+}
+
+struct RetryGateDrive<'a> {
+    entered: &'a std::sync::mpsc::Receiver<()>,
+    release_gate: &'a std::sync::mpsc::Sender<()>,
+    wait_seen: &'a std::sync::mpsc::Receiver<(Instant, Duration)>,
+    wait_release: &'a std::sync::mpsc::Sender<Instant>,
+    expected_wait: (Instant, Duration),
+    deadline: Instant,
+}
+
+fn drive_retry_gate(runtime: &DockerRuntime, drive: &RetryGateDrive<'_>) -> Result<(), String> {
+    drive
+        .entered
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|error| format!("retry never reached the gate before D: {error:?}"))?;
+    expect_single_retry_context(runtime, "inFlight")?;
+    let at_gate = runtime.process_state.gate_handles_for_test();
+    if at_gate != Some((Some(false), Some(false))) {
+        return Err(format!(
+            "taken owner entered the gate with handles {at_gate:?}"
+        ));
+    }
+    if runtime.active_reader_count() != 2 {
+        return Err(format!(
+            "gate lost a reader: {}",
+            retained_retry_snapshot(runtime)
+        ));
+    }
+    drive
+        .release_gate
+        .send(())
+        .map_err(|error| error.to_string())?;
+    let (waited_at, requested) = drive
+        .wait_seen
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|error| format!("termination never acknowledged a wait before D: {error:?}"))?;
+    if (waited_at, requested) != drive.expected_wait {
+        return Err(format!("unexpected wait {:?}", (waited_at, requested)));
+    }
+    expect_single_retry_context(runtime, "inFlight")?;
+    drive
+        .wait_release
+        .send(drive.deadline)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[test]
+fn retained_command_retry_uses_one_clock_through_termination() {
+    let poll = DockerProcessState::COMMAND_POLL_FOR_TEST;
+    let deadline = Instant::now()
+        .checked_sub(Duration::from_millis(50))
+        .expect("physical deadline in the past");
+    let step = poll / 2;
+    let clock = Arc::new(Mutex::new(deadline - step));
+    let handshake = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (wait_entered, wait_seen) = std::sync::mpsc::channel::<(Instant, Duration)>();
+    let (wait_release, wait_released) = std::sync::mpsc::channel::<Instant>();
+    let wait_released = Mutex::new(wait_released);
+    let mut runtime = DockerRuntime::new();
+    let now_clock = Arc::clone(&clock);
+    let wait_clock = Arc::clone(&clock);
+    let wait_handshake = Arc::clone(&handshake);
+    runtime.set_retry_clock_for_test(
+        Arc::new(move || *now_clock.lock().unwrap()),
+        Arc::new(move |requested| {
+            let current = *wait_clock.lock().unwrap();
+            let _ = wait_entered.send((current, requested));
+            if wait_handshake.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                if let Ok(next) = wait_released.lock().unwrap().recv() {
+                    *wait_clock.lock().unwrap() = next;
+                }
+            } else {
+                *wait_clock.lock().unwrap() += requested;
+                std::thread::sleep(requested);
+            }
+        }),
+    );
+    let readers = runtime.retain_blocked_command_readers_for_test(
+        "docker-command-reader",
+        "docker-retry-fixture",
+        "retained retry fixture error",
+    );
+    let (entered, release_gate) = runtime.install_command_retry_gate_for_test();
+    let runtime = Arc::new(runtime);
+    let control = ContainerRuntimeControl::default();
+    control.request_shutdown(deadline);
+    let worker_runtime = Arc::clone(&runtime);
+    let worker = std::thread::Builder::new()
+        .name("docker-retry-clock-test".to_string())
+        .spawn(move || worker_runtime.retry_retained_cleanups(&control))
+        .expect("spawn Docker retry clock test");
+    let rescue_gate = release_gate.clone();
+    let rescue_wait = wait_release.clone();
+    let rescue_handshake = Arc::clone(&handshake);
+    let mut rescue = RescueGuardForTest {
+        rescue: Some(Box::new(move || {
+            rescue_handshake.store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = rescue_gate.send(());
+            let _ = rescue_wait.send(deadline);
+            readers.release();
+        })),
+        worker: Some(worker),
+    };
+    let drive = RetryGateDrive {
+        entered: &entered,
+        release_gate: &release_gate,
+        wait_seen: &wait_seen,
+        wait_release: &wait_release,
+        expected_wait: (deadline - step, poll.min(step)),
+        deadline,
+    };
+    let driven = drive_retry_gate(&runtime, &drive);
+    if let Err(failure) = driven {
+        let snapshot = retained_retry_snapshot(&runtime);
+        let outcome = rescue.rescue_and_join().map(|joined| joined.is_ok());
+        panic!("{failure}; state at failure {snapshot}; worker returned {outcome:?}");
+    }
+    rescue
+        .join_worker()
+        .expect("retry worker present")
+        .expect("join Docker retry clock test");
+    let extra_waits = wait_seen.try_iter().collect::<Vec<_>>();
+    assert!(
+        extra_waits.is_empty(),
+        "termination waited at or after D: {extra_waits:?}"
+    );
+    expect_single_retry_context(&runtime, "retained").unwrap();
+    assert_eq!(runtime.active_reader_count(), 2);
+    assert_eq!(
+        runtime.process_state.retained_reader_handles_for_test(),
+        vec![(Some(false), Some(false))]
+    );
+
+    rescue.rescue_and_join();
+    wait_for_retained_readers_to_finish(&runtime);
+    let future = *clock.lock().unwrap() + Duration::from_secs(5);
+    let future_control = ContainerRuntimeControl::default();
+    future_control.request_shutdown(future);
+    runtime.retry_retained_cleanups(&future_control);
+    assert!(runtime.retained_cleanup_contexts().is_empty());
+    assert!(runtime
+        .process_state
+        .retained_reader_handles_for_test()
+        .is_empty());
+    assert_eq!(runtime.active_reader_count(), 0);
 }
 
 #[test]

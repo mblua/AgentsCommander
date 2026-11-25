@@ -93,6 +93,20 @@ impl DockerProcessState {
         self.command_ownership.retry_until(deadline);
     }
 
+    #[cfg(test)]
+    pub(crate) fn retry_until_with_clock(
+        &self,
+        deadline: Instant,
+        now: &dyn Fn() -> Instant,
+        wait: &dyn Fn(std::time::Duration),
+    ) {
+        self.command_ownership
+            .retry_until_with_clock(deadline, now, wait);
+    }
+
+    #[cfg(test)]
+    pub(crate) const COMMAND_POLL_FOR_TEST: std::time::Duration = DOCKER_COMMAND_POLL;
+
     pub(crate) fn retained_contexts(&self) -> Vec<RetainedDockerCommandContext> {
         self.command_ownership.retained_contexts()
     }
@@ -153,6 +167,16 @@ impl DockerProcessState {
         self.command_ownership
             .retain(owner, Some(last_error.into()));
         DockerCommandReaderReleaseForTest { gate }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_reader_handles_for_test(&self) -> Vec<(Option<bool>, Option<bool>)> {
+        self.command_ownership.retained_reader_handles_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gate_handles_for_test(&self) -> Option<(Option<bool>, Option<bool>)> {
+        self.command_ownership.gate_handles_for_test()
     }
 
     #[cfg(test)]
