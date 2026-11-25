@@ -6,7 +6,7 @@
 use crate::commands;
 use crate::pty::agent_quota::{AgentQuotaPayload, QuotaEventSink};
 use crate::pty::context_scrape::{ContextEventSink, ContextUsagePayload};
-use crate::pty_wiring::WatcherDelivery;
+use crate::pty_wiring::{WatcherDelivery, WatchersScopeEvents};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -19,6 +19,17 @@ impl<R: Runtime> ContextEventSink for AppHandle<R> {
 impl<R: Runtime> QuotaEventSink for AppHandle<R> {
     fn emit(&self, payload: AgentQuotaPayload) {
         let _ = tauri::Emitter::emit(self, "agent_quota", payload);
+    }
+}
+
+impl<R: Runtime> WatchersScopeEvents for AppHandle<R> {
+    fn request_watchers_scope(&self, session_id: uuid::Uuid) -> Result<(), String> {
+        self.emit_to(
+            commands::window::WATCHERS_WINDOW_LABEL,
+            "watchers_scope_request",
+            serde_json::json!({ "sessionId": session_id.to_string() }),
+        )
+        .map_err(|e| e.to_string())
     }
 }
 
