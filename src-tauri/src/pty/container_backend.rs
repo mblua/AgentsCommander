@@ -168,18 +168,14 @@ impl ContainerShutdownWorkRegistry {
     }
 }
 
-static NATIVE_SWEEP_CLOCK: std::sync::OnceLock<ContainerSweepClock> = std::sync::OnceLock::new();
-
 impl ContainerSweepClock {
     pub(super) fn native() -> Self {
-        NATIVE_SWEEP_CLOCK
-            .get_or_init(|| Self {
-                now: Arc::new(Instant::now),
-                wait: Arc::new(|_, step| std::thread::sleep(step)),
-                #[cfg(test)]
-                probe: None,
-            })
-            .clone()
+        Self {
+            now: Arc::new(Instant::now),
+            wait: Arc::new(|_, step| std::thread::sleep(step)),
+            #[cfg(test)]
+            probe: None,
+        }
     }
 
     #[cfg(test)]
