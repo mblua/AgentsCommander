@@ -312,10 +312,17 @@ class Run:
         steps = [["-M", "ctrl", "l", "-m", "ctrl"], [canonical], ["-k", "Return"]]
         for step in steps:
             self.dialog_key(step, dialog)
-        time.sleep(0.5)
-        focus = self.desk.focused()
-        if focus and focus["conId"] == dialog["conId"]:
-            self.dialog_key(["-M", "alt", "s", "-m", "alt"], dialog)
+        # The chooser may only enter the folder on Return; then the accept button
+        # confirms it. Its mnemonic depends on the portal label (_Select or _Open).
+        accepts = [("return", ["-k", "Return"]), ("alt_s", ["-M", "alt", "s", "-m", "alt"]),
+                   ("alt_o", ["-M", "alt", "o", "-m", "alt"])]
+        for name, keys in accepts:
+            time.sleep(0.5)
+            focus = self.desk.focused()
+            if not (focus and focus["conId"] == dialog["conId"]):
+                break
+            print(f"J1 dialog still open, sending {name}", file=sys.stderr)
+            self.dialog_key(keys, dialog)
 
         def back_in_main():
             focus = self.desk.focused()
