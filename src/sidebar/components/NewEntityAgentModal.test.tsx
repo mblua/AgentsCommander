@@ -178,4 +178,16 @@ describe("NewEntityAgentModal template picker", () => {
     keyDown(document, "Escape");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("exposes the tutorial markers", async () => {
+    const { root } = await mount();
+    const one = (id: string) => {
+      const found = root.querySelectorAll(`[data-ac-testid="${id}"]`);
+      expect(found).toHaveLength(1);
+      return found[0];
+    };
+    one("newAgent.modal");
+    expect(one("newAgent.name")).toBeInstanceOf(HTMLInputElement);
+    expect(one("newAgent.create")).toBeInstanceOf(HTMLButtonElement);
+  });
 });

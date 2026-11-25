@@ -263,6 +263,9 @@ const NewTeamModal: Component<{
     <div class="modal-overlay" role="none" onKeyDown={handleKeyDown}>
       <div
         class="agent-modal entity-wizard-modal"
+        data-ac-testid="newTeam.modal"
+        data-ac-role="dialog"
+        data-ac-state={`step-${step()}`}
         aria-busy={creating() ? "true" : "false"}
       >
         <div class="agent-modal-header">
@@ -276,6 +279,8 @@ const NewTeamModal: Component<{
               <label class="new-agent-label" for="new-team-name">Team name</label>
               <input
                 id="new-team-name"
+                data-ac-testid="newTeam.name"
+                data-ac-role="input"
                 ref={nameRef!}
                 class="agent-search-input"
                 value={teamName()}
@@ -298,7 +303,7 @@ const NewTeamModal: Component<{
         </Show>
 
         <Show when={step() === 2}>
-          <div class="wizard-body">
+          <div class="wizard-body" data-ac-testid="newTeam.agents" data-ac-role="list">
             <Show when={createError()}>
               <div class="new-agent-error" role="alert" aria-label="Agent selection error">{createError()}</div>
             </Show>
@@ -511,6 +516,8 @@ const NewTeamModal: Component<{
             </button>
             <button
               class="new-agent-create-btn"
+              data-ac-testid="newTeam.create"
+              data-ac-role="button"
               disabled={!canCreate()}
               onClick={handleCreate}
             >

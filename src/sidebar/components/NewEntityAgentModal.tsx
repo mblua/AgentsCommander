@@ -196,7 +196,7 @@ const NewEntityAgentModal: Component<{
 
   return (
     <div class="modal-overlay" role="none" onKeyDown={handleKeyDown}>
-      <div class="agent-modal">
+      <div class="agent-modal" data-ac-testid="newAgent.modal" data-ac-role="dialog">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Agent</span>
         </div>
@@ -330,6 +330,8 @@ const NewEntityAgentModal: Component<{
             <label class="new-agent-label" for="new-agent-name">Name</label>
             <input
               id="new-agent-name"
+              data-ac-testid="newAgent.name"
+              data-ac-role="input"
               ref={nameRef!}
               class="agent-search-input"
               value={name()}
@@ -379,6 +381,8 @@ const NewEntityAgentModal: Component<{
           </button>
           <button
             class="new-agent-create-btn"
+            data-ac-testid="newAgent.create"
+            data-ac-role="button"
             disabled={!canCreate() || creating()}
             onClick={handleCreate}
           >
