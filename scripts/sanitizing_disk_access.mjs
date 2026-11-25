@@ -97,7 +97,8 @@ function parameterType(scan, fn, T, name) {
   const open = parameterListOpen(T, fn);
   if (T[open]?.text !== '(') return null;
   let part = [];
-  for (let k = open + 1; k <= T[open].mate; k++) {
+  let k = open;
+  while (++k <= T[open].mate) {
     if (k === T[open].mate || T[k].text === ',') {
       const type = parameterPartType(scan, part, name);
       if (type !== undefined) return type;

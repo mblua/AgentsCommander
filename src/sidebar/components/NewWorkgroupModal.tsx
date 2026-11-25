@@ -179,7 +179,7 @@ const NewWorkgroupModal: Component<{
   });
 
   return (
-    <div class="modal-overlay" onKeyDown={handleKeyDown} onKeyUp={releaseHeldKey}>
+    <div class="modal-overlay" role="none" onKeyDown={handleKeyDown} onKeyUp={releaseHeldKey}>
       <div class="agent-modal new-room-modal" data-ac-testid="newRoom.modal" data-ac-role="dialog">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Room</span>

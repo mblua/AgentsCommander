@@ -690,7 +690,7 @@ const ProjectPanel: Component = () => {
         try {
           await SessionAPI.restart(existing.id, { skipAutoResume: false });
           if (isTauri) {
-            await WindowAPI.ensureTerminal();
+            await WindowAPI.focusMain();
           }
         } catch (e) {
           console.error("Failed to wake session:", e);
@@ -704,7 +704,7 @@ const ProjectPanel: Component = () => {
         const detachedLabel = `terminal-${existing.id.replaceAll("-", "")}`;
         const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
         if (!detachedWin) {
-          await WindowAPI.ensureTerminal();
+          await WindowAPI.focusMain();
         }
       }
       return;
@@ -3311,7 +3311,7 @@ const ProjectPanel: Component = () => {
             {showCtxMenu() && (
               <Portal>
                 <div
-                  class="session-context-menu"
+                  class="session-context-menu" role="none"
                   style={{ left: `${ctxMenuPos().x}px`, top: `${ctxMenuPos().y}px` }}
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -3534,7 +3534,7 @@ const ProjectPanel: Component = () => {
                     {workgroupsHeaderCtxMenu() && (
                       <Portal>
                         <div
-                          class="session-context-menu"
+                          class="session-context-menu" role="none"
                           style={{ left: `${workgroupsHeaderCtxMenu()!.x}px`, top: `${workgroupsHeaderCtxMenu()!.y}px` }}
                           onClick={(e) => e.stopPropagation()}
                         >
@@ -3664,7 +3664,7 @@ const ProjectPanel: Component = () => {
                     {loopsHeaderCtxMenu() && (
                       <Portal>
                         <div
-                          class="session-context-menu"
+                          class="session-context-menu" role="none"
                           style={{ left: `${loopsHeaderCtxMenu()!.x}px`, top: `${loopsHeaderCtxMenu()!.y}px` }}
                           onClick={(e) => e.stopPropagation()}
                         >
@@ -3811,7 +3811,7 @@ const ProjectPanel: Component = () => {
                     {agentCtxMenu() && (
                       <Portal>
                         <div
-                          class="session-context-menu"
+                          class="session-context-menu" role="none"
                           style={{ left: `${agentCtxMenu()!.x}px`, top: `${agentCtxMenu()!.y}px` }}
                           onClick={(e) => e.stopPropagation()}
                         >
@@ -3849,7 +3849,7 @@ const ProjectPanel: Component = () => {
                     {agentsHeaderCtxMenu() && (
                       <Portal>
                         <div
-                          class="session-context-menu"
+                          class="session-context-menu" role="none"
                           style={{ left: `${agentsHeaderCtxMenu()!.x}px`, top: `${agentsHeaderCtxMenu()!.y}px` }}
                           onClick={(e) => e.stopPropagation()}
                         >
@@ -4051,7 +4051,7 @@ const ProjectPanel: Component = () => {
                     {teamsHeaderCtxMenu() && (
                       <Portal>
                         <div
-                          class="session-context-menu"
+                          class="session-context-menu" role="none"
                           style={{ left: `${teamsHeaderCtxMenu()!.x}px`, top: `${teamsHeaderCtxMenu()!.y}px` }}
                           onClick={(e) => e.stopPropagation()}
                         >
@@ -4080,7 +4080,7 @@ const ProjectPanel: Component = () => {
             {teamCtxMenu() && (
               <Portal>
                 <div
-                  class="session-context-menu"
+                  class="session-context-menu" role="none"
                   style={{ left: `${teamCtxMenu()!.x}px`, top: `${teamCtxMenu()!.y}px` }}
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -4125,7 +4125,7 @@ const ProjectPanel: Component = () => {
             {wgCtxMenu() && (
               <Portal>
                 <div
-                  class="session-context-menu"
+                  class="session-context-menu" role="none"
                   style={{ left: `${wgCtxMenu()!.x}px`, top: `${wgCtxMenu()!.y}px` }}
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -4141,7 +4141,7 @@ const ProjectPanel: Component = () => {
                       setWgCtxMenu(null);
                     }}
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style={{ "flex-shrink": "0" }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style={{ "flex-shrink": "0" }} aria-hidden="true">
                       <polyline points="3 6 5 6 21 6" />
                       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                     </svg>
@@ -4155,7 +4155,7 @@ const ProjectPanel: Component = () => {
             {loopCtxMenu() && (
               <Portal>
                 <div
-                  class="session-context-menu"
+                  class="session-context-menu" role="none"
                   style={{ left: `${loopCtxMenu()!.x}px`, top: `${loopCtxMenu()!.y}px` }}
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -4309,7 +4309,7 @@ const ProjectPanel: Component = () => {
             {replicaCtxMenu() && (
               <Portal>
                 <div
-                  class="session-context-menu"
+                  class="session-context-menu" role="none"
                   ref={replicaCtxMenuEl}
                   style={{ left: `${replicaCtxMenu()!.x}px`, top: `${replicaCtxMenu()!.y}px` }}
                   onClick={(e) => e.stopPropagation()}
@@ -5074,7 +5074,7 @@ const ProjectPanel: Component = () => {
               const detachedLabel = `terminal-${newSession.id.replaceAll("-", "")}`;
               const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
               if (!detachedWin) {
-                await WindowAPI.ensureTerminal();
+                await WindowAPI.focusMain();
               }
             }
             setPendingLaunch(null);

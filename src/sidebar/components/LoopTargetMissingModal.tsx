@@ -33,6 +33,7 @@ const LoopTargetMissingModal: Component<{
 
   return (
     <div
+      role="none"
       class="modal-overlay"
       onClick={props.onDismiss}
       onKeyDown={dismissOnEscape}

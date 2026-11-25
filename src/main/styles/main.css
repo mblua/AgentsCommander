@@ -412,7 +412,8 @@ html.light-theme .home-markdown pre { background: rgba(0, 0, 0, 0.05); }
   font-size: 12px;
   line-height: 1.5;
   white-space: pre-wrap;
-  word-break: break-word;
+  word-break: normal;
+  overflow-wrap: anywhere;
   background: rgba(0, 0, 0, 0.25);
   border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
   border-radius: 4px;

@@ -132,7 +132,8 @@ function recordCommands({ path, scan, ts, m, record }) {
 
 function touchesDisk(path, scan, ts, m, item) {
   let disk = false;
-  for (let i = 0; i < ts.length; i++) {
+  let i = -1;
+  while (++i < ts.length) {
     const t = ts[i];
     if (item.bodyStart === null || t.start <= item.bodyStart || t.start >= item.end ||
       t.kind !== 'ident' || (ts[i - 1]?.text === '.' || ts[i - 1]?.text === '::' &&
