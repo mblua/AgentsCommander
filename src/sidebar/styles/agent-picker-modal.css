@@ -694,7 +694,6 @@
   color: var(--sidebar-fg-dim);
   text-transform: uppercase;
   overflow-wrap: anywhere;
-  word-break: break-word;
 }
 
 .agent-profile-declared-env-value {
