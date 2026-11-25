@@ -34,6 +34,7 @@ import desktop as dk
 SUITE_S, STARTUP_S, STEP_S, CLOSE_S, OBSERVE_S = 180, 60, 30, 15, 12
 EXIT_PASS, EXIT_FAIL, EXIT_COMPOSITOR = 0, 1, 20
 DIALOG_TITLE = "Select parent folder for the new agent"
+MENU_NEW_PROJECT = "actionBar.menu.newProject"
 READY = "PROBE READY"
 PYTHON = "/usr/bin/python3"
 SPAWN_RE = re.compile(r"\[pty\] Spawned session (\S+) with child pid (.*)$")
@@ -138,8 +139,33 @@ class Run:
 
     def click(self, selector):
         self.require_main_focus()
+        if selector == MENU_NEW_PROJECT:
+            self.click_menu_item(selector)
+            return
         self.require_target(self.ui("ui-query", selector), selector)
         self.require_target(self.ui("ui-click", selector), selector)
+
+    def click_menu_item(self, selector):
+        """Click a menu item that closes its menu, so the post-click snapshot may be hidden.
+
+        The query proves exactly one visible, enabled match in the main window; focus is
+        checked again before the click; the click reply must name the main window and the
+        same selector. Its effect (the authenticated chooser) is checked by the caller.
+        """
+        query = self.ui("ui-query", selector, check=False)
+        if query.get("error") == "duplicate_selector":
+            raise Failure("selector_not_unique", self.stage)
+        if (query.get("ok") is not True or query.get("window") != "main"
+                or query.get("selector") != selector):
+            raise Failure("target_not_usable", self.stage)
+        self.require_target(query, selector)
+        self.require_main_focus()
+        reply = self.ui("ui-click", selector)
+        target = reply.get("target") or {}
+        if (reply.get("ok") is not True or reply.get("action") != "click"
+                or reply.get("window") != "main" or reply.get("selector") != selector
+                or target.get("testId") != selector):
+            raise Failure("target_not_usable", self.stage)
 
     def wait_selector(self, selector, seconds=STEP_S):
         reply = self.ui("ui-wait", selector, "--timeout-ms", str(int(seconds * 1000)),
@@ -220,7 +246,7 @@ class Run:
         if not isinstance(agents, list) or len(agents) != 1:
             raise Failure("agent_list_mismatch", self.stage)
         agent = agents[0]
-        if agent.get("id") != "e2e-probe" or agent.get("command") != f"{PYTHON} {self.probe}":
+        if agent.get("id") != "e2e-probe" or agent.get("baseCommand") != f"{PYTHON} {self.probe}":
             raise Failure("agent_list_mismatch", self.stage)
 
     def launch_app(self):
@@ -256,18 +282,33 @@ class Run:
 
     # ----- J1 --------------------------------------------------------------------------
 
-    def project_paths(self):
+    def project_paths(self, post):
+        """Read-only view of the profile's project-paths.json for J1.
+
+        PRE (post=False): a missing file or the empty object `{}` is the empty profile.
+        POST (post=True): the file must hold an explicit `projectPaths` list. Anything else
+        (null, legacy `projectPath`, broken JSON, wrong types, read errors) fails.
+        """
+        code = "project_paths_mismatch" if post else "project_paths_unreadable"
         try:
-            with open(os.path.join(self.profile, "project-paths.json"), encoding="utf-8") as h:
-                data = json.load(h)
+            with open(os.path.join(self.profile, "project-paths.json"), "rb") as h:
+                raw = h.read()
         except FileNotFoundError:
+            if post:
+                raise Failure(code, self.stage) from None
             return []
-        except ValueError as exc:
-            raise Failure("project_paths_unreadable", self.stage) from exc
+        except OSError as exc:
+            raise Failure(code, self.stage) from exc
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise Failure(code, self.stage) from exc
+        if not post and data == {}:
+            return []
         paths = data.get("projectPaths") if isinstance(data, dict) else None
-        if not isinstance(paths, list):
-            raise Failure("project_paths_unreadable", self.stage)
-        return [os.path.realpath(p if isinstance(p, str) else p.get("path", "")) for p in paths]
+        if not isinstance(paths, list) or not all(isinstance(p, str) and p for p in paths):
+            raise Failure(code, self.stage)
+        return [os.path.realpath(p) for p in paths]
 
     def journey_one(self):
         self.at("J1")
@@ -275,14 +316,14 @@ class Run:
         self.project = os.path.join(self.root, "projects", self.project_name)
         os.makedirs(self.project, mode=0o700)
         canonical = os.path.realpath(self.project)
-        if os.listdir(self.project) or canonical in self.project_paths():
+        if os.listdir(self.project) or canonical in self.project_paths(post=False):
             raise Failure("project_not_fresh", self.stage)
         self.p_id = automation_id_part(canonical)
         header = f"project.header.{self.p_id}"
         if self.ui("ui-query", header, check=False).get("error") != "missing_selector":
             raise Failure("project_header_present", self.stage)
         self.click("actionBar.newOpen")
-        self.click("actionBar.menu.newProject")
+        self.click(MENU_NEW_PROJECT)
         dialog = self.wait_dialog()
         steps = [["-M", "ctrl", "l", "-m", "ctrl"], [canonical], ["-k", "Return"]]
         for step in steps:
@@ -300,7 +341,7 @@ class Run:
         self.wait_selector(header)
         self.poll(STEP_S, lambda: os.path.isdir(os.path.join(canonical, ".ac")),
                   "project_ac_missing")
-        if self.project_paths().count(canonical) != 1:
+        if self.project_paths(post=True).count(canonical) != 1:
             raise Failure("project_paths_mismatch", self.stage)
         self.result["journeys"]["J1"] = "pass"
 

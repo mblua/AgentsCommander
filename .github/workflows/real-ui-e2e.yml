@@ -1,0 +1,350 @@
+name: Real UI e2e
+
+# #5145 P02: run the integrated real-UI journeys (scripts/real-ui-e2e) on the
+# PR head inside a disposable runner VM and verify their evidence from disk.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'crates/**'
+      - 'scripts/real-ui-e2e/**'
+      - '.github/workflows/real-ui-e2e.yml'
+      - 'scripts/ci-install-linux-deps.sh'
+      - 'scripts/copy-testable-binary.mjs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '.nvmrc'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'index.html'
+      - 'vite.config.ts'
+      - 'tsconfig*.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-ui-e2e-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  real-ui-e2e-linux:
+    name: real-ui-e2e-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+
+      - name: Install toolchain and desktop dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --show-toplevel)" = "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          npm install -g --ignore-scripts npm@12.2.3
+          rustup toolchain install 1.98.1 --profile minimal
+          APT_DEB_CACHE="$RUNNER_TEMP/apt-debs" bash scripts/ci-install-linux-deps.sh
+          sudo apt-get install -y sway wtype dbus xdg-desktop-portal xdg-desktop-portal-gtk \
+            python3-pil tesseract-ocr tesseract-ocr-eng fonts-dejavu-core
+
+      - name: Record versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "node $(node --version)"
+          echo "npm $(npm --version)"
+          rustc --version
+          cargo --version
+          sway --version
+          dpkg-query -W -f='${Package} ${Version}\n' 'libwebkit2gtk-4.1-0' || true
+          /usr/bin/python3 --version
+          /usr/bin/python3 -c 'import PIL; print("Pillow", PIL.__version__)'
+          tesseract --version 2>&1 | head -n 1
+
+      - name: Build the testable binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          cargo fetch --locked
+          BUILD_PROFILE=prod ./node_modules/.bin/tauri build --no-bundle \
+            --config src-tauri/tauri.prod.conf.json -- --locked
+          npm run build:testable
+          cmp target/release/agentscommander target/release/agentscommander_testeable.exe
+
+      - name: Run the journeys
+        id: journeys
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          E=$(mktemp -d "$RUNNER_TEMP/real-ui-evidence.XXXXXXXX")
+          printf 'EVIDENCE_DIR=%s\n' "$E" >> "$GITHUB_ENV"
+          rc=0
+          timeout --signal=TERM --kill-after=15s 240s /usr/bin/python3 -B \
+            scripts/real-ui-e2e/journeys.py --binary "$PWD/target/release/agentscommander_testeable.exe" \
+            --evidence "$E" --source-sha "$PR_HEAD" || rc=$?
+          printf 'rc=%s\n' "$rc" >> "$GITHUB_OUTPUT"
+          echo "journeys exit code: $rc"
+          exit "$rc"
+
+      - name: Verify the evidence
+        id: verify
+        if: always()
+        shell: bash
+        env:
+          DRIVER_RC: ${{ steps.journeys.outputs.rc }}
+          BINARY: target/release/agentscommander_testeable.exe
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -B - <<'PY'
+          import hashlib, io, json, os, re, stat, subprocess, sys, uuid
+
+          E = os.environ.get("EVIDENCE_DIR", "")
+          HEAD = os.environ["PR_HEAD"]
+          RC = os.environ.get("DRIVER_RC", "")
+          OUT = os.environ["GITHUB_OUTPUT"]
+          SUMMARY = os.path.join(os.environ["RUNNER_TEMP"], "real-ui-summary")
+          NAMES = ("result.json", "ready.png", "reply.png", "silent.png")
+          ROLES = ("ready", "reply", "silent")
+          LIMIT = 10 * 1024 * 1024
+          HEX = re.compile(r"^[0-9a-f]{64}$")
+          CODE = re.compile(r"^[a-z0-9_.]{1,64}$")
+          ASK = re.compile(r"^ASK [A-Z]+ [A-Z]+ [A-Z]+$")
+          REPLY = re.compile(r"^REPLY [A-Z]+ [A-Z]+ [A-Z]+ [A-Z]+$")
+          READY = "PROBE READY"
+
+          class Invalid(Exception):
+              pass
+
+          def need(ok, why):
+              if not ok:
+                  raise Invalid(why)
+
+          def pos_int(v):
+              return type(v) is int and v > 0
+
+          def keys(obj, names, why):
+              need(isinstance(obj, dict) and set(obj) == set(names), why)
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def verify(r, blobs, binary, ocr):
+              """Check result.json against the P01 contract and the stored pixels."""
+              need(isinstance(r, dict), "result_type")
+              need(r.get("sourceSha") == HEAD, "source_sha")
+              keys(r.get("binary"), ("sha256", "bytes"), "binary_keys")
+              need(r["binary"]["sha256"] == sha(binary) and r["binary"]["bytes"] == len(binary), "binary_identity")
+              started = r.get("startedAtUtc")
+              need(isinstance(started, str) and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z", started), "started_utc")
+              need(pos_int(r.get("durationMs")) and pos_int(r.get("appPid")), "duration_pid")
+              keys(r.get("window"), ("label", "conId"), "window_keys")
+              need(r["window"]["label"] == "main" and pos_int(r["window"]["conId"]), "window")
+              s = r.get("sessionId")
+              try:
+                  need(isinstance(s, str) and str(uuid.UUID(s)) == s, "session_uuid")
+              except ValueError:
+                  raise Invalid("session_uuid")
+              keys(r.get("profile"), ("before", "after"), "profile_keys")
+              need(r["profile"]["before"] == [] and r["profile"]["after"] == [s], "profile_delta")
+              launch = r.get("launch")
+              keys(launch, ("sessionId", "childPid", "startTicks", "ttyDev", "replicaKey", "spawnCount", "probeStarts"), "launch_keys")
+              p = launch["childPid"]
+              need(launch["sessionId"] == s and pos_int(p) and pos_int(launch["startTicks"]), "launch_identity")
+              tty = launch["ttyDev"]
+              need(isinstance(tty, list) and len(tty) == 2 and all(type(x) is int and x >= 0 for x in tty), "launch_tty")
+              need(isinstance(launch["replicaKey"], str) and HEX.match(launch["replicaKey"]), "launch_replica")
+              need(launch["spawnCount"] == 1 and launch["probeStarts"] == 1
+                   and type(launch["spawnCount"]) is int and type(launch["probeStarts"]) is int, "launch_counts")
+              obs = r.get("observations")
+              need(isinstance(obs, list) and len(obs) == 2, "observations")
+              for i, (case, outcome) in enumerate((("reply", "visible_reply"), ("silent", "missing_visible_reply"))):
+                  o = obs[i]
+                  keys(o, ("case", "ask", "want", "outcome", "receipt", "capture"), "observation_keys")
+                  need(o["case"] == case and o["outcome"] == outcome, "observation_case")
+                  need(isinstance(o["ask"], str) and ASK.match(o["ask"]), "observation_ask")
+                  need(isinstance(o["want"], str) and REPLY.match(o["want"]), "observation_want")
+                  rc = o["receipt"]
+                  keys(rc, ("seq", "line", "pid", "startTicks", "ttyDev", "replicaKey"), "receipt_keys")
+                  need(type(rc["seq"]) is int and rc["seq"] == i + 1 and rc["line"] == o["ask"], "receipt_seq")
+                  need(type(rc["pid"]) is int and rc["pid"] == p and rc["startTicks"] == launch["startTicks"]
+                       and rc["ttyDev"] == tty and rc["replicaKey"] == launch["replicaKey"], "receipt_identity")
+              need(obs[0]["ask"] != obs[1]["ask"] and obs[0]["want"] != obs[1]["want"], "observation_distinct")
+              captures = {"ready": r.get("ready"), "reply": obs[0]["capture"], "silent": obs[1]["capture"]}
+              for role, c in captures.items():
+                  keys(c, ("sessionId", "childPid", "conId", "file", "sha256"), "capture_keys")
+                  need(c["sessionId"] == s and c["childPid"] == p and type(c["childPid"]) is int
+                       and c["conId"] == r["window"]["conId"] and c["file"] == role + ".png", "capture_identity")
+                  need(isinstance(c["sha256"], str) and HEX.match(c["sha256"]), "capture_hash_format")
+                  need(sha(blobs[role]) == c["sha256"], "capture_hash")
+              need(r.get("journeys") == {"J1": "pass", "J2": "pass", "J3": "pass"}, "journeys")
+              keys(r.get("control"), ("samePty", "observedError"), "control_keys")
+              need(r["control"]["samePty"] is True and r["control"]["observedError"] == "missing_visible_reply", "control")
+              need(isinstance(r.get("cleanup"), dict) and r["cleanup"].get("ok") is True, "cleanup")
+              a1, w1, a2, w2 = obs[0]["ask"], obs[0]["want"], obs[1]["ask"], obs[1]["want"]
+              known = {READY, a1, w1, a2, w2}
+              required = {"ready": [READY], "reply": [READY, a1, w1], "silent": [READY, w1, a2]}
+              for role in ROLES:
+                  lines = ocr(blobs[role])
+                  need(READY in lines, "ocr_anchor_" + role)
+                  tail = lines[lines.index(READY):]
+                  need(all(line in known for line in tail), "ocr_unknown_" + role)
+                  need(tail == required[role], "ocr_content_" + role)
+
+          _ocr_cache = {}
+
+          def ocr(data):
+              key = sha(data)
+              if key not in _ocr_cache:
+                  from PIL import Image
+                  image = Image.open(io.BytesIO(data))
+                  image.load()
+                  need(image.width > 0 and image.height > 0, "png_area")
+                  try:
+                      done = subprocess.run(["tesseract", "stdin", "stdout", "-l", "eng", "--psm", "6"],
+                                            input=data, capture_output=True, timeout=60)
+                  except subprocess.TimeoutExpired:
+                      raise Invalid("ocr_timeout")
+                  need(done.returncode == 0, "ocr_failed")
+                  text = done.stdout.decode("utf-8", "replace")
+                  _ocr_cache[key] = [" ".join(l.split()) for l in text.splitlines() if l.strip()]
+              return _ocr_cache[key]
+
+          def rejects(r, blobs, binary, why):
+              try:
+                  verify(r, blobs, binary, ocr)
+              except Invalid as exc:
+                  print("negative control rejected (" + why + "): " + str(exc))
+                  return str(exc)
+              raise Invalid("negative_control_accepted_" + why)
+
+          def self_test(r, blobs, binary):
+              copy = lambda: json.loads(json.dumps(r))
+              c = copy(); del c["observations"][1]["receipt"]
+              rejects(c, blobs, binary, "silent_receipt_removed")
+              c = copy(); c["observations"][1]["receipt"]["pid"] += 1
+              rejects(c, blobs, binary, "silent_receipt_pid")
+              c = copy(); c["observations"][1]["capture"]["sessionId"] = str(uuid.uuid4())
+              rejects(c, blobs, binary, "capture_uuid")
+              swapped = dict(blobs, reply=blobs["silent"], silent=blobs["reply"])
+              need(rejects(copy(), swapped, binary, "swapped_bytes") == "capture_hash", "swap_not_hash")
+              c = copy()
+              c["observations"][0]["capture"]["sha256"] = sha(swapped["reply"])
+              c["observations"][1]["capture"]["sha256"] = sha(swapped["silent"])
+              need(rejects(c, swapped, binary, "swapped_rehashed").startswith("ocr_content_"), "swap_not_ocr")
+
+          def summary(result, status):
+              """Sanitized summary: fixed fields and known codes only."""
+              os.makedirs(SUMMARY, exist_ok=True)
+              out = {"sourceSha": HEAD, "driverExit": RC if RC.isdigit() else None, "status": status}
+              if isinstance(result, dict):
+                  for k in ("error", "stage"):
+                      v = result.get(k)
+                      if isinstance(v, str) and CODE.match(v):
+                          out[k] = v
+                  j = result.get("journeys")
+                  if isinstance(j, dict):
+                      out["journeys"] = {k: v for k, v in j.items()
+                                         if k in ("J1", "J2", "J3") and v in ("pass", "fail", "skipped")}
+                  if isinstance(result.get("durationMs"), int):
+                      out["durationMs"] = result["durationMs"]
+                  cl = result.get("cleanup")
+                  if isinstance(cl, dict) and isinstance(cl.get("ok"), bool):
+                      out["cleanupOk"] = cl["ok"]
+              with open(os.path.join(SUMMARY, "summary.json"), "w", encoding="utf-8") as f:
+                  json.dump(out, f, indent=2, sort_keys=True)
+                  f.write("\n")
+              print(json.dumps(out, sort_keys=True))
+
+          def emit(name, value):
+              with open(OUT, "a", encoding="utf-8") as f:
+                  f.write(name + "=" + value + "\n")
+
+          def load_dir():
+              need(E and os.path.isdir(E) and not os.path.islink(E), "evidence_dir")
+              need(sorted(os.listdir(E)) == sorted(NAMES), "evidence_names")
+              blobs, total = {}, 0
+              for name in NAMES:
+                  path = os.path.join(E, name)
+                  st = os.lstat(path)
+                  need(stat.S_ISREG(st.st_mode), "evidence_not_regular")
+                  with open(path, "rb") as f:
+                      data = f.read()
+                  total += len(data)
+                  blobs[name[:-4] if name.endswith(".png") else name] = data
+              need(total <= LIMIT, "evidence_too_large")
+              return blobs
+
+          result = None
+          try:
+              if E and os.path.isfile(os.path.join(E, "result.json")) and not os.path.islink(os.path.join(E, "result.json")):
+                  try:
+                      with open(os.path.join(E, "result.json"), encoding="utf-8") as f:
+                          result = json.load(f)
+                  except ValueError:
+                      result = None
+              if RC != "0":
+                  summary(result, "driver_failed")
+                  sys.exit(1)
+              blobs = load_dir()
+              result = json.loads(blobs.pop("result.json").decode("utf-8"))
+              with open(os.environ["BINARY"], "rb") as f:
+                  binary = f.read()
+              verify(result, blobs, binary, ocr)
+              self_test(result, blobs, binary)
+              publish = os.path.join(E, "publish")
+              os.mkdir(publish)
+              fields = ("sourceSha", "binary", "startedAtUtc", "durationMs", "appPid", "window", "sessionId",
+                        "profile", "launch", "ready", "observations", "journeys", "control")
+              public = {k: result[k] for k in fields}
+              public["cleanup"] = {"ok": True}
+              with open(os.path.join(publish, "result.json"), "w", encoding="utf-8") as f:
+                  json.dump(public, f, indent=2, sort_keys=True)
+                  f.write("\n")
+              for role in ROLES:
+                  with open(os.path.join(publish, role + ".png"), "wb") as f:
+                      f.write(blobs[role])
+              summary(result, "verified")
+              emit("verified", "true")
+          except Invalid as exc:
+              summary(result, "invalid:" + str(exc))
+              sys.exit(1)
+          PY
+
+      - name: Upload verified evidence
+        if: always() && steps.verify.outputs.verified == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: real-ui-e2e-${{ env.PR_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.EVIDENCE_DIR }}/publish/result.json
+            ${{ env.EVIDENCE_DIR }}/publish/ready.png
+            ${{ env.EVIDENCE_DIR }}/publish/reply.png
+            ${{ env.EVIDENCE_DIR }}/publish/silent.png
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload sanitized summary
+        if: always() && steps.verify.outputs.verified != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: real-ui-e2e-summary-${{ env.PR_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/real-ui-summary/summary.json
+          if-no-files-found: ignore
+          retention-days: 7

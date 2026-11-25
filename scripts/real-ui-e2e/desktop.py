@@ -14,6 +14,7 @@ import socket
 import struct
 import subprocess
 import time
+from xml.etree import ElementTree
 
 SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SWAY = "/usr/bin/sway"
@@ -88,6 +89,8 @@ class Desktop:
         self.swaysock = None
         self.sway = None
         self.portal_pids = {}
+        self.portal_children = {}
+        self.portal_receipts = []
         self.key_calls = 0
         self.snapshot_calls = 0
         self.sway_exit = None
@@ -203,22 +206,21 @@ class Desktop:
             raise DesktopError("bus_identity_mismatch", "bus")
         self.bus_address = address
 
-    def bus_call(self, method, arg):
-        result = self.run([
-            "/usr/bin/dbus-send", "--session", "--print-reply=literal",
-            "--dest=org.freedesktop.DBus", "/org/freedesktop/DBus",
-            f"org.freedesktop.DBus.{method}", f"string:{arg}",
-        ], check=False, timeout=5)
+    def bus_call(self, method, arg, deadline=None):
+        timeout = 5 if deadline is None else min(5, deadline - time.monotonic())
+        if timeout <= 0:
+            raise DesktopError("portal_unavailable", "portals")
+        try:
+            result = self.run([
+                "/usr/bin/dbus-send", f"--bus={self.bus_address}", "--print-reply=literal",
+                "--dest=org.freedesktop.DBus", "/org/freedesktop/DBus",
+                f"org.freedesktop.DBus.{method}", f"string:{arg}",
+            ], check=False, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise DesktopError("portal_unavailable", "portals") from exc
         if result.returncode != 0:
             return None
         return result.stdout.decode("ascii", "replace").split()[-1]
-
-    def name_owner_pid(self, name):
-        owner = self.bus_call("GetNameOwner", name)
-        if owner is None:
-            return None
-        pid = self.bus_call("GetConnectionUnixProcessID", owner)
-        return int(pid) if pid and pid.isdigit() else None
 
     # ----- compositor ------------------------------------------------------------------
 
@@ -293,25 +295,118 @@ class Desktop:
 
     # ----- portals ---------------------------------------------------------------------
 
-    def start_portals(self, deadline):
+    def portal_env(self):
+        """The explicit environment both portal children get: private bus and Wayland only."""
         env = self.child_env()
-        gtk = self.spawn("portal-gtk", [PORTAL_GTK, "--replace"], env)
-        portal = self.spawn("portal", [PORTAL, "--replace"], env)
-        expected = {PORTAL_NAME: portal, PORTAL_GTK_NAME: gtk}
+        env["GDK_BACKEND"] = "wayland"
+        env.pop("DISPLAY", None)
+        if (not env.get("WAYLAND_DISPLAY") or not env.get("DBUS_SESSION_BUS_ADDRESS")
+                or env.get("DBUS_SESSION_BUS_ADDRESS") != self.bus_address
+                or not os.path.isfile(os.path.join(env["XDG_CONFIG_HOME"], "xdg-desktop-portal",
+                                                   "portals.conf"))):
+            raise DesktopError("portal_env_invalid", "portals")
+        return env
+
+    def owner_of(self, name, deadline):
+        """(unique, pid, uid) of `name` on the private bus, or None while it has no owner."""
+        unique = self.bus_call("GetNameOwner", name, deadline)
+        if unique is None:
+            return None
+        pid = self.bus_call("GetConnectionUnixProcessID", unique, deadline)
+        uid = self.bus_call("GetConnectionUnixUser", unique, deadline)
+        if not (pid and pid.isdigit() and uid and uid.isdigit()):
+            raise DesktopError("portal_identity_mismatch", "portals")
+        return unique, int(pid), int(uid)
+
+    def check_owner(self, name, child, unique, deadline):
+        owner = self.owner_of(name, deadline)
+        if (owner is None or owner[0] != unique or owner[1] != child.pid
+                or owner[2] != self.uid or not child.alive()):
+            raise DesktopError("portal_identity_mismatch", "portals")
+
+    def introspect(self, unique, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DesktopError("portal_unavailable", "portals")
+        try:
+            result = subprocess.run(
+                ["/usr/bin/gdbus", "introspect", "--address", self.bus_address, "--dest", unique,
+                 "--object-path", "/org/freedesktop/portal/desktop", "--xml"],
+                env=self.child_env(), cwd=self.root, stdin=subprocess.DEVNULL,
+                capture_output=True, timeout=remaining, check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise DesktopError("portal_unavailable", "portals") from exc
+        if result.returncode != 0:
+            raise DesktopError("portal_interface_missing", "portals")
+        try:
+            root = ElementTree.fromstring(result.stdout)
+        except ElementTree.ParseError as exc:
+            raise DesktopError("portal_introspection_invalid", "portals") from exc
+        return root
+
+    def start_portal(self, key, argv, name, interface, env, deadline):
+        """Spawn one portal child, wait until it alone owns `name`, then check `interface`."""
+        start = time.monotonic()
+        child = self.spawn(key, argv, env)
+        found = {}
 
         def owned():
-            return all(self.name_owner_pid(n) == c.pid for n, c in expected.items())
+            owner = self.owner_of(name, deadline)
+            if owner is None:
+                if not child.alive():
+                    raise DesktopError("portal_identity_mismatch", "portals")
+                return False
+            if owner[1] != child.pid or owner[2] != self.uid or not child.alive():
+                found["foreign"] = True  # someone else owns it: fail now, do not wait
+                return True
+            found["unique"] = owner[0]
+            return True
 
-        wait_until(deadline, owned, "portal_unavailable", "portals")
-        for name, child in expected.items():
-            if not child.alive():
-                raise DesktopError("portal_identity_mismatch", "portals")
-            self.portal_pids[name] = child.pid
+        while True:
+            if owned():
+                break
+            if time.monotonic() >= deadline:
+                raise DesktopError("portal_unavailable", "portals")
+            time.sleep(0.1)
+        if found.get("foreign"):
+            raise DesktopError("portal_identity_mismatch", "portals")
+        unique = found["unique"]
+        owned_at = time.monotonic()
+        self.check_owner(name, child, unique, deadline)
+        root = self.introspect(unique, deadline)
+        self.check_owner(name, child, unique, deadline)
+        node = [i for i in root.findall("interface") if i.get("name") == interface]
+        if len(node) != 1 or not any(m.get("name") == "OpenFile" for m in node[0].findall("method")):
+            raise DesktopError("portal_interface_missing", "portals")
+        self.portal_children[name] = (child, unique)
+        self.portal_pids[name] = child.pid
+        self.portal_receipts.append({
+            "name": name, "unique": unique, "pid": child.pid, "uid": self.uid,
+            "interface": interface, "method": "OpenFile", "spawnMs": round(start * 1000),
+            "ownedMs": round(owned_at * 1000), "checkedMs": round(time.monotonic() * 1000),
+        })
+        with open(self.path("logs", "portal-receipts.json"), "w", encoding="utf-8") as handle:
+            json.dump(self.portal_receipts, handle, indent=2)
+
+    def start_portals(self, deadline):
+        """GTK backend first, owned and checked, and only then the frontend (no autoactivation).
+
+        Started together, the frontend asked for the backend before ours owned its name: dbus
+        activated copies without a display that exited, and no FileChooser was exported.
+        """
+        env = self.portal_env()
+        self.start_portal("portal-gtk", [PORTAL_GTK, "--replace"], PORTAL_GTK_NAME,
+                          "org.freedesktop.impl.portal.FileChooser", env, deadline)
+        self.start_portal("portal", [PORTAL, "--replace"], PORTAL_NAME,
+                          "org.freedesktop.portal.FileChooser", env, deadline)
+        for name, (child, unique) in self.portal_children.items():
+            self.check_owner(name, child, unique, deadline)
 
     def verify_portals(self):
-        for name, pid in self.portal_pids.items():
-            if self.name_owner_pid(name) != pid:
-                raise DesktopError("portal_identity_mismatch", "portals")
+        deadline = time.monotonic() + 5
+        for name, (child, unique) in self.portal_children.items():
+            self.check_owner(name, child, unique, deadline)
 
     @property
     def gtk_portal_pid(self):
