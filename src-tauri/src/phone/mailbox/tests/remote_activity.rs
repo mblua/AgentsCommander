@@ -641,3 +641,258 @@ fn body_depends_on_backend_only_for_filesystem_file_notifications() {
         WakeDeliveryOrigin::FilesystemPoller
     ));
 }
+
+// #5190 marker: both notice variants through the real entry with no test hooks, live and
+// reopened after a consumed close marker. Runs in a child process so `log::set_logger`
+// never leaks into the rest of the suite; the parent prints only the AC5190-* rows.
+const CHILD_5190: &str = "AC5190_MAILBOX_TEST_CHILD";
+const NAME_5190: &str =
+    "phone::mailbox::tests::remote_activity::mailbox_delivery_and_close_marker_5190";
+type App5190 = tauri::AppHandle<tauri::test::MockRuntime>;
+type Sessions5190 = Arc<tokio::sync::RwLock<SessionManager>>;
+// (level, target, text, PTY writes seen when the record was logged)
+type Row5190 = (log::Level, String, String, usize);
+static ROWS_5190: Mutex<Vec<Row5190>> = Mutex::new(Vec::new());
+static MOCK_5190: Mutex<Option<Arc<dyn PtyBackend>>> = Mutex::new(None);
+
+struct Capture5190;
+impl log::Log for Capture5190 {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        let text = record.args().to_string();
+        let notice = ["[context-alert]", "[remote-activity]", "[internal-wake]"];
+        if notice.iter().any(|p| text.starts_with(p)) {
+            let mock = MOCK_5190.lock().unwrap().clone();
+            let writes = mock.map_or(usize::MAX, |b| mock_5190(&b).writes.lock().unwrap().len());
+            let row = (record.level(), record.target().to_string(), text, writes);
+            ROWS_5190.lock().unwrap().push(row);
+        }
+    }
+    fn flush(&self) {}
+}
+
+fn mock_5190(backend: &Arc<dyn PtyBackend>) -> &MailboxMockPtyBackend {
+    backend.as_any().downcast_ref().unwrap()
+}
+
+fn notice_5190(context: bool, tag: &str) -> (InternalSystemNotice, String, String) {
+    if context {
+        let (member, wg) = (format!("member-{tag}"), format!("wg-77-{tag}"));
+        let notice =
+            InternalSystemNotice::for_context_alert(member.clone(), wg.clone(), 83, vec![61, 83]);
+        let payload = format!("\n[AC context alert] `{member}` in `{wg}` reached threshold(s): 61%, 83%. No action taken; you decide any follow-up.");
+        let info = format!("[context-alert] delivered coordinatorSession={{id}} project=proj-a workgroup={wg} member={member} observed=83 thresholds=[61, 83]");
+        return (notice.unwrap(), payload, info);
+    }
+    let (repo, branch, sha) = (format!("org/{tag}"), format!("branch/{tag}"), "9f1e2d3");
+    let at = "2026-11-25 03:00:00-03:00";
+    let notice = InternalSystemNotice::for_remote_activity(
+        RemoteNoticeKind::CiStarted,
+        repo.clone(),
+        branch.clone(),
+        sha.to_string(),
+        String::new(),
+        None,
+        at.to_string(),
+        None,
+    );
+    let payload = format!("\n[AgentsCommander] CI started on {repo} {branch} (commit {sha}) at {at}. Status notice only; no action is required.");
+    let info = format!("[remote-activity] delivered coordinatorSession={{id}} project=proj-a kind=CiStarted repo={repo} branch={branch} sha={sha}");
+    (notice.unwrap(), payload, info)
+}
+
+async fn deliver_5190(app: &App5190, target: &InternalSystemTarget, notice: InternalSystemNotice) {
+    let warnings = crate::config::injected_messages::MessageWarnings::new();
+    let poller = MailboxPoller::new(Arc::new(warnings));
+    assert!(poller.test_hooks.is_none(), "no cfg(test) shortcut");
+    let (target, cancel) = (target.clone(), CancellationToken::new());
+    let entry =
+        poller.deliver_internal_system_notice(app, target, notice, cancel, Arc::new(|| Ok(())));
+    let bounded = tokio::time::timeout(Duration::from_secs(30), entry).await;
+    bounded.expect("bounded delivery").unwrap();
+}
+
+// The captured rows are the optional reopen event before any write, then exactly one delivery
+// INFO after all three writes; the backend saw only the payload and two Enters to `id`.
+fn check_5190(m: &MailboxMockPtyBackend, id: Uuid, t: (&str, &str), r: Option<&str>) -> String {
+    let (payload, info) = t;
+    let info = info.replace("{id}", &id.to_string());
+    let lib = "agentscommander_lib::phone::mailbox::internal_delivery";
+    let row =
+        |target: String, text: &str, writes| (log::Level::Info, target, text.to_string(), writes);
+    let mut expected: Vec<Row5190> = Vec::new();
+    expected.extend(r.map(|text| row(format!("{lib}::wake_receipt"), text, 0)));
+    expected.push(row(lib.to_string(), &info, 3));
+    assert_eq!(std::mem::take(&mut *ROWS_5190.lock().unwrap()), expected);
+    let writes = [payload, "\r", "\r"].map(|w| (id, w.as_bytes().to_vec()));
+    assert_eq!(*m.writes.lock().unwrap(), writes);
+    info
+}
+
+// Test-only readiness, as the live-session tests set it: idle and input-ready.
+async fn ready_5190(app: &App5190, id: Uuid) {
+    let idle = app.state::<Arc<crate::pty::idle_detector::IdleDetector>>();
+    idle.register_session(id, crate::session::profile::IdleTuning::DEFAULT);
+    idle.set_pty_input_ready_for_test(id);
+    app.state::<Sessions5190>().read().await.mark_idle(id).await;
+}
+
+// Create-path state the mailbox fixture app lacks; mirrors the session tests' app.
+fn create_states_5190(fixture: &MailboxFixture) {
+    let app = fixture.app.handle();
+    let gate_root = fixture._temp.path().join("target-gate");
+    app.manage(crate::api::message_store::PtyInputTargetGateState::for_root(gate_root));
+    app.manage(Arc::new(
+        crate::resource_monitor::ResourceMonitorState::new(),
+    ));
+    app.manage(crate::DetachedSessionsState::default());
+    app.manage(crate::network::OutboundNetwork::new_for_tests(1));
+    app.manage(crate::session::warnings::new_session_warning_state());
+    app.manage(Arc::new(crate::pty::menu_guard::MenuGuard::new()));
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let sessions = app.state::<Sessions5190>().inner().clone();
+    let coordinator =
+        crate::session::selection::SelectionCoordinator::new(sessions, shutdown.token().clone());
+    app.manage(coordinator.clone());
+    app.manage(shutdown);
+    coordinator.start(app.clone()).expect("start coordinator");
+    let open = std::thread::spawn(move || {
+        tauri::async_runtime::block_on(coordinator.submit_restore_first()).map(|o| o.finish())
+    });
+    open.join().unwrap().expect("open coordinator");
+}
+
+// Live: deliver into an idle live lead. T10: reopen with no live session after the close
+// marker was consumed, through background resume, a real spawn and injection.
+async fn run_5190(context: bool, t10: bool) {
+    let fixture = make_mailbox_fixture();
+    let app = fixture.app.handle().clone();
+    let lead = fixture.sender_cwd.clone();
+    let target = InternalSystemTarget::for_context_alert(CANONICAL_WAKE_FROM.into(), lead).unwrap();
+    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let backend = pty
+        .lock()
+        .unwrap()
+        .backend_for_kind(SessionBackendKind::LocalProcess);
+    *MOCK_5190.lock().unwrap() = Some(Arc::clone(&backend));
+    let mock = mock_5190(&backend);
+    let sessions = app.state::<Sessions5190>().inner().clone();
+    let scenario = ["remote-activity", "context-alert"][usize::from(context)];
+    let tag = format!("{}-{scenario}", if t10 { "t10" } else { "live" });
+    let (notice, payload, info) = notice_5190(context, &tag);
+    if !t10 {
+        let shape = (SessionStatus::Idle, None, "codex", Some("codex"), false);
+        let (status, bot, shell, agent, root) = shape;
+        let cwd = &fixture.sender_cwd;
+        let id = add_mailbox_session_with_shape(&app, cwd, "lead", status, bot, shell, agent, root)
+            .await;
+        mock.set_live(id);
+        pty.lock()
+            .unwrap()
+            .try_record_route(id, SessionBackendKind::LocalProcess)
+            .unwrap();
+        ready_5190(&app, id).await;
+        deliver_5190(&app, &target, notice).await;
+        let info = check_5190(mock, id, (&payload, &info), None);
+        println!("AC5190-LIVE scenario={scenario} session={id} writes=3/3 info={info:?}");
+        return;
+    }
+    let clocks: crate::config::coordinator_clocks::CoordinatorClocksState = Arc::default();
+    app.manage(Arc::clone(&clocks));
+    create_states_5190(&fixture);
+    let cwd = target.replica_dir().to_string_lossy().into_owned();
+    let key = crate::config::teams::agent_fqn_from_path(&cwd);
+    assert_eq!(key, target.fqn(), "marker key is the target replica");
+    assert!(
+        sessions.read().await.list_sessions().await.is_empty(),
+        "no session before"
+    );
+    assert!(mock.live.lock().unwrap().is_empty() && mock.writes.lock().unwrap().is_empty());
+    let seeded = chrono::DateTime::from_timestamp(1_795_000_000, 0).unwrap();
+    let (observed, consumed, before) = {
+        let mut clocks = clocks.lock().unwrap();
+        assert!(clocks.mark_auto_closed(&key, seeded));
+        let observed = clocks.auto_closed_at(&key);
+        (
+            observed,
+            clocks.clear_auto_closed(&key),
+            clocks.auto_closed_at(&key),
+        )
+    };
+    assert_eq!((observed, consumed, before), (Some(seeded), true, None));
+    let (ready_app, ready_cwd) = (app.clone(), cwd.clone());
+    let ready = tokio::spawn(async move {
+        let sessions = ready_app.state::<Sessions5190>().inner().clone();
+        loop {
+            let list = sessions.read().await.list_sessions().await;
+            if let Some(info) = list.iter().find(|s| s.working_directory == ready_cwd) {
+                let id = Uuid::parse_str(&info.id).unwrap();
+                ready_5190(&ready_app, id).await;
+                return id;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    deliver_5190(&app, &target, notice).await;
+    let id = ready.await.unwrap();
+    assert!(
+        mock.live.lock().unwrap().contains(&id),
+        "real spawn in the mock backend"
+    );
+    let list = sessions.read().await.list_sessions().await;
+    let spawned: Vec<_> = list
+        .iter()
+        .map(|s| (s.id.clone(), s.working_directory.clone()))
+        .collect();
+    assert_eq!(spawned, [(id.to_string(), cwd.clone())]);
+    let fqn = target.fqn();
+    let reopen =
+        format!("[internal-wake] '{fqn}' no-live-session spawn resume=false auto_closed_at=None");
+    let info = check_5190(mock, id, (&payload, &info), Some(&reopen));
+    let after = clocks.lock().unwrap().auto_closed_at(&key);
+    assert_eq!(after, None);
+    println!("AC5190-T10 scenario={scenario} target={fqn} key={key} seeded={seeded:?} observed={observed:?} consumed={consumed} before={before:?} reopen={reopen:?} cwd={cwd:?} session={id} writes=3/3 info={info:?} after={after:?}");
+}
+
+#[test]
+fn mailbox_delivery_and_close_marker_5190() {
+    if std::env::var_os(CHILD_5190).is_some() {
+        log::set_logger(&Capture5190).expect("child installs the capture logger");
+        log::set_max_level(log::LevelFilter::Trace);
+        println!("\nAC5190-LOGGER installed=true");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            for (context, t10) in [(true, false), (true, true), (false, false), (false, true)] {
+                run_5190(context, t10).await;
+            }
+        });
+        return;
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child.args([NAME_5190, "--exact", "--nocapture", "--test-threads=1"]);
+    let out = child.env(CHILD_5190, "1").output().unwrap();
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        out.status.success(),
+        "child failed: {}\n{stdout}\n{stderr}",
+        out.status
+    );
+    let rows: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.starts_with("AC5190-"))
+        .collect();
+    rows.iter().for_each(|row| println!("{row}"));
+    let count = |p: &str| rows.iter().filter(|r| r.starts_with(p)).count();
+    assert_eq!(
+        ["AC5190-LOGGER ", "AC5190-LIVE ", "AC5190-T10 "].map(count),
+        [1, 2, 2]
+    );
+}
