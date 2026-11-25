@@ -535,6 +535,7 @@ fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
     let clock = Arc::new(Mutex::new(started_at));
     let waits = Arc::new(Mutex::new(Vec::new()));
     let (first_wait, first_wait_seen) = std::sync::mpsc::channel();
+    let (done, done_seen) = std::sync::mpsc::channel();
     let worker_clock = Arc::clone(&clock);
     let worker_waits = Arc::clone(&waits);
     let readers = Arc::clone(&runtime.process_state.active_readers);
@@ -554,6 +555,7 @@ fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
                 *current += requested;
             };
             let result = owner.collect_output_until_with_clock(deadline, &now, &wait);
+            let _ = done.send(());
             (owner, result.map(|result| result.is_ok()), now())
         })
         .expect("spawn Docker reader collection test");
@@ -568,6 +570,16 @@ fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
             .map(|joined| joined.map(|(_, result, at)| (result, at == deadline)));
         panic!(
             "collection never armed its bounded wait with both readers blocked: {error:?}; \
+            worker returned {outcome:?}"
+        );
+    }
+    if let Err(error) = done_seen.recv_timeout(Duration::from_secs(5)) {
+        let waits = waits.lock().unwrap().clone();
+        let outcome = rescue
+            .rescue_and_join()
+            .map(|joined| joined.map(|(_, result, at)| (result, at == deadline)));
+        panic!(
+            "collection did not return after its first wait: {error:?}; waits {waits:?}; \
             worker returned {outcome:?}"
         );
     }
@@ -744,6 +756,12 @@ fn retained_command_retry_uses_one_clock_through_termination() {
             .recv_timeout(Duration::from_secs(5))
             .map_err(|error| format!("retry never reached the gate before D: {error:?}"))?;
         expect_single_retry_context(&runtime, "inFlight")?;
+        let at_gate = runtime.process_state.gate_handles_for_test();
+        if at_gate != Some((Some(false), Some(false))) {
+            return Err(format!(
+                "taken owner entered the gate with handles {at_gate:?}"
+            ));
+        }
         if runtime.active_reader_count() != 2 {
             return Err(format!(
                 "gate lost a reader: {}",

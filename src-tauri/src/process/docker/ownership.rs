@@ -137,6 +137,8 @@ pub(crate) struct DockerCommandOwnership {
     pub(crate) entries: Mutex<Vec<DockerCommandOwnershipEntry>>,
     #[cfg(test)]
     pub(crate) retry_gate: Mutex<Option<DockerCommandRetryGate>>,
+    #[cfg(test)]
+    pub(crate) gate_handles: Mutex<Option<(Option<bool>, Option<bool>)>>,
 }
 
 pub(crate) struct DockerCommandOwnershipEntry {
@@ -361,7 +363,7 @@ impl DockerCommandOwnership {
             };
 
             #[cfg(test)]
-            self.wait_at_retry_gate_for_test();
+            self.wait_at_retry_gate_for_test(&owner);
 
             let outcome = catch_unwind(AssertUnwindSafe(|| {
                 owner.terminate_until_with_clock(deadline, true, now, wait)
@@ -469,13 +471,28 @@ impl DockerCommandOwnership {
     }
 
     #[cfg(test)]
-    pub(crate) fn wait_at_retry_gate_for_test(&self) {
+    pub(crate) fn gate_handles_for_test(&self) -> Option<(Option<bool>, Option<bool>)> {
+        *self
+            .gate_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_at_retry_gate_for_test(&self, owner: &DockerCommandOwner) {
         let gate = self
             .retry_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(gate) = gate {
+            *self
+                .gate_handles
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+                owner.stdout.as_ref().map(JoinHandle::is_finished),
+                owner.stderr.as_ref().map(JoinHandle::is_finished),
+            ));
             if gate.entered.send(()).is_ok() {
                 let _ = gate.release.recv();
             }
