@@ -119,3 +119,177 @@ pub(crate) fn validate_explorer_target(path: &str) -> Result<PathBuf, String> {
     }
     Ok(canonical)
 }
+
+pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
+pub(crate) const RESOURCE_MONITOR_WINDOW_LABEL: &str = "resource-monitor";
+const RESOURCE_MONITOR_FLOATING_WIDTH: u32 = 760;
+const RESOURCE_MONITOR_FLOATING_HEIGHT: u32 = 560;
+const RESOURCE_MONITOR_MIN_WIDTH: u32 = 520;
+pub(crate) const RESOURCE_MONITOR_MIN_HEIGHT: u32 = 420;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PhysicalWindowRect {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+impl PhysicalWindowRect {
+    pub(crate) const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    pub(crate) fn right(self) -> i32 {
+        self.x.saturating_add(u32_to_i32(self.width))
+    }
+
+    fn bottom(self) -> i32 {
+        self.y.saturating_add(u32_to_i32(self.height))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ResourceMonitorPlacement {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MonitorWorkArea {
+    pub(crate) rect: PhysicalWindowRect,
+    pub(crate) scale_factor: f64,
+}
+
+fn u32_to_i32(value: u32) -> i32 {
+    value.min(i32::MAX as u32) as i32
+}
+
+fn effective_scale_factor(scale_factor: f64) -> f64 {
+    if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    }
+}
+
+fn clamp_position(value: i32, min: i32, max: i32) -> i32 {
+    if min > max {
+        min
+    } else {
+        value.clamp(min, max)
+    }
+}
+
+fn fits_horizontally(x: i32, width: u32, bounds: PhysicalWindowRect) -> bool {
+    x >= bounds.x && x.saturating_add(u32_to_i32(width)) <= bounds.right()
+}
+
+pub(crate) fn resource_monitor_placement_for_main(
+    main_rect: PhysicalWindowRect,
+    monitor_bounds: PhysicalWindowRect,
+    requested_width: u32,
+    requested_height: u32,
+) -> ResourceMonitorPlacement {
+    let width = requested_width.min(monitor_bounds.width).max(1);
+    let height = requested_height.min(monitor_bounds.height).max(1);
+    let max_x = monitor_bounds.right().saturating_sub(u32_to_i32(width));
+    let max_y = monitor_bounds.bottom().saturating_sub(u32_to_i32(height));
+
+    let right_x = main_rect.right();
+    let left_x = main_rect.x.saturating_sub(u32_to_i32(width));
+    let x = if fits_horizontally(right_x, width, monitor_bounds) {
+        right_x
+    } else if fits_horizontally(left_x, width, monitor_bounds) {
+        left_x
+    } else {
+        clamp_position(
+            main_rect.right().saturating_sub(u32_to_i32(width)),
+            monitor_bounds.x,
+            max_x,
+        )
+    };
+
+    ResourceMonitorPlacement {
+        x,
+        y: clamp_position(main_rect.y, monitor_bounds.y, max_y),
+        width,
+        height,
+    }
+}
+
+/// Native window operations the Resource Monitor lifecycle needs. The command edge
+/// implements them; this domain only passes `Window` values back to these methods.
+pub(crate) trait ResourceMonitorWindows {
+    type Window;
+
+    fn lookup(&self, label: &str) -> Option<Self::Window>;
+    fn focus(&self, window: &Self::Window) -> Result<(), String>;
+    fn outer_rect(&self, window: &Self::Window) -> Result<PhysicalWindowRect, String>;
+    fn work_area(&self, window: &Self::Window) -> Result<MonitorWorkArea, String>;
+    fn build(
+        &self,
+        position: (f64, f64),
+        size: (f64, f64),
+        minimum: (f64, f64),
+    ) -> Result<Self::Window, String>;
+    fn set_size(&self, window: &Self::Window, width: u32, height: u32) -> Result<(), String>;
+    fn outer_size(&self, window: &Self::Window) -> Result<(u32, u32), String>;
+    fn set_position(&self, window: &Self::Window, x: i32, y: i32) -> Result<(), String>;
+}
+
+/// Open the floating Resource Monitor beside the main window, or focus it when it is
+/// already open. The second placement uses the size the new window actually reports.
+pub(crate) fn open_resource_monitor(windows: &impl ResourceMonitorWindows) -> Result<(), String> {
+    if let Some(existing) = windows.lookup(RESOURCE_MONITOR_WINDOW_LABEL) {
+        windows.focus(&existing)?;
+        return Ok(());
+    }
+
+    let main = windows
+        .lookup(MAIN_WINDOW_LABEL)
+        .ok_or_else(|| "Main window is not available".to_string())?;
+    let main_rect = windows.outer_rect(&main)?;
+    let monitor_work_area = windows.work_area(&main)?;
+    let placement = resource_monitor_placement_for_main(
+        main_rect,
+        monitor_work_area.rect,
+        RESOURCE_MONITOR_FLOATING_WIDTH,
+        RESOURCE_MONITOR_FLOATING_HEIGHT,
+    );
+    let scale_factor = effective_scale_factor(monitor_work_area.scale_factor);
+
+    let window = windows.build(
+        (
+            f64::from(placement.x) / scale_factor,
+            f64::from(placement.y) / scale_factor,
+        ),
+        (
+            f64::from(placement.width) / scale_factor,
+            f64::from(placement.height) / scale_factor,
+        ),
+        (
+            f64::from(RESOURCE_MONITOR_MIN_WIDTH),
+            f64::from(RESOURCE_MONITOR_MIN_HEIGHT),
+        ),
+    )?;
+
+    windows.set_size(&window, placement.width, placement.height)?;
+    let (actual_width, actual_height) = windows.outer_size(&window)?;
+    let placement = resource_monitor_placement_for_main(
+        main_rect,
+        monitor_work_area.rect,
+        actual_width,
+        actual_height,
+    );
+    windows.set_position(&window, placement.x, placement.y)?;
+
+    Ok(())
+}

@@ -15,6 +15,10 @@ use crate::session::selection::{
     SelectionWindowEffects,
 };
 use crate::session::session::SessionStatus;
+use crate::window::{
+    resource_monitor_placement_for_main, MonitorWorkArea, PhysicalWindowRect, MAIN_WINDOW_LABEL,
+    RESOURCE_MONITOR_MIN_HEIGHT, RESOURCE_MONITOR_WINDOW_LABEL,
+};
 use crate::DetachedSessionsState;
 #[cfg(test)]
 #[derive(Default)]
@@ -36,19 +40,13 @@ impl WindowDestroyAudit {
     }
 }
 
-const MAIN_WINDOW_LABEL: &str = "main";
-const RESOURCE_MONITOR_WINDOW_LABEL: &str = "resource-monitor";
 /// The singleton watcher activity window.
 ///
 /// `pub(crate)` because the watcher sink checks for this window before emitting: when it does
 /// not exist, no `watcher_matches` event is produced at all, which is the case that holds
 /// most of the time.
 pub(crate) const WATCHERS_WINDOW_LABEL: &str = "watchers";
-const RESOURCE_MONITOR_FLOATING_WIDTH: u32 = 760;
-const RESOURCE_MONITOR_FLOATING_HEIGHT: u32 = 560;
 const RESOURCE_MONITOR_DOCK_WIDTH: u32 = 420;
-const RESOURCE_MONITOR_MIN_WIDTH: u32 = 520;
-const RESOURCE_MONITOR_MIN_HEIGHT: u32 = 420;
 /// The size the activity window opens at when no geometry was ever saved. Wider
 /// than tall because the table is four columns (time, watcher, session, captures) and the
 /// captures cell is the one that must not be cramped.
@@ -56,104 +54,6 @@ const WATCHERS_DEFAULT_WIDTH: f64 = 980.0;
 const WATCHERS_DEFAULT_HEIGHT: f64 = 640.0;
 const WATCHERS_MIN_WIDTH: f64 = 640.0;
 const WATCHERS_MIN_HEIGHT: f64 = 420.0;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PhysicalWindowRect {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
-impl PhysicalWindowRect {
-    const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
-    fn right(self) -> i32 {
-        self.x.saturating_add(u32_to_i32(self.width))
-    }
-
-    fn bottom(self) -> i32 {
-        self.y.saturating_add(u32_to_i32(self.height))
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ResourceMonitorPlacement {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct MonitorWorkArea {
-    rect: PhysicalWindowRect,
-    scale_factor: f64,
-}
-
-fn u32_to_i32(value: u32) -> i32 {
-    value.min(i32::MAX as u32) as i32
-}
-
-fn effective_scale_factor(scale_factor: f64) -> f64 {
-    if scale_factor.is_finite() && scale_factor > 0.0 {
-        scale_factor
-    } else {
-        1.0
-    }
-}
-
-fn clamp_position(value: i32, min: i32, max: i32) -> i32 {
-    if min > max {
-        min
-    } else {
-        value.clamp(min, max)
-    }
-}
-
-fn fits_horizontally(x: i32, width: u32, bounds: PhysicalWindowRect) -> bool {
-    x >= bounds.x && x.saturating_add(u32_to_i32(width)) <= bounds.right()
-}
-
-fn resource_monitor_placement_for_main(
-    main_rect: PhysicalWindowRect,
-    monitor_bounds: PhysicalWindowRect,
-    requested_width: u32,
-    requested_height: u32,
-) -> ResourceMonitorPlacement {
-    let width = requested_width.min(monitor_bounds.width).max(1);
-    let height = requested_height.min(monitor_bounds.height).max(1);
-    let max_x = monitor_bounds.right().saturating_sub(u32_to_i32(width));
-    let max_y = monitor_bounds.bottom().saturating_sub(u32_to_i32(height));
-
-    let right_x = main_rect.right();
-    let left_x = main_rect.x.saturating_sub(u32_to_i32(width));
-    let x = if fits_horizontally(right_x, width, monitor_bounds) {
-        right_x
-    } else if fits_horizontally(left_x, width, monitor_bounds) {
-        left_x
-    } else {
-        clamp_position(
-            main_rect.right().saturating_sub(u32_to_i32(width)),
-            monitor_bounds.x,
-            max_x,
-        )
-    };
-
-    ResourceMonitorPlacement {
-        x,
-        y: clamp_position(main_rect.y, monitor_bounds.y, max_y),
-        width,
-        height,
-    }
-}
 
 fn window_outer_rect<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
@@ -739,78 +639,80 @@ pub async fn open_spec_board_window(app: AppHandle) -> Result<(), String> {
 /// If already open, just focus it.
 #[tauri::command]
 pub async fn open_resource_monitor_window(app: AppHandle) -> Result<(), String> {
-    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    crate::window::open_resource_monitor(&ResourceMonitorWindow(&app))
+}
 
-    if let Some(existing) = app.get_webview_window(RESOURCE_MONITOR_WINDOW_LABEL) {
-        existing.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
+/// Tauri edge for the Resource Monitor lifecycle in `crate::window`.
+struct ResourceMonitorWindow<'a>(&'a AppHandle);
+
+impl crate::window::ResourceMonitorWindows for ResourceMonitorWindow<'_> {
+    type Window = tauri::WebviewWindow;
+
+    fn lookup(&self, label: &str) -> Option<Self::Window> {
+        self.0.get_webview_window(label)
     }
 
-    let main = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
-        .ok_or_else(|| "Main window is not available".to_string())?;
-    let main_rect = window_outer_rect(&main)?;
-    let monitor_work_area = monitor_work_area_for_window(&main)?;
-    let placement = resource_monitor_placement_for_main(
-        main_rect,
-        monitor_work_area.rect,
-        RESOURCE_MONITOR_FLOATING_WIDTH,
-        RESOURCE_MONITOR_FLOATING_HEIGHT,
-    );
-    let scale_factor = effective_scale_factor(monitor_work_area.scale_factor);
+    fn focus(&self, window: &Self::Window) -> Result<(), String> {
+        window.set_focus().map_err(|e| e.to_string())
+    }
 
-    let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
-        .expect("Failed to load app icon");
+    fn outer_rect(&self, window: &Self::Window) -> Result<PhysicalWindowRect, String> {
+        window_outer_rect(window)
+    }
 
-    let window = WebviewWindowBuilder::new(
-        &app,
-        RESOURCE_MONITOR_WINDOW_LABEL,
-        WebviewUrl::App("index.html?window=resource-monitor".into()),
-    )
-    .title(format!(
-        "Resource Monitor - {}",
-        crate::config::profile::app_title_suffix()
-    ))
-    .icon(icon)
-    .map_err(|e| e.to_string())?
-    .inner_size(
-        f64::from(placement.width) / scale_factor,
-        f64::from(placement.height) / scale_factor,
-    )
-    .position(
-        f64::from(placement.x) / scale_factor,
-        f64::from(placement.y) / scale_factor,
-    )
-    .min_inner_size(
-        f64::from(RESOURCE_MONITOR_MIN_WIDTH),
-        f64::from(RESOURCE_MONITOR_MIN_HEIGHT),
-    )
-    .decorations(false)
-    .zoom_hotkeys_enabled(false)
-    .build()
-    .map_err(|e| e.to_string())?;
+    fn work_area(&self, window: &Self::Window) -> Result<MonitorWorkArea, String> {
+        monitor_work_area_for_window(window)
+    }
 
-    window
-        .set_size(tauri::Size::Physical(tauri::PhysicalSize {
-            width: placement.width,
-            height: placement.height,
-        }))
-        .map_err(|e| e.to_string())?;
-    let actual_size = window.outer_size().map_err(|e| e.to_string())?;
-    let placement = resource_monitor_placement_for_main(
-        main_rect,
-        monitor_work_area.rect,
-        actual_size.width,
-        actual_size.height,
-    );
-    window
-        .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: placement.x,
-            y: placement.y,
-        }))
-        .map_err(|e| e.to_string())?;
+    fn build(
+        &self,
+        position: (f64, f64),
+        size: (f64, f64),
+        minimum: (f64, f64),
+    ) -> Result<Self::Window, String> {
+        use tauri::{WebviewUrl, WebviewWindowBuilder};
 
-    Ok(())
+        let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
+            .expect("Failed to load app icon");
+
+        WebviewWindowBuilder::new(
+            self.0,
+            RESOURCE_MONITOR_WINDOW_LABEL,
+            WebviewUrl::App("index.html?window=resource-monitor".into()),
+        )
+        .title(format!("Resource Monitor - {}", window_title_suffix()))
+        .icon(icon)
+        .map_err(|e| e.to_string())?
+        .inner_size(size.0, size.1)
+        .position(position.0, position.1)
+        .min_inner_size(minimum.0, minimum.1)
+        .decorations(false)
+        .zoom_hotkeys_enabled(false)
+        .build()
+        .map_err(|e| e.to_string())
+    }
+
+    fn set_size(&self, window: &Self::Window, width: u32, height: u32) -> Result<(), String> {
+        window
+            .set_size(tauri::Size::Physical(tauri::PhysicalSize { width, height }))
+            .map_err(|e| e.to_string())
+    }
+
+    fn outer_size(&self, window: &Self::Window) -> Result<(u32, u32), String> {
+        let size = window.outer_size().map_err(|e| e.to_string())?;
+        Ok((size.width, size.height))
+    }
+
+    fn set_position(&self, window: &Self::Window, x: i32, y: i32) -> Result<(), String> {
+        window
+            .set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// The profile suffix shown in window titles.
+fn window_title_suffix() -> &'static str {
+    crate::config::profile::app_title_suffix()
 }
 
 /// Move the Resource Monitor beside the main window.
