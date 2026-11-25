@@ -40,7 +40,7 @@ async fn stale_without_own_commits_sends_no_notice_but_keeps_the_chip() {
     assert_eq!(activity.behind_by, Some(2));
 }
 
-/// #2141, the whole point: the suppressed round records `Current`, the commit
+/// The whole point: the suppressed round records `Current`, the commit
 /// moves `head_sha` and the carry-over hands that `Current` to the new key,
 /// so the notice arrives in the round OF the commit and exactly once.
 ///

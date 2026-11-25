@@ -2,7 +2,7 @@ use super::PtyInstance;
 use std::sync::Mutex;
 
 /// A `PtyInstance` carries real `ConPTY` handles, so the tests below drive the one piece
-/// that #973 (C) actually changes: the size cache and the decision it drives.
+/// that (C) actually changes: the size cache and the decision it drives.
 fn cache(cols: u16, rows: u16) -> Mutex<(u16, u16)> {
     Mutex::new((cols, rows))
 }

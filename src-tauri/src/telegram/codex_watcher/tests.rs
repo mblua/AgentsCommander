@@ -2,7 +2,7 @@ use super::*;
 use crate::telegram::output::RecordingEvents;
 
 // The extractor tests drive the kernel directly; production now reads
-// through `read_new_lines_with_starts` (`#2232` phase 1), so the wrapper
+// through `read_new_lines_with_starts` (phase 1), so the wrapper
 // is imported here instead of by the module's production import list.
 use crate::telegram::jsonl_kernel::read_new_lines;
 use std::fs;

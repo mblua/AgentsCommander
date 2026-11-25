@@ -100,7 +100,7 @@ pub(super) fn logical_path_resolve(path: &Path) -> String {
 /// 2. Falls back to pure logical resolution when canonicalize fails (the
 ///    typical post-workspace-rename state, where both the team coordinator
 ///    ref and the replica identity ref point to a folder that no longer
-///    exists — see #299).
+///    exists).
 ///
 /// Both branches feed `normalize_path_for_compare`, so two refs pointing at
 /// the same conceptual location produce equal keys whether or not the

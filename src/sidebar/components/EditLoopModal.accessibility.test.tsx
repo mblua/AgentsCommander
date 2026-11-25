@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4945 S6853 characterization: the Edit Loop labels are bound to their
+// S6853 characterization: the Edit Loop labels are bound to their
 // controls through literal `for`/`id` pairs (P1, false positive).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AcWorkgroup, LoopConfigDetails } from "../../shared/types";

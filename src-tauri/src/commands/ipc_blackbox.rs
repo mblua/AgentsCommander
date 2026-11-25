@@ -1,5 +1,5 @@
 //! Tauri commands `ipc_blackbox_report` (harvests renderer IPC black-box records) and
-//! `ipc_blackbox_enabled` (#1707: whether the renderer instrument runs this process).
+//! `ipc_blackbox_enabled` (whether the renderer instrument runs this process).
 //! Holds only the boot snapshot `IpcBlackBoxActivation`; the report command forwards
 //! records to the managed `IpcObserver` from `crate::loops::ipc_observer` and returns the
 //! localStorage keys the caller must delete.
@@ -25,7 +25,7 @@ pub async fn ipc_blackbox_report(
     Ok(observer.ingest_records(records))
 }
 
-/// The `ipcBlackBoxEnabled` value read once at boot (#1707). Never updated: a
+/// The `ipcBlackBoxEnabled` value read once at boot. Never updated: a
 /// settings save takes effect on the next start only.
 pub struct IpcBlackBoxActivation {
     pub enabled: bool,

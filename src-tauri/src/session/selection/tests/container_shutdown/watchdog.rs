@@ -1,4 +1,4 @@
-//! Physical watchdog for one bounded selection close (#1234): producer stamps, inclusive
+//! Physical watchdog for one bounded selection close: producer stamps, inclusive
 //! S/A/R limits, wake flag and the gates opened on the first failure.
 
 use super::deadline::ms;

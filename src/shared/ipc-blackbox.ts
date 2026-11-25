@@ -29,7 +29,7 @@
  * `window.__TAURI_INTERNALS__.invoke`, which would put a diagnostic in the path
  * of every IPC call the app makes.
  *
- * ACTIVATION (#1707). `main.tsx` passes `BlackBoxAPI.enabled`, the backend's boot snapshot of
+ * ACTIVATION. `main.tsx` passes `BlackBoxAPI.enabled`, the backend's boot snapshot of
  * `ipcBlackBoxEnabled`. Off (the default) leaves the instrument inert; the harvest still runs.
  */
 
@@ -114,7 +114,7 @@ let lastSentAtMs = 0;       // stamped by noteInvokeStart, BEFORE the call reach
  *  deterministic. */
 let installed: Promise<void> | null = null;
 let teardown: Array<() => void> = [];
-/** #1707. `true` until the install decides, so a call issued before the
+/** `true` until the install decides, so a call issued before the
  *  decision is registered exactly as before. An "off" decision clears the
  *  registry and sets it `false` for the rest of the run. */
 let recording = true;

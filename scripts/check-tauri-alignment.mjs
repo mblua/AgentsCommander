@@ -5,7 +5,7 @@
 // `@tauri-apps/plugin-X` to match `tauri-plugin-X`, on major.minor (patch
 // may differ). `@tauri-apps/api` <-> `tauri` is checked by
 // src-tauri/tests/tauri_npm_version_coupling.rs, so it is not repeated here.
-// Reads the resolved versions from `package-lock.json` and `Cargo.lock` (#5153).
+// Reads the resolved versions from `package-lock.json` and `Cargo.lock`.
 //
 // Usage:
 //   node scripts/check-tauri-alignment.mjs

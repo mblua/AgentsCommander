@@ -495,7 +495,7 @@ describe("OpenAgentModal P2 selectedRepo observer fixture (#4945)", () => {
   });
 });
 
-// #4945 phase 2 (P2): rows are native buttons. jsdom has no native button
+// Phase 2 (P2): rows are native buttons. jsdom has no native button
 // activation, so a row keydown is checked as unhandled and the native
 // activation is driven by the click it would produce; Chrome covers the keys.
 describe("OpenAgentModal phase 2 native row buttons (#4945)", () => {

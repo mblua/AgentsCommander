@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { declarations, declProps, declValue, scanRules, soleRuleBody, type ScannedRule } from "../../sidebar/styles/css-test-helpers";
 
-// #5140 - native <select> readable on WebKitGTK. select.css draws the arrow at
+// Native <select> readable on WebKitGTK. select.css draws the arrow at
 // specificity (0,2,2); any class rule at that level or above that sets the
 // background shorthand would erase it. jsdom paints nothing: bytes are the contract.
 

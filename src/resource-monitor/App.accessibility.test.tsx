@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4945 S6853 characterization: the Resource Monitor filter labels are bound
+// S6853 characterization: the Resource Monitor filter labels are bound
 // to their controls through literal `for`/`id` pairs (P1, false positive).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import ResourceMonitorApp from "./App";

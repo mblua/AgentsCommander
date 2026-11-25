@@ -218,7 +218,7 @@ fn agent_order_legacy_load_writes_nothing_and_next_save_persists_positions() {
         settings.coding_agent_profiles.profile_labels_by_agent["a"]["A"],
         "Alpha"
     );
-    // Loading writes nothing beyond the one-shot export of #2716 (B3) 4.3:
+    // Loading writes nothing beyond the one-shot export (B3):
     // both groups move, every other byte stays, and a second load writes none.
     b3_assert_split_matches_seed(&path, &before, &["order"]);
     let sidecar = b3_object(&super::super::agents_instance_path(&path));

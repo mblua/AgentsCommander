@@ -384,7 +384,7 @@ fn sidechain_assistant_records_are_captured_today() {
     // Test 9 — sub-agent residual, pinned not fixed (`epic.md` 9.7):
     // `claude_watcher` has no `isSidechain` filter (0 hits) and follows
     // `find_latest_jsonl`, so a sidechain assistant record is captured.
-    // Narrowing this is not in #2264 scope; this test makes a later
+    // Narrowing this is not in scope here; this test makes a later
     // narrowing a deliberate, visible change.
     let line = serde_json::json!({
         "type": "assistant",

@@ -4,7 +4,7 @@ import type { Component } from "solid-js";
 import type { WebServerOwnedStatus } from "../../shared/types";
 import type { FakeTransport } from "../../shared/testing/fake-transport";
 
-// #4945 characterization of the WebServer popover's accessibility contract,
+// Characterization of the WebServer popover's accessibility contract,
 // mounted through Titlebar with the fixtures of Titlebar.webserver.test.tsx.
 
 const tauriStubs = vi.hoisted(() => {

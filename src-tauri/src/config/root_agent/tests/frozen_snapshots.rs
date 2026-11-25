@@ -431,7 +431,7 @@ fn old_deferred_messaging_paragraph_is_frozen() {
 }
 
 /// S5 / G3: the frozen v4 root snapshot must stay byte-identical to what
-/// the #698..409b7f90 builds shipped. Expected values captured by a one-off run
+/// the ..409b7f90 builds shipped. Expected values captured by a one-off run
 /// of `default_root_context_template()` AT base commit 409b7f90, never from
 /// this const.
 #[test]

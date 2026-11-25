@@ -50,7 +50,7 @@ fn read_sync_updates_pre_orchestrator_rename_coordinator_template() {
 }
 
 /// S6 / G3: the frozen v1 global snapshot must stay byte-identical to
-/// what the #658..ec660c17 builds shipped. Expected values captured by a
+/// what the ..ec660c17 builds shipped. Expected values captured by a
 /// one-off run of the shipped accessor AT base commit ec660c17, never from
 /// this const.
 #[test]

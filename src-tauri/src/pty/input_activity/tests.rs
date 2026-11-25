@@ -25,7 +25,7 @@ struct MatrixRow {
     from_clear: (bool, bool),
     /// (`*pending` after the chunk, `submitted`) starting from `pending == true`.
     from_pending: (bool, bool),
-    /// #1682's added observation. Not part of #871's contract.
+    /// The added observation. Not part of the original contract.
     contributed: bool,
 }
 
@@ -130,7 +130,7 @@ const MATRIX_ROWS: &[MatrixRow] = &[
         contributed: true,
     },
 ];
-/// Regression guard on #871. `classify_chunk` is #871's classifier and
+/// Regression guard. `classify_chunk` is the original classifier and
 /// Is only a consumer of it, so this pins what the classifier does to
 /// `pending_nonspace` and to `submitted` for every chunk class the fix
 /// touches, from BOTH starting states, independently of the new field.
@@ -203,7 +203,7 @@ fn an_abandoned_line_ages_out_under_a_stream_of_non_submit_chunks() {
             !t.pending_within(id, USER_WRITE_STAMP_WINDOW),
             "{label}: must not refresh a line abandoned before it arrived"
         );
-        // #871's flag itself is untouched: it is the AGE that expired, not
+        // The original flag itself is untouched: it is the AGE that expired, not
         // `pending_nonspace`, which only CR/LF-with-content, Ctrl-C/Ctrl-U
         // and `reset` may clear.
         assert!(
@@ -433,7 +433,7 @@ fn pending_within_tracks_unsubmitted_input_and_expires() {
 }
 
 /// The exact chunk classes the typing hold accepts and rejects.
-/// The rejected rows are the same device-reply/mouse/focus classes #1682
+/// The rejected rows are the same device-reply/mouse/focus classes the observation
 /// proved arrive through the same `onData` stream while a person is NOT
 /// typing.
 #[test]

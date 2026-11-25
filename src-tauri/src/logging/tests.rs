@@ -792,7 +792,7 @@ fn level_gate_atomic_flip_changes_verdict_at_runtime() {
 /// R2 (grinch): the error-sink now sits BEHIND the new gate plumbing.
 /// Prove an ERROR record is NOT dropped by the gate at the STRICTEST
 /// selectable level (Error) and still reaches `error_sink()` through the
-/// reused format closure (`install_format`'s #264 tee). `error_sink()` is a
+/// reused format closure (`install_format`'s tee). `error_sink()` is a
 /// process-wide global, so assert our unique message was captured (a delta
 /// check) rather than an absolute count, to stay robust under the parallel
 /// test runner. This crate's only unit-test global-sink drainer is this

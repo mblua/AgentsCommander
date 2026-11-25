@@ -44,7 +44,7 @@ fn map(
     QuotaSources::sources_map(&settings)
 }
 
-/// Every entry's agent exists and runs `claude`: the pre-#2566 adapter cases.
+/// Every entry's agent exists and runs `claude`: the older adapter cases.
 fn specs(entries: Vec<(&str, QuotaSourceEntry)>) -> HashMap<String, AgentQuotaSource> {
     let agents = entries.iter().map(|(id, _)| (*id, "claude")).collect();
     map(agents, entries)

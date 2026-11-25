@@ -3,7 +3,7 @@ use super::*;
 // ── legacy startOnlyCoordinators → restoreCoordinatorWakeState ──
 //
 // The minimal JSON below carries the three fields without serde defaults
-// (`defaultShell`, `defaultShellArgs`, `agents`) plus whichever issue-#248
+// (`defaultShell`, `defaultShellArgs`, `agents`) plus whichever
 // field is under test. All other AppSettings fields use their serde defaults.
 
 #[test]
@@ -420,7 +420,7 @@ fn profile_labels_override_survives_serde_round_trip() {
 
 #[test]
 fn profile_labels_default_to_empty_and_always_serialize() {
-    // A pre-#548 v2 codingAgentProfiles object with NO profileLabelsByAgent key
+    // An older v2 codingAgentProfiles object with NO profileLabelsByAgent key
     // must load as an empty map (proves #[serde(default)]).
     let json = r#"{
             "schemaVersion": 2,
@@ -773,7 +773,7 @@ fn settings_1757(agents: Vec<AgentConfig>) -> AppSettings {
     }
 }
 
-/// The pre-#1757 materialized Codex array's only entry.
+/// The older materialized Codex array's only entry.
 fn folder_trust_entry_1757() -> super::super::BlockingMenuEntry {
     super::super::BlockingMenuEntry::Valid(super::super::BlockingMenuConfig {
         pattern: r"^\s*Do you trust the contents of this directory\?".to_string(),

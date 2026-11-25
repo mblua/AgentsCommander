@@ -142,7 +142,7 @@ fn assert_registration_request(request: &serde_json::Value, project: &Path) {
 
 /// Hang guard for one CLI child. nextest runs every test in its own process
 /// and many at once, so a healthy debug `new-project` can pass 10 s on a loaded
-/// CI runner (#5204); 60 s still fails a real hang well before nextest does.
+/// CI runner; 60 s still fails a real hang well before nextest does.
 const CHILD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Drain both pipes while waiting so output cannot defeat the child deadline.

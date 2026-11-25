@@ -336,7 +336,7 @@ fn old_coordinator_default_is_known_generated_without_raise_hand() {
 }
 
 /// S4 / G3: the frozen v2 snapshot must stay byte-identical to what the
-/// #684..1dd0b58 builds shipped. Expected values captured by a one-off run of
+/// ..1dd0b58 builds shipped. Expected values captured by a one-off run of
 /// the shipped accessor AT base commit 1dd0b58, never from this const.
 #[test]
 fn coordinator_pre_token_minimization_snapshot_is_byte_exact() {

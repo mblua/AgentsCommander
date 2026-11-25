@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// #3528: conserved native lint/platform capacity; locations are capture-local only.
+// Conserved native lint/platform capacity; locations are capture-local only.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';

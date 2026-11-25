@@ -95,7 +95,7 @@ fn app_settings_default_overrides_differ_from_missing_keys() {
     );
 }
 
-/// #5178 A file without `screenshotCopyPath` loads image mode; `true` round-trips.
+/// A file without `screenshotCopyPath` loads image mode; `true` round-trips.
 #[test]
 fn app_settings_screenshot_copy_path_defaults_off_and_round_trips() {
     let mut value = serde_json::to_value(AppSettings::default()).expect("serialize default");

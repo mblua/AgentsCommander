@@ -16,14 +16,14 @@ pub(crate) const ALLOWED_GUARDED_CRATE_REFERENCES: [(&str, &str); 1] =
 /// - `*` is the single `use super::*;` inside `#[cfg(test)] mod tests`, where
 ///   `super` is this module itself. See entry 9 of the uncovered list for why
 ///   its count is asserted separately.
-/// - `ROOT_AGENT_DIR_NAME` is the constant #1273 moved into `crate::config`,
+/// - `ROOT_AGENT_DIR_NAME` is the constant the split moved into `crate::config`,
 ///   reached as `super::ROOT_AGENT_DIR_NAME` from `required_rules` and as
 ///   `super::super::ROOT_AGENT_DIR_NAME` from the test module. **It is listed
 ///   because it must be there**: this is an equality, so if it silently
 ///   disappears the assertion fails rather than passing quieter. Its absence
 ///   would mean the name was reached some other way.
 /// - `agent_local_dir_name` and `config_dir` are `crate::config`'s own
-///   functions, called from `ensure_instance_gitignore`. They predate #1273 and
+///   functions, called from `ensure_instance_gitignore`. They predate the split and
 ///   are the reason the arc `config::instance_gitignore -> config` exists and is
 ///   not removable.
 /// - `injected_messages` is `super::super::injected_messages::...` in two tests.
@@ -34,7 +34,7 @@ pub(crate) const ALLOWED_GUARDED_CRATE_REFERENCES: [(&str, &str); 1] =
 ///   config::injected_messages` and this module is back in the knot. This guard
 ///   cannot tell the two positions apart; the detector can, and is the check
 ///   that decides.
-/// - `instance_artifacts` is the artifact registry #1446 added, and unlike
+/// - `instance_artifacts` is the artifact registry added later, and unlike
 ///   `injected_messages` it is allowed in **production** code. The reason is a
 ///   property of the target, not of the position: that module has zero outgoing
 ///   arcs, so it is a trivial SCC whatever points at it, and an arc into it can
@@ -419,7 +419,7 @@ pub(crate) const ALLOWED_GUARDED_SELF_REFERENCES: [(&str, &str); 0] = [];
 /// **Empty, and this is the one that was measured to matter.** From
 /// `src/config.rs`, `self::` means `crate::config`, so
 /// `use self::root_agent::...;` reaches a knot member from the module whose
-/// zero-outgoing-arc property the whole of #1273 Section 4.3 rests on. Measured
+/// zero-outgoing-arc property the whole split rests on. Measured
 /// during the review: that one line took the knot 87 to **91** and
 /// `sccSize(config::instance_gitignore)` 1 to **91**, with the guard green,
 /// because no anchor here was reading `self::` at all. Unlike entry 13 the
@@ -430,7 +430,7 @@ pub(crate) const ALLOWED_HOST_SELF_REFERENCES: [(&str, &str); 0] = [];
 /// under `crate::`, sorted.
 ///
 /// **Empty, and the emptiness is the whole reason the registry is safe to
-/// depend on.** #1446 inverted the natural direction on purpose: the registry
+/// depend on.** The registry inverted the natural direction on purpose: the registry
 /// declares the artifact names and the modules that write them alias it, rather
 /// than the registry importing each owner's constant. The inverse would have
 /// needed an arc in both directions with `api::message_store`, which is a
@@ -461,7 +461,7 @@ pub(crate) const ALLOWED_REGISTRY_SUPER_REFERENCES: [(&str, &str); 1] =
 /// it unasserted would leave that spelling free.
 pub(crate) const ALLOWED_REGISTRY_SELF_REFERENCES: [(&str, &str); 0] = [];
 
-/// The module #1273 cut this one away from, matched as a bare identifier under
+/// The module the split cut this one away from, matched as a bare identifier under
 /// every anchor and under none.
 ///
 /// This is the one check in the file that does not depend on an anchor, and it
@@ -486,13 +486,13 @@ pub(crate) const SELF_ANCHOR: &str = "self::";
 /// The module this guard is written about, as path segments below `crate`.
 pub(crate) const GUARDED_MODULE: [&str; 2] = ["config", "instance_gitignore"];
 
-/// The module #1273 moved the constant into, as path segments below `crate`.
+/// The module the split moved the constant into, as path segments below `crate`.
 pub(crate) const HOST_MODULE: [&str; 1] = ["config"];
 
-/// The artifact registry #1446 added, as path segments below `crate`.
+/// The artifact registry added later, as path segments below `crate`.
 pub(crate) const REGISTRY_MODULE: [&str; 2] = ["config", "instance_artifacts"];
 
-/// The constant #1273 moved, and the one file that may define it.
+/// The constant the split moved, and the one file that may define it.
 ///
 /// `defines_the_constant` decides what counts as a definition, because the
 /// re-export left behind in `src/config/root_agent.rs` names the same identifier

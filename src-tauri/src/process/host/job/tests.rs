@@ -60,7 +60,7 @@ fn job_terminate_kills_child_and_grandchild() {
     // Assigned pid = outer cmd; it spawns an inner cmd (child) that spawns ping
     // (grandchild of the assigned pid). Proves tree-kill to depth 2 and that
     // descendants spawned AFTER assignment are captured. The outer cmd waits
-    // about 1 s before spawning, so `for_child` assigns the job first (#917).
+    // about 1 s before spawning, so `for_child` assigns the job first.
     let mut child = Command::new("cmd.exe")
         .args([
             "/C",

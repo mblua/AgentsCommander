@@ -193,10 +193,10 @@ fn a_blank_viewport_is_not_content_but_a_coloured_one_is() {
 /// `vt100::grid::set_size` computes `size.rows - 1` on a `u16`, so `rows == 0` underflows.
 /// Debug panics; release wraps to 65535. Worse, the panic fires while
 /// `resize_screen_and_broadcast` holds `screen_parsers`, poisoning it - and every reader of
-/// that mutex swallows the poison silently (`if let Ok` / `.ok()?`), so #955's snapshot,
+/// that mutex swallows the poison silently (`if let Ok` / `.ok()?`), so the snapshot,
 /// the output sequence numbering and `get_pty_size` would go dead for EVERY session, for
 /// the life of the process, without a log line. A black tile on re-attach is what the user
-/// would see: exactly the bug #955 shipped to kill.
+/// would see: exactly the bug the snapshot exists to kill.
 #[test]
 fn a_degenerate_resize_never_reaches_the_vt100_parser() {
     let fanout = fanout();

@@ -503,7 +503,7 @@ impl Drop for P03SettingsLock {
 fn p03_real_readers_hold_shared_lock_and_retry_sidecar_without_managed_writes() {
     // The 3 modes share no state (each fixture owns its temp dirs, binary copy,
     // config and lock file), so they run in parallel: each mode must wait >= 2 s
-    // per reader command, and in series that cost ~60 s of CI wall time (#5180).
+    // per reader command, and in series that cost ~60 s of CI wall time.
     let workers: Vec<_> = (0..3)
         .map(|mode| {
             std::thread::Builder::new()
@@ -604,7 +604,7 @@ fn p03_real_readers_mode(mode: usize) {
 
 /// The CLI waits 2 s for the settings lock. Under CI load the concurrent
 /// sibling can hold it longer, and the CLI then refuses with
-/// `lock_timed_out` (#5204), the same refusal this test expects while the lock
+/// `lock_timed_out`, the same refusal this test expects while the lock
 /// is held. Retry only that refusal, a bounded number of times; any other
 /// failure, and a lost registration, still fail the test.
 fn run_new_project_retrying_lock_timeout(bin: &Path, project: &Path) {

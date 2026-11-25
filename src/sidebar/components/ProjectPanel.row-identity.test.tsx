@@ -20,7 +20,7 @@ import { automationIdPart } from "./replica-repo-badges";
 // close markers, repo branch) used to replace every project object reference,
 // so the reference-keyed <For>s disposed and re-created the whole clickable
 // panel DOM. A click whose press straddled that swap never fired (Chromium
-// drops `click` when the mousedown target is detached, w3c/uievents#141).
+// drops `click` when the mousedown target is detached).
 // These tests pin the fix at the DOM level: after each volatile event the row
 // must be the SAME element (identity stable ⇒ no click can be lost to it),
 // while the badge/pill content still updates in place. An actually-changed

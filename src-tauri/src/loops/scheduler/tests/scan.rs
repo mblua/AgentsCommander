@@ -578,7 +578,7 @@ fn tmp_files_in(dir: &Path) -> Vec<String> {
 }
 
 /// Round 2 - a non-UTF-8 `state.json` is unreadable state, not a
-/// scan failure: the scan replaces it with a baseline, as before #2695.
+/// scan failure: the scan replaces it with a baseline, as before.
 #[tokio::test]
 async fn scan_heals_a_non_utf8_state_file() {
     let config = sample_config();

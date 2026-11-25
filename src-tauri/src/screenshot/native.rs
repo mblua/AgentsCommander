@@ -201,7 +201,7 @@ pub fn register_configured_hotkey<H: ScreenshotHost>(
     #[cfg(target_os = "linux")]
     if is_wayland(app) {
         // Must precede app.global_shortcut(): under XWayland the grab SUCCEEDS
-        // and then never fires. #2774: bind a portal shortcut instead; the final
+        // and then never fires. Fix: bind a portal shortcut instead; the final
         // status arrives through `screenshot_hotkey_status_changed`.
         let generation = begin_wayland_registration(app);
         let token = instance_token(crate::config::config_dir().as_deref());
@@ -247,7 +247,7 @@ pub fn register_configured_hotkey<H: ScreenshotHost>(
                 // registered fallback alive (do not take `registered_shortcut`) so it
                 // keeps working and a later save can unregister it, but report the
                 // configured shortcut as NOT registered so the UI surfaces the
-                // conflict (Grinch #714 LOW): `status.registered` describes the
+                // conflict: `status.registered` describes the
                 // configured shortcut, not the internal fallback.
                 let msg = e.clone();
                 runtime.status = hotkey_status_after_attempt(configured, Err(msg.as_str()));

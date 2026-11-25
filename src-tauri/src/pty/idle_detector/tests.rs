@@ -806,7 +806,7 @@ fn issue_2158_second_resize_classification_order() {
     let id = team_session(&detector, IdleTuning::AGENT_DEFAULT, base);
     detector.record_resize_at(id, Some(secs(base, 20.0)));
     detector.record_resize_at(id, Some(secs(base, 22.0)));
-    // Compare stored stamps, not two wall-clock ages (#5126).
+    // Compare stored stamps, not two wall-clock ages.
     let stamp = |d: &IdleDetector| lock(&d.silence).get(&id).copied().unwrap();
     let silence_before = stamp(&detector);
     chunk(&detector, id, secs(base, 21.0), secs(base, 26.0));

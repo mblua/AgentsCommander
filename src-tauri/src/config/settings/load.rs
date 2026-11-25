@@ -938,7 +938,7 @@ pub(crate) fn read_ipc_blackbox_enabled_from_path(path: &std::path::Path) -> boo
         .unwrap_or(false)
 }
 
-/// Read once at boot (#1707): the renderer black box follows the value the
+/// Read once at boot: the renderer black box follows the value the
 /// process started with, never a later save.
 pub fn read_ipc_blackbox_enabled_only() -> bool {
     match settings_path() {

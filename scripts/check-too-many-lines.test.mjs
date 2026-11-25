@@ -712,7 +712,7 @@ test('detector commands run from a candidate checkout that deletes or renames th
     }
   }));
 
-// #4944 P02: the six long #1850 release steps load three pinned Bash files from
+// The six long release steps load three pinned Bash files from
 // the event commit. Read sites, aliases and pins from the workflow and the blobs from HEAD.
 const RELEASE_FILE = kind => `scripts/pr-regression/issue1850-release-${kind}.sh`;
 const RELEASE_SITES = [

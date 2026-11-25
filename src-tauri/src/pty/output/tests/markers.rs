@@ -1,7 +1,7 @@
 use super::super::markers::strip_ansi_csi;
 use super::*;
 
-/// The check before #5179: strip a full copy, then look for a printable char.
+/// The older check: strip a full copy, then look for a printable char.
 fn reference(text: &str) -> bool {
     strip_ansi_csi(text)
         .chars()

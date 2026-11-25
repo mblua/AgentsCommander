@@ -1,6 +1,6 @@
 use super::*;
 
-/// Test #21 — byte-for-byte golden for the no-template scaffold. The baseline
+/// Byte-for-byte golden for the no-template scaffold. The baseline
 /// is the token-minimized Source of Truth / Agent Memory Rule
 /// bodies. The format string is
 /// reproduced verbatim here (NOT imported from the helper) so the two
@@ -33,7 +33,7 @@ fn build_role_content_no_template_matches_legacy() {
     );
 }
 
-/// Test #22 — supplying a resolved template inserts the `## Role Profile`
+/// Supplying a resolved template inserts the `## Role Profile`
 /// section between the heading/description and the Source of Truth section,
 /// using the template body verbatim (post-trim). Body must be fenced by the
 /// plan §7.2 HTML-comment delimiters with the opening tag carrying the
@@ -99,7 +99,7 @@ fn build_role_content_with_template_inserts_role_profile() {
     );
 }
 
-/// Test #23 — mandatory sections are always last, even when a template body
+/// Mandatory sections are always last, even when a template body
 /// itself contains a heading that LOOKS like a mandatory section. The
 /// template is inserted between description and the mandatory block, never
 /// after it; the actual `## Source of Truth` and `## Agent Memory Rule`
@@ -145,7 +145,7 @@ fn build_role_content_keeps_mandatory_sections_last() {
     );
 }
 
-/// Test #24 — single quotes in the description are doubled inside the YAML
+/// Single quotes in the description are doubled inside the YAML
 /// frontmatter `description:` value so the file stays valid YAML, while the
 /// human-readable body keeps the original character.
 #[test]

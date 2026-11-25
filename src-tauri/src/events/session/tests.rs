@@ -448,7 +448,7 @@ fn issue_3950_native_fail_ws() {
     println!("\nISSUE3950_MUTANT_REJECTED case=native_short_circuit");
 }
 
-// ----- #5206 AutoClose missing managed state (AppHandle port and run) -----
+// ----- AutoClose missing managed state (AppHandle port and run) -----
 
 use crate::config::coordinator_clocks::{ClockEntry, CoordinatorClocks, CoordinatorClocksState};
 use crate::config::settings::SettingsState;
@@ -718,7 +718,7 @@ fn check_child(
     Ok(stdout)
 }
 
-/// Parent side of the AutoClose run test (#5206).
+/// Parent side of the AutoClose run test.
 fn run_autoclose_child() {
     let args = [&[AUTOCLOSE_FQN][..], &AUTOCLOSE_ARGS].concat();
     let mut child = spawn_test_binary(&args, Some("skip-recover"));
@@ -895,7 +895,7 @@ async fn yields(n: usize) {
 #[tokio::test(start_paused = true)]
 async fn run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task() {
     use crate::pty::backend::{PtyBackend, SessionBackendKind};
-    // One process-wide logger: the body runs in a child of this exact test (#5206).
+    // One process-wide logger: the body runs in a child of this exact test.
     if !autoclose_child_mode() {
         return run_autoclose_child();
     }

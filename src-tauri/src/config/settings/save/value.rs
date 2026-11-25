@@ -177,7 +177,7 @@ pub(crate) fn save_settings_value_with_startup(
 
 /// Locked half of the project-aware writer. Assumes `settings.json.lock` is
 /// already held by the caller (both production entry points acquire it before
-/// reaching here), and performs #2058 backup rotation after a successful write.
+/// reaching here), and performs backup rotation after a successful write.
 pub(crate) fn save_settings_value_locked(
     settings: &AppSettings,
     path: &Path,
@@ -222,7 +222,7 @@ pub(crate) fn restore_protected_agents_instance_groups(
                 out.remove(key);
             }
         }
-        // Only legacy MAIN identities retain the existing #2450 writer output.
+        // Only legacy MAIN identities retain the existing writer output.
         // All other fields of a protected profiles group remain raw disk values.
         if key == "codingAgentProfiles" {
             if out
@@ -360,7 +360,7 @@ pub(crate) fn prepare_registered_main_agent_groups(
 
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
     // repair, so the eligible branches above never fire for it; its groups are
-    // written verbatim from the live settings/disk, matching pre-#1077 behavior.
+    // written verbatim from the live settings/disk, matching the older behavior.
     // Restore complete protected groups after every retention/repair stage.
     // Sidecar key presence, including empty values, takes precedence over main.
     restore_protected_agents_instance_groups(

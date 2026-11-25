@@ -427,7 +427,7 @@ describe("RootAgentBanner compact toggle (#2284)", () => {
     expect(r.toggle.getAttribute("aria-label")).toContain(DEFAULT_SIDEBAR_COMPACT_HOTKEY);
   });
 
-  // #4945 P5 characterization: pointer, native and contextmenu paths on the
+  // P5 characterization: pointer, native and contextmenu paths on the
   // banner group, pinned in both expanded and compact modes.
   const MENU_SEL = '[data-ac-testid="rootAgent.menu"]';
   const fire = (el: Element) =>

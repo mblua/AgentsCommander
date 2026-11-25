@@ -10,7 +10,7 @@ fn exe_err() -> Result<PathBuf, Error> {
 }
 
 /// A SUFFIXED absolute executable: the only kind that still reaches the
-/// adjacent write-probe table after #1868. Its complete stem names the
+/// adjacent write-probe table. Its complete stem names the
 /// adjacent directory.
 fn absolute_executable() -> PathBuf {
     if cfg!(windows) {
@@ -164,7 +164,7 @@ fn blank_debug_override_is_ignored() {
         WriteProbeOutcome::Success,
     );
     // Falls through to the portable executable-derived config (suffixed
-    // fixture: the unsuffixed route selects HOME instead, see #1868).
+    // fixture: the unsuffixed route selects HOME instead).
     let expected_config = if cfg!(windows) {
         PathBuf::from(r"C:\bundle\.ac_portable")
     } else {

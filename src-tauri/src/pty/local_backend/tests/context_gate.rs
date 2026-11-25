@@ -76,7 +76,7 @@ fn paint(fanout: &SessionIoFanout, id: Uuid) {
 /// `TerminateProcess` is asynchronous, and `wait()` short-circuits on `try_wait()` ->
 /// `is_complete()` -> `GetExitCodeProcess`. The exit code is readable ~14 ms (measured
 /// here) BEFORE the kernel signals the process object, so `wait()` returns `Ok(1)` while
-/// `WaitForSingleObject(h, 0)` still answers `WAIT_TIMEOUT`. That is #942 arriving from the
+/// `WaitForSingleObject(h, 0)` still answers `WAIT_TIMEOUT`. That is the bug arriving from the
 /// other side: `is_complete` is exactly the accessor AC's oracle refuses to trust, and
 /// the oracle asks the stronger question on purpose. Production never notices the gap -
 /// 14 ms against a 5 s tick - but a test that kills and reads in the same breath lands

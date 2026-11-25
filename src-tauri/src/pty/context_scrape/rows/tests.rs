@@ -1,7 +1,7 @@
 use super::*;
 use crate::pty::context_scrape::pattern::compile;
 
-/// The two patterns the live capture measured, and what #1033's placeholder ships.
+/// The two patterns the live capture measured, and what the placeholder ships.
 /// Every element of each is load-bearing, and the tests below are what say so.
 const CLAUDE: &str = r"^ {2}Context [░█]+ (\d{1,3})%";
 const CODEX: &str = r"^ {2}.*· Context (\d{1,3})% used";

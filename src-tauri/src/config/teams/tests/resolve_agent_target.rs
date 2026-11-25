@@ -553,7 +553,7 @@ fn resolve_wg_coordinator_replica_rejects_portable_ref_with_spoofed_identity() {
 
 /// Build a fixture where both team config and replica configs reference
 /// a renamed folder (`renamed-workspace`) that no longer exists on disk.
-/// Mirrors the post-workspace-rename state from #299: persisted refs are
+/// Mirrors the post-workspace-rename state: persisted refs are
 /// stale, but the same-workspace local matrices exist and are the only valid
 /// authority targets.
 fn make_stale_coordinator_fixture(

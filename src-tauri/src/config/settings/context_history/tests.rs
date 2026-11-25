@@ -190,7 +190,7 @@ fn new_fields_survive_save_reload_and_unrelated_updates() {
 const WINDOWS: &str = "contextHistorySessionWindows";
 const COLOUR: &str = "contextHistoryColorSessions";
 
-/// Fixture with nondefault #4049 fields plus the given windows/colour
+/// Fixture with nondefault fields plus the given windows/colour
 /// (each removed when `None`).
 fn sessions_json(windows: Option<Value>, colour: Option<Value>) -> Value {
     let mut raw = settings_json(Some(json!(7)));

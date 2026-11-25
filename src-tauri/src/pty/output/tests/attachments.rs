@@ -217,7 +217,7 @@ fn attachments_are_counted_by_window_label() {
     assert_eq!(events(&sink).len(), 1);
 }
 
-/// Criterion M, and the case that IS #1363: two windows on two sessions, both delivering at
+/// Criterion M, and the core case: two windows on two sessions, both delivering at
 /// the same time with no reactivation. A single delivery slot passes every other test in
 /// this family and fails this one, which is why it is here.
 #[test]
@@ -308,7 +308,7 @@ fn detach_is_idempotent_and_never_crosses_windows() {
 }
 
 /// Criterion L. A session whose parser is gone still attaches and still emits, with no
-/// sequence, and the client writes those bytes live: emitting nothing there is #955, the
+/// sequence, and the client writes those bytes live: emitting nothing there is the bug, the
 /// permanently black terminal, and there is no recovery lane left to repair it. A rejected
 /// attach, by contrast, changes nothing at all.
 #[test]

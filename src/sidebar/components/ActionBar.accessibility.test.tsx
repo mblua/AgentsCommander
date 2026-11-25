@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4945 characterization: ActionBar create notice and create confirmation dialogs.
+// Characterization: ActionBar create notice and create confirmation dialogs.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Component } from "solid-js";
 

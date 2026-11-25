@@ -310,7 +310,7 @@ async fn p2525_switch_off_releases_a_running_room_demand() {
     crate::commands::session::reader_demand_tests::assert_no_room_reader_state_for(&h, id).await;
 }
 
-/// T-r2, inverted by #2756 U2a: a whitespace-only key is a `Ready`
+/// T-r2, inverted by U2a: a whitespace-only key is a `Ready`
 /// input, not a capture input, so a running Room demand survives the pass
 /// and the slot stays open. Mutation: sweep on the key again.
 #[tokio::test]

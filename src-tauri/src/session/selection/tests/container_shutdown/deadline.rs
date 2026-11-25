@@ -1,4 +1,4 @@
-//! Paused-clock driver for one bounded selection close (#1234).
+//! Paused-clock driver for one bounded selection close.
 //!
 //! The parent prepares the domain and the sweep. This leaf owns the pinned close future,
 //! the Tokio schedule, the receipts of each product wait, the attributable bound `C`,

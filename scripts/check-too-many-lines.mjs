@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// #3507: measured Clippy debt, committed ceilings, and conservative relocation.
+// Measured Clippy debt, committed ceilings, and conservative relocation.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';

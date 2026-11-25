@@ -5,10 +5,10 @@ use super::*;
 /// that reference is allowed in production code is that this module has **zero
 /// outgoing arcs**. A node with no way out is a trivial SCC however many modules
 /// point at it, so every arc into the registry is safe regardless of whether its
-/// source is inside the knot, and #1446 puts arcs into it from more than twenty
+/// source is inside the knot, and the registry puts arcs into it from more than twenty
 /// modules, many of them knot members.
 ///
-/// **This test is what holds that property.** It is the same argument #1273 made
+/// **This test is what holds that property.** It is the same argument the split made
 /// for `crate::config`, applied one level down, and it fails the same way: one
 /// `use crate::<any knot member>::...;` in the registry and the registry joins
 /// the knot, `config::instance_gitignore` follows it through a reference the

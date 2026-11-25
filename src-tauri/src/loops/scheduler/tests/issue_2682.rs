@@ -98,7 +98,7 @@ fn issue_2682_scan_commit_child() {
     println!("AC_2682_SCAN_CHILD_WRITTEN");
 }
 
-/// T2b, cross-process - the lost update #2682 names: the scan commit
+/// T2b, cross-process - the lost update this file names: the scan commit
 /// runs in a child process, the update in this one.
 #[test]
 fn issue_2682_t2b_cross_process_scan_commit_does_not_clobber_an_update() {

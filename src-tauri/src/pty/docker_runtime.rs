@@ -749,7 +749,7 @@ impl ContainerRuntime for DockerRuntime {
                 // No warn! here on purpose. The same `session_id: err` string is
                 // returned in the aggregate Err below, which the backend logs at the
                 // severity its sweep posture calls for. Warning here as well would fire
-                // on every opportunistic pass, which is the noise #992 is about.
+                // on every opportunistic pass, which is the noise to avoid.
                 Err(err) => errors.push(format!("{session_id}: {err}")),
             }
         }

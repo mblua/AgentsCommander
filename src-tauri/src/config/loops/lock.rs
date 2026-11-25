@@ -148,7 +148,7 @@ pub(super) fn migrate_loop_state_name(
         Ok(held) => held,
         Err(refusal) => return warn("the scope token failed", refusal),
     };
-    // #2718 4.5: the new names are ignored before anything takes them.
+    // The new names are ignored before anything takes them.
     if let Err(refusal) = ensure_loop_state_ignore_rows(canonical_root) {
         return warn("the .ac/.gitignore sweep failed", refusal);
     }

@@ -330,7 +330,7 @@ fn screen_rows_since_reports_gone_for_a_session_with_no_route() {
     ));
 }
 
-/// #1388, T4 - the trait default reads as "no claim, do not gate".
+/// T4 - the trait default reads as "no claim, do not gate".
 ///
 /// Exercised on an existing fake that does not override it, which is the one path
 /// production never takes: both production backends override. Its only content is the

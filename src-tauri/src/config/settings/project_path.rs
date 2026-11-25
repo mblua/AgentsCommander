@@ -63,7 +63,7 @@ pub(crate) use transaction::{
 // canonical paths, and stashes the raw pairs/outcomes in the hidden
 // `AppSettings.project_path_state`. On write, the preserve/reconcile modes
 // re-inject all six fields (companions are `#[serde(skip)]`, so a plain
-// AppSettings serialization would otherwise drop them). See plan #1077 §3.2-§4.3.
+// AppSettings serialization would otherwise drop them).
 
 /// An absent-side outcome (used when synthesizing a legacy hidden state).
 pub(crate) fn absent_side() -> SideOutcome {
@@ -195,7 +195,7 @@ pub(crate) fn report_overlay_diagnostics(source: &str, overlay: &LocalSettingsOv
 /// (D16) - one top-level key of the effective (base plus overlay) settings
 /// object, read without migrations, without auto-token-gen and without any save.
 /// Deliberately pre-migration AND pre-project-decode, exactly as these readers
-/// were before #1737. Valid ONLY for keys outside
+/// were before the local overlay. Valid ONLY for keys outside
 /// `OVERLAY_PREMIGRATION_UNSAFE_KEYS`: `apply_project_decode_to_value` rewrites
 /// or removes the six project keys, so for those six the value here is not the
 /// value `parse_settings_json` produces. Renders no diagnostics: the load path already

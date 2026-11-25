@@ -240,7 +240,7 @@ const S6_FIXTURE_JSON: &str = r##"{
 /// Re-captured after phase 3 - the loader no longer materializes
 /// `blockingMenus` and the export strips every array (claude's explicit `[]`
 /// is pristine and is dropped), so the control carries no `blockingMenus`.
-/// Re-captured after adding `sidebarCompactHotkey` (phase 4, #2281),
+/// Re-captured after adding `sidebarCompactHotkey` (phase 4),
 /// which is always serialized, using `print_s6_normalized_non_project_settings`
 /// with two byte-identical JSON captures.
 /// P1: re-captured - the loader finalizes every registered agent to

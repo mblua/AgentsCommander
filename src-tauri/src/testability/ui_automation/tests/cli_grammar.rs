@@ -271,7 +271,7 @@ fn ui_automation_action_wire_names_match_typescript_union() {
     // would inject a phantom member, and one carrying a `;` would truncate the union
     // early. The first revision of this test stripped AFTER `find(';')`, which left the
     // truncation hazard fully live while this comment claimed it was handled. That is
-    // precisely the defect #944 exists to kill (a comment asserting a protection the
+    // precisely the defect this exists to kill (a comment asserting a protection the
     // code does not have), so it is called out here rather than quietly repaired:
     // strip, THEN find the terminator. Both are false REDs, and a parity test that
     // cries wolf is a parity test somebody deletes.

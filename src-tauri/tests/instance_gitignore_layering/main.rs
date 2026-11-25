@@ -1,7 +1,7 @@
 //! Layering guard: `crate::config::instance_gitignore` may not name
 //! `crate::config::root_agent`, nor anything else that can reach the crate's
 //! cyclic SCC, and the module that now holds `ROOT_AGENT_DIR_NAME`,
-//! `crate::config`, may not name anything at all. #1446 added a third scanned
+//! `crate::config`, may not name anything at all. The registry added a third scanned
 //! unit on the same argument: `crate::config::instance_artifacts`, the artifact
 //! registry the guarded module now derives its rules from, may not name anything
 //! either, because a module with zero outgoing arcs is the only kind that is
@@ -25,7 +25,7 @@
 //! all. A guard that asserted only the `crate::`-anchored set would therefore
 //! observe **nothing** in this module and pass everything, which is exactly the
 //! failure `project_settings_layering/main.rs` records against itself as entry 13 of
-//! its own uncovered list and issue #1268 tracks: adding
+//! its own uncovered list tracks: adding
 //! `use crate::session::manager::SessionManager;` to that guarded module moved
 //! the knot 88 to 89 and `sccSize` 1 to 89 with that file green throughout,
 //! because its `crate::`-anchored set was collected and never asserted. Here
@@ -33,7 +33,7 @@
 //! is deliberately **empty**: this module names nothing under `crate::` today
 //! and any first entry is a decision about the crate's shape.
 //!
-//! WHY THE CONSTANT'S NEW HOME IS GUARDED TOO. #1273 took
+//! WHY THE CONSTANT'S NEW HOME IS GUARDED TOO. The split took
 //! `config::instance_gitignore` out of the knot by moving one `pub const` down
 //! into `crate::config`, and the argument that the knot cannot absorb it rests
 //! on `crate::config` having **zero outgoing arcs**, measured over the record
@@ -42,7 +42,7 @@
 //! puts `config` into the knot and drags this module straight back in with it,
 //! and the assertions about `instance_gitignore` stay green throughout, because
 //! that file never changed. The premise is load bearing either way: the arc
-//! `config::instance_gitignore -> config` is not removed by #1273 and is not
+//! `config::instance_gitignore -> config` is not removed by the split and is not
 //! removable, so `config` has to stay clean whatever else happens.
 //!
 //! WHAT IT READS. Not a directory. The files it scans are resolved by walking
@@ -83,7 +83,7 @@
 //!
 //! This list is maintained by the review loop. When a reviewer proves a spelling
 //! that puts this module back within reach of the knot and still passes this
-//! file, it is appended here. Appending an entry is part of reviewing #1273 and
+//! file, it is appended here. Appending an entry is part of reviewing the split and
 //! is expected; it changes nothing else.
 //!
 //! **This file is the canonical copy.** Section 5.4 of
@@ -237,7 +237,7 @@
 //!      `config -> agentscommander_lib`. `config` stops being the pure sink
 //!      Section 4.3 of the plan rests on, the knot goes 87 -> **91**, and
 //!      `sccSize(config::instance_gitignore)` goes 1 -> **91** through arc 547,
-//!      which #1273 never removed and cannot remove. This is precisely the
+//!      which the split never removed and cannot remove. This is precisely the
 //!      failure this test was written to prevent, walking through the one row it
 //!      allows.
 //!

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Proof harness for issue #2016: the npm launcher must resolve the executable
+// Proof harness: the npm launcher must resolve the executable
 // inside the extracted macOS .app bundle. Not shipped (it lives outside npm/ and
 // outside npm/package.json#files); run it directly with node.
 //
@@ -332,7 +332,7 @@ function runLauncher(launcherArgs, options = {}) {
   return spawnSync(process.execPath, nodeArgs, { cwd: workDir, env, encoding: 'utf8' });
 }
 
-// installEnv pins HOME and npm_config_global so the macOS alias branch (#2065)
+// installEnv pins HOME and npm_config_global so the macOS alias branch
 // is exercised deliberately and never writes into the real user's home.
 function runInstall(fixture, tarInfo, installEnv = {}) {
   const env = {
@@ -551,7 +551,7 @@ function runPackageChecks() {
       );
     }
 
-    // Issue #2065: nothing in the published package may touch Gatekeeper.
+    // Nothing in the published package may touch Gatekeeper.
     for (const name of ['install.js', 'macos-alias.js', 'run.js']) {
       const source = fs.readFileSync(path.join(NPM_DIR, name), 'utf8');
       const code = stripLineComments(source);
@@ -806,7 +806,7 @@ function runDarwinInstallChecks(tarInfo, symlinkProbe) {
     });
   }
 
-  // --- global install creates the ~/Applications alias (issue #2065) ---
+  // --- global install creates the ~/Applications alias ---
   const aliasJobs = [
     { id: 'I3', env: {}, expectAlias: true },
     { id: 'I4', env: { AGENTSCOMMANDER_NO_SHORTCUT: '1' }, expectAlias: false },

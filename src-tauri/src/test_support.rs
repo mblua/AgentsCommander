@@ -103,11 +103,11 @@ where
     (response, calls.load(Ordering::SeqCst))
 }
 
-/// Private marker `FQN|scenario` that turns a test process into a #5174 child.
+/// Private marker `FQN|scenario` that turns a test process into a child.
 #[cfg(test)]
 const CASE_MARKER: &str = "AC_5174_CASE";
 
-/// Absolute path of a fixture the parent prepared for its child (#5174).
+/// Absolute path of a fixture the parent prepared for its child.
 #[cfg(test)]
 pub(crate) const CASE_FIXTURE: &str = "AC_5174_FIXTURE";
 
@@ -118,7 +118,7 @@ pub(crate) fn case_name(path: &str) -> &str {
     path.strip_prefix("agentscommander_lib::").unwrap_or(path)
 }
 
-/// libtest arguments of a #5174 child after its single selector.
+/// libtest arguments of a child after its single selector.
 #[cfg(test)]
 const CASE_ARGS: [&str; 5] = [
     "--exact",
@@ -128,7 +128,7 @@ const CASE_ARGS: [&str; 5] = [
     "--color=never",
 ];
 
-/// Child side of a #5174 process case. Returns the scenario when this
+/// Child side of a process case. Returns the scenario when this
 /// process is the child that runs `path`, and `None` in the ordinary parent.
 /// A marker that names another test, an unknown scenario or a command line
 /// other than the one `run_case` builds (`<name>` plus `CASE_ARGS`) fails.
@@ -165,7 +165,7 @@ fn case_log(line: std::fmt::Arguments<'_>) {
     let _ = writeln!(std::io::stderr(), "{line}");
 }
 
-/// Child process owned by a #5174 parent. It holds the child logs and every
+/// Child process owned by a parent. It holds the child logs and every
 /// parent input until the child is reaped; the reap is attempted only once.
 #[cfg(test)]
 struct CaseChild {
@@ -253,7 +253,7 @@ impl Drop for CaseChild {
     }
 }
 
-/// Parent side of a #5174 process case: run `path` again in a child process
+/// Parent side of a process case: run `path` again in a child process
 /// with private cwd and environment, set only on its `Command` through
 /// `configure`, and require the child receipt for `scenario`. `inputs` are
 /// the parent fixtures the child reads; they live until the child is reaped.

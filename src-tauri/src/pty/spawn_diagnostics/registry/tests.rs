@@ -445,7 +445,7 @@ fn a_stale_failed_stop_does_not_poison_the_stop_that_finally_lands() {
     // grinch D2, the real run: RM Kill is blocked by AV/EDR (Quarantined leaves the
     // agent running), the user closes the session minutes later, we kill it. With a
     // first-wins anchor our own kill came out as `child-initiated` with a WARN and a
-    // head dump: a fabricated smoking gun, the exact lie #942 exists to remove.
+    // head dump: a fabricated smoking gun, the exact lie this exists to remove.
     let record = SpawnRecord {
         thresholds: Thresholds {
             stop_attribution: Duration::from_millis(30),

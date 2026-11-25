@@ -161,7 +161,7 @@ pub(crate) fn children_under(body: &str, anchor: &str) -> Result<Vec<String>, &'
     Ok(children)
 }
 
-/// Whether `body`, which must be scrubbed and normalized, names the module #1273
+/// Whether `body`, which must be scrubbed and normalized, names the module the split
 /// cut away from, as a bare identifier and under no anchor at all.
 ///
 /// Both boundaries are checked, so `root_agent_defaults` and
@@ -228,7 +228,7 @@ pub(crate) fn names_the_replaced_module(body: &str) -> bool {
 /// The needle is the keyword and the name together, and what follows decides. A
 /// following `:` is what makes it a definition, so `pub const ROOT_AGENT_DIR_NAME:
 /// &str = ...` and `static ROOT_AGENT_DIR_NAME: &str = ...` both count while
-/// `pub use crate::config::ROOT_AGENT_DIR_NAME;` does not: the re-export #1273
+/// `pub use crate::config::ROOT_AGENT_DIR_NAME;` does not: the re-export the split
 /// leaves in `src/config/root_agent.rs` names the identifier and defines nothing,
 /// and counting it would make the "moved, not duplicated" assertion fail on the
 /// very shape the plan requires.

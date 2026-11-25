@@ -244,7 +244,7 @@ fn resolve_agent_target_still_rejects_other_multi_colon_strings() {
     ));
 }
 
-/// Validation #16: `is_coordinator_for_cwd` correctness guard.
+/// `is_coordinator_for_cwd` correctness guard.
 /// Live sessions always run inside WG replica dirs (`wg-*/__agent_*`); the function
 /// consumes those via `agent_name_from_path` + WG-aware `is_coordinator`.
 #[test]
@@ -338,11 +338,11 @@ fn is_coordinator_for_cwd_project_qualified() {
     assert!(is_coordinator_for_cwd(coord_b_cwd, &teams));
 }
 
-/// Issue #77 regression guard: `is_any_coordinator` is the hot path used by
+/// Regression guard: `is_any_coordinator` is the hot path used by
 /// `commands::ac_discovery` to populate `AcAgentReplica.isCoordinator`. The
 /// §AR2-strict gate in `is_coordinator` requires a project-qualified FQN —
 /// callers that pass an unqualified WG-local name will silently get `false`
-/// (which is exactly the bug fixed in #77). This test pins the contract so
+/// (which is exactly the bug once fixed here). This test pins the contract so
 /// no future refactor can re-introduce the regression.
 #[test]
 fn is_any_coordinator_requires_qualified_fqn() {

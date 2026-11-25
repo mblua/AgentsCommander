@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #4945 S6853 characterization: the Coding Agent filter label is bound to its
+// S6853 characterization: the Coding Agent filter label is bound to its
 // search input through a literal `for`/`id` pair (P1, false positive).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppSettings } from "../../shared/types";

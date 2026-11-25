@@ -9,7 +9,7 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio::time::error::Elapsed;
 
 // Ceiling, not a wait: the sweep returns once terminal. 1 s missed it on a
-// loaded machine (#1248).
+// loaded machine.
 const GLOBAL_SWEEP_CEILING: Duration = Duration::from_secs(10);
 
 mod deadline;

@@ -610,7 +610,7 @@ describe("#1871 SessionRowMenu surface mechanics", () => {
   });
 });
 
-// #4945 baseline: click locality of the root surface and the Add to Group flyout.
+// Baseline: click locality of the root surface and the Add to Group flyout.
 describe("#4945 SessionRowMenu surface propagation baseline", () => {
   const countWindow = (types: string[]) => {
     const seen: string[] = [];
