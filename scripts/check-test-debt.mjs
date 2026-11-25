@@ -618,27 +618,27 @@ function addFrontendSkippedFindings(source, rel, ranges, findings) {
 function callbackBody(source, masked, fromIndex, callEnd) {
   // Parameter defaults may contain braces or arrows; skip the complete parameter list.
   let cursor = skipWhitespace(masked, fromIndex);
-  while (cursor < callEnd) {
-    const ch = masked[cursor];
-    if (ch === '{') {
-      const close = findMatchingBrace(masked, cursor);
-      if (close === -1 || close >= callEnd) return null;
-      return { body: source.slice(cursor + 1, close) };
-    }
+  while (cursor !== -1 && cursor < callEnd) {
+    if (masked[cursor] === '{') return braceBody(source, masked, cursor, callEnd);
     if (masked.startsWith('=>', cursor)) {
       cursor = skipWhitespace(masked, cursor + 2);
       if (masked[cursor] === '{') continue;
       return { body: source.slice(cursor, expressionBodyEnd(masked, cursor, callEnd)) };
     }
-    if (ch === '(') {
-      const close = findMatchingParen(masked, cursor);
-      if (close === -1 || close >= callEnd) return null;
-      cursor = close + 1;
-    } else {
-      cursor += 1;
-    }
+    cursor = nextParamCursor(masked, cursor, callEnd);
   }
   return null;
+}
+
+function braceBody(source, masked, open, callEnd) {
+  const close = findMatchingBrace(masked, open);
+  return close === -1 || close >= callEnd ? null : { body: source.slice(open + 1, close) };
+}
+// Cursor after one parameter-list character or whole `(..)` group; -1 when unbalanced.
+function nextParamCursor(masked, cursor, callEnd) {
+  if (masked[cursor] !== '(') return cursor + 1;
+  const close = findMatchingParen(masked, cursor);
+  return close === -1 || close >= callEnd ? -1 : close + 1;
 }
 
 // End of an arrow expression body: the first top-level comma, or callEnd.

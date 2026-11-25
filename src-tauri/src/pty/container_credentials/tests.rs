@@ -1,8 +1,8 @@
 use super::*;
-use std::sync::Mutex;
+use crate::test_support::{case_child, case_done, run_case, CASE_FIXTURE};
 
-// resolve_plan mutates/reads process env; serialize the env-touching tests.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// resolve_plan reads process env: each env-touching test runs its body in a
+// child process whose environment is set only on the parent's Command.
 
 fn first_run() -> ContainerFirstRunState {
     ContainerFirstRunState {
@@ -33,78 +33,102 @@ fn plan_for(root: &Path, first_run: Option<ContainerFirstRunState>) -> Container
     }
 }
 
-fn with_env<R>(key: &str, value: Option<&str>, f: impl FnOnce() -> R) -> R {
-    let prev = std::env::var_os(key);
-    // SAFETY: callers hold ENV_LOCK
-    unsafe {
-        match value {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
-        }
+/// Parent fixture `<fixture>/host` and `<fixture>/root`, handed to the child
+/// through `CASE_FIXTURE`; `key` points at the host directory.
+fn run_host_case(name: &str, scenario: &str, key: &str, credential: Option<&[u8]>) {
+    let fixture = tempfile::tempdir().expect("fixture");
+    let host_dir = fixture.path().join("host");
+    std::fs::create_dir(&host_dir).expect("host dir");
+    std::fs::create_dir(fixture.path().join("root")).expect("host root");
+    if let Some(bytes) = credential {
+        std::fs::write(host_dir.join(".credentials.json"), bytes).expect("write cred");
     }
-    let out = f();
-    // SAFETY: callers hold ENV_LOCK
-    unsafe {
-        match prev {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
-        }
-    }
-    out
+    let root = fixture.path().to_path_buf();
+    run_case(name, scenario, vec![fixture], |command| {
+        command.env(key, &host_dir).env(CASE_FIXTURE, &root);
+    });
+}
+
+/// The child's `(host_dir, host_root)` from the parent fixture.
+fn host_fixture() -> (PathBuf, PathBuf) {
+    let fixture = PathBuf::from(std::env::var_os(CASE_FIXTURE).expect("case fixture"));
+    (fixture.join("host"), fixture.join("root"))
 }
 
 #[test]
 fn resolve_plan_uses_absolute_env_override_and_builds_dest() {
-    let _g = ENV_LOCK.lock().unwrap();
+    const NAME: &str = concat!(
+        module_path!(),
+        "::resolve_plan_uses_absolute_env_override_and_builds_dest"
+    );
     let key = "AC_TEST_CRED_DIR_930_ABS";
-    let host_dir = tempfile::tempdir().expect("host dir");
-    std::fs::write(host_dir.path().join(".credentials.json"), b"tok").expect("write cred");
-    let host_root = tempfile::tempdir().expect("host root");
+    let Some(scenario) = case_child(NAME, &["absolute"]) else {
+        return run_host_case(NAME, "absolute", key, Some(b"tok"));
+    };
+    let (host_dir, host_root) = host_fixture();
 
-    let plan = with_env(key, Some(&host_dir.path().to_string_lossy()), || {
-        resolve_plan(&source(Some(key)), &host_root.path().to_string_lossy())
-    })
-    .expect("plan present");
+    let plan =
+        resolve_plan(&source(Some(key)), &host_root.to_string_lossy()).expect("plan present");
 
-    assert_eq!(plan.source, host_dir.path().join(".credentials.json"));
+    assert_eq!(plan.source, host_dir.join(".credentials.json"));
     assert_eq!(
         plan.dest,
-        host_root.path().join(".claude").join(".credentials.json")
+        host_root.join(".claude").join(".credentials.json")
     );
     // The first-run descriptor must reach the plan: the container
     // backend sees only the plan, never the agent profile.
     assert_eq!(plan.first_run, Some(first_run()));
+    case_done(NAME, scenario);
 }
 
 #[test]
 fn resolve_plan_skips_when_source_file_absent() {
-    let _g = ENV_LOCK.lock().unwrap();
+    const NAME: &str = concat!(
+        module_path!(),
+        "::resolve_plan_skips_when_source_file_absent"
+    );
     let key = "AC_TEST_CRED_DIR_930_MISSING";
-    let host_dir = tempfile::tempdir().expect("host dir"); // empty, no cred file
-    let host_root = tempfile::tempdir().expect("host root");
+    let Some(scenario) = case_child(NAME, &["missing"]) else {
+        // The host dir stays empty: no cred file.
+        return run_host_case(NAME, "missing", key, None);
+    };
+    let (_host_dir, host_root) = host_fixture();
 
-    let plan = with_env(key, Some(&host_dir.path().to_string_lossy()), || {
-        resolve_plan(&source(Some(key)), &host_root.path().to_string_lossy())
-    });
+    let plan = resolve_plan(&source(Some(key)), &host_root.to_string_lossy());
     assert!(plan.is_none(), "missing host file must be a clean skip");
+    case_done(NAME, scenario);
 }
 
 #[test]
 fn resolve_plan_ignores_relative_env_override_f6() {
-    let _g = ENV_LOCK.lock().unwrap();
+    const NAME: &str = concat!(
+        module_path!(),
+        "::resolve_plan_ignores_relative_env_override_f6"
+    );
     let key = "AC_TEST_CRED_DIR_930_REL";
+    let Some(scenario) = case_child(NAME, &["relative"]) else {
+        // The child's cwd holds the relative directory with a credential, so
+        // honouring the override would change the plan.
+        let cwd = tempfile::tempdir().expect("cwd fixture");
+        let relative = cwd.path().join("relative/not-absolute-930");
+        std::fs::create_dir_all(&relative).expect("relative dir");
+        std::fs::write(relative.join(".credentials.json"), b"tok").expect("write cred");
+        let dir = cwd.path().to_path_buf();
+        return run_case(NAME, "relative", vec![cwd], |command| {
+            command
+                .current_dir(&dir)
+                .env(key, "relative/not-absolute-930");
+        });
+    };
     let host_root = tempfile::tempdir().expect("host root");
 
     // A relative override must be ignored (F6), so the result is identical to
     // having no override at all (both fall back to ~/<host_dir>, which does
     // not contain our sentinel file).
-    let with_rel = with_env(key, Some("relative/not-absolute-930"), || {
-        resolve_plan(&source(Some(key)), &host_root.path().to_string_lossy())
-    });
-    let with_none = with_env(key, None, || {
-        resolve_plan(&source(None), &host_root.path().to_string_lossy())
-    });
+    let with_rel = resolve_plan(&source(Some(key)), &host_root.path().to_string_lossy());
+    let with_none = resolve_plan(&source(None), &host_root.path().to_string_lossy());
     assert_eq!(with_rel, with_none, "relative override must be ignored");
+    case_done(NAME, scenario);
 }
 
 #[test]
