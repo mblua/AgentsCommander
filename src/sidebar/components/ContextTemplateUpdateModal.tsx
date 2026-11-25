@@ -15,6 +15,7 @@ const ContextTemplateUpdateModal: Component<{
 
   return (
     <div
+      role="none"
       class="modal-overlay"
       onKeyDown={swallowEscape}
       {...automationAttrs("contextTemplateUpdate.overlay", "overlay")}

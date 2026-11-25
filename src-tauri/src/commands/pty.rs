@@ -268,8 +268,7 @@ pub(crate) async fn note_user_message_to_session<R: tauri::Runtime>(
     // (b) badge: reset only when the typed-to session is a coordinator.
     let cwd = {
         let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-        let cwd = mgr.read().await.coordinator_cwd(session_id).await;
-        cwd
+        mgr.read().await.coordinator_cwd(session_id).await
     };
     let Some(cwd) = cwd else { return };
     let Some(clocks) = app.try_state::<crate::config::coordinator_clocks::CoordinatorClocksState>()
@@ -404,8 +403,7 @@ async fn room_root_of_orchestrator<R: tauri::Runtime>(
 ) -> Option<std::path::PathBuf> {
     let cwd = {
         let mgr = app.state::<Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>>();
-        let cwd = mgr.read().await.coordinator_cwd(session_id).await;
-        cwd
+        mgr.read().await.coordinator_cwd(session_id).await
     };
     crate::config::co_managed::room_root_for_path(std::path::Path::new(&cwd?))
 }

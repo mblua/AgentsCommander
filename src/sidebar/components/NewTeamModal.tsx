@@ -260,7 +260,7 @@ const NewTeamModal: Component<{
   onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
 
   return (
-    <div class="modal-overlay" onKeyDown={handleKeyDown}>
+    <div class="modal-overlay" role="none" onKeyDown={handleKeyDown}>
       <div
         class="agent-modal entity-wizard-modal"
         aria-busy={creating() ? "true" : "false"}
@@ -273,8 +273,9 @@ const NewTeamModal: Component<{
         <Show when={step() === 1}>
           <div class="new-agent-form">
             <div class="new-agent-field">
-              <label class="new-agent-label">Team name</label>
+              <label class="new-agent-label" for="new-team-name">Team name</label>
               <input
+                id="new-team-name"
                 ref={nameRef!}
                 class="agent-search-input"
                 value={teamName()}

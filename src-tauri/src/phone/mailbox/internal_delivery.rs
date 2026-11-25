@@ -200,8 +200,7 @@ impl MailboxPoller {
         let cwd = target.replica_dir().to_string_lossy().to_string();
         let settings_snapshot = {
             let settings = app.pty_settings();
-            let snapshot = settings.read().await.clone();
-            snapshot
+            settings.read().await.clone()
         };
         let (resolved_spawn, resolved_agent_host_shell) =
             Self::resolve_internal_spawn_profile(settings_snapshot, agent_id, &cwd, target).await?;

@@ -579,7 +579,7 @@ const SessionItem: Component<{
             style={telegramUi(bridge()).style}
           ><TelegramIcon /></button>
           <Show when={showBotMenu()}>
-            <div class="session-item-bot-menu" onClick={(e) => e.stopPropagation()}>
+            <div class="session-item-bot-menu" role="none" onClick={(e) => e.stopPropagation()}>
               <For each={availableBots()}>
                 {(bot) => (
                   <button
@@ -633,6 +633,7 @@ const SessionItem: Component<{
             class="session-context-menu"
             ref={contextMenuEl}
             style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
+            role="none"
             onClick={(e) => e.stopPropagation()}
             data-ac-testid={`session.${props.session.id}.menu`}
             data-ac-role="menu"
