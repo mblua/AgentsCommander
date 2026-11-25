@@ -211,21 +211,13 @@ fn short_path(p: &Path) -> PathBuf {
     PathBuf::from(std::ffi::OsString::from_wide(&buf))
 }
 
-/// CWD is process-wide; serialize tests that intentionally use relative paths.
+/// Restores the process CWD on Drop. Tests that change it run in their own
+/// child process (`crate::test_support::run_case`).
 struct CwdGuard(PathBuf);
 impl Drop for CwdGuard {
     fn drop(&mut self) {
         let _ = std::env::set_current_dir(&self.0);
     }
-}
-
-static CWD_MUTEX: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-
-async fn cwd_lock() -> tokio::sync::MutexGuard<'static, ()> {
-    CWD_MUTEX
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await
 }
 
 fn archive_snapshot(

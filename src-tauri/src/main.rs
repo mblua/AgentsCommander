@@ -28,81 +28,20 @@ fn main() {
     let cmd = agentscommander_lib::cli::Cli::command().name(binary_name);
 
     match cmd.try_get_matches() {
-        Ok(matches) => {
-            match agentscommander_lib::cli::Cli::from_arg_matches(&matches) {
-                Ok(cli) => match cli.command {
-                    Some(cmd) => {
-                        run_cli(cmd, &owners);
-                    }
-                    None => {
-                        // GUI mode (with or without --app)
-                        let placement = match window_placement::resolve_from_cli_or_env(
-                            cli.window_x,
-                            cli.window_y,
-                            cli.window_width,
-                            cli.window_height,
-                            cli.window_maximized,
-                        ) {
-                            Ok(placement) => placement,
-                            Err(e) => {
-                                agentscommander_lib::cli::attach_parent_console();
-                                eprintln!("Error: {e}");
-                                agentscommander_lib::cli::flush_outputs();
-                                std::process::exit(1);
-                            }
-                        };
-
-                        let ui_automation_enabled =
-                            match ui_automation::resolve_enabled_from_cli_or_env(cli.ui_automation)
-                            {
-                                Ok(enabled) => enabled,
-                                Err(e) => {
-                                    agentscommander_lib::cli::attach_parent_console();
-                                    eprintln!("{e}");
-                                    agentscommander_lib::cli::flush_outputs();
-                                    std::process::exit(1);
-                                }
-                            };
-
-                        if !try_acquire_single_instance() {
-                            if ui_automation_enabled {
-                                if ui_automation::existing_enabled_session_for_current_config() {
-                                    std::process::exit(0);
-                                }
-                                agentscommander_lib::cli::attach_parent_console();
-                                eprintln!("{}", ui_automation::automation_not_enabled_json());
-                                agentscommander_lib::cli::flush_outputs();
-                                std::process::exit(1);
-                            }
-                            agentscommander_lib::cli::present_fatal_startup_message(
-                                "An AgentsCommander instance with this executable identity is \
-                                already running.\n\n\
-                                Rename this executable to agentscommander_<name>.exe to start an \
-                                independent instance with its own configuration directory \
-                                and ports.",
-                            );
-                            std::process::exit(0);
-                        }
-                        if let Err(error) = agentscommander_lib::run(
-                            placement,
-                            ui_automation_enabled,
-                            owners.clone(),
-                        ) {
-                            agentscommander_lib::cli::present_fatal_startup_message(
-                                &error.to_string(),
-                            );
-                            std::process::exit(1);
-                        }
-                    }
-                },
-                Err(e) => {
-                    agentscommander_lib::cli::attach_parent_console();
-                    let _ = e.print();
-                    agentscommander_lib::cli::flush_outputs();
-                    std::process::exit(1);
+        Ok(matches) => match agentscommander_lib::cli::Cli::from_arg_matches(&matches) {
+            Ok(cli) => match cli.command {
+                Some(cmd) => {
+                    run_cli(cmd, &owners);
                 }
+                None => run_gui(&cli, &owners),
+            },
+            Err(e) => {
+                agentscommander_lib::cli::attach_parent_console();
+                let _ = e.print();
+                agentscommander_lib::cli::flush_outputs();
+                std::process::exit(1);
             }
-        }
+        },
         Err(e) => {
             // --help, --version, or invalid args: print and exit
             agentscommander_lib::cli::attach_parent_console();
@@ -111,6 +50,74 @@ fn main() {
             std::process::exit(i32::from(e.use_stderr()));
         }
     }
+}
+
+/// GUI mode (with or without --app): resolves placement and UI automation,
+/// takes the single-instance guard and runs the app.
+#[expect(
+    clippy::exit,
+    reason = "GUI startup failures exit with the status main used before the extraction"
+)]
+fn run_gui(cli: &agentscommander_lib::cli::Cli, owners: &agentscommander_lib::AppOwners) {
+    let placement = match window_placement::resolve_from_cli_or_env(
+        cli.window_x,
+        cli.window_y,
+        cli.window_width,
+        cli.window_height,
+        cli.window_maximized,
+    ) {
+        Ok(placement) => placement,
+        Err(e) => {
+            agentscommander_lib::cli::attach_parent_console();
+            eprintln!("Error: {e}");
+            agentscommander_lib::cli::flush_outputs();
+            std::process::exit(1);
+        }
+    };
+
+    let ui_automation_enabled =
+        match ui_automation::resolve_enabled_from_cli_or_env(cli.ui_automation) {
+            Ok(enabled) => enabled,
+            Err(e) => {
+                agentscommander_lib::cli::attach_parent_console();
+                eprintln!("{e}");
+                agentscommander_lib::cli::flush_outputs();
+                std::process::exit(1);
+            }
+        };
+
+    if !try_acquire_single_instance() {
+        exit_for_running_instance(ui_automation_enabled);
+    }
+    if let Err(error) = agentscommander_lib::run(placement, ui_automation_enabled, owners.clone()) {
+        agentscommander_lib::cli::present_fatal_startup_message(&error.to_string());
+        std::process::exit(1);
+    }
+}
+
+/// Another GUI instance holds the single-instance guard: report it and exit.
+#[expect(
+    clippy::exit,
+    reason = "A running instance ends this process with the status main used before the extraction"
+)]
+fn exit_for_running_instance(ui_automation_enabled: bool) -> ! {
+    if ui_automation_enabled {
+        if ui_automation::existing_enabled_session_for_current_config() {
+            std::process::exit(0);
+        }
+        agentscommander_lib::cli::attach_parent_console();
+        eprintln!("{}", ui_automation::automation_not_enabled_json());
+        agentscommander_lib::cli::flush_outputs();
+        std::process::exit(1);
+    }
+    agentscommander_lib::cli::present_fatal_startup_message(
+        "An AgentsCommander instance with this executable identity is \
+        already running.\n\n\
+        Rename this executable to agentscommander_<name>.exe to start an \
+        independent instance with its own configuration directory \
+        and ports.",
+    );
+    std::process::exit(0);
 }
 
 fn run_cli(cmd: Commands, owners: &agentscommander_lib::AppOwners) -> ! {
