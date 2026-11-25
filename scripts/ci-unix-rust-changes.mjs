@@ -125,6 +125,32 @@ function detector(repo, env = process.env) {
   return { git, detect };
 }
 
+// Write or delete (null text) each fixture file of one case.
+function applyChanges(repo, write, changes) {
+  for (const [file, text] of Object.entries(changes)) {
+    if (text === null) fs.unlinkSync(path.join(repo, file));
+    else write(file, text);
+  }
+}
+
+// Run this script as a CLI against the fixture repo and check status, output and stdout.
+function runCliCase(repo, env, base, [id, head, event, expected, status]) {
+  const output = path.join(repo, `${id}.output`);
+  fs.writeFileSync(output, '');
+  let code = 0, stdout = '';
+  try {
+    stdout = execFileSync(process.execPath, [fileURLToPath(import.meta.url),
+      '--base', base, '--head', head, '--repo', repo], {
+      env: { ...env, GITHUB_EVENT_NAME: event, GITHUB_OUTPUT: output },
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) { code = error.status; }
+  assert.equal(code, status, id);
+  assert.equal(fs.readFileSync(output, 'utf8'), expected, id);
+  if (id === 'C3') assert.ok(stdout.includes('(event push)'), id);
+  if (id === 'C4') assert.ok(stdout.includes(`  ${CATALOG}: workflow\n`), id);
+}
+
 function selfTest() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ac4510-'));
   const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
@@ -232,10 +258,7 @@ function selfTest() {
     for (const [id, changes, reasons] of cases) {
       git(['reset', '--hard', base]);
       git(['clean', '-fdq']);
-      for (const [file, text] of Object.entries(changes)) {
-        if (text === null) fs.unlinkSync(path.join(repo, file));
-        else write(file, text);
-      }
+      applyChanges(repo, write, changes);
       commit();
       heads[id] = git(['rev-parse', 'HEAD']).trim();
       assert.deepEqual(detect(base, heads[id], 'pull_request'),
@@ -265,22 +288,7 @@ function selfTest() {
       ['E2', heads.B3, 'pull_request', '', 2],
     ];
     const total = cases.length + broken.length + 2 + cliCases.length;
-    for (const [id, head, event, expected, status] of cliCases) {
-      const output = path.join(repo, `${id}.output`);
-      fs.writeFileSync(output, '');
-      let code = 0, stdout = '';
-      try {
-        stdout = execFileSync(process.execPath, [fileURLToPath(import.meta.url),
-          '--base', base, '--head', head, '--repo', repo], {
-          env: { ...env, GITHUB_EVENT_NAME: event, GITHUB_OUTPUT: output },
-          encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-        });
-      } catch (error) { code = error.status; }
-      assert.equal(code, status, id);
-      assert.equal(fs.readFileSync(output, 'utf8'), expected, id);
-      if (id === 'C3') assert.ok(stdout.includes('(event push)'), id);
-      if (id === 'C4') assert.ok(stdout.includes(`  ${flow(CATALOG)}\n`), id);
-    }
+    for (const cliCase of cliCases) runCliCase(repo, env, base, cliCase);
     console.log(`ci-unix-rust-changes self-test: ${total} cases ok`);
   } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 }
