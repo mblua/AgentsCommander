@@ -34,6 +34,7 @@ import desktop as dk
 SUITE_S, STARTUP_S, STEP_S, CLOSE_S, OBSERVE_S = 180, 60, 30, 15, 12
 EXIT_PASS, EXIT_FAIL, EXIT_COMPOSITOR = 0, 1, 20
 DIALOG_TITLE = "Select parent folder for the new agent"
+MENU_NEW_PROJECT = "actionBar.menu.newProject"
 READY = "PROBE READY"
 PYTHON = "/usr/bin/python3"
 SPAWN_RE = re.compile(r"\[pty\] Spawned session (\S+) with child pid (.*)$")
@@ -139,12 +140,18 @@ class Run:
     def click(self, selector):
         self.require_main_focus()
         self.require_target(self.ui("ui-query", selector), selector)
-        # The bridge snapshots the target after the click, so an element the click
-        # closes (a menu item) is no longer visible. Usability is checked by the
-        # query above; here only the clicked element's identity.
-        clicked = self.ui("ui-click", selector).get("target") or {}
-        if clicked.get("testId") != selector:
-            raise Failure("target_not_usable", self.stage)
+        reply = self.ui("ui-click", selector)
+        if selector == MENU_NEW_PROJECT:
+            # The item closes its menu, so the bridge's post-click snapshot may show it
+            # hidden. The query above proved it visible and enabled; here the click must
+            # be exactly on it, and its effect, the authenticated chooser, is required by
+            # the caller (wait_dialog).
+            target = reply.get("target") or {}
+            if (reply.get("ok") is not True or reply.get("action") != "click"
+                    or target.get("testId") != selector):
+                raise Failure("target_not_usable", self.stage)
+            return
+        self.require_target(reply, selector)
 
     def wait_selector(self, selector, seconds=STEP_S):
         reply = self.ui("ui-wait", selector, "--timeout-ms", str(int(seconds * 1000)),
@@ -216,16 +223,6 @@ class Run:
         except dk.DesktopError as exc:
             raise Failure(exc.code, exc.stage) from exc
 
-    def report_agent_list(self, agents, listing):
-        """Diagnostics only: print the ids and commands `coding-agent list` returned."""
-        if isinstance(agents, list):
-            rows = [{"id": a.get("id"), "baseCommand": a.get("baseCommand")} if isinstance(a, dict)
-                    else {"type": type(a).__name__} for a in agents]
-        else:
-            rows = {"listingType": type(listing).__name__}
-        expected = {"id": "e2e-probe", "baseCommand": f"{PYTHON} {self.probe}"}
-        print(json.dumps({"agentList": rows, "expected": expected}), file=sys.stderr)
-
     def register_agent(self):
         self.at("agent")
         self.cli("coding-agent", "add", "--id", "e2e-probe", "--label", "E2EProbe",
@@ -233,11 +230,9 @@ class Run:
         _, listing = self.cli("coding-agent", "list")
         agents = listing.get("agents") if isinstance(listing, dict) else listing
         if not isinstance(agents, list) or len(agents) != 1:
-            self.report_agent_list(agents, listing)
             raise Failure("agent_list_mismatch", self.stage)
         agent = agents[0]
         if agent.get("id") != "e2e-probe" or agent.get("baseCommand") != f"{PYTHON} {self.probe}":
-            self.report_agent_list(agents, listing)
             raise Failure("agent_list_mismatch", self.stage)
 
     def launch_app(self):
@@ -314,59 +309,21 @@ class Run:
         if self.ui("ui-query", header, check=False).get("error") != "missing_selector":
             raise Failure("project_header_present", self.stage)
         self.click("actionBar.newOpen")
-        self.click("actionBar.menu.newProject")
+        self.click(MENU_NEW_PROJECT)
         dialog = self.wait_dialog()
-        # A key sent before the chooser takes keyboard input is lost: ctrl+l then never
-        # opens the location bar and the typed path lands in the search box instead.
-        # A leading "/" also opens that bar, but it takes focus a moment later: keys
-        # typed before then still go to the search box. So "/" goes alone, and the rest
-        # of the path follows after a pause, one key every 20 ms. A lone Return run is
-        # dropped like other single-key runs, so the two Returns ride on the path's run:
-        # the first takes the inline completion, the second activates the folder.
-        time.sleep(1.0)
-        steps = [(["-M", "ctrl", "l", "-m", "ctrl"], 0.3), (["/"], 1.0),
-                 (["-d", "20", canonical.lstrip("/"), "-s", "500", "-k", "Return",
-                   "-s", "800", "-k", "Return"], 0.5)]
-        for step, pause in steps:
+        steps = [["-M", "ctrl", "l", "-m", "ctrl"], [canonical], ["-k", "Return"]]
+        for step in steps:
             self.dialog_key(step, dialog)
-            time.sleep(pause)
-        # GTK ignores the virtual keyboard's Return here, so the header-bar Select
-        # button (top right, 48 px in from the edge, 22 px down) is clicked instead.
-        # The first click can only dismiss the location bar's completion popup, so a
-        # second click follows while the dialog still has focus.
-        rect = dialog["rect"]
-        for attempt in range(2):
-            focus = self.desk.focused()
-            if not (focus and focus["conId"] == dialog["conId"]):
-                break
-            print(f"J1 clicking Select, attempt {attempt + 1}", file=sys.stderr)
-            try:
-                self.desk.click(rect["x"] + rect["width"] - 48, rect["y"] + 22, dialog["conId"],
-                                self.desk.gtk_portal_pid, self.stage)
-            except dk.DesktopError as exc:
-                raise Failure(exc.code, self.stage) from exc
-            time.sleep(0.8)
-        # Fallback keys. The accept mnemonic depends on the portal label (_Select or _Open).
-        accepts = [("return", ["-k", "Return"]), ("alt_s", ["-M", "alt", "s", "-m", "alt"]),
-                   ("alt_o", ["-M", "alt", "o", "-m", "alt"])]
-        for name, keys in accepts:
-            time.sleep(0.5)
-            focus = self.desk.focused()
-            if not (focus and focus["conId"] == dialog["conId"]):
-                break
-            print(f"J1 dialog still open, sending {name}", file=sys.stderr)
-            self.dialog_key(keys, dialog)
+        time.sleep(0.5)
+        focus = self.desk.focused()
+        if focus and focus["conId"] == dialog["conId"]:
+            self.dialog_key(["-M", "alt", "s", "-m", "alt"], dialog)
 
         def back_in_main():
             focus = self.desk.focused()
             return focus and focus["conId"] == self.main_con and focus["pid"] == self.app.pid
 
-        try:
-            self.poll(STEP_S, back_in_main, "main_focus_not_restored")
-        except Failure:
-            self.dump_views("main_focus_not_restored", self.desk.windows())
-            self.dump_screen("j1-dialog")
-            raise
+        self.poll(STEP_S, back_in_main, "main_focus_not_restored")
         self.wait_selector(header)
         self.poll(STEP_S, lambda: os.path.isdir(os.path.join(canonical, ".ac")),
                   "project_ac_missing")
@@ -377,11 +334,8 @@ class Run:
     def wait_dialog(self):
         gtk = self.desk.gtk_portal_pid
 
-        seen = []
-
         def dialog():
             views = self.desk.windows()
-            seen[:] = views
             if any(w["pid"] not in (self.app.pid, gtk) for w in views):
                 raise Failure("unexpected_dialog_owner", self.stage)
             hits = [w for w in views if w["conId"] != self.main_con]
@@ -392,47 +346,11 @@ class Run:
                 return hit
             return None
 
-        try:
-            return self.poll(STEP_S, dialog, "portal_dialog_missing")
-        except Failure:
-            self.dump_views("portal_dialog_missing", seen)
-            raise
-
-    def dump_views(self, code, views):
-        # Diagnostic only (job log): which views existed when a wait ended.
-        gtk = self.desk.gtk_portal_pid
-        roles = {self.app.pid: "app", gtk: "portal"}
-        shown = [{"owner": roles.get(w["pid"], "other"), "name": w["name"],
-                  "focused": w["focused"], "main": w["conId"] == self.main_con}
-                 for w in views]
-        print(f"{code}: portalPid={'set' if gtk else 'none'} "
-              f"views={json.dumps(shown)}", file=sys.stderr)
-        logs = self.desk.path("logs")
-        for name in sorted(os.listdir(logs)) if os.path.isdir(logs) else []:
-            with open(os.path.join(logs, name), "rb") as h:
-                tail = h.read().decode("utf-8", "replace").splitlines()[-40:]
-            print(f"--- {name} (last {len(tail)} lines)", file=sys.stderr)
-            print("\n".join(tail), file=sys.stderr)
-
-    def dump_screen(self, name):
-        # Diagnostic only, on failure: the private compositor's screen and its OCR text,
-        # kept under RUNNER_TEMP/real-ui-debug, outside the verified evidence.
-        out = os.path.join(os.environ.get("RUNNER_TEMP") or self.root, "real-ui-debug")
-        os.makedirs(out, exist_ok=True)
-        png = os.path.join(out, name + ".png")
-        shot = self.desk.run(["/usr/bin/grim", png], check=False)
-        if shot.returncode != 0:
-            print(f"{name}: grim failed: {shot.stderr.decode('utf-8', 'replace')}", file=sys.stderr)
-            return
-        text = self.desk.run(["/usr/bin/tesseract", png, "stdout", "-l", "eng"], check=False)
-        print(f"--- {name} OCR\n{text.stdout.decode('utf-8', 'replace')}", file=sys.stderr)
+        return self.poll(STEP_S, dialog, "portal_dialog_missing")
 
     def dialog_key(self, args, dialog):
-        # Each wtype run is a new virtual keyboard; the chooser drops keys sent before
-        # it has taken that keyboard's keymap, so every run waits 300 ms first.
         try:
-            self.desk.key(["-s", "300", *args], dialog["conId"], self.desk.gtk_portal_pid,
-                          self.stage)
+            self.desk.key(args, dialog["conId"], self.desk.gtk_portal_pid, self.stage)
         except dk.DesktopError as exc:
             raise Failure(exc.code, self.stage) from exc
         time.sleep(0.2)

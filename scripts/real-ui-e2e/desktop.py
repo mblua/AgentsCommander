@@ -415,14 +415,13 @@ class Desktop:
     # ----- windows and focus -----------------------------------------------------------
 
     def windows(self):
-        """Flat list of Sway view nodes: {conId, pid, name, focused, rect}."""
+        """Flat list of Sway view nodes: {conId, pid, name, focused}."""
         found = []
 
         def walk(node):
             if node.get("pid") is not None and node.get("type") in ("con", "floating_con"):
                 found.append({"conId": node["id"], "pid": node["pid"],
-                              "name": node.get("name") or "", "focused": node.get("focused"),
-                              "rect": node.get("rect") or {}})
+                              "name": node.get("name") or "", "focused": node.get("focused")})
             for child in node.get("nodes", []) + node.get("floating_nodes", []):
                 walk(child)
 
@@ -451,19 +450,6 @@ class Desktop:
         result = self.run(["/usr/bin/wtype", *args], timeout=10, check=False)
         if result.returncode != 0:
             raise DesktopError("key_failed", stage)
-
-    def click(self, x, y, con_id, pid, stage):
-        """One left click at output pixel (x, y), after a focus check. Headless Sway has
-        no pointer device, so this uses a wlr virtual pointer: pinned to the top-left
-        corner first, then moved by (x, y)."""
-        self.require_focus(con_id, pid, stage)
-        self.key_calls += 1
-        for args in (["pointer", "move", "-10000", "-10000"],
-                     ["pointer", "move", str(int(x)), str(int(y))], ["pointer", "click", "left"]):
-            result = self.run(["/usr/bin/wlrctl", *args], timeout=5, check=False)
-            if result.returncode != 0:
-                raise DesktopError("click_failed", stage)
-            time.sleep(0.2)
 
     def snapshot(self, binary, frame, con_id, pid, stage):
         """window.snapshot into a new private file; returns the full PNG bytes."""
