@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppSettings } from "../../shared/types";
+import type { SettingsSnapshot } from "../../shared/types";
 import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
 import { baseSettings } from "../../shared/testing/base-settings";
@@ -17,13 +17,14 @@ vi.mock("../../sidebar/stores/project", () => ({
 
 const get = vi.mocked(SettingsAPI.get);
 const update = vi.mocked(SettingsAPI.update);
-const withFlags = (flags: object) => ({ ...baseSettings(), ...flags }) as AppSettings;
+const withFlags = (flags: object = {}) =>
+  ({ ...baseSettings(), ...flags }) as unknown as SettingsSnapshot;
 
 beforeEach(() => {
   vi.clearAllMocks();
   __resetTutorialProgressForTests();
   __resetTutorialStoreForTests();
-  get.mockResolvedValue(baseSettings());
+  get.mockResolvedValue(withFlags());
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -55,7 +56,7 @@ describe("tutorialProgressStore", () => {
 
   it("dismissHint writes only tutorialHintDismissed", async () => {
     await tutorialProgressStore.dismissHint();
-    const arg = update.mock.calls[0]?.[0] as Record<string, unknown>;
+    const arg = update.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(arg.tutorialHintDismissed).toBe(true);
     expect("teamTutorialCompleted" in arg).toBe(false);
     expect(tutorialProgressStore.hintDismissed).toBe(true);
