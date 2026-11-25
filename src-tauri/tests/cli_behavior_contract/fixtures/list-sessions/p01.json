@@ -1,0 +1,48 @@
+{
+  "pin": "e7f3442af3a2bc4fa596a4651a1052b4be5e144d",
+  "platform": "x86_64-unknown-linux-gnu",
+  "binarySha256": "f5bc981672f415ee57df7789025fa49e4db033c82a0e33d6fee1464250f2c266",
+  "inputs": {"full": "45b4d0f5afba748596d7bee07fc344a987e7af06666837fd4787cebf67311400", "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"},
+  "cases": [
+    {
+      "argv": ["list-sessions"],
+      "input": "full",
+      "rc": 0,
+      "stdoutSha256": "f1cbe960472a2e9636dcaa52bb6b0e5370722f1b5098ca5389b48c5c29af6d42",
+      "stdoutLen": 2854,
+      "stdout": "[\n  {\n    \"id\": \"11111111-1111-1111-1111-111111111111\",\n    \"name\": \"tech-lead\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_tech-lead\",\n    \"status\": \"running\",\n    \"waitingForInput\": true,\n    \"raisedHand\": true,\n    \"createdAt\": \"2026-06-30T10:00:00+00:00\"\n  },\n  {\n    \"id\": \"22222222-2222-2222-2222-222222222222\",\n    \"name\": \"coord-missing-communication\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_architect\",\n    \"status\": \"running\",\n    \"waitingForInput\": false,\n    \"raisedHand\": false,\n    \"createdAt\": \"2026-06-30T10:05:00+00:00\"\n  },\n  {\n    \"id\": \"33333333-3333-3333-3333-333333333333\",\n    \"name\": \"coord-hidden-communication\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_planner\",\n    \"status\": \"running\",\n    \"waitingForInput\": false,\n    \"raisedHand\": false,\n    \"createdAt\": \"2026-06-30T10:10:00+00:00\"\n  },\n  {\n    \"id\": \"44444444-4444-4444-4444-444444444444\",\n    \"name\": \"dev-rust\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_dev-rust\",\n    \"status\": \"running\",\n    \"waitingForInput\": false,\n    \"raisedHand\": false,\n    \"createdAt\": \"2026-06-30T10:15:00+00:00\"\n  },\n  {\n    \"id\": \"55555555-5555-5555-5555-555555555555\",\n    \"name\": \"coord-dormant-restored-hand\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_old-tech-lead\",\n    \"status\": {\n      \"exited\": 0\n    },\n    \"waitingForInput\": false,\n    \"raisedHand\": true,\n    \"createdAt\": \"2026-06-30T10:20:00+00:00\"\n  },\n  {\n    \"id\": \"66666666-0000-0000-0000-000000000006\",\n    \"name\": \"tab\\there \\\"quoted\\\"\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_architect\",\n    \"status\": \"active\",\n    \"waitingForInput\": false,\n    \"raisedHand\": false,\n    \"createdAt\": \"2026-06-30T10:05:00+00:00\"\n  },\n  {\n    \"id\": \"77777777-0000-0000-0000-000000000007\",\n    \"name\": \"p01-7\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_architect\",\n    \"status\": \"idle\",\n    \"waitingForInput\": false,\n    \"raisedHand\": false,\n    \"createdAt\": \"2026-06-30T10:05:00+00:00\"\n  },\n  {\n    \"id\": \"88888888-0000-0000-0000-000000000008\",\n    \"name\": \"p01-8\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_architect\",\n    \"status\": {\n      \"exited\": -7\n    },\n    \"waitingForInput\": false,\n    \"raisedHand\": false,\n    \"createdAt\": \"2026-06-30T10:05:00+00:00\"\n  },\n  {\n    \"id\": \"99999999-0000-0000-0000-000000000009\",\n    \"name\": \"p01-9\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_architect\",\n    \"status\": \"unknown\",\n    \"waitingForInput\": false,\n    \"raisedHand\": false,\n    \"createdAt\": \"\"\n  },\n  {\n    \"id\": \"11111111-1111-1111-1111-111111111111\",\n    \"name\": \"tech-lead\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_tech-lead\",\n    \"status\": \"running\",\n    \"waitingForInput\": true,\n    \"raisedHand\": true,\n    \"createdAt\": \"2026-06-30T10:00:00+00:00\"\n  }\n]\n"
+    },
+    {
+      "argv": ["list-sessions","--status","RUNNING"],
+      "input": "full",
+      "rc": 0,
+      "stdoutSha256": "e5178ea2d603c0f7b0ad22ba4fda56b3b960af4570c73ca526973cd2e90a8701",
+      "stdoutLen": 1430,
+      "stdout": "[\n  {\n    \"id\": \"11111111-1111-1111-1111-111111111111\",\n    \"name\": \"tech-lead\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_tech-lead\",\n    \"status\": \"running\",\n    \"waitingForInput\": true,\n    \"raisedHand\": true,\n    \"createdAt\": \"2026-06-30T10:00:00+00:00\"\n  },\n  {\n    \"id\": \"22222222-2222-2222-2222-222222222222\",\n    \"name\": \"coord-missing-communication\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_architect\",\n    \"status\": \"running\",\n    \"waitingForInput\": false,\n    \"raisedHand\": false,\n    \"createdAt\": \"2026-06-30T10:05:00+00:00\"\n  },\n  {\n    \"id\": \"33333333-3333-3333-3333-333333333333\",\n    \"name\": \"coord-hidden-communication\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_planner\",\n    \"status\": \"running\",\n    \"waitingForInput\": false,\n    \"raisedHand\": false,\n    \"createdAt\": \"2026-06-30T10:10:00+00:00\"\n  },\n  {\n    \"id\": \"44444444-4444-4444-4444-444444444444\",\n    \"name\": \"dev-rust\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_dev-rust\",\n    \"status\": \"running\",\n    \"waitingForInput\": false,\n    \"raisedHand\": false,\n    \"createdAt\": \"2026-06-30T10:15:00+00:00\"\n  },\n  {\n    \"id\": \"11111111-1111-1111-1111-111111111111\",\n    \"name\": \"tech-lead\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_tech-lead\",\n    \"status\": \"running\",\n    \"waitingForInput\": true,\n    \"raisedHand\": true,\n    \"createdAt\": \"2026-06-30T10:00:00+00:00\"\n  }\n]\n"
+    },
+    {
+      "argv": ["list-sessions","--status","exited"],
+      "input": "full",
+      "rc": 0,
+      "stdoutSha256": "8fc6f72d3f4fc2a11c78e7760ce8fad99ab0be8241c5d45f3544e9fe043642b6",
+      "stdoutLen": 613,
+      "stdout": "[\n  {\n    \"id\": \"55555555-5555-5555-5555-555555555555\",\n    \"name\": \"coord-dormant-restored-hand\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_old-tech-lead\",\n    \"status\": {\n      \"exited\": 0\n    },\n    \"waitingForInput\": false,\n    \"raisedHand\": true,\n    \"createdAt\": \"2026-06-30T10:20:00+00:00\"\n  },\n  {\n    \"id\": \"88888888-0000-0000-0000-000000000008\",\n    \"name\": \"p01-8\",\n    \"workingDirectory\": \"C:/proj/.ac/wg-1-dev-team/__agent_architect\",\n    \"status\": {\n      \"exited\": -7\n    },\n    \"waitingForInput\": false,\n    \"raisedHand\": false,\n    \"createdAt\": \"2026-06-30T10:05:00+00:00\"\n  }\n]\n"
+    },
+    {
+      "argv": ["list-sessions","--status","bogus"],
+      "input": "full",
+      "rc": 1,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdoutLen": 0,
+      "stdout": ""
+    },
+    {
+      "argv": ["list-sessions"],
+      "input": "empty",
+      "rc": 0,
+      "stdoutSha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "stdoutLen": 3,
+      "stdout": "[]\n"
+    }
+  ]
+}

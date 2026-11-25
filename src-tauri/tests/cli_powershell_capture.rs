@@ -495,6 +495,11 @@ fn isolation_occurrences(tokens: &[String], pattern: &str) -> usize {
         .count()
 }
 
+#[rustfmt::skip]
+const CLI_BEHAVIOR_BINDINGS: Counts = &[
+    ("run", 1), ("run_task_title", 1), ("invoke", 1), ("run_list_sessions_p01", 1),
+];
+
 // Frozen per-file and per-function routes. A bypass cannot hide in another helper.
 type Counts = &'static [(&'static str, usize)];
 type Entry = (&'static str, &'static str, usize, Counts, Counts);
@@ -522,8 +527,8 @@ static ISOLATION_INVENTORY: &[Entry] = &[
             include_str!("cli_behavior_contract/main.rs"),
             include_str!("cli_behavior_contract/public_commands.rs"),
         ),
-        3,
-        &[("run", 1), ("run_task_title", 1), ("invoke", 1)],
+        4,
+        CLI_BEHAVIOR_BINDINGS,
         &[],
     ),
     (

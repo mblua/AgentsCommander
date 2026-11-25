@@ -38,10 +38,25 @@ struct SessionEntry {
     id: String,
     name: String,
     working_directory: String,
-    status: serde_json::Value,
+    status: EntryStatus,
     waiting_for_input: bool,
     raised_hand: bool,
     created_at: String,
+}
+
+/// Output `status`: the persisted status, or the `"unknown"` sentinel when absent.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum EntryStatus {
+    Known(SessionStatus),
+    Unknown(UnknownStatus),
+}
+
+/// Serializes as the string `"unknown"`.
+#[derive(Debug, Serialize)]
+enum UnknownStatus {
+    #[serde(rename = "unknown")]
+    Unknown,
 }
 
 /// Convert a `SessionStatus` to its string tag (for filtering).
@@ -74,16 +89,16 @@ fn raised_hand_from_persisted(s: &PersistedSession) -> bool {
 
 /// Convert a `PersistedSession` (with runtime fields) to a CLI output entry.
 fn to_entry(s: &PersistedSession) -> SessionEntry {
-    let status_value = match &s.status {
-        Some(st) => serde_json::to_value(st).unwrap_or(serde_json::json!("unknown")),
-        None => serde_json::json!("unknown"),
+    let status = match &s.status {
+        Some(st) => EntryStatus::Known(st.clone()),
+        None => EntryStatus::Unknown(UnknownStatus::Unknown),
     };
 
     SessionEntry {
         id: s.id.clone().unwrap_or_default(),
         name: s.name.clone(),
         working_directory: s.working_directory.clone(),
-        status: status_value,
+        status,
         waiting_for_input: s.waiting_for_input.unwrap_or(false),
         raised_hand: raised_hand_from_persisted(s),
         created_at: s.created_at.clone().unwrap_or_default(),
