@@ -276,7 +276,15 @@ class Run:
             return []
         except ValueError as exc:
             raise Failure("project_paths_unreadable", self.stage) from exc
-        paths = data.get("projectPaths") if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            raise Failure("project_paths_unreadable", self.stage)
+        # Same reading as the app (project_lists_from_projection): the file only
+        # holds the keys it has, so a missing or null projectPaths falls back to
+        # projectPath.
+        paths = data.get("projectPaths")
+        if paths is None:
+            head = data.get("projectPath")
+            paths = [head] if isinstance(head, str) else []
         if not isinstance(paths, list):
             raise Failure("project_paths_unreadable", self.stage)
         return [os.path.realpath(p if isinstance(p, str) else p.get("path", "")) for p in paths]
