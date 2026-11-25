@@ -332,6 +332,7 @@ class Run:
             self.poll(STEP_S, back_in_main, "main_focus_not_restored")
         except Failure:
             self.dump_views("main_focus_not_restored", self.desk.windows())
+            self.dump_screen("j1-dialog")
             raise
         self.wait_selector(header)
         self.poll(STEP_S, lambda: os.path.isdir(os.path.join(canonical, ".ac")),
@@ -379,6 +380,19 @@ class Run:
                 tail = h.read().decode("utf-8", "replace").splitlines()[-40:]
             print(f"--- {name} (last {len(tail)} lines)", file=sys.stderr)
             print("\n".join(tail), file=sys.stderr)
+
+    def dump_screen(self, name):
+        # Diagnostic only, on failure: the private compositor's screen and its OCR text,
+        # kept under RUNNER_TEMP/real-ui-debug, outside the verified evidence.
+        out = os.path.join(os.environ.get("RUNNER_TEMP") or self.root, "real-ui-debug")
+        os.makedirs(out, exist_ok=True)
+        png = os.path.join(out, name + ".png")
+        shot = self.desk.run(["/usr/bin/grim", png], check=False)
+        if shot.returncode != 0:
+            print(f"{name}: grim failed: {shot.stderr.decode('utf-8', 'replace')}", file=sys.stderr)
+            return
+        text = self.desk.run(["/usr/bin/tesseract", png, "stdout", "-l", "eng"], check=False)
+        print(f"--- {name} OCR\n{text.stdout.decode('utf-8', 'replace')}", file=sys.stderr)
 
     def dialog_key(self, args, dialog):
         try:

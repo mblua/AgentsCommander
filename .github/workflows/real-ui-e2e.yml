@@ -59,7 +59,7 @@ jobs:
           npm install -g --ignore-scripts npm@12.2.3
           rustup toolchain install 1.98.1 --profile minimal
           APT_DEB_CACHE="$RUNNER_TEMP/apt-debs" bash scripts/ci-install-linux-deps.sh
-          sudo apt-get install -y sway wtype dbus xdg-desktop-portal xdg-desktop-portal-gtk \
+          sudo apt-get install -y sway wtype grim dbus xdg-desktop-portal xdg-desktop-portal-gtk \
             python3-pil tesseract-ocr tesseract-ocr-eng fonts-dejavu-core
 
       - name: Record versions
@@ -346,5 +346,14 @@ jobs:
         with:
           name: real-ui-e2e-summary-${{ env.PR_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/real-ui-summary/summary.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload failure screen (diagnostic)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: real-ui-e2e-debug-${{ env.PR_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/real-ui-debug/
           if-no-files-found: ignore
           retention-days: 7
