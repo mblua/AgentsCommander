@@ -741,7 +741,7 @@ function braceBodyEnd(code, b) {
 }
 function maskedFunctions(code) {
   const functions = [];
-  for (const m of code.matchAll(/\bfn\s+([A-Za-z_]\w*)\s*(?:<|\()/g)) {
+  for (const m of code.matchAll(/\bfn\s+([A-Za-z_]\w*)\s*[<(]/g)) {
     const b = code.indexOf('{', m.index), semi = code.indexOf(';', m.index);
     if (b < 0 || semi >= 0 && semi < b) continue;
     functions.push({ name: m[1], start: m.index, end: braceBodyEnd(code, b) });

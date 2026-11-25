@@ -104,9 +104,9 @@ export function createAgentDragReorder(options: AgentDragReorderOptions): AgentD
     drag.rowTop = rect.top;
     const ghost = drag.row.cloneNode(true) as HTMLElement;
     // The clone must not double any test id, id or focusable control.
-    for (const node of [ghost, ...ghost.querySelectorAll("*")]) {
-      node.removeAttribute("data-ac-testid");
-      node.removeAttribute("data-ac-role");
+    for (const node of [ghost, ...ghost.querySelectorAll<HTMLElement>("*")]) {
+      delete node.dataset.acTestid;
+      delete node.dataset.acRole;
       node.removeAttribute("id");
     }
     ghost.setAttribute("aria-hidden", "true");
