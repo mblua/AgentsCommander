@@ -641,9 +641,22 @@ impl SessionManager {
             state.revision
         };
         let (removed, removed_selected) = remove_foreign_exited(&mut state, ids, &dispositions);
-        if clear_surviving || removed_selected {
-            reselect_after_cleanup(&mut state, &dispositions, clear_surviving, next_revision);
+        if !clear_surviving && !removed_selected {
+            return removed;
         }
+        let surviving = state.selection.id().filter(|_| clear_surviving);
+        if let Some(row) = surviving
+            .and_then(|id| state.sessions.get_mut(&id))
+            .filter(|row| row.status == SessionStatus::Active)
+        {
+            row.status = SessionStatus::Running;
+        }
+        state.revision = next_revision;
+        let next = next_cleanup_selection(&state, &dispositions);
+        if let Some(session) = next.and_then(|id| state.sessions.get_mut(&id)) {
+            session.status = SessionStatus::Active;
+        }
+        select_after_cleanup(&mut state, next);
         removed
     }
 }
@@ -687,45 +700,32 @@ fn remove_foreign_exited(
     (removed, removed_selection)
 }
 
-/// Moves the selection to the first remaining `Foreign` session (or none)
-/// after a background cleanup cleared or removed it.
-fn reselect_after_cleanup(
-    state: &mut SessionManagerState,
+/// First remaining `Foreign`, non-pending session in order, if any.
+fn next_cleanup_selection(
+    state: &SessionManagerState,
     dispositions: &HashMap<Uuid, CarrierDisposition>,
-    clear_surviving: bool,
-    next_revision: u64,
-) {
-    if clear_surviving {
-        if let Some(id) = state.selection.id() {
-            if let Some(row) = state.sessions.get_mut(&id) {
-                if row.status == SessionStatus::Active {
-                    row.status = SessionStatus::Running;
-                }
-            }
-        }
-    }
-    state.revision = next_revision;
-    let next = state.order.iter().copied().find(|candidate| {
+) -> Option<Uuid> {
+    state.order.iter().copied().find(|candidate| {
         !state.pending_create.contains_key(candidate)
             && dispositions.get(candidate) == Some(&CarrierDisposition::Foreign)
-    });
-    if let Some(next_id) = next {
-        if let Some(session) = state.sessions.get_mut(&next_id) {
-            session.status = SessionStatus::Active;
-        }
-        state.selection = SessionSelection::live(
+    })
+}
+
+/// Points the selection at `next` (or at none) after a background cleanup.
+fn select_after_cleanup(state: &mut SessionManagerState, next: Option<Uuid>) {
+    state.selection = match next {
+        Some(next_id) => SessionSelection::live(
             state.epoch,
             state.revision,
             SelectionCause::BackgroundCleanup,
             next_id,
-        );
-    } else {
-        state.selection = SessionSelection::none(
+        ),
+        None => SessionSelection::none(
             state.epoch,
             state.revision,
             SelectionCause::BackgroundCleanup,
-        );
-    }
+        ),
+    };
 }
 
 fn verify_input_authority(
