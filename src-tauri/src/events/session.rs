@@ -7,7 +7,7 @@
 //! here; selection events go to Tauri and to the WebSocket broadcaster.
 //! The policies themselves live in `crate::session` and `crate::co_managed`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 
@@ -17,14 +17,18 @@ use uuid::Uuid;
 
 use crate::config::coordinator_clocks::CoordinatorClocksState;
 use crate::config::injected_messages::MessageWarnings;
+use crate::config::settings::SettingsState;
 use crate::phone::mailbox::{
     InternalNoticeGuard, InternalSystemNotice, InternalSystemTarget, MailboxPoller,
 };
 use crate::pty::context_scrape::ContextScraper;
+use crate::pty::idle_detector::IdleDetector;
+use crate::pty::manager::PtyManager;
 use crate::session::auto_close::{AutoClose, AutoCloseInputs, AutoCloseServices};
 use crate::session::context_alerts::{ContextAlertMonitor, ContextAlertServices};
 use crate::session::manager::SessionManager;
 use crate::session::purge_guard::PurgeGuard;
+use crate::session::selection::SelectionCoordinator;
 use crate::session::session::Session;
 use crate::shutdown::ShutdownSignal;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -157,12 +161,13 @@ fn auto_close_state<R: Runtime, T: Clone + Send + Sync + 'static>(
 
 impl<R: Runtime> AutoCloseServices for AppHandle<R> {
     fn inputs(&self) -> Result<AutoCloseInputs, &'static str> {
+        // Resolved in this order; the first missing type is reported.
         Ok(AutoCloseInputs {
-            settings: auto_close_state(self)?,
-            session_manager: auto_close_state(self)?,
-            pty_manager: auto_close_state(self)?,
-            idle_detector: auto_close_state(self)?,
-            selection_coordinator: auto_close_state(self)?,
+            settings: auto_close_state::<R, SettingsState>(self)?,
+            session_manager: auto_close_state::<R, Arc<tokio::sync::RwLock<SessionManager>>>(self)?,
+            pty_manager: auto_close_state::<R, Arc<Mutex<PtyManager>>>(self)?,
+            idle_detector: auto_close_state::<R, Arc<IdleDetector>>(self)?,
+            selection_coordinator: auto_close_state::<R, SelectionCoordinator>(self)?,
         })
     }
 
