@@ -20,6 +20,8 @@ const m = vi.hoisted(() => ({
   getSnapshot: vi.fn(),
   open: vi.fn(),
   newProject: vi.fn(),
+  checkPath: vi.fn(),
+  pickFolder: vi.fn(),
   discover: vi.fn(),
   removeProject: vi.fn(),
   getSettings: vi.fn(),
@@ -33,6 +35,7 @@ vi.mock("../../shared/ipc", async (importOriginal) => ({
   ProjectAPI: {
     open: m.open,
     new: m.newProject,
+    checkPath: m.checkPath,
     discover: m.discover,
     remove: m.removeProject,
     archive: vi.fn(),
@@ -42,11 +45,12 @@ vi.mock("../../shared/ipc", async (importOriginal) => ({
     update: m.updateSettings,
   },
   AgentCreatorAPI: {
-    pickFolder: vi.fn(),
+    pickFolder: m.pickFolder,
   },
 }));
 
 import { projectStore } from "./project";
+import { normalizeProjectPathForCompare } from "./project-refresh";
 import { effectiveAutoClosedAt, replicaVolatileStore } from "./replica-volatile";
 
 const PROJECT_PATH = "C:\\Users\\Maria\\Project";
@@ -723,6 +727,53 @@ describe("projectStore", () => {
   // Project removal routes through the dedicated disk-authoritative
   // remove_project command, NOT a whole-object settings save (which under
   // Design S preserves the on-disk list and would no longer remove anything).
+  describe("New Project outcome (#5228)", () => {
+    it("pickAndCheck asks the picker for the New Project title", async () => {
+      const before = projectStore.newProjectOutcome.seq;
+      m.pickFolder.mockResolvedValueOnce(null);
+
+      const result = await projectStore.pickAndCheck();
+
+      expect(m.pickFolder).toHaveBeenCalledTimes(1);
+      expect(m.pickFolder).toHaveBeenCalledWith(undefined, "Select a folder for your project");
+      expect(result).toEqual({ picked: null, hasWorkspace: false });
+      expect(projectStore.newProjectOutcome)
+        .toEqual({ seq: before + 1, path: null, created: false });
+    });
+
+    it("pickAndCheck on a folder with a workspace records a loaded, not created, project", async () => {
+      const before = projectStore.newProjectOutcome.seq;
+      m.pickFolder.mockResolvedValueOnce(PROJECT_PATH);
+      m.checkPath.mockResolvedValueOnce(true);
+
+      await projectStore.pickAndCheck();
+
+      expect(projectStore.newProjectOutcome).toEqual({
+        seq: before + 1, path: normalizeProjectPathForCompare(PROJECT_PATH), created: false,
+      });
+    });
+
+    it("createAndLoad success records a created project", async () => {
+      const before = projectStore.newProjectOutcome.seq;
+      m.newProject.mockResolvedValueOnce({ path: PROJECT_PATH });
+
+      await projectStore.createAndLoad(PROJECT_PATH);
+
+      expect(projectStore.newProjectOutcome).toEqual({
+        seq: before + 1, path: normalizeProjectPathForCompare(PROJECT_PATH), created: true,
+      });
+    });
+
+    it("createAndLoad failure records nothing", async () => {
+      const before = projectStore.newProjectOutcome.seq;
+      m.newProject.mockRejectedValueOnce(new Error("boom"));
+
+      await expect(projectStore.createAndLoad(PROJECT_PATH)).rejects.toThrow("boom");
+
+      expect(projectStore.newProjectOutcome.seq).toBe(before);
+    });
+  });
+
   describe("removeProject", () => {
     it("routes removal through remove_project and never whole-object saves", async () => {
       await loadProjectWith([]);

@@ -73,6 +73,14 @@ const taskErrors = new Set<string>();
 let taskGeneration = 0;
 let nextTaskRequest = 0;
 
+export const NEW_PROJECT_PICKER_TITLE = "Select a folder for your project";
+/** #5228 - last New Project result; `seq` grows on every result. */
+export type NewProjectOutcome = { seq: number; path: string | null; created: boolean };
+const [newProjectOutcome, setNewProjectOutcome] =
+  createSignal<NewProjectOutcome>({ seq: 0, path: null, created: false });
+const noteNewProject = (path: string | null, created: boolean) =>
+  setNewProjectOutcome((o) => ({ seq: o.seq + 1, path, created }));
+
 function loadedTaskRooms(): Map<string, string> {
   return new Map(projects().flatMap(project => project.workgroups.map(wg =>
     [normalizePath(wg.path), wg.path] as const)));
@@ -467,6 +475,7 @@ function issueBlockingText(issue: ProjectPathIssue): string {
 }
 
 export const projectStore = {
+  get newProjectOutcome() { return newProjectOutcome(); },
   taskSnapshot(path: string) { return taskSnapshots().get(normalizePath(path)); },
   refreshTaskSnapshot,
   refreshTaskSnapshots,
@@ -611,15 +620,20 @@ export const projectStore = {
     await runSerializedArchiveChange(normalized, () =>
       discoverAndAppendIfCurrent(reg.path, normalized)
     );
+    noteNewProject(normalized, true);
   },
 
   async pickAndCheck(): Promise<{ picked: string | null; hasWorkspace: boolean }> {
-    const picked = await AgentCreatorAPI.pickFolder();
-    if (!picked) return { picked: null, hasWorkspace: false };
+    const picked = await AgentCreatorAPI.pickFolder(undefined, NEW_PROJECT_PICKER_TITLE);
+    if (!picked) {
+      noteNewProject(null, false);
+      return { picked: null, hasWorkspace: false };
+    }
 
     const hasWorkspace = await ProjectAPI.checkPath(picked);
     if (hasWorkspace) {
       await projectStore.loadProject(picked);
+      noteNewProject(normalizePath(picked), false);
     }
     return { picked, hasWorkspace };
   },

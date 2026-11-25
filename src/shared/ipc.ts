@@ -1635,8 +1635,8 @@ export const EntityAPI = {
 };
 
 export const AgentCreatorAPI = {
-  pickFolder: (defaultPath?: string) =>
-    transport.invoke<string | null>("pick_folder", { defaultPath: defaultPath ?? null }),
+  pickFolder: (defaultPath?: string, title?: string) =>
+    transport.invoke<string | null>("pick_folder", { defaultPath: defaultPath ?? null, title }),
 
   createFolder: (parentPath: string, agentName: string) =>
     transport.invoke<string>("create_agent_folder", { parentPath, agentName }),

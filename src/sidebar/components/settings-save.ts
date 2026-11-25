@@ -1,5 +1,6 @@
 import type { AgentConfig, AppSettings } from "../../shared/types";
 import type { TempRoomAgentChoice } from "../../shared/temp-rooms";
+import { readTutorialFlags } from "../../shared/tutorial-settings";
 
 function normalizeAgentInstructionsFilename(agent: AgentConfig): AgentConfig {
   const trimmed = agent.instructionsFilename?.trim();
@@ -92,7 +93,11 @@ function outsideWriterFields(draft: AppSettings, fresh: AppSettings) {
   const picked = Object.fromEntries(OUTSIDE_WRITER_KEYS.map((key) => [key, fresh[key]]));
   return {
     rest,
-    picked: { ...picked, ...(choice ? { tempRoomAgent: choice } : {}) } as Partial<WithTempRoom>,
+    picked: {
+      ...picked,
+      ...readTutorialFlags(fresh),
+      ...(choice ? { tempRoomAgent: choice } : {}),
+    } as Partial<WithTempRoom>,
   };
 }
 
