@@ -350,7 +350,7 @@ where
     // Geometry is restored here rather than by `initWindowGeometry`, which this window stays
     // away from (plan 4.12); `focus_main_window` is the precedent for reading a persisted
     // rect straight into the builder.
-    let saved = config::settings::load_settings();
+    let saved = crate::config::settings::load_settings();
     let (size, position) = match &saved.watchers_geometry {
         Some(geo) => ((geo.width, geo.height), Some((geo.x, geo.y))),
         None => ((WATCHERS_DEFAULT_WIDTH, WATCHERS_DEFAULT_HEIGHT), None),
