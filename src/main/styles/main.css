@@ -619,3 +619,95 @@ html.light-theme .web-browser-error {
   flex: 1;
   min-height: 0;
 }
+
+/* --- #5228 Home tutorials, hint and guided overlay ----------------------- */
+.home-tutorials {
+  padding: var(--spacing-md) calc(var(--spacing-lg) * 1.5) var(--spacing-xs);
+  font-family: var(--font-ui);
+  color: var(--sidebar-fg);
+  flex-shrink: 0;
+}
+.home-tutorials h3 { margin: 0 0 var(--spacing-sm); font-size: 15px; }
+.home-tutorial-card {
+  max-width: 420px;
+  padding: var(--spacing-md);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-md);
+  background: var(--sidebar-hover);
+}
+.home-tutorial-card strong { display: block; font-size: var(--font-size-md); }
+.home-tutorial-card p {
+  margin: var(--spacing-xs) 0 var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+}
+.home-tutorial-card button {
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: 1px solid var(--sidebar-accent);
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.home-tutorial-card button:disabled { opacity: 0.4; cursor: not-allowed; }
+.home-tutorial-card button:focus-visible { outline: 2px solid var(--sidebar-accent); }
+.home-tutorial-done {
+  display: inline-block;
+  margin-left: var(--spacing-sm);
+  padding: 0 var(--spacing-sm);
+  border: 1px solid var(--sidebar-accent);
+  border-radius: 999px;
+  color: var(--sidebar-accent);
+  font-size: 11px;
+  font-weight: normal;
+}
+.home-tutorial-card .home-tutorial-note { color: var(--sidebar-fg); }
+
+/* Above .modal-overlay (z-index 1000) so the ring shows on open dialogs. */
+.tutorial-ring {
+  position: fixed;
+  z-index: 1100;
+  pointer-events: none;
+  border: 2px solid var(--sidebar-accent);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 12px var(--sidebar-accent);
+}
+.tutorial-bubble {
+  position: fixed;
+  z-index: 1101;
+  max-width: 260px;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--sidebar-accent);
+  border-radius: var(--radius-md);
+  background: var(--sidebar-bg);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.tutorial-bubble p { margin: 0; }
+.tutorial-bubble--warn { border-width: 2px; border-style: dashed; }
+.tutorial-bubble-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--spacing-sm);
+}
+.tutorial-bubble button {
+  padding: 2px var(--spacing-sm);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.tutorial-bubble button:focus-visible { outline: 2px solid var(--sidebar-accent); }
+.tutorial-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+.tutorial-hint button { border: none; padding: 0 var(--spacing-xs); }

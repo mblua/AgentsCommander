@@ -28,6 +28,7 @@ import LastPrompt from "./components/LastPrompt";
 import TerminalView from "./components/TerminalView";
 import StatusBar from "./components/StatusBar";
 import HomeView from "../main/components/HomeView";
+import TutorialLayer from "../main/components/TutorialLayer";
 import ExternalLinkConfirm from "../shared/components/ExternalLinkConfirm";
 import "../shared/styles/external-link-confirm.css";
 import "./styles/terminal.css";
@@ -452,6 +453,9 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       <StatusBar detached={props.detached} />
       <Show when={isHomeShown()}>
         <HomeView />
+      </Show>
+      <Show when={props.embedded && !props.detached}>
+        <TutorialLayer />
       </Show>
       <Show when={isTauri && !props.embedded}>
         <ExternalLinkConfirm />
