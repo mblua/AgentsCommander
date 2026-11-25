@@ -437,17 +437,28 @@ async fn reorder_coding_agent_stale_expected_ids_rejects_before_saver_without_ev
 
 #[test]
 fn reorder_coding_agent_is_registered_in_invoke_handler() {
-    let lines: Vec<&str> = include_str!("../../../lib.rs")
-        .lines()
-        .map(str::trim)
-        .collect();
-    let hits: Vec<usize> = lines
+    let routes = crate::test_support::invoke_handler_routes(include_str!("../../../lib.rs"));
+    let hits: Vec<usize> = routes
         .iter()
         .enumerate()
-        .filter(|(_, line)| **line == "commands::config::reorder_coding_agent,")
+        .filter(|(_, route)| route.rsplit("::").next() == Some("reorder_coding_agent"))
         .map(|(index, _)| index)
         .collect();
     assert_eq!(hits.len(), 1, "registration must occur exactly once");
-    assert!(hits[0] > 0);
-    assert_eq!(lines[hits[0] - 1], "commands::config::move_coding_agent,");
+    assert!(
+        matches!(
+            routes[hits[0]],
+            "commands::config::reorder_coding_agent" | "c::config::reorder_coding_agent"
+        ),
+        "reorder_coding_agent must be registered from commands::config: {}",
+        routes[hits[0]]
+    );
+    let previous = hits[0].checked_sub(1).and_then(|index| routes.get(index));
+    assert!(
+        matches!(
+            previous,
+            Some(&("commands::config::move_coding_agent" | "c::config::move_coding_agent"))
+        ),
+        "reorder_coding_agent must follow move_coding_agent: {previous:?}"
+    );
 }
