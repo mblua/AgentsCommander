@@ -309,13 +309,6 @@ pub(crate) fn run_case(
             Err(error) => owner.fail(&format!("case child poll failed: {error}")),
         }
     };
-    case_log(format_args!(
-        "#5174 {}: parent pid {} child pid {} {status} in {:?}",
-        owner.label,
-        std::process::id(),
-        owner.process.id(),
-        started.elapsed()
-    ));
     let stdout = owner
         .directory
         .as_ref()
@@ -337,6 +330,27 @@ pub(crate) fn run_case(
         || !summary[0].starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;")
     {
         owner.fail("case child exit, receipt, result line or summary failed");
+    }
+    // Success diagnostic goes to a private file next to the child logs, not
+    // to the parent's stdout or stderr; the logs directory is then kept.
+    let diagnostic = format!(
+        "#5174 {}: parent pid {} child pid {} {status} in {:?}\n",
+        owner.label,
+        std::process::id(),
+        owner.process.id(),
+        started.elapsed()
+    );
+    let written = owner
+        .directory
+        .as_ref()
+        .map(|d| std::fs::write(d.path().join("diagnostic.txt"), diagnostic));
+    match written {
+        Some(Ok(())) => {}
+        Some(Err(error)) => owner.fail(&format!("case diagnostic write failed: {error}")),
+        None => owner.fail("case directory missing for the diagnostic"),
+    }
+    if let Some(directory) = owner.directory.take() {
+        let _kept = directory.keep();
     }
     println!("AC5174_OK {name} {scenario}");
 }
