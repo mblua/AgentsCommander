@@ -333,6 +333,131 @@ impl DiscoveryBranchWatcher {
             .collect()
     }
 
+    /// Polls one replica: runs Gates A and B for its refreshed repo state.
+    async fn poll_replica_entry(&self, entry: &ReplicaBranchEntry) {
+        // Capture the session's git_repos_gen (if a session exists) BEFORE running
+        // detections.
+        // Used for CAS on set_git_repos_if_gen.
+        let (session_id_opt, gen_snapshot) = {
+            let mgr = self.session_manager.read().await;
+            match mgr.find_by_name(&entry.session_name).await {
+                Some(id) => {
+                    let r#gen = mgr.get_git_repos_gen(id).await.unwrap_or(0);
+                    (Some(id), r#gen)
+                }
+                None => (None, 0),
+            }
+        };
+
+        let refreshed = self.refreshed_repos(entry);
+
+        self.emit_discovery_if_changed(entry, &refreshed);
+        if !self.repos_changed(entry, &refreshed) {
+            return;
+        }
+        if let Some(session_id) = session_id_opt {
+            self.publish_session_git_repos(entry, session_id, refreshed, gen_snapshot)
+                .await;
+        }
+        // If no session exists yet (un-instantiated replica), Gate A has already
+        // covered
+        // the display surface — no session to push git_repos into.
+    }
+
+    fn emit_discovery_if_changed(&self, entry: &ReplicaBranchEntry, refreshed: &[SessionRepo]) {
+        // Gate A: emit ac_discovery_branch_updated (AcDiscoveryPanel's branch
+        // chip, plus the per-repo branches for cold replicas).
+        //
+        // `branch` keeps its exact old semantics (single-repo only, None for
+        // multi-repo, so the panel chip still hides there). `repo_branches` is
+        // the vec `refreshed` already holds and Gate A used to discard, which
+        // is the whole of Module B2: a cold multi-repo coordinator learns each
+        // repo's branch without a single new git spawn.
+        let payload = DiscoveryBranchPayload {
+            replica_path: entry.replica_path.clone(),
+            branch: if entry.repos.len() == 1 {
+                refreshed[0].branch.clone()
+            } else {
+                None
+            },
+            repo_branches: refreshed.iter().map(|r| r.branch.clone()).collect(),
+            repo_paths: refreshed.iter().map(|r| r.source_path.clone()).collect(),
+            repo_dirty: refreshed.iter().map(|r| r.dirty).collect(),
+        };
+        // Gate on the whole payload. Comparing only the single-repo `branch`
+        // (what this did before B2) means a multi-repo replica whose repo just
+        // changed branch compares None against None and never re-emits.
+        let discovery_changed = {
+            let mut cache = self
+                .discovery_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if cache.get(&entry.replica_path) == Some(&payload) {
+                false
+            } else {
+                cache.insert(entry.replica_path.clone(), payload.clone());
+                true
+            }
+        };
+        if discovery_changed {
+            let _ = self.app_handle.emit("ac_discovery_branch_updated", payload);
+        }
+    }
+
+    /// Gate B cache: records `refreshed` and reports whether it differs.
+    fn repos_changed(&self, entry: &ReplicaBranchEntry, refreshed: &[SessionRepo]) -> bool {
+        // Gate B: emit session_git_repos (full per-repo state for SessionItem).
+        // Independent cache so multi-repo replicas re-emit on per-repo drift even when
+        // Gate A stays None.
+        let mut cache = self
+            .repos_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev = cache.get(&entry.replica_path).map(Vec::as_slice);
+        if prev == Some(refreshed) {
+            false
+        } else {
+            cache.insert(entry.replica_path.clone(), refreshed.to_vec());
+            true
+        }
+    }
+
+    async fn publish_session_git_repos(
+        &self,
+        entry: &ReplicaBranchEntry,
+        session_id: Uuid,
+        refreshed: Vec<SessionRepo>,
+        gen_snapshot: u64,
+    ) {
+        // CAS write: skip if a refresh bumped gen during our detection window.
+        let wrote = {
+            let mgr = self.session_manager.read().await;
+            mgr.set_git_repos_if_gen(session_id, refreshed.clone(), gen_snapshot)
+                .await
+        };
+        if wrote {
+            let _ = self.app_handle.emit(
+                "session_git_repos",
+                SessionGitReposPayload {
+                    session_id: session_id.to_string(),
+                    repos: refreshed.clone(),
+                },
+            );
+        } else {
+            log::debug!(
+                "[DiscoveryBranchWatcher] gen mismatch for {} — refresh landed during \
+                poll; skipping stale emit",
+                entry.replica_path
+            );
+            // Clear our own cache entry so next tick re-evaluates against the fresh
+            // list.
+            self.repos_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&entry.replica_path);
+        }
+    }
+
     pub(crate) async fn poll(&self) -> Result<(), String> {
         // Flatten per-project entries.
         let entries: Vec<ReplicaBranchEntry> = {
@@ -343,117 +468,12 @@ impl DiscoveryBranchWatcher {
             map.values().flatten().cloned().collect()
         };
 
-        // Gate A + Gate B (existing replica-driven git detection). Wrapped so
-        // an empty `entries` (no project loaded) still falls through to Gate C,
+        // Gate A + Gate B (existing replica-driven git detection). An empty
+        // `entries` (no project loaded) still falls through to Gate C,
         // which is also driven by active sessions — sessions can exist for
         // workgroups whose project is not in `settings.projectPaths`.
-        if !entries.is_empty() {
-            for entry in &entries {
-                // Capture the session's git_repos_gen (if a session exists) BEFORE running
-                // detections.
-                // Used for CAS on set_git_repos_if_gen.
-                let (session_id_opt, gen_snapshot) = {
-                    let mgr = self.session_manager.read().await;
-                    match mgr.find_by_name(&entry.session_name).await {
-                        Some(id) => {
-                            let r#gen = mgr.get_git_repos_gen(id).await.unwrap_or(0);
-                            (Some(id), r#gen)
-                        }
-                        None => (None, 0),
-                    }
-                };
-
-                let refreshed = self.refreshed_repos(entry);
-
-                // Gate A: emit ac_discovery_branch_updated (AcDiscoveryPanel's branch
-                // chip, plus the per-repo branches for cold replicas).
-                //
-                // `branch` keeps its exact old semantics (single-repo only, None for
-                // multi-repo, so the panel chip still hides there). `repo_branches` is
-                // the vec `refreshed` already holds and Gate A used to discard, which
-                // is the whole of Module B2: a cold multi-repo coordinator learns each
-                // repo's branch without a single new git spawn.
-                let payload = DiscoveryBranchPayload {
-                    replica_path: entry.replica_path.clone(),
-                    branch: if entry.repos.len() == 1 {
-                        refreshed[0].branch.clone()
-                    } else {
-                        None
-                    },
-                    repo_branches: refreshed.iter().map(|r| r.branch.clone()).collect(),
-                    repo_paths: refreshed.iter().map(|r| r.source_path.clone()).collect(),
-                    repo_dirty: refreshed.iter().map(|r| r.dirty).collect(),
-                };
-                // Gate on the whole payload. Comparing only the single-repo `branch`
-                // (what this did before B2) means a multi-repo replica whose repo just
-                // changed branch compares None against None and never re-emits.
-                let discovery_changed = {
-                    let mut cache = self
-                        .discovery_cache
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if cache.get(&entry.replica_path) == Some(&payload) {
-                        false
-                    } else {
-                        cache.insert(entry.replica_path.clone(), payload.clone());
-                        true
-                    }
-                };
-                if discovery_changed {
-                    let _ = self.app_handle.emit("ac_discovery_branch_updated", payload);
-                }
-
-                // Gate B: emit session_git_repos (full per-repo state for SessionItem).
-                // Independent cache so multi-repo replicas re-emit on per-repo drift even when
-                // Gate A stays None.
-                let repos_changed = {
-                    let mut cache = self
-                        .repos_cache
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let prev = cache.get(&entry.replica_path);
-                    if prev == Some(&refreshed) {
-                        false
-                    } else {
-                        cache.insert(entry.replica_path.clone(), refreshed.clone());
-                        true
-                    }
-                };
-                if repos_changed {
-                    if let Some(session_id) = session_id_opt {
-                        // CAS write: skip if a refresh bumped gen during our detection window.
-                        let wrote = {
-                            let mgr = self.session_manager.read().await;
-                            mgr.set_git_repos_if_gen(session_id, refreshed.clone(), gen_snapshot)
-                                .await
-                        };
-                        if wrote {
-                            let _ = self.app_handle.emit(
-                                "session_git_repos",
-                                SessionGitReposPayload {
-                                    session_id: session_id.to_string(),
-                                    repos: refreshed.clone(),
-                                },
-                            );
-                        } else {
-                            log::debug!(
-                            "[DiscoveryBranchWatcher] gen mismatch for {} — refresh landed during \
-                                poll; skipping stale emit",
-                            entry.replica_path
-                        );
-                            // Clear our own cache entry so next tick re-evaluates against the fresh
-                            // list.
-                            self.repos_cache
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .remove(&entry.replica_path);
-                        }
-                    }
-                    // If no session exists yet (un-instantiated replica), Gate A has already
-                    // covered
-                    // the display surface — no session to push git_repos into.
-                }
-            }
+        for entry in &entries {
+            self.poll_replica_entry(entry).await;
         }
 
         // Gate C: TASK.md detection. Runs every tick whether or not Gate A/B
