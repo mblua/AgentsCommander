@@ -953,17 +953,48 @@ async fn the_git_sweeper_starts_at_once_and_stops_during_a_round() {
     drop(held);
 }
 
-/// An empty round floors at the clamped minimum; shutdown ends the sweep during that wait.
+/// The period is max(floor, round duration): a shorter round waits out the floor, a longer
+/// one is followed at once, and shutdown ends the floor wait. The fixture round reports
+/// each start on a channel and takes a scripted time on the paused Tokio clock.
 #[tokio::test(start_paused = true)]
-async fn the_git_sweeper_stops_during_its_floor_wait() {
+async fn the_git_sweep_period_is_the_floor_or_the_round_whichever_is_longer() {
+    let floor = Duration::from_secs(1);
+    let script = [
+        Duration::from_millis(300),
+        Duration::from_millis(1500),
+        Duration::ZERO,
+    ];
+    let t0 = tokio::time::Instant::now();
+    let (starts, mut started) = tokio::sync::mpsc::unbounded_channel();
+    let rounds = std::cell::Cell::new(0usize);
     let shutdown = crate::shutdown::ShutdownSignal::new();
-    let sweeper = sweeper(repo_session_manager());
-    let sweep = sweeper.sweep(shutdown.clone());
+    let round = || {
+        let n = rounds.replace(rounds.get() + 1);
+        let starts = starts.clone();
+        async move {
+            starts.send(t0.elapsed()).unwrap();
+            tokio::time::sleep(script.get(n).copied().unwrap_or_default()).await;
+            floor
+        }
+    };
+    let sweep = sweep_rounds(round, shutdown.clone());
     tokio::pin!(sweep);
-    let half = Duration::from_millis(SWEEP_MIN_INTERVAL_SECS * 500);
-    assert!(tokio::time::timeout(half, &mut sweep).await.is_err());
+    let mut seen = Vec::new();
+    while seen.len() < 3 {
+        tokio::select! {
+            () = &mut sweep => panic!("the sweep ended on its own"),
+            Some(at) = started.recv() => seen.push(at),
+        }
+    }
+    // 0: first round at once; +1.0 s: 300 ms round, floor wins; +1.5 s: 1500 ms round wins.
+    let ms = |m| Duration::from_millis(m);
+    assert_eq!(seen, vec![ms(0), ms(1000), ms(2500)]);
+    // The zero-length third round now waits its floor; shutdown ends the sweep there.
+    assert!(tokio::time::timeout(ms(500), &mut sweep).await.is_err());
+    assert!(
+        started.try_recv().is_err(),
+        "no round during the floor wait"
+    );
     shutdown.token().cancel();
-    tokio::time::timeout(Duration::from_millis(10), &mut sweep)
-        .await
-        .unwrap();
+    tokio::time::timeout(ms(10), &mut sweep).await.unwrap();
 }

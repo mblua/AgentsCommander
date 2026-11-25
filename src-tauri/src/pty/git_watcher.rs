@@ -753,6 +753,33 @@ pub(super) fn build_work_list(
     paths
 }
 
+/// The sweep loop. The first round starts at once; the period is max(floor, round
+/// duration); shutdown wins every await. `round` is a parameter so tests can time it.
+async fn sweep_rounds<F, Fut>(mut round: F, shutdown: crate::shutdown::ShutdownSignal)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Duration>,
+{
+    loop {
+        // `started` is taken BEFORE the round, which is what makes the
+        // period max(floor, round duration) and what keeps the first
+        // round from being delayed (plan D3).
+        let started = tokio::time::Instant::now();
+        let floor = tokio::select! {
+            biased;
+            () = shutdown.token().cancelled() => break,
+            floor = round() => floor,
+        };
+        let remaining = floor.saturating_sub(started.elapsed());
+        tokio::select! {
+            biased;
+            () = shutdown.token().cancelled() => break,
+            () = tokio::time::sleep(remaining) => {}
+        }
+    }
+    log::info!("[GitSweeper] Shutdown signal received, stopping");
+}
+
 /// The single global POLLING producer of per-repo git state. Both watchers
 /// read the snapshot it publishes instead of spawning `git` themselves.
 ///
@@ -805,26 +832,8 @@ impl GitSweeper {
         });
     }
 
-    /// The sweep loop. The first round starts at once; shutdown wins every await.
     async fn sweep(&self, shutdown: crate::shutdown::ShutdownSignal) {
-        loop {
-            // `started` is taken BEFORE the round, which is what makes the
-            // period max(floor, round duration) and what keeps the first
-            // round from being delayed (plan D3).
-            let started = std::time::Instant::now();
-            let floor = tokio::select! {
-                biased;
-                () = shutdown.token().cancelled() => break,
-                floor = self.round() => floor,
-            };
-            let remaining = floor.saturating_sub(started.elapsed());
-            tokio::select! {
-                biased;
-                () = shutdown.token().cancelled() => break,
-                () = tokio::time::sleep(remaining) => {}
-            }
-        }
-        log::info!("[GitSweeper] Shutdown signal received, stopping");
+        sweep_rounds(|| self.round(), shutdown).await;
     }
 
     /// One sweep over the whole work list, returning the floor to apply afterwards
