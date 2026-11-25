@@ -243,6 +243,42 @@ fn user_home_is_not_an_ac_placeholder_token() {
     assert!(!value_contains_ac_placeholder("%USER_HOME%/.claude"));
 }
 
+/// Collects each value once, reporting `AC_TOKENS duplicate <side> <value>` on repeats.
+fn unique_ac_tokens<'a>(
+    side: &str,
+    values: &[&'a str],
+    errors: &mut Vec<String>,
+) -> std::collections::BTreeSet<&'a str> {
+    assert!(!values.is_empty(), "AC_TOKENS {side} list is empty");
+    let mut set = std::collections::BTreeSet::new();
+    for value in values {
+        if !set.insert(*value) {
+            errors.push(format!("AC_TOKENS duplicate {side} {value}"));
+        }
+    }
+    set
+}
+
+#[test]
+fn ac_placeholder_tokens_match_fixture() {
+    // Pins the compiled launch-root tokens against the shared JSON oracle.
+    // Order is free; duplicates on either side and any set difference fail.
+    let raw = include_str!("tests/fixtures/ac-placeholder-tokens.json");
+    let json: Vec<String> = serde_json::from_str(raw)
+        .unwrap_or_else(|e| panic!("AC_TOKENS fixture is not a JSON string array: {e}"));
+    let json: Vec<&str> = json.iter().map(String::as_str).collect();
+    let mut errors = Vec::new();
+    let rust = unique_ac_tokens("Rust", AC_PLACEHOLDER_TOKENS, &mut errors);
+    let fixture = unique_ac_tokens("JSON", &json, &mut errors);
+    for value in rust.difference(&fixture) {
+        errors.push(format!("AC_TOKENS missing_from_json {value}"));
+    }
+    for value in fixture.difference(&rust) {
+        errors.push(format!("AC_TOKENS extra_in_json {value}"));
+    }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
 #[test]
 fn strict_expand_still_rejects_user_home() {
     // v1 scope: env values and command args keep their fail-closed contract,
