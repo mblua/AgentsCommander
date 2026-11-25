@@ -273,26 +273,33 @@ class Run:
 
     # ----- J1 --------------------------------------------------------------------------
 
-    def project_paths(self):
+    def project_paths(self, post):
+        """Read-only view of the profile's project-paths.json for J1.
+
+        PRE (post=False): a missing file or the empty object `{}` is the empty profile.
+        POST (post=True): the file must hold an explicit `projectPaths` list. Anything else
+        (null, legacy `projectPath`, broken JSON, wrong types, read errors) fails.
+        """
+        code = "project_paths_mismatch" if post else "project_paths_unreadable"
         try:
-            with open(os.path.join(self.profile, "project-paths.json"), encoding="utf-8") as h:
-                data = json.load(h)
+            with open(os.path.join(self.profile, "project-paths.json"), "rb") as h:
+                raw = h.read()
         except FileNotFoundError:
+            if post:
+                raise Failure(code, self.stage) from None
             return []
-        except ValueError as exc:
-            raise Failure("project_paths_unreadable", self.stage) from exc
-        if not isinstance(data, dict):
-            raise Failure("project_paths_unreadable", self.stage)
-        # Same reading as the app (project_lists_from_projection): the file only
-        # holds the keys it has, so a missing or null projectPaths falls back to
-        # projectPath.
-        paths = data.get("projectPaths")
-        if paths is None:
-            head = data.get("projectPath")
-            paths = [head] if isinstance(head, str) else []
-        if not isinstance(paths, list):
-            raise Failure("project_paths_unreadable", self.stage)
-        return [os.path.realpath(p if isinstance(p, str) else p.get("path", "")) for p in paths]
+        except OSError as exc:
+            raise Failure(code, self.stage) from exc
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise Failure(code, self.stage) from exc
+        if not post and data == {}:
+            return []
+        paths = data.get("projectPaths") if isinstance(data, dict) else None
+        if not isinstance(paths, list) or not all(isinstance(p, str) and p for p in paths):
+            raise Failure(code, self.stage)
+        return [os.path.realpath(p) for p in paths]
 
     def journey_one(self):
         self.at("J1")
@@ -300,7 +307,7 @@ class Run:
         self.project = os.path.join(self.root, "projects", self.project_name)
         os.makedirs(self.project, mode=0o700)
         canonical = os.path.realpath(self.project)
-        if os.listdir(self.project) or canonical in self.project_paths():
+        if os.listdir(self.project) or canonical in self.project_paths(post=False):
             raise Failure("project_not_fresh", self.stage)
         self.p_id = automation_id_part(canonical)
         header = f"project.header.{self.p_id}"
@@ -363,7 +370,7 @@ class Run:
         self.wait_selector(header)
         self.poll(STEP_S, lambda: os.path.isdir(os.path.join(canonical, ".ac")),
                   "project_ac_missing")
-        if self.project_paths().count(canonical) != 1:
+        if self.project_paths(post=True).count(canonical) != 1:
             raise Failure("project_paths_mismatch", self.stage)
         self.result["journeys"]["J1"] = "pass"
 
