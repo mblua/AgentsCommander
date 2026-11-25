@@ -1,4 +1,4 @@
-use super::{write_stdout, write_stdout_with_error};
+use super::*;
 use std::io::{self, Read, Write};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -13,6 +13,8 @@ const REPORT_ATTEMPT: &str = "I5206_STDOUT_REPORT_ATTEMPT";
 const PANIC_HOOK: &str = "I5206_STDOUT_PANIC_HOOK";
 const ERROR_DISPLAY: &str = "i4016 synthetic stdout failure";
 const CHILD_DEADLINE: Duration = Duration::from_secs(10);
+/// What libtest itself prints on the child's stdout before the test exits.
+const HARNESS_STDOUT: &str = "\nrunning 1 test\n";
 
 fn render(args: std::fmt::Arguments<'_>) -> Vec<u8> {
     let mut out = Vec::new();
@@ -102,6 +104,7 @@ fn broken_pipe_child() {
 
 struct ChildOutcome {
     code: Option<i32>,
+    stdout: String,
     stderr: String,
 }
 
@@ -142,11 +145,12 @@ fn run_child(mode: &str) -> ChildOutcome {
         }
         thread::sleep(Duration::from_millis(20));
     };
-    stdout.join().expect("join child stdout");
+    let stdout = stdout.join().expect("join child stdout");
     let stderr = stderr.join().expect("join child stderr");
     ChildOutcome {
         code: status.code(),
-        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        stdout: String::from_utf8_lossy(&stdout).replace('\r', ""),
+        stderr: String::from_utf8_lossy(&stderr).replace('\r', ""),
     }
 }
 
@@ -170,13 +174,29 @@ fn assert_single_mode_marker(outcome: &ChildOutcome, mode: &str) {
     );
 }
 
-fn panic_message_lines(outcome: &ChildOutcome) -> usize {
-    let expected = format!("failed printing to stdout: {ERROR_DISPLAY}");
+/// The child's stderr without the test's own marker lines.
+fn product_stderr(outcome: &ChildOutcome) -> Vec<&str> {
     outcome
         .stderr
         .lines()
-        .filter(|line| line.trim_end_matches('\r') == expected)
-        .count()
+        .filter(|line| !line.starts_with(MODE_MARKER) && !line.starts_with(REPORT_ATTEMPT))
+        .collect()
+}
+
+/// Both channels in full: stdout holds only the harness banner and stderr only
+/// `want` once the test markers are removed.
+fn assert_channels(outcome: &ChildOutcome, want: &[&str]) {
+    assert_eq!(
+        outcome.stdout, HARNESS_STDOUT,
+        "child stdout (stderr: {})",
+        outcome.stderr
+    );
+    assert_eq!(
+        product_stderr(outcome),
+        want,
+        "child stderr: {}",
+        outcome.stderr
+    );
 }
 
 #[test]
@@ -184,29 +204,15 @@ fn broken_pipe_exits_zero_without_panic() {
     let outcome = run_child("broken_pipe");
     assert_single_mode_marker(&outcome, "broken_pipe");
     assert_eq!(outcome.code, Some(0), "child stderr: {}", outcome.stderr);
-    assert!(
-        !outcome.stderr.contains("panicked"),
-        "child stderr: {}",
-        outcome.stderr
-    );
-    assert_eq!(panic_message_lines(&outcome), 0);
+    assert_channels(&outcome, &[]);
 }
 
 fn assert_error_mode_exits_one(mode: &str) {
     let outcome = run_child(mode);
     assert_single_mode_marker(&outcome, mode);
     assert_eq!(outcome.code, Some(1), "child stderr: {}", outcome.stderr);
-    assert!(
-        !outcome.stderr.contains("panicked"),
-        "child stderr: {}",
-        outcome.stderr
-    );
-    assert_eq!(
-        panic_message_lines(&outcome),
-        1,
-        "child stderr: {}",
-        outcome.stderr
-    );
+    let diagnostic = format!("failed printing to stdout: {ERROR_DISPLAY}");
+    assert_channels(&outcome, &[diagnostic.as_str()]);
 }
 
 #[test]
@@ -241,8 +247,10 @@ fn failed_diagnostic_is_tried_once_and_still_exits_one() {
         outcome.stderr
     );
     assert!(
-        !outcome.stderr.contains(PANIC_HOOK) && !outcome.stderr.contains("panicked"),
+        !outcome.stderr.contains(PANIC_HOOK),
         "child stderr: {}",
         outcome.stderr
     );
+    // The failing report wrote nothing itself, so nothing else may appear.
+    assert_channels(&outcome, &[]);
 }
