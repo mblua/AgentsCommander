@@ -6,6 +6,8 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+## 0.49.0
+
 ### Added
 
 - Settings > Coding Agents has **Export** and **Import** buttons. Export saves every coding agent and its A/B/C profiles to `ac-coding-agents-exports_YYYYMMDD_HHMMSS.json`; when the file contains environment variable values, a red sticky warning says so. Import adds the file's agents with new IDs (a duplicated label gets ` (N)`) to the tab draft, kept only when you press Save; an invalid file changes nothing. (#5071, #5129, #5130, #5131)
@@ -36,7 +38,6 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 ### Notes
 
 - About 160 behavior-preserving refactor, test, documentation and CI PRs: issue references removed from code comments and test titles, module docs for every Rust file, reasons for every lint `allow`, `unwrap`/`expect` lints in production code, module-cycle cuts, Sonar findings, less PTY output copying, smaller `tokio` and `reqwest` feature sets, and fewer flaky tests. (#4860, #4868, #4878, #4900, #4949, #4965, #4981, #5181, #5182, #5188, #5198)
-
 ## 0.48.0
 
 ### Added
