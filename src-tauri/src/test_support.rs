@@ -108,7 +108,10 @@ where
 #[cfg(test)]
 pub(crate) fn invoke_handler_routes(source: &str) -> Vec<&str> {
     let (_, body) = source
-        .split_once("observer.observe_invokes(tauri::generate_handler![")
+        .split_once(concat!(
+            "observer.observe_invokes(tauri::generate_handler!",
+            "["
+        ))
         .expect("lib.rs must open the invoke handler list");
     let (list, _) = body
         .split_once("])")
