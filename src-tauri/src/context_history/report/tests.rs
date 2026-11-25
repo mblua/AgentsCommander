@@ -338,8 +338,8 @@ fn agent_cursor_pages_in_stable_order_and_rejects_foreign_queries() {
     assert!(build_report(&records, &garbage, CONTEXT).is_err());
 }
 
-#[test]
-fn session_and_record_cursors_walk_whole_sessions() {
+/// One "dev" session with 150 records plus 119 one-record sessions.
+fn walk_records() -> Vec<HistoryRecord> {
     let values: Vec<(i64, u8)> = (0..150).map(|index| (NOW - DAY_MS + index, 5)).collect();
     let mut records = session(1, NOW - DAY_MS, &values);
     for id in 2..=120 {
@@ -349,6 +349,12 @@ fn session_and_record_cursors_walk_whole_sessions() {
             &[(NOW, 1)],
         ));
     }
+    records
+}
+
+#[test]
+fn session_and_record_cursors_walk_whole_sessions() {
+    let records = walk_records();
     let detail = build_agent_detail(&records, &last_days(7), "dev", CONTEXT).expect("detail");
     assert_eq!(
         (detail.sessions_page.len(), detail.totals.sessions_count),
@@ -846,4 +852,86 @@ fn sidebar_session_windows_are_zero_for_known_and_null_otherwise() {
     let response = sidebar_means(&[], PROJECT, &[ambiguous], &COUNTS, NOW).expect("means");
     let json = serde_json::to_value(&response.entries[0]).expect("json");
     assert!(json["sessionWindows"].is_null());
+}
+
+/// Re-encode a cursor after editing its JSON text, keeping the same prefix.
+fn retoken(token: &str, edit: impl Fn(&str) -> String) -> String {
+    let body = token
+        .strip_prefix(CURSOR_PREFIX)
+        .expect("prefix")
+        .as_bytes();
+    let bytes: Vec<u8> = body
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).expect("hex"), 16).expect("hex"))
+        .collect();
+    let json = edit(&String::from_utf8(bytes).expect("utf8"));
+    let hex: String = json.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format!("{CURSOR_PREFIX}{hex}")
+}
+
+/// #5237 P16: cursor bytes frozen at pin e7f3442af stay equal and still page.
+#[test]
+fn history_cursor_pin_bytes_and_second_page() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/issue-5237/history-cursor.json"
+    ))
+    .expect("fixture");
+    let frozen = |name: &str| fixture["tokens"][name]["token"].as_str().expect("token");
+    let after = |cursor: &str| ReportQuery {
+        cursor: Some(cursor.to_string()),
+        ..last_days(7)
+    };
+    let (agents, records, id) = (many_agents(150), walk_records(), Uuid::from_u128(1));
+    let first = report(&agents, &last_days(7)).next_agent_cursor;
+    let detail = build_agent_detail(&records, &last_days(7), "dev", CONTEXT).expect("detail");
+    let changes = build_changes_page(&records, &last_days(7), "dev", id, CONTEXT).expect("page");
+    let emitted = [
+        ("agent", first.expect("agent")),
+        ("session", detail.next_session_cursor.expect("session")),
+        ("record", changes.next_record_cursor.expect("record")),
+    ];
+    let sessions = |query: &ReportQuery| build_agent_detail(&records, query, "dev", CONTEXT);
+    let pages = |query: &ReportQuery| build_changes_page(&records, query, "dev", id, CONTEXT);
+    for (name, live) in &emitted {
+        let token = frozen(name);
+        assert_eq!(live.as_bytes(), token.as_bytes(), "{name} cursor bytes");
+        let mut flipped = token.as_bytes().to_vec();
+        flipped[CURSOR_PREFIX.len()] ^= 1;
+        assert_ne!(live.as_bytes(), flipped.as_slice(), "{name} sensitivity");
+        let null_last = retoken(token, |json| {
+            let at = json.rfind(",\"last\":").expect("last");
+            format!("{},\"last\":null}}", &json[..at])
+        });
+        let foreign = ReportQuery {
+            project_path: "C:/projects/other".to_string(),
+            ..after(&null_last)
+        };
+        let run = |query: &ReportQuery| match *name {
+            "agent" => build_report(&agents, query, CONTEXT).map(drop),
+            "session" => sessions(query).map(drop),
+            _ => pages(query).map(drop),
+        };
+        let errors = [&foreign, &after(&null_last)].map(|query| run(query).expect_err(name));
+        let expected =
+            ["cursor_query_mismatch", "cursor_malformed"].map(ReportError::InvalidCursor);
+        assert_eq!(errors, expected, "{name} rejections");
+    }
+    let second = report(&agents, &after(frozen("agent")));
+    let keys: Vec<String> = second
+        .agents_page
+        .iter()
+        .map(|a| a.agent_key.clone())
+        .collect();
+    let expected: Vec<String> = (101..=150).map(|id| format!("agent-{id:03}")).collect();
+    assert_eq!((keys, second.next_agent_cursor.clone()), (expected, None));
+    assert_eq!(second, report(&agents, &after(&emitted[0].1)));
+    let rest = sessions(&after(frozen("session"))).expect("rest");
+    assert_eq!(rest.sessions_page.len(), 20);
+    assert_eq!(rest, sessions(&after(&emitted[1].1)).expect("live rest"));
+    let tail = pages(&after(frozen("record"))).expect("tail");
+    assert_eq!(
+        (tail.records_page.len(), &tail.next_record_cursor),
+        (50, &None)
+    );
+    assert_eq!(tail, pages(&after(&emitted[2].1)).expect("live tail"));
 }

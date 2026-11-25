@@ -341,14 +341,14 @@ enum PageKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CursorPayload {
+struct CursorPayload<K> {
     version: u32,
     page: PageKind,
     query: ReportQuery,
     agent_key: Option<String>,
     logical_session_id: Option<Uuid>,
     /// The previous page's last key: agent key, (start, id) or (time, sequence, id).
-    last: serde_json::Value,
+    last: K,
 }
 
 /// Where a page sits: its kind and, for detail pages, the agent and session.
@@ -376,13 +376,13 @@ fn next_cursor<K: Serialize>(query: &ReportQuery, target: PageTarget, last: &K) 
         query: query.normalized(),
         agent_key: target.agent_key.map(str::to_string),
         logical_session_id: target.logical_session_id,
-        last: serde_json::to_value(last).unwrap_or_default(),
+        last,
     })
 }
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
-fn encode_cursor(payload: &CursorPayload) -> String {
+fn encode_cursor<K: Serialize>(payload: &CursorPayload<&K>) -> String {
     let json = serde_json::to_vec(payload).unwrap_or_default();
     let mut text = String::with_capacity(CURSOR_PREFIX.len() + json.len() * 2);
     text.push_str(CURSOR_PREFIX);
@@ -401,7 +401,7 @@ fn hex_value(digit: u8) -> Option<u8> {
     }
 }
 
-fn decode_cursor(cursor: &str) -> Result<CursorPayload, ReportError> {
+fn decode_cursor(cursor: &str) -> Result<CursorPayload<serde_json::Value>, ReportError> {
     if cursor.len() > MAX_CURSOR_BYTES {
         return Err(ReportError::InvalidCursor("cursor_too_long"));
     }
@@ -417,7 +417,7 @@ fn decode_cursor(cursor: &str) -> Result<CursorPayload, ReportError> {
         .map(|pair| Some((hex_value(pair[0])? << 4) | hex_value(pair[1])?))
         .collect::<Option<Vec<u8>>>()
         .ok_or(ReportError::InvalidCursor("cursor_malformed"))?;
-    let payload: CursorPayload =
+    let payload: CursorPayload<_> =
         serde_json::from_slice(&bytes).or(Err(ReportError::InvalidCursor("cursor_malformed")))?;
     if payload.version != CURSOR_VERSION {
         return Err(ReportError::InvalidCursor("cursor_version_unsupported"));
