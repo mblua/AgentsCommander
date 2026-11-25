@@ -3311,9 +3311,8 @@ const ProjectPanel: Component = () => {
             {showCtxMenu() && (
               <Portal>
                 <div
-                  class="session-context-menu"
+                  class="session-context-menu" role="none"
                   style={{ left: `${ctxMenuPos().x}px`, top: `${ctxMenuPos().y}px` }}
-                  role="none"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
@@ -3535,9 +3534,8 @@ const ProjectPanel: Component = () => {
                     {workgroupsHeaderCtxMenu() && (
                       <Portal>
                         <div
-                          class="session-context-menu"
+                          class="session-context-menu" role="none"
                           style={{ left: `${workgroupsHeaderCtxMenu()!.x}px`, top: `${workgroupsHeaderCtxMenu()!.y}px` }}
-                          role="none"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
@@ -3666,9 +3664,8 @@ const ProjectPanel: Component = () => {
                     {loopsHeaderCtxMenu() && (
                       <Portal>
                         <div
-                          class="session-context-menu"
+                          class="session-context-menu" role="none"
                           style={{ left: `${loopsHeaderCtxMenu()!.x}px`, top: `${loopsHeaderCtxMenu()!.y}px` }}
-                          role="none"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
@@ -3814,9 +3811,8 @@ const ProjectPanel: Component = () => {
                     {agentCtxMenu() && (
                       <Portal>
                         <div
-                          class="session-context-menu"
+                          class="session-context-menu" role="none"
                           style={{ left: `${agentCtxMenu()!.x}px`, top: `${agentCtxMenu()!.y}px` }}
-                          role="none"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
@@ -3853,9 +3849,8 @@ const ProjectPanel: Component = () => {
                     {agentsHeaderCtxMenu() && (
                       <Portal>
                         <div
-                          class="session-context-menu"
+                          class="session-context-menu" role="none"
                           style={{ left: `${agentsHeaderCtxMenu()!.x}px`, top: `${agentsHeaderCtxMenu()!.y}px` }}
-                          role="none"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
@@ -4056,9 +4051,8 @@ const ProjectPanel: Component = () => {
                     {teamsHeaderCtxMenu() && (
                       <Portal>
                         <div
-                          class="session-context-menu"
+                          class="session-context-menu" role="none"
                           style={{ left: `${teamsHeaderCtxMenu()!.x}px`, top: `${teamsHeaderCtxMenu()!.y}px` }}
-                          role="none"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
@@ -4086,9 +4080,8 @@ const ProjectPanel: Component = () => {
             {teamCtxMenu() && (
               <Portal>
                 <div
-                  class="session-context-menu"
+                  class="session-context-menu" role="none"
                   style={{ left: `${teamCtxMenu()!.x}px`, top: `${teamCtxMenu()!.y}px` }}
-                  role="none"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
@@ -4132,9 +4125,8 @@ const ProjectPanel: Component = () => {
             {wgCtxMenu() && (
               <Portal>
                 <div
-                  class="session-context-menu"
+                  class="session-context-menu" role="none"
                   style={{ left: `${wgCtxMenu()!.x}px`, top: `${wgCtxMenu()!.y}px` }}
-                  role="none"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
@@ -4163,9 +4155,8 @@ const ProjectPanel: Component = () => {
             {loopCtxMenu() && (
               <Portal>
                 <div
-                  class="session-context-menu"
+                  class="session-context-menu" role="none"
                   style={{ left: `${loopCtxMenu()!.x}px`, top: `${loopCtxMenu()!.y}px` }}
-                  role="none"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
@@ -4318,10 +4309,9 @@ const ProjectPanel: Component = () => {
             {replicaCtxMenu() && (
               <Portal>
                 <div
-                  class="session-context-menu"
+                  class="session-context-menu" role="none"
                   ref={replicaCtxMenuEl}
                   style={{ left: `${replicaCtxMenu()!.x}px`, top: `${replicaCtxMenu()!.y}px` }}
-                  role="none"
                   onClick={(e) => e.stopPropagation()}
                   onMouseEnter={cancelReplicaCtxMenuClose}
                   onMouseLeave={() => {

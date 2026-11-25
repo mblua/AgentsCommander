@@ -22,15 +22,8 @@ import type {
   QuotaSourceConfig,
 } from "../../shared/types";
 import { agentsUnreadableNotice } from "../../shared/types";
-import {
-  SettingsAPI,
-  TelegramAPI,
-  ReposAPI,
-  CodingAgentsAPI,
-  PtyAPI,
-  assertCodingAgentMoveOrder,
-  onCodingAgentSettingsUpdated,
-} from "../../shared/ipc";
+import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI, PtyAPI, assertCodingAgentMoveOrder,
+  onCodingAgentSettingsUpdated } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
 import { validateScreenshotHotkeySyntax } from "../../shared/screenshot-hotkey";
 import { letterFromCaptureEvent, parseAppHotkey } from "../../shared/app-hotkey";
