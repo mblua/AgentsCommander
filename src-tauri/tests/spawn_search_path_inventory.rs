@@ -131,6 +131,7 @@ type Row = (&'static str, usize, usize, &'static [(Reason, usize)]);
 // #4788 adds two TestOnly rows (lock holder child, wrapper child), for 103
 // classified rows.
 // #4843 adds one AppEnvProbe site to the process.rs row (gst-inspect-1.0 probe).
+// #5174 P02 adds one TestOnly row (test_support.rs `#[cfg(test)]` run_case child).
 const FAKE_SHELL_RS: &str = "src-tauri/src/process/host/login/fake_shell.rs";
 const PROFILE_TESTS_RS: &str = "src-tauri/src/config/profile/tests.rs";
 const LOCK_TESTS_RS: &str = "src-tauri/src/filesystem/single_instance_lock/tests.rs";
@@ -209,6 +210,7 @@ const INVENTORY: &[Row] = &[
         &[(WindowsOnly, 1)],
     ),
     ("src-tauri/src/cli/stdout/tests.rs", 1, 0, &[(TestOnly, 1)]),
+    ("src-tauri/src/test_support.rs", 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/cli/tests/startup_message_tests.rs",
         1,
