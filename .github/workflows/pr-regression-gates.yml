@@ -623,13 +623,15 @@ jobs:
           path: ${{ runner.temp }}/cog-observed-windows.json
           if-no-files-found: warn
 
-      # The one test skipped here runs alone in rust-slow-test-windows: on Windows it
-      # takes about 16 minutes while every other test finishes within 9. Both jobs
-      # use the same name, so a test is either skipped here and run there, or run here.
+      # The tests skipped here run alone in rust-slow-test-windows: on Windows the
+      # driver test takes about 16 minutes while every other test finishes within 9,
+      # and public_authority_privacy (#5265) spends about 310 s in its nested cargo
+      # build. Both jobs use the same names, so a test is either skipped here and run
+      # there, or run here.
       - name: cargo test
         working-directory: src-tauri
         shell: bash
-        run: cargo test --locked --lib --bins --tests --no-fail-fast -- --skip single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets 2>&1 | tee cargo-test.log
+        run: cargo test --locked --lib --bins --tests --no-fail-fast -- --skip single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets --skip public_authority_privacy 2>&1 | tee cargo-test.log
         # The path-identity reparse test uses simulated flags; real Windows
         # reparse metadata and no-follow integration are outside its coverage.
 
@@ -812,6 +814,26 @@ jobs:
             exit 1
           }
 
+      # #5265: its nested cargo build takes about 310 s on Windows.
+      - name: cargo test (pty_authority_privacy nested-build test)
+        if: ${{ !cancelled() }}
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          TEST='public_authority_privacy'
+          cargo test --locked --test pty_authority_privacy -- --exact "$TEST" 2>&1 \
+            | tee slow-privacy-test.log
+          grep -qE "^test ${TEST} \.\.\. ok$" slow-privacy-test.log || {
+            echo "::error::${TEST} never ran; update its name here and in rust-regression-windows."
+            exit 1
+          }
+          grep -qE '^test result: ok\. 1 passed; 0 failed' slow-privacy-test.log || {
+            echo "::error::expected exactly one passing test for ${TEST}."
+            exit 1
+          }
+
       # #4527: observation only. It never changes this job's result (D4a).
       - name: "Flaky observations: write record (#4527)"
         if: always()
@@ -821,7 +843,7 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           shopt -s nullglob
-          logs=(src-tauri/slow-test.log)
+          logs=(src-tauri/slow-test.log src-tauri/slow-privacy-test.log)
           args=()
           for f in "${logs[@]}"; do args+=(--log "$f"); done
           node scripts/flaky-observations.mjs cargo \
