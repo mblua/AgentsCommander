@@ -309,9 +309,13 @@ class Run:
         self.click("actionBar.newOpen")
         self.click("actionBar.menu.newProject")
         dialog = self.wait_dialog()
+        # A key sent before the chooser takes keyboard input is lost: ctrl+l then never
+        # opens the location bar and the typed path lands in the search box instead.
+        time.sleep(1.0)
         steps = [["-M", "ctrl", "l", "-m", "ctrl"], [canonical], ["-k", "Return"]]
         for step in steps:
             self.dialog_key(step, dialog)
+            time.sleep(0.3)
         # The chooser may only enter the folder on Return; then the accept button
         # confirms it. Its mnemonic depends on the portal label (_Select or _Open).
         accepts = [("return", ["-k", "Return"]), ("alt_s", ["-M", "alt", "s", "-m", "alt"]),
