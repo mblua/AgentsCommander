@@ -644,8 +644,8 @@ html.light-theme .web-browser-error {
 .home-tutorial-card button {
   padding: var(--spacing-xs) var(--spacing-md);
   border: 1px solid var(--sidebar-accent);
-  background: var(--btn-primary-bg);
-  color: var(--btn-primary-fg);
+  background: var(--btn-primary-bg, rgba(0, 212, 255, 0.2));
+  color: var(--btn-primary-fg, #00d4ff);
   font-family: var(--font-ui);
   font-size: var(--font-size-sm);
   border-radius: var(--radius-md);
