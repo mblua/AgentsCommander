@@ -363,16 +363,17 @@ class Desktop:
             raise DesktopError("key_failed", stage)
 
     def click(self, x, y, con_id, pid, stage):
-        """One left click at output pixel (x, y) through the Sway seat, after a focus check."""
+        """One left click at output pixel (x, y), after a focus check. Headless Sway has
+        no pointer device, so this uses a wlr virtual pointer: pinned to the top-left
+        corner first, then moved by (x, y)."""
         self.require_focus(con_id, pid, stage)
         self.key_calls += 1
-        for command in (f"seat seat0 cursor set {int(x)} {int(y)}",
-                        "seat seat0 cursor press button1", "seat seat0 cursor release button1"):
-            result = self.run(["/usr/bin/swaymsg", "-s", self.swaysock, command],
-                              timeout=5, check=False)
+        for args in (["pointer", "move", "-10000", "-10000"],
+                     ["pointer", "move", str(int(x)), str(int(y))], ["pointer", "click", "left"]):
+            result = self.run(["/usr/bin/wlrctl", *args], timeout=5, check=False)
             if result.returncode != 0:
                 raise DesktopError("click_failed", stage)
-            time.sleep(0.1)
+            time.sleep(0.2)
 
     def snapshot(self, binary, frame, con_id, pid, stage):
         """window.snapshot into a new private file; returns the full PNG bytes."""

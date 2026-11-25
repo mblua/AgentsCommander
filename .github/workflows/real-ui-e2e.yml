@@ -59,7 +59,7 @@ jobs:
           npm install -g --ignore-scripts npm@12.2.3
           rustup toolchain install 1.98.1 --profile minimal
           APT_DEB_CACHE="$RUNNER_TEMP/apt-debs" bash scripts/ci-install-linux-deps.sh
-          sudo apt-get install -y sway wtype grim dbus xdg-desktop-portal xdg-desktop-portal-gtk \
+          sudo apt-get install -y sway wtype wlrctl grim dbus xdg-desktop-portal xdg-desktop-portal-gtk \
             python3-pil tesseract-ocr tesseract-ocr-eng fonts-dejavu-core
 
       - name: Record versions
