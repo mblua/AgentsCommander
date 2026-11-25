@@ -317,9 +317,10 @@ class Run:
         time.sleep(1.0)
         steps = [(["-M", "ctrl", "l", "-m", "ctrl"], 0.3), (["/"], 1.0),
                  (["-d", "20", canonical.lstrip("/")], 0.3), (["-k", "Return"], 0.3)]
-        for step, pause in steps:
+        for n, (step, pause) in enumerate(steps):
             self.dialog_key(step, dialog)
             time.sleep(pause)
+            self.dump_screen(f"j1-step{n}")  # TEMP diagnostic: which widget took the keys
         # The chooser may only enter the folder on Return; then the accept button
         # confirms it. Its mnemonic depends on the portal label (_Select or _Open).
         accepts = [("return", ["-k", "Return"]), ("alt_s", ["-M", "alt", "s", "-m", "alt"]),
