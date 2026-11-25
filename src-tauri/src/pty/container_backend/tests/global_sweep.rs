@@ -415,7 +415,17 @@ fn assert_high_cardinality_report(report: ContainerShutdownReport) {
 
 type RetainedEntry = Arc<super::super::retained_cleanup::RetainedContainerCleanup>;
 
-const REAL_POISON: &str = "route removal failed: route removal lock poisoned owner=ptyManager";
+/// Real poisons of the outer PTY mutex and of the route registry, with their exact text.
+const REAL_POISONS: [(bool, &str); 2] = [
+    (
+        false,
+        "route removal failed: route removal lock poisoned owner=ptyManager",
+    ),
+    (
+        true,
+        "route removal failed: route removal lock poisoned owner=ptyRouteRegistry",
+    ),
+];
 
 struct ClockedSweepFixture {
     backend: Arc<ContainerTransportBackend>,
@@ -473,22 +483,29 @@ impl ClockedSweepFixture {
     }
 
     /// Records the real poison through the production remover; never seeded.
-    fn record_real_poison(&self, epoch: u64) -> String {
-        let poison_manager = Arc::clone(&self.pty_manager);
-        let poison = std::thread::spawn(move || {
-            let _manager_guard = poison_manager.lock().unwrap();
-            panic!("poison the real outer PTY manager mutex");
-        });
-        assert!(
-            poison.join().is_err(),
-            "outer mutex poison fixture must panic"
-        );
+    fn record_real_poison(&self, epoch: u64, (registry, error): (bool, &str)) -> String {
+        if registry {
+            self.pty_manager
+                .lock()
+                .unwrap()
+                .poison_route_registry_for_test();
+        } else {
+            let poison_manager = Arc::clone(&self.pty_manager);
+            let poison = std::thread::spawn(move || {
+                let _manager_guard = poison_manager.lock().unwrap();
+                panic!("poison the real outer PTY manager mutex");
+            });
+            assert!(
+                poison.join().is_err(),
+                "outer mutex poison fixture must panic"
+            );
+        }
         let before = self.before_deadline();
         self.attempt(epoch, &|| before);
-        assert_eq!(self.last_error().as_deref(), Some(REAL_POISON));
+        assert_eq!(self.last_error().as_deref(), Some(error));
         let context = self.context();
         assert!(
-            context.ends_with(&format!("lastError={REAL_POISON}")),
+            context.ends_with(&format!("lastError={error}")),
             "{context}"
         );
         context
@@ -529,6 +546,9 @@ impl ClockedSweepFixture {
 
     fn assert_cleaned_after_retry(&self, epoch: u64) {
         self.pty_manager.clear_poison();
+        let manager = self.pty_manager.lock().unwrap();
+        manager.clear_route_registry_poison_for_test();
+        drop(manager);
         let before = self.before_deadline();
         self.attempt(epoch, &|| before);
         assert_eq!(self.runtime.stopped(), vec![self.session_id]);
@@ -579,8 +599,14 @@ fn observing_clock<'a>(
 
 #[test]
 fn global_sweep_pre_remover_expiry_preserves_real_poison_error() {
+    for poison in REAL_POISONS {
+        pre_remover_expiry_preserves(poison);
+    }
+}
+
+fn pre_remover_expiry_preserves(poison: (bool, &str)) {
     let fixture = ClockedSweepFixture::new();
-    let context = fixture.record_real_poison(1);
+    let context = fixture.record_real_poison(1, poison);
     let admission = fixture.before_deadline();
     assert!(admission < fixture.deadline);
     let observed = Mutex::new(Vec::new());
@@ -594,7 +620,7 @@ fn global_sweep_pre_remover_expiry_preserves_real_poison_error() {
         [admission, observed[0].2],
         [fixture.before_deadline(), fixture.deadline]
     );
-    assert_eq!(fixture.last_error().as_deref(), Some(REAL_POISON));
+    assert_eq!(fixture.last_error().as_deref(), Some(poison.1));
     assert_eq!(fixture.context(), context);
     fixture.assert_retained(2);
 
@@ -603,8 +629,14 @@ fn global_sweep_pre_remover_expiry_preserves_real_poison_error() {
 
 #[test]
 fn global_sweep_invoked_deadline_preserves_real_poison_error() {
+    for poison in REAL_POISONS {
+        invoked_deadline_preserves(poison);
+    }
+}
+
+fn invoked_deadline_preserves(poison: (bool, &str)) {
     let fixture = ClockedSweepFixture::new();
-    let context = fixture.record_real_poison(1);
+    let context = fixture.record_real_poison(1, poison);
     let production = fixture
         .backend
         .route_remover_until(Instant::now() + Duration::from_secs(1));
@@ -617,7 +649,7 @@ fn global_sweep_invoked_deadline_preserves_real_poison_error() {
         *calls.lock().unwrap(),
         vec![(fixture.session_id, fixture.deadline)]
     );
-    assert_eq!(fixture.last_error().as_deref(), Some(REAL_POISON));
+    assert_eq!(fixture.last_error().as_deref(), Some(poison.1));
     assert_eq!(fixture.context(), context);
     fixture.assert_retained(2);
 
