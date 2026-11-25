@@ -140,19 +140,7 @@ impl ContainerTransportBackend {
             self.route_remover_until_with_clock(deadline, clock)
         };
         if let Err(error) = &route_remover {
-            retained_residue.push(
-                RetainedContainerOwnerContext {
-                    owner: "routeRemoverRegistry",
-                    session_id: None,
-                    reason: "global-shutdown".to_string(),
-                    program: None,
-                    runtime_handle: None,
-                    state: "retained",
-                    in_flight: false,
-                    last_error: Some(error.to_string()),
-                }
-                .diagnostic(),
-            );
+            retained_residue.push(route_remover_residue(error));
         }
         let control = ContainerRuntimeControl::default();
         control.request_shutdown(deadline);
@@ -497,4 +485,18 @@ impl ContainerTransportBackend {
             .is_some_and(|runtime| !runtime.retained_cleanup_contexts().is_empty());
         cleanup_remaining || runtime_remaining
     }
+}
+
+fn route_remover_residue(error: &super::RouteRemovalError) -> String {
+    RetainedContainerOwnerContext {
+        owner: "routeRemoverRegistry",
+        session_id: None,
+        reason: "global-shutdown".to_string(),
+        program: None,
+        runtime_handle: None,
+        state: "retained",
+        in_flight: false,
+        last_error: Some(error.to_string()),
+    }
+    .diagnostic()
 }
