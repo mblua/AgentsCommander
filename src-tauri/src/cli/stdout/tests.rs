@@ -13,8 +13,9 @@ const REPORT_ATTEMPT: &str = "I5206_STDOUT_REPORT_ATTEMPT";
 const PANIC_HOOK: &str = "I5206_STDOUT_PANIC_HOOK";
 const ERROR_DISPLAY: &str = "i4016 synthetic stdout failure";
 const CHILD_DEADLINE: Duration = Duration::from_secs(10);
-/// What libtest itself prints on the child's stdout before the test exits.
-const HARNESS_STDOUT: &str = "\nrunning 1 test\n";
+/// What libtest itself prints on the child's stdout before the test exits. The
+/// child always runs on one thread, so the banner includes the test name.
+const HARNESS_STDOUT: &str = "\nrunning 1 test\ntest cli::stdout::tests::broken_pipe_child ... ";
 
 fn render(args: std::fmt::Arguments<'_>) -> Vec<u8> {
     let mut out = Vec::new();
@@ -123,9 +124,10 @@ fn run_child(mode: &str) -> ChildOutcome {
     );
     let exe = std::env::current_exe().expect("current test executable");
     let mut child = Command::new(exe)
-        .args(["--exact", CHILD_TEST, "--nocapture"])
+        .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
         .env(CHILD_ENV, mode)
         .env_remove("RUST_BACKTRACE")
+        .env_remove("RUST_TEST_THREADS")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -149,8 +151,8 @@ fn run_child(mode: &str) -> ChildOutcome {
     let stderr = stderr.join().expect("join child stderr");
     ChildOutcome {
         code: status.code(),
-        stdout: String::from_utf8_lossy(&stdout).replace('\r', ""),
-        stderr: String::from_utf8_lossy(&stderr).replace('\r', ""),
+        stdout: String::from_utf8(stdout).expect("child stdout is UTF-8"),
+        stderr: String::from_utf8(stderr).expect("child stderr is UTF-8"),
     }
 }
 
@@ -174,29 +176,20 @@ fn assert_single_mode_marker(outcome: &ChildOutcome, mode: &str) {
     );
 }
 
-/// The child's stderr without the test's own marker lines.
-fn product_stderr(outcome: &ChildOutcome) -> Vec<&str> {
-    outcome
-        .stderr
-        .lines()
-        .filter(|line| !line.starts_with(MODE_MARKER) && !line.starts_with(REPORT_ATTEMPT))
-        .collect()
-}
-
-/// Both channels in full: stdout holds only the harness banner and stderr only
-/// `want` once the test markers are removed.
-fn assert_channels(outcome: &ChildOutcome, want: &[&str]) {
+/// Both channels in full, byte for byte: stdout holds only the harness banner
+/// and stderr exactly the mode marker followed by `lines`, each ending in one LF.
+fn assert_channels(outcome: &ChildOutcome, mode: &str, lines: &[&str]) {
     assert_eq!(
         outcome.stdout, HARNESS_STDOUT,
-        "child stdout (stderr: {})",
+        "child stdout (stderr: {:?})",
         outcome.stderr
     );
-    assert_eq!(
-        product_stderr(outcome),
-        want,
-        "child stderr: {}",
-        outcome.stderr
-    );
+    let mut want = format!("{MODE_MARKER}{mode}\n");
+    for line in lines {
+        want.push_str(line);
+        want.push('\n');
+    }
+    assert_eq!(outcome.stderr, want, "child stderr");
 }
 
 #[test]
@@ -204,7 +197,7 @@ fn broken_pipe_exits_zero_without_panic() {
     let outcome = run_child("broken_pipe");
     assert_single_mode_marker(&outcome, "broken_pipe");
     assert_eq!(outcome.code, Some(0), "child stderr: {}", outcome.stderr);
-    assert_channels(&outcome, &[]);
+    assert_channels(&outcome, "broken_pipe", &[]);
 }
 
 fn assert_error_mode_exits_one(mode: &str) {
@@ -212,7 +205,7 @@ fn assert_error_mode_exits_one(mode: &str) {
     assert_single_mode_marker(&outcome, mode);
     assert_eq!(outcome.code, Some(1), "child stderr: {}", outcome.stderr);
     let diagnostic = format!("failed printing to stdout: {ERROR_DISPLAY}");
-    assert_channels(&outcome, &[diagnostic.as_str()]);
+    assert_channels(&outcome, mode, &[diagnostic.as_str()]);
 }
 
 #[test]
@@ -251,6 +244,7 @@ fn failed_diagnostic_is_tried_once_and_still_exits_one() {
         "child stderr: {}",
         outcome.stderr
     );
-    // The failing report wrote nothing itself, so nothing else may appear.
-    assert_channels(&outcome, &[]);
+    // The failing report wrote nothing itself: only its one attempt marker.
+    let attempt = format!("{REPORT_ATTEMPT}1");
+    assert_channels(&outcome, "report_fails", &[attempt.as_str()]);
 }
