@@ -313,10 +313,13 @@ class Run:
         # opens the location bar and the typed path lands in the search box instead.
         # A leading "/" also opens that bar, but it takes focus a moment later: keys
         # typed before then still go to the search box. So "/" goes alone, and the rest
-        # of the path follows after a pause, one key every 20 ms.
+        # of the path follows after a pause, one key every 20 ms. A lone Return run is
+        # dropped like other single-key runs, so the two Returns ride on the path's run:
+        # the first takes the inline completion, the second activates the folder.
         time.sleep(1.0)
         steps = [(["-M", "ctrl", "l", "-m", "ctrl"], 0.3), (["/"], 1.0),
-                 (["-d", "20", canonical.lstrip("/")], 0.3), (["-k", "Return"], 0.3)]
+                 (["-d", "20", canonical.lstrip("/"), "-s", "500", "-k", "Return",
+                   "-s", "800", "-k", "Return"], 0.5)]
         for step, pause in steps:
             self.dialog_key(step, dialog)
             time.sleep(pause)
