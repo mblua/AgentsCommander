@@ -91,6 +91,8 @@ fn fields_2(s: &AppSettings, d: &mut fmt::DebugStruct<'_, '_>) {
     d.field("selected_row_rail_color", &s.selected_row_rail_color);
     d.field("root_token", &REDACTED);
     d.field("onboarding_dismissed", &s.onboarding_dismissed);
+    d.field("tutorial_hint_dismissed", &s.tutorial_hint_dismissed);
+    d.field("team_tutorial_completed", &s.team_tutorial_completed);
     d.field("coord_sort_by_activity", &s.coord_sort_by_activity);
     d.field("always_show_selected_workgroup", &s.always_show_selected_workgroup);
     d.field("log_level", &s.log_level);
@@ -180,6 +182,7 @@ fn all_fields_listed(s: &AppSettings) {
         local_overlay_state: _, agents_layer: _, coding_agent_identity_physical: _,
         sidebar_style: _, selected_row_rail_width: _, selected_row_rail_color: _, root_token: _,
         onboarding_dismissed: _, coord_sort_by_activity: _, always_show_selected_workgroup: _,
+        tutorial_hint_dismissed: _, team_tutorial_completed: _,
         log_level: _, activity_log_enabled: _, auto_generate_task_title: _, agent_templates_path: _,
         theme_light: _, rail_collapsed_projects: _, rail_favorites_collapsed: _,
         spec_board_enabled: _, web_browser_enabled: _, git_sweep_concurrency: _,

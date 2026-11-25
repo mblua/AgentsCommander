@@ -669,6 +669,11 @@ pub struct AppSettings {
     /// Whether the user has dismissed the first-run onboarding wizard
     #[serde(default)]
     pub onboarding_dismissed: bool,
+    /// #5228 - Home tutorials: hint closed with x, and team tutorial completed.
+    #[serde(default)]
+    pub tutorial_hint_dismissed: bool,
+    #[serde(default)]
+    pub team_tutorial_completed: bool,
     /// When true, sort the Coordinator Quick-Access list by most-recent-activity descending.
     /// Activity = busy→idle transition (`IdleDetector` emits `session_idle`).
     /// Per-session timestamps live in the frontend store and are NOT persisted.

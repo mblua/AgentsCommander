@@ -106,6 +106,7 @@
   "soundsEnabled": true,
   "specBoardEnabled": false,
   "teamIdleBeepEnabled": true,
+  "teamTutorialCompleted": false,
   "telegramBots": [],
   "telegramNetworkPollErrorLogging": {
     "firstFailureLevel": "warn",
@@ -118,6 +119,7 @@
   "terminalSnapshotsEnabled": true,
   "terminalZoom": 1.0,
   "themeLight": false,
+  "tutorialHintDismissed": false,
   "typingHoldSeconds": 30,
   "voiceAutoExecute": true,
   "voiceAutoExecuteDelay": 15,
