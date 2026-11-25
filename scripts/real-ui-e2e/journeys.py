@@ -317,10 +317,9 @@ class Run:
         time.sleep(1.0)
         steps = [(["-M", "ctrl", "l", "-m", "ctrl"], 0.3), (["/"], 1.0),
                  (["-d", "20", canonical.lstrip("/")], 0.3), (["-k", "Return"], 0.3)]
-        for n, (step, pause) in enumerate(steps):
+        for step, pause in steps:
             self.dialog_key(step, dialog)
             time.sleep(pause)
-            self.dump_screen(f"j1-step{n}")  # TEMP diagnostic: which widget took the keys
         # The chooser may only enter the folder on Return; then the accept button
         # confirms it. Its mnemonic depends on the portal label (_Select or _Open).
         accepts = [("return", ["-k", "Return"]), ("alt_s", ["-M", "alt", "s", "-m", "alt"]),
@@ -404,8 +403,11 @@ class Run:
         print(f"--- {name} OCR\n{text.stdout.decode('utf-8', 'replace')}", file=sys.stderr)
 
     def dialog_key(self, args, dialog):
+        # Each wtype run is a new virtual keyboard; the chooser drops keys sent before
+        # it has taken that keyboard's keymap, so every run waits 300 ms first.
         try:
-            self.desk.key(args, dialog["conId"], self.desk.gtk_portal_pid, self.stage)
+            self.desk.key(["-s", "300", *args], dialog["conId"], self.desk.gtk_portal_pid,
+                          self.stage)
         except dk.DesktopError as exc:
             raise Failure(exc.code, self.stage) from exc
         time.sleep(0.2)
