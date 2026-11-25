@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod events;
 
@@ -748,4 +749,207 @@ fn assert_git_discovery(owner: &GitState, first: &GitSweeper, second: &GitSweepe
     retain_swept_paths(&HashSet::new(), &first.git_state);
     assert!(read_git_status(path, &second.git_state).is_none());
     assert_eq!(remember_dirty(path, None, &second.git_state), None);
+}
+
+// ----- #5206 P03: observer runtime start -----------------------------------------------
+
+mod child;
+pub(crate) use child::{p03_in_child, P03_ERRORS};
+
+/// A failed build logs once per identity, with cause and effect, and never runs the work.
+#[test]
+fn a_failed_git_runtime_build_logs_once_and_skips_the_work() {
+    let test = "a_failed_git_runtime_build_logs_once_and_skips_the_work";
+    let Some(_done) = p03_in_child(module_path!(), test) else {
+        return;
+    };
+    for (name, effect) in [
+        ("GitWatcher", WATCHER_STOPPED),
+        ("GitSweeper", SWEEP_STOPPED),
+    ] {
+        let (made, worked) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let before = P03_ERRORS.lock().unwrap().len();
+        git_observer_runtime(
+            name,
+            effect,
+            || {
+                made.fetch_add(1, Ordering::SeqCst);
+                Err(std::io::Error::other("E_FACTORY"))
+            },
+            |_| {
+                worked.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!((made.into_inner(), worked.into_inner()), (1, 0), "{name}");
+        let logs = P03_ERRORS.lock().unwrap()[before..].to_vec();
+        assert_eq!(logs.len(), 1, "{name}: {logs:?}");
+        assert!(logs[0].starts_with(&format!("[{name}] ")), "{logs:?}");
+        assert!(
+            logs[0].contains("E_FACTORY") && logs[0].ends_with(effect),
+            "{logs:?}"
+        );
+    }
+}
+
+/// The shared builder makes an independent CurrentThread runtime per call, and the
+/// helper hands it to the work exactly once.
+#[test]
+fn build_git_runtime_makes_one_current_thread_runtime_per_observer() {
+    use tokio::runtime::RuntimeFlavor;
+    let calls = AtomicUsize::new(0);
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        git_observer_runtime("GitWatcher", WATCHER_STOPPED, build_git_runtime, |rt| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(rt.handle().runtime_flavor(), RuntimeFlavor::CurrentThread);
+            assert_eq!(rt.block_on(async { 7 }), 7);
+            handles.push(rt.handle().id());
+        });
+    }
+    assert_eq!(calls.into_inner(), 2);
+    assert_ne!(handles[0], handles[1], "each observer owns its own runtime");
+}
+
+fn repo_session_manager() -> Arc<tokio::sync::RwLock<SessionManager>> {
+    Arc::new(tokio::sync::RwLock::new(SessionManager::new()))
+}
+
+async fn add_repo_session(manager: &Arc<tokio::sync::RwLock<SessionManager>>) -> Uuid {
+    let repo = SessionRepo {
+        label: "A".into(),
+        source_path: "/nonexistent/p03".into(),
+        branch: None,
+        dirty: None,
+    };
+    let mgr = manager.read().await;
+    let session = mgr
+        .create_session(
+            "cmd".into(),
+            vec![],
+            "/tmp".into(),
+            None,
+            None,
+            vec![repo],
+            false,
+            crate::pty::backend::SessionBackendKind::LocalProcess,
+        )
+        .await
+        .expect("create_session");
+    session.id
+}
+
+/// The watcher waits a full `POLL_INTERVAL` before its first poll, then polls.
+#[tokio::test(start_paused = true)]
+async fn the_git_watcher_first_polls_after_poll_interval() {
+    let manager = repo_session_manager();
+    let id = add_repo_session(&manager).await;
+    let watcher = GitWatcher::new_headless_for_tests(Arc::clone(&manager));
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let task = tokio::spawn({
+        let (watcher, shutdown) = (Arc::clone(&watcher), shutdown.clone());
+        async move { watcher.watch(shutdown).await }
+    });
+    let polled = |w: &GitWatcher| w.cache.lock().unwrap().contains_key(&id);
+    tokio::time::sleep(POLL_INTERVAL - Duration::from_millis(1)).await;
+    assert!(!polled(&watcher), "no poll before POLL_INTERVAL");
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    assert!(polled(&watcher), "one poll at POLL_INTERVAL");
+    shutdown.token().cancel();
+    tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+/// Shutdown ends the watcher during its wait.
+#[tokio::test(start_paused = true)]
+async fn the_git_watcher_stops_during_its_wait() {
+    let watcher = GitWatcher::new_headless_for_tests(repo_session_manager());
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let task = tokio::spawn({
+        let shutdown = shutdown.clone();
+        async move { watcher.watch(shutdown).await }
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    shutdown.token().cancel();
+    tokio::time::timeout(Duration::from_millis(10), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+fn sweeper(manager: Arc<tokio::sync::RwLock<SessionManager>>) -> Arc<GitSweeper> {
+    let settings = crate::config::settings::new_settings_state(Default::default());
+    GitSweeper::with_state(manager, settings, Arc::new(GitState::new()))
+}
+
+/// The first round starts at once (it reaches the session read immediately), and
+/// shutdown ends the sweep while that round is blocked there.
+#[tokio::test(start_paused = true)]
+async fn the_git_sweeper_starts_at_once_and_stops_during_a_round() {
+    let manager = repo_session_manager();
+    let held = manager.write().await;
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let sweeper = sweeper(Arc::clone(&manager));
+    let sweep = sweeper.sweep(shutdown.clone());
+    tokio::pin!(sweep);
+    let pending = tokio::time::timeout(Duration::from_secs(30), &mut sweep).await;
+    assert!(
+        pending.is_err(),
+        "the round stays blocked on the session read"
+    );
+    shutdown.token().cancel();
+    tokio::time::timeout(Duration::from_millis(10), &mut sweep)
+        .await
+        .unwrap();
+    drop(held);
+}
+
+/// The period is max(floor, round duration): a shorter round waits out the floor, a longer
+/// one is followed at once, and shutdown ends the floor wait. The fixture round reports
+/// each start on a channel and takes a scripted time on the paused Tokio clock.
+#[tokio::test(start_paused = true)]
+async fn the_git_sweep_period_is_the_floor_or_the_round_whichever_is_longer() {
+    let floor = Duration::from_secs(1);
+    let script = [
+        Duration::from_millis(300),
+        Duration::from_millis(1500),
+        Duration::ZERO,
+    ];
+    let t0 = tokio::time::Instant::now();
+    let (starts, mut started) = tokio::sync::mpsc::unbounded_channel();
+    let rounds = std::cell::Cell::new(0usize);
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let round = || {
+        let n = rounds.replace(rounds.get() + 1);
+        let starts = starts.clone();
+        async move {
+            starts.send(t0.elapsed()).unwrap();
+            tokio::time::sleep(script.get(n).copied().unwrap_or_default()).await;
+            floor
+        }
+    };
+    let sweep = sweep_rounds(round, shutdown.clone());
+    tokio::pin!(sweep);
+    let mut seen = Vec::new();
+    while seen.len() < 3 {
+        tokio::select! {
+            () = &mut sweep => panic!("the sweep ended on its own"),
+            Some(at) = started.recv() => seen.push(at),
+        }
+    }
+    // 0: first round at once; +1.0 s: 300 ms round, floor wins; +1.5 s: 1500 ms round wins.
+    let ms = |m| Duration::from_millis(m);
+    assert_eq!(seen, vec![ms(0), ms(1000), ms(2500)]);
+    // The zero-length third round now waits its floor; shutdown ends the sweep there.
+    assert!(tokio::time::timeout(ms(500), &mut sweep).await.is_err());
+    assert!(
+        started.try_recv().is_err(),
+        "no round during the floor wait"
+    );
+    shutdown.token().cancel();
+    tokio::time::timeout(ms(10), &mut sweep).await.unwrap();
 }

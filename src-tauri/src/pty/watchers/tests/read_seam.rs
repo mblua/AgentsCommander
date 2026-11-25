@@ -25,7 +25,7 @@ fn feed(fanout: &SessionIoFanout, id: Uuid, chunk: &[u8]) {
     fanout.handle_output(&token, &id.to_string(), chunk);
 }
 
-/// Section 7.3: the three numbers recorded in this module's doc comment.
+/// Section 7.3: the three measurements below.
 ///
 /// `#[ignore]`d so it never becomes a flaky timing gate, and kept in the tree so the
 /// numbers can be re-taken rather than guessed at again:
@@ -36,6 +36,28 @@ fn feed(fanout: &SessionIoFanout, id: Uuid, chunk: &[u8]) {
 ///
 /// The changed-frame measurement feeds a chunk between reads, which is what a session
 /// with a live spinner does several times per second.
+///
+/// # Measured cost
+///
+/// Taken by `read_seam_timing` below at AC's default 30x120 grid, against a session with a
+/// live spinner - `output_sequence` advances on every CHUNK (`output.rs:160`), including
+/// chunks that change no character, so a visually still screen is not a quiet one and the
+/// unchanged short circuit must not be measured against one. Same form as
+/// `context_scrape/mod.rs:22-25`:
+///
+/// - `get_screen_rows`: ~81 us
+/// - `get_screen_rows_since` on an UNCHANGED frame: ~30 ns
+/// - `get_screen_rows_since` on a CHANGED frame: ~82 us
+///
+/// So a changed read costs what the existing sample costs, plus the wrap flags and the cursor
+/// row, which are O(1) under the guard the row clone already takes. An unchanged read is
+/// ~2700x cheaper because it clones nothing, and that is enforced by the TYPE -
+/// `ScreenRowsSince::Unchanged` carries no rows - rather than by this measurement.
+///
+/// Machine: Windows 11, taken with optimizations on so the numbers are comparable to the
+/// ~200 us `context_scrape` records. A plain `cargo test` build is unoptimized and its
+/// numbers are not comparable to either; `--release` does not build the test target in this
+/// tree, because `load_sessions_raw_from_dir_for_test` is `#[cfg(debug_assertions)]`.
 #[test]
 #[ignore]
 fn read_seam_timing() {

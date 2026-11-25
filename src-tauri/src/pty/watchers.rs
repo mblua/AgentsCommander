@@ -5,36 +5,11 @@
 //! read boundary on `SessionIoFanout`; `ContextScraper` keeps its 5 s interval, its single
 //! pattern per agent and its five sinks, untouched.
 //!
-//! **The engine cannot act.** Like `ContextScraper` (`context_scrape/mod.rs:5-8`) it holds
-//! narrow trait objects and no `AppHandle` and no `PtyManager` of its own, so the worst a
-//! hostile or careless pattern can do is put a wrong row in a window and a wrong number in a
-//! counter. Injection capability plus a loose pattern would be a feedback loop: inject,
-//! printed to the PTY, matches its own injection, inject again.
-//!
-//! **This is a best-effort indicator and not an audit log.** That is a property of the PTY
-//! channel and it is stated in the UI.
-//!
-//! # Measured cost
-//!
-//! Taken by `read_seam_timing` below at AC's default 30x120 grid, against a session with a
-//! live spinner - `output_sequence` advances on every CHUNK (`output.rs:160`), including
-//! chunks that change no character, so a visually still screen is not a quiet one and the
-//! unchanged short circuit must not be measured against one. Same form as
-//! `context_scrape/mod.rs:22-25`:
-//!
-//! - `get_screen_rows`: ~81 us
-//! - `get_screen_rows_since` on an UNCHANGED frame: ~30 ns
-//! - `get_screen_rows_since` on a CHANGED frame: ~82 us
-//!
-//! So a changed read costs what the existing sample costs, plus the wrap flags and the cursor
-//! row, which are O(1) under the guard the row clone already takes. An unchanged read is
-//! ~2700x cheaper because it clones nothing, and that is enforced by the TYPE -
-//! `ScreenRowsSince::Unchanged` carries no rows - rather than by this measurement.
-//!
-//! Machine: Windows 11, taken with optimizations on so the numbers are comparable to the
-//! ~200 us `context_scrape` records. A plain `cargo test` build is unoptimized and its
-//! numbers are not comparable to either; `--release` does not build the test target in this
-//! tree, because `load_sessions_raw_from_dir_for_test` is `#[cfg(debug_assertions)]`.
+//! **The engine cannot act.** Like `ContextScraper` it holds narrow trait objects, no `AppHandle`
+//! and no `PtyManager`, so a bad pattern can at worst show a wrong row or count. Injection plus a
+//! loose pattern would be a feedback loop (inject, print, match itself, inject again). **This is
+//! a best-effort indicator and not an audit log**, a property of the PTY channel stated in the UI.
+//! The measured read cost is recorded on its test, `read_seam_timing`.
 
 mod activity;
 mod dedupe;
@@ -508,45 +483,78 @@ impl WatcherEngine {
         })
     }
 
-    /// Own thread, own runtime, shutdown token: `ContextScraper::start`'s shape
-    /// (`context_scrape/mod.rs:207-227`), which is `GitWatcher`'s.
-    ///
-    /// The loop is wrapped so a panic in a tick cannot end the engine SILENTLY. Without this,
-    /// the thread would unwind, every snapshot would freeze at its last value for the life of
-    /// the process, and nothing anywhere would say why: the window would keep answering, with
-    /// stale counters, which is worse than answering nothing. Containing at this boundary
-    /// follows `probe_child_contained` (`local_backend.rs:1119-1124`), which catches for the
-    /// same reason - a diagnostic path must not take something else down without a word.
+    /// Own thread, own CurrentThread runtime, shutdown token (`GitWatcher`'s shape).
+    #[cfg_attr(
+        not(test),
+        deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)
+    )]
     pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
         let engine = Arc::clone(self);
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new()
-                .expect("Failed to create tokio runtime for WatcherEngine");
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                rt.block_on(async move {
-                    loop {
-                        tokio::select! {
-                            biased;
-                            _ = shutdown.token().cancelled() => {
-                                log::info!("[watchers] Shutdown signal received, stopping");
-                                break;
-                            }
-                            _ = tokio::time::sleep(TICK_INTERVAL) => {
-                                engine.tick().await;
-                            }
+        std::thread::spawn(move || engine.run_with_runtime(Self::RUNTIME_FACTORY, shutdown));
+    }
+
+    #[cfg_attr(
+        not(test),
+        deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)
+    )]
+    const RUNTIME_FACTORY: fn() -> std::io::Result<tokio::runtime::Runtime> = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+    };
+
+    /// A failed or unwinding build logs once and returns before the first tick.
+    #[cfg_attr(
+        not(test),
+        deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)
+    )]
+    fn run_with_runtime<F>(&self, make: F, shutdown: crate::shutdown::ShutdownSignal)
+    where
+        F: FnOnce() -> std::io::Result<tokio::runtime::Runtime> + std::panic::UnwindSafe,
+    {
+        let rt = match std::panic::catch_unwind(make) {
+            Ok(Ok(rt)) => rt,
+            Ok(Err(e)) => return Self::log_no_runtime(&e.to_string()),
+            Err(payload) => {
+                let cause = payload
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&'static str>().copied())
+                    .unwrap_or("non-string panic payload");
+                return Self::log_no_runtime(cause);
+            }
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(async {
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.token().cancelled() => {
+                            log::info!("[watchers] Shutdown signal received, stopping");
+                            break;
+                        }
+                        _ = tokio::time::sleep(TICK_INTERVAL) => {
+                            self.tick().await;
                         }
                     }
-                });
-            }));
-            if outcome.is_err() {
-                log::error!(
-                    "[watchers] the watcher engine thread PANICKED and has stopped. No further \
-                     activity will be sampled and every snapshot is frozen at its last value \
-                     until AgentsCommander restarts. Nothing else is affected: the engine holds \
-                     no PTY and no session state."
-                );
-            }
-        });
+                }
+            });
+        }));
+        if outcome.is_err() {
+            log::error!(
+                "[watchers] the watcher engine thread PANICKED and has stopped. No further \
+                 activity will be sampled and every snapshot is frozen at its last value \
+                 until AgentsCommander restarts. Nothing else is affected: the engine holds \
+                 no PTY and no session state."
+            );
+        }
+    }
+
+    fn log_no_runtime(cause: &str) {
+        log::error!(
+            "[watchers] WatcherEngine could not build its runtime ({cause}); no activity is \
+             sampled and every snapshot stays frozen until AgentsCommander restarts."
+        );
     }
 
     /// Start sampling a session. Called once per session at the spawn chokepoint. A session

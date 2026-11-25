@@ -38,6 +38,40 @@ impl GitState {
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const DETECT_TIMEOUT: Duration = Duration::from_secs(2);
 
+const WATCHER_STOPPED: &str =
+    "session Git status is no longer refreshed until AgentsCommander restarts";
+const SWEEP_STOPPED: &str = "the Git sweep is no longer renewed until AgentsCommander restarts";
+
+/// The one runtime constructor both Git observers use, once per observer thread.
+#[cfg_attr(
+    not(test),
+    deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)
+)]
+fn build_git_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
+/// Builds an observer's runtime on its own thread and hands it to `work`. A failed
+/// build logs one error naming the observer, the cause and the consequence, and
+/// returns without calling `work`; it no longer panics the observer thread.
+#[cfg_attr(
+    not(test),
+    deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)
+)]
+fn git_observer_runtime(
+    name: &str,
+    effect: &str,
+    make: impl FnOnce() -> std::io::Result<tokio::runtime::Runtime>,
+    work: impl FnOnce(tokio::runtime::Runtime),
+) {
+    match make() {
+        Ok(rt) => work(rt),
+        Err(e) => log::error!("[{name}] could not build its tokio runtime ({e}); {effect}"),
+    }
+}
+
 /// Read-site clamp bounds for the two sweeper dials.
 /// `SWEEP_MIN_INTERVAL_SECS` is also the floor an EMPTY round applies, which is
 /// what makes the cold start pick up work about a second after it appears.
@@ -467,28 +501,36 @@ impl GitWatcher {
         })
     }
 
+    #[cfg_attr(
+        not(test),
+        deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)
+    )]
     pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
         let watcher = Arc::clone(self);
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create tokio runtime for GitWatcher");
-            rt.block_on(async move {
-                loop {
-                    tokio::select! {
-                        biased;
-                        () = shutdown.token().cancelled() => {
-                            log::info!("[GitWatcher] Shutdown signal received, stopping");
-                            break;
-                        }
-                        () = tokio::time::sleep(POLL_INTERVAL) => {
-                            watcher.poll().await;
-                        }
-                    }
-                }
-            });
+            git_observer_runtime(
+                "GitWatcher",
+                WATCHER_STOPPED,
+                build_git_runtime,
+                move |rt| rt.block_on(watcher.watch(shutdown)),
+            );
         });
+    }
+
+    /// The poll loop: the first poll waits `POLL_INTERVAL`; shutdown wins every wait.
+    async fn watch(&self, shutdown: crate::shutdown::ShutdownSignal) {
+        loop {
+            tokio::select! {
+                biased;
+                () = shutdown.token().cancelled() => {
+                    log::info!("[GitWatcher] Shutdown signal received, stopping");
+                    break;
+                }
+                () = tokio::time::sleep(POLL_INTERVAL) => {
+                    self.poll().await;
+                }
+            }
+        }
     }
 
     pub fn remove_session(&self, id: Uuid) {
@@ -711,6 +753,33 @@ pub(super) fn build_work_list(
     paths
 }
 
+/// The sweep loop. The first round starts at once; the period is max(floor, round
+/// duration); shutdown wins every await. `round` is a parameter so tests can time it.
+async fn sweep_rounds<F, Fut>(mut round: F, shutdown: crate::shutdown::ShutdownSignal)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Duration>,
+{
+    loop {
+        // `started` is taken BEFORE the round, which is what makes the
+        // period max(floor, round duration) and what keeps the first
+        // round from being delayed (plan D3).
+        let started = tokio::time::Instant::now();
+        let floor = tokio::select! {
+            biased;
+            () = shutdown.token().cancelled() => break,
+            floor = round() => floor,
+        };
+        let remaining = floor.saturating_sub(started.elapsed());
+        tokio::select! {
+            biased;
+            () = shutdown.token().cancelled() => break,
+            () = tokio::time::sleep(remaining) => {}
+        }
+    }
+    log::info!("[GitSweeper] Shutdown signal received, stopping");
+}
+
 /// The single global POLLING producer of per-repo git state. Both watchers
 /// read the snapshot it publishes instead of spawning `git` themselves.
 ///
@@ -750,34 +819,21 @@ impl GitSweeper {
     /// The round itself sits inside the shutdown `select!`. Without it, worst-case
     /// shutdown latency would be `N * DETECT_TIMEOUT`. Cancelling mid-round drops
     /// the in-flight detection, and `kill_on_drop` terminates its `git.exe`.
+    #[cfg_attr(
+        not(test),
+        deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)
+    )]
     pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
         let sweeper = Arc::clone(self);
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create tokio runtime for GitSweeper");
-            rt.block_on(async move {
-                loop {
-                    // `started` is taken BEFORE the round, which is what makes the
-                    // period max(floor, round duration) and what keeps the first
-                    // round from being delayed (plan D3).
-                    let started = std::time::Instant::now();
-                    let floor = tokio::select! {
-                        biased;
-                        () = shutdown.token().cancelled() => break,
-                        floor = sweeper.round() => floor,
-                    };
-                    let remaining = floor.saturating_sub(started.elapsed());
-                    tokio::select! {
-                        biased;
-                        () = shutdown.token().cancelled() => break,
-                        () = tokio::time::sleep(remaining) => {}
-                    }
-                }
-                log::info!("[GitSweeper] Shutdown signal received, stopping");
+            git_observer_runtime("GitSweeper", SWEEP_STOPPED, build_git_runtime, move |rt| {
+                rt.block_on(sweeper.sweep(shutdown))
             });
         });
+    }
+
+    async fn sweep(&self, shutdown: crate::shutdown::ShutdownSignal) {
+        sweep_rounds(|| self.round(), shutdown).await;
     }
 
     /// One sweep over the whole work list, returning the floor to apply afterwards
@@ -900,4 +956,4 @@ impl GitSweeper {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

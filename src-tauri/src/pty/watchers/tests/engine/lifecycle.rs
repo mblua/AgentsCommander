@@ -208,3 +208,309 @@ fn publish_restart_destroyed() {{}}"
     );
     assert_eq!(predicates(SOURCE, &duplicate), [false, true, true]);
 }
+
+// ----- #5206 P03: engine runtime start ---------------------------------------------------
+
+use std::sync::atomic::AtomicUsize as P03Count;
+use std::time::Instant;
+
+// The one child-process logger helper of #5206 P03, shared with the Git observer tests.
+use crate::pty::git_watcher::tests::{p03_in_child, P03_ERRORS};
+
+/// An engine with one agent session whose every tick would read the backend.
+fn p03_harness() -> Harness {
+    let harness = Harness::new();
+    let id = Uuid::new_v4();
+    harness.engine.register_session(id, Some("a1".to_string()));
+    harness.configure("a1", vec![state_watcher("perm", "Permission required")]);
+    harness.backend.paint(id, &["idle"]);
+    harness
+}
+
+/// Linux TID of the last `p03_run` engine thread.
+static P03_TID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Runs `run_with_runtime` on its own thread; returns (joined in time, join was Ok).
+fn p03_run<F>(engine: &Arc<WatcherEngine>, make: F, shutdown: &ShutdownSignal) -> (bool, bool)
+where
+    F: FnOnce() -> std::io::Result<tokio::runtime::Runtime> + std::panic::UnwindSafe + Send,
+    F: 'static,
+{
+    let (engine, shutdown) = (Arc::clone(engine), shutdown.clone());
+    let (done, wait) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        #[cfg(target_os = "linux")]
+        // SAFETY: gettid has no preconditions.
+        P03_TID.store(unsafe { libc::gettid() }, Ordering::SeqCst);
+        engine.run_with_runtime(make, shutdown);
+        let _ = done.send(());
+    });
+    let in_time = wait.recv_timeout(Duration::from_secs(3)).is_ok();
+    (in_time, in_time && thread.join().is_ok())
+}
+
+type ShutdownSignal = crate::shutdown::ShutdownSignal;
+
+/// A factory error or unwind (literal, `String`, opaque payload) logs one application
+/// error with the name, the cause and the frozen samples, and never reads or ticks.
+#[test]
+fn a_failed_engine_runtime_logs_once_and_never_ticks() {
+    let Some(_done) = p03_in_child(
+        module_path!(),
+        "a_failed_engine_runtime_logs_once_and_never_ticks",
+    ) else {
+        return;
+    };
+    type Make = Box<dyn FnOnce() -> std::io::Result<tokio::runtime::Runtime> + Send>;
+    let cases: [(&str, Make); 4] = [
+        (
+            "E_FACTORY",
+            Box::new(|| Err(std::io::Error::other("E_FACTORY"))),
+        ),
+        ("E_LITERAL", Box::new(|| panic!("E_LITERAL"))),
+        (
+            "E_STRING",
+            Box::new(|| std::panic::panic_any(String::from("E_STRING"))),
+        ),
+        (
+            "non-string panic payload",
+            Box::new(|| std::panic::panic_any(7u32)),
+        ),
+    ];
+    for (cause, make) in cases {
+        let harness = p03_harness();
+        let entered = Arc::new(P03Count::new(0));
+        let counter = Arc::clone(&entered);
+        let make = std::panic::AssertUnwindSafe(make);
+        let factory = move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let whole = make; // capture the wrapper, not its field
+            (whole.0)()
+        };
+        let before = P03_ERRORS.lock().unwrap().len();
+        let shutdown = ShutdownSignal::new();
+        assert_eq!(
+            p03_run(&harness.engine, factory, &shutdown),
+            (true, true),
+            "{cause}"
+        );
+        assert_eq!(entered.load(Ordering::SeqCst), 1, "{cause}");
+        assert_eq!(harness.backend.reads.load(Ordering::SeqCst), 0, "{cause}");
+        assert_eq!(harness.engine.ticks.load(Ordering::SeqCst), 0, "{cause}");
+        let logs = P03_ERRORS.lock().unwrap()[before..].to_vec();
+        assert_eq!(logs.len(), 1, "{cause}: {logs:?}");
+        assert!(
+            logs[0].contains("WatcherEngine") && logs[0].contains(cause),
+            "{logs:?}"
+        );
+        assert!(
+            logs[0].contains("frozen") && !logs[0].contains("PANICKED"),
+            "{logs:?}"
+        );
+    }
+}
+
+/// The production factory is CurrentThread. Ticks start after 200 ms, run one at a time
+/// at least 200 ms apart, wait out a held settings lock, and stop on cancel.
+#[test]
+fn the_production_runtime_ticks_on_cadence_and_stops_on_cancel() {
+    use tokio::runtime::RuntimeFlavor;
+    let rt = (WatcherEngine::RUNTIME_FACTORY)().expect("production runtime");
+    assert_eq!(rt.handle().runtime_flavor(), RuntimeFlavor::CurrentThread);
+    drop(rt);
+
+    let harness = p03_harness();
+    let gate = Arc::new(GatedPatterns(
+        Arc::clone(&harness.patterns),
+        Default::default(),
+    ));
+    let engine = WatcherEngine::new(
+        Arc::clone(&harness.backends) as Arc<dyn WatcherBackendSource>,
+        Arc::clone(&gate) as Arc<dyn WatcherPatternSource>,
+        Arc::clone(&harness.sink) as Arc<dyn WatcherEventSink>,
+        Arc::clone(&harness.history),
+    );
+    let shutdown = ShutdownSignal::new();
+    let start = Instant::now();
+    let thread = std::thread::spawn({
+        let (engine, shutdown) = (Arc::clone(&engine), shutdown.clone());
+        move || engine.run_with_runtime(WatcherEngine::RUNTIME_FACTORY, shutdown)
+    });
+    let ticks = || engine.ticks.load(Ordering::SeqCst);
+    let wait_for = |n: u64| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ticks() < n {
+            assert!(Instant::now() < deadline, "tick {n} never came");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        Instant::now()
+    };
+    let first = wait_for(1);
+    assert!(first - start >= TICK_INTERVAL, "first tick after 200 ms");
+    let second = wait_for(2);
+    assert!(second - first >= TICK_INTERVAL - Duration::from_millis(10));
+
+    let held = gate.1.blocking_write();
+    let third = wait_for(3);
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(
+        ticks(),
+        3,
+        "no tick overlaps the one waiting on the settings lock"
+    );
+    drop(held);
+    let fourth = wait_for(4);
+    assert!(fourth - third >= Duration::from_millis(600));
+
+    shutdown.token().cancel();
+    let cancelled = Instant::now();
+    thread.join().expect("engine thread");
+    assert!(cancelled.elapsed() < Duration::from_secs(1));
+}
+
+/// Cancelled before its first tick, the engine exits without ticking.
+#[test]
+fn the_engine_cancelled_before_its_first_tick_never_ticks() {
+    let harness = p03_harness();
+    let shutdown = ShutdownSignal::new();
+    shutdown.token().cancel();
+    let run = p03_run(&harness.engine, WatcherEngine::RUNTIME_FACTORY, &shutdown);
+    assert_eq!(run, (true, true));
+    assert_eq!(harness.engine.ticks.load(Ordering::SeqCst), 0);
+    assert_eq!(harness.backend.reads.load(Ordering::SeqCst), 0);
+}
+
+/// A tick panic is still contained: one PANICKED error, the thread ends cleanly.
+#[test]
+fn a_panicking_tick_is_contained_with_the_real_runtime() {
+    let Some(_done) = p03_in_child(
+        module_path!(),
+        "a_panicking_tick_is_contained_with_the_real_runtime",
+    ) else {
+        return;
+    };
+    let harness = p03_harness();
+    let engine = WatcherEngine::new(
+        Arc::clone(&harness.backends) as Arc<dyn WatcherBackendSource>,
+        Arc::new(PanickingPatterns) as Arc<dyn WatcherPatternSource>,
+        Arc::clone(&harness.sink) as Arc<dyn WatcherEventSink>,
+        Arc::clone(&harness.history),
+    );
+    let shutdown = ShutdownSignal::new();
+    assert_eq!(
+        p03_run(&engine, WatcherEngine::RUNTIME_FACTORY, &shutdown),
+        (true, true)
+    );
+    let logs = P03_ERRORS.lock().unwrap().clone();
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    assert!(logs[0].contains("PANICKED"), "{logs:?}");
+}
+
+/// Patterns behind an async lock the test can hold, like `SettingsState`'s.
+struct GatedPatterns(Arc<FakePatterns>, tokio::sync::RwLock<()>);
+
+impl WatcherPatternSource for GatedPatterns {
+    fn resolve(&self) -> BoxFuture<'_, Option<HashMap<String, AgentResolution>>> {
+        Box::pin(async move {
+            let _read = self.1.read().await;
+            self.0.resolve().await
+        })
+    }
+}
+
+struct PanickingPatterns;
+
+impl WatcherPatternSource for PanickingPatterns {
+    fn resolve(&self) -> BoxFuture<'_, Option<HashMap<String, AgentResolution>>> {
+        Box::pin(async move { panic!("tick panic") })
+    }
+}
+
+/// Linux: the real factory under `RLIMIT_NOFILE=5` fails in the driver, logs the cause
+/// and the frozen samples, never reads or ticks, and leaves no descriptor or thread.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_production_runtime_fails_cleanly_when_descriptors_run_out() {
+    let Some(_done) = p03_in_child(
+        module_path!(),
+        "the_production_runtime_fails_cleanly_when_descriptors_run_out",
+    ) else {
+        return;
+    };
+    let count = |dir: &str| std::fs::read_dir(dir).unwrap().count();
+    let harness = p03_harness();
+    let tids = || -> std::collections::BTreeSet<String> {
+        let dir = std::fs::read_dir("/proc/self/task").unwrap();
+        dir.map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect()
+    };
+    let (fds, tasks, pre) = (count("/proc/self/fd"), count("/proc/self/task"), tids());
+    assert_eq!(
+        fds, 4,
+        "three inherited descriptors plus the directory being read"
+    );
+    let mut old = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: plain getrlimit/setrlimit on this process with valid pointers.
+    assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut old) }, 0);
+    let low = libc::rlimit {
+        rlim_cur: 5,
+        rlim_max: old.rlim_max,
+    };
+    // SAFETY: setrlimit on this process with a valid pointer to an initialized rlimit.
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &low) }, 0);
+    let shutdown = ShutdownSignal::new();
+    let start = Instant::now();
+    let run = p03_run(&harness.engine, WatcherEngine::RUNTIME_FACTORY, &shutdown);
+    let (joined, fds_at_join) = (Instant::now(), count("/proc/self/fd"));
+    // SAFETY: setrlimit on this process with a valid pointer to an initialized rlimit.
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &old) }, 0);
+    assert_eq!((run, fds_at_join), ((true, true), 4));
+    // The whole trial, join included, has its own 3 s ceiling.
+    let ceiling = start + Duration::from_secs(3);
+    assert!(joined <= ceiling, "trial took {:?}", joined - start);
+    // The final threads are exactly the child's main thread and this test thread.
+    // SAFETY: getpid and gettid have no preconditions.
+    let own = unsafe { [libc::getpid(), libc::gettid()] }.map(|t| t.to_string());
+    assert_eq!(pre, own.into_iter().collect(), "PRE threads");
+    // Only the joined engine TID may stay listed, and it must be gone by the deadline:
+    // every reading, the accepting one included, is taken before the deadline.
+    let engine = P03_TID.load(Ordering::SeqCst).to_string();
+    let deadline = (joined + Duration::from_secs(1)).min(ceiling);
+    let mut seen_engine = false;
+    loop {
+        let now = tids();
+        let at = Instant::now();
+        assert!(at <= deadline, "settle read after the deadline: {now:?}");
+        if now == pre {
+            eprintln!("post-join: engine {engine} seen {seen_engine}, PRE {pre:?}, final {now:?}");
+            break;
+        }
+        let extra: Vec<&String> = now.difference(&pre).collect();
+        assert!(
+            pre.is_subset(&now) && extra == [&engine],
+            "{now:?} vs {pre:?}"
+        );
+        seen_engine = true;
+        std::thread::sleep(
+            deadline
+                .saturating_duration_since(at)
+                .min(Duration::from_millis(5)),
+        );
+    }
+    assert_eq!(
+        (count("/proc/self/fd"), count("/proc/self/task")),
+        (fds, tasks)
+    );
+    assert_eq!(harness.backend.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(harness.engine.ticks.load(Ordering::SeqCst), 0);
+    let logs = P03_ERRORS.lock().unwrap().clone();
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    assert!(
+        logs[0].contains("WatcherEngine") && logs[0].contains("frozen"),
+        "{logs:?}"
+    );
+    assert!(logs[0].contains("Too many open files"), "{logs:?}");
+}
