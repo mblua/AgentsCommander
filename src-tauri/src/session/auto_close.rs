@@ -693,4 +693,4 @@ fn flush_clocks(services: &impl AutoCloseServices) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

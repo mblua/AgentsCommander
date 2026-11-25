@@ -447,3 +447,394 @@ fn issue_3950_native_fail_ws() {
     );
     println!("\nISSUE3950_MUTANT_REJECTED case=native_short_circuit");
 }
+
+// ----- #5206 AutoClose missing managed state (AppHandle port and run) -----
+
+use crate::config::coordinator_clocks::{ClockEntry, CoordinatorClocks, CoordinatorClocksState};
+use crate::config::settings::SettingsState;
+use crate::pty::idle_detector::IdleDetector;
+use crate::pty::manager::PtyManager;
+use crate::session::auto_close::tests::{
+    auto_close_session, AutoCloseBackend, Badge, RecordingServices,
+};
+use crate::session::auto_close::{AutoClose, AutoCloseInputs};
+use crate::session::manager::SessionManager;
+use crate::session::selection::SelectionCoordinator;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tauri::Manager;
+
+/// The AutoClose tick period, kept local so no production constant is exposed.
+const TICK: Duration = Duration::from_secs(60);
+const AUTOCLOSE_FQN: &str =
+    "events::session::tests::run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task";
+const AUTOCLOSE_CHILD: &str = "AC_5206_AUTOCLOSE_CHILD";
+const AUTOCLOSE_DONE: &str = "AC5206_AUTOCLOSE_DONE skip-recover";
+const AUTOCLOSE_ARGS: [&str; 5] = [
+    "--exact",
+    "--test-threads=1",
+    "--show-output",
+    "--format=pretty",
+    "--color=never",
+];
+
+/// Child mode needs the exact private mark and the exact argv of this one test; any
+/// other mark, combination or extra argument fails before a logger is installed.
+fn autoclose_child_mode() -> bool {
+    let Some(mark) = std::env::var_os(AUTOCLOSE_CHILD) else {
+        return false;
+    };
+    assert_eq!(mark, "skip-recover", "unrecognized {AUTOCLOSE_CHILD}");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut expected = vec![AUTOCLOSE_FQN.to_string()];
+    expected.extend(AUTOCLOSE_ARGS.iter().map(|a| a.to_string()));
+    assert_eq!(args, expected, "child argv must select only this test");
+    true
+}
+
+struct AutoCloseChild {
+    process: std::process::Child,
+    directory: Option<tempfile::TempDir>,
+    reaped: bool,
+}
+
+impl AutoCloseChild {
+    fn fail(&mut self, reason: &str) -> ! {
+        let pid = self.process.id();
+        let directory = self.directory.take().unwrap().keep();
+        panic!(
+            "{reason}; child pid {pid}, diagnostics retained at {}",
+            directory.display()
+        );
+    }
+}
+
+impl Drop for AutoCloseChild {
+    fn drop(&mut self) {
+        if !self.reaped {
+            let _ = self.process.kill();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                if !matches!(self.process.try_wait(), Ok(None)) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
+/// Parent side, after `commands/session/destroy/tests.rs::run_child`: private stdout and
+/// stderr files, null stdin, private config dir on the Command only, bounded waits.
+fn run_autoclose_child() {
+    use std::process::{Command, Stdio};
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config");
+    std::fs::create_dir(&config).unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .arg(AUTOCLOSE_FQN)
+        .args(AUTOCLOSE_ARGS)
+        .stdin(Stdio::null())
+        .stdout(std::fs::File::create(directory.path().join("stdout.txt")).unwrap())
+        .stderr(std::fs::File::create(directory.path().join("stderr.txt")).unwrap())
+        .env_remove("RUST_TEST_NOCAPTURE")
+        .env("AGENTSCOMMANDER_CONFIG_DIR", &config)
+        .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &config)
+        .env(AUTOCLOSE_CHILD, "skip-recover");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let mut owner = AutoCloseChild {
+        process: command.spawn().unwrap(),
+        directory: Some(directory),
+        reaped: false,
+    };
+    let started = std::time::Instant::now();
+    let status = loop {
+        match owner.process.try_wait() {
+            Ok(Some(status)) => {
+                owner.reaped = true;
+                break status;
+            }
+            Ok(None) if started.elapsed() < Duration::from_secs(45) => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => owner.fail("child deadline"),
+            Err(_) => owner.fail("child poll failed"),
+        }
+    };
+    let path = owner.directory.as_ref().unwrap().path().join("stdout.txt");
+    let stdout = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = stdout.lines().collect();
+    let receipts = lines.iter().filter(|l| **l == AUTOCLOSE_DONE).count();
+    let ok_line = format!("test {AUTOCLOSE_FQN} ... ok");
+    if !status.success()
+        || lines.iter().filter(|l| **l == ok_line).count() != 1
+        || !stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;")
+        || receipts != 1
+    {
+        owner.fail("child status, success line, count or receipt failed");
+    }
+}
+
+const LEAD: &str = "myproj:wg-1-team/lead";
+
+struct Handles {
+    settings: SettingsState,
+    manager: Arc<tokio::sync::RwLock<SessionManager>>,
+    pty: Arc<Mutex<PtyManager>>,
+    idle: Arc<IdleDetector>,
+    coordinator: SelectionCoordinator,
+}
+
+fn handles() -> Handles {
+    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let backend = Arc::new(AutoCloseBackend::default());
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    Handles {
+        settings: crate::config::settings::new_settings_state(Default::default()),
+        coordinator: SelectionCoordinator::new(Arc::clone(&manager), shutdown.token().clone()),
+        manager,
+        pty: Arc::new(Mutex::new(PtyManager::new_for_test(backend))),
+        idle: IdleDetector::new(|_| {}, |_| {}),
+    }
+}
+
+/// A mock app managing every required handle except the one at `skip`.
+fn app_without(h: &Handles, skip: usize) -> tauri::App<tauri::test::MockRuntime> {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    manage_index(&app, h, (0..5).filter(|i| *i != skip));
+    app
+}
+
+fn manage_index(
+    app: &impl Manager<tauri::test::MockRuntime>,
+    h: &Handles,
+    which: impl Iterator<Item = usize>,
+) {
+    for i in which {
+        match i {
+            0 => app.manage(h.settings.clone()),
+            1 => app.manage(Arc::clone(&h.manager)),
+            2 => app.manage(Arc::clone(&h.pty)),
+            3 => app.manage(Arc::clone(&h.idle)),
+            _ => app.manage(h.coordinator.clone()),
+        };
+    }
+}
+
+/// All five returned handles are the managed ones. The coordinator has no identity
+/// accessor, so its shared shutdown token stands in: cancelling the returned
+/// coordinator's token is seen by the managed one and not by an unrelated decoy.
+fn assert_same_handles(inputs: AutoCloseInputs, h: &Handles) {
+    assert!(Arc::ptr_eq(&inputs.settings, &h.settings));
+    assert!(Arc::ptr_eq(&inputs.session_manager, &h.manager));
+    assert!(Arc::ptr_eq(&inputs.pty_manager, &h.pty));
+    assert!(Arc::ptr_eq(&inputs.idle_detector, &h.idle));
+    let decoy = handles().coordinator;
+    assert!(!h.coordinator.shutdown_token().is_cancelled());
+    inputs.selection_coordinator.shutdown_token().cancel();
+    assert!(h.coordinator.shutdown_token().is_cancelled());
+    assert!(!decoy.shutdown_token().is_cancelled());
+}
+
+#[test]
+fn tauri_inputs_name_each_missing_type_and_return_the_managed_handles() {
+    let names = [
+        std::any::type_name::<SettingsState>(),
+        std::any::type_name::<Arc<tokio::sync::RwLock<SessionManager>>>(),
+        std::any::type_name::<Arc<Mutex<PtyManager>>>(),
+        std::any::type_name::<Arc<IdleDetector>>(),
+        std::any::type_name::<SelectionCoordinator>(),
+    ];
+    for (skip, name) in names.iter().enumerate() {
+        for clock_present in [false, true] {
+            let h = handles();
+            let app = app_without(&h, skip);
+            let handle = app.handle();
+            let clocks: CoordinatorClocksState = Arc::new(Mutex::new(CoordinatorClocks::default()));
+            if clock_present {
+                app.manage(clocks.clone());
+            }
+            assert_eq!(AutoCloseServices::inputs(handle).err(), Some(*name));
+            manage_index(&app, &h, std::iter::once(skip));
+            let inputs = AutoCloseServices::inputs(handle).expect("all five managed");
+            match handle.coordinator_clocks() {
+                Some(managed) => assert!(clock_present && Arc::ptr_eq(&clocks, &managed)),
+                None => assert!(!clock_present),
+            }
+            assert_same_handles(inputs, &h);
+        }
+    }
+}
+
+static WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+struct AutoCloseLog;
+
+impl log::Log for AutoCloseLog {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.target() == "auto-close"
+    }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) && record.level() == log::Level::Warn {
+            WARNINGS.lock().unwrap().push(record.args().to_string());
+        }
+    }
+    fn flush(&self) {}
+}
+
+/// Delegates the five handles to a real mock `AppHandle`; badges and saves go to the
+/// shared `RecordingServices` spy, and clock queries are counted.
+struct Delegated {
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    rec: RecordingServices,
+    clock_queries: AtomicUsize,
+}
+
+impl AutoCloseServices for Arc<Delegated> {
+    fn inputs(&self) -> Result<AutoCloseInputs, &'static str> {
+        AutoCloseServices::inputs(&self.app)
+    }
+    fn coordinator_clocks(&self) -> Option<CoordinatorClocksState> {
+        self.clock_queries.fetch_add(1, Ordering::SeqCst);
+        self.rec.coordinator_clocks()
+    }
+    fn idle_badge(&self, cwd: &str, at: DateTime<Utc>) {
+        self.rec.idle_badge(cwd, at);
+    }
+    fn auto_closed_badge(&self, cwd: &str, at: DateTime<Utc>) {
+        self.rec.auto_closed_badge(cwd, at);
+    }
+    fn save_clocks(&self, map: &HashMap<String, ClockEntry>) -> Result<(), String> {
+        self.rec.save_clocks(map)
+    }
+}
+
+impl Delegated {
+    fn counts(&self) -> (usize, usize, usize, usize) {
+        (
+            WARNINGS.lock().unwrap().len(),
+            self.clock_queries.load(Ordering::SeqCst),
+            self.rec.notices.lock().unwrap().len(),
+            self.rec.saved.lock().unwrap().len(),
+        )
+    }
+}
+
+async fn settle_until(spy: &Delegated, done: impl Fn((usize, usize, usize, usize)) -> bool) {
+    for _ in 0..10_000 {
+        if done(spy.counts()) {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("no observation: {:?}", spy.counts());
+}
+
+async fn yields(n: usize) {
+    for _ in 0..n {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task() {
+    use crate::pty::backend::{PtyBackend, SessionBackendKind};
+    // One process-wide logger: the body runs in a child of this exact test (#5206).
+    if !autoclose_child_mode() {
+        return run_autoclose_child();
+    }
+    log::set_logger(&AutoCloseLog).expect("child installs the auto-close logger");
+    log::set_max_level(log::LevelFilter::Warn);
+
+    let temp = tempfile::tempdir().unwrap();
+    let team = temp.path().join("myproj/.ac/wg-1-team");
+    let (lead_cwd, member_cwd) = (team.join("__agent_lead"), team.join("__agent_rust"));
+    let h = handles();
+    let lead = auto_close_session(&h.manager, &lead_cwd, None, true).await;
+    let member = auto_close_session(&h.manager, &member_cwd, Some("codex".into()), false).await;
+    let backend = Arc::new(AutoCloseBackend::default());
+    *h.pty.lock().unwrap() = PtyManager::new_for_test(backend.clone());
+    for id in [lead, member] {
+        backend.set_live(id);
+        h.pty
+            .lock()
+            .unwrap()
+            .record_route(id, SessionBackendKind::LocalProcess);
+    }
+    // Disabled: badges only. Members are not tracked by the detector, so no activity
+    // advance moves the anchor between ticks.
+    h.settings.write().await.coordinator_auto_close_enabled = false;
+    let anchor = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+    let mut seeded = CoordinatorClocks::default();
+    assert!(seeded.note_user_message(LEAD, anchor));
+    let before = seeded.snapshot();
+    let app = app_without(&h, 4);
+    let spy = Arc::new(Delegated {
+        app: app.handle().clone(),
+        rec: RecordingServices::new(
+            h.settings.clone(),
+            (
+                Arc::clone(&h.manager),
+                Arc::clone(&h.pty),
+                Arc::clone(&h.idle),
+            ),
+            h.coordinator.clone(),
+            Arc::new(Mutex::new(seeded)),
+        ),
+        clock_queries: AtomicUsize::new(0),
+    });
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let task = tokio::spawn(AutoClose::run(Arc::clone(&spy), shutdown.clone()));
+    yields(50).await;
+
+    tokio::time::advance(TICK).await;
+    settle_until(&spy, |(warnings, ..)| warnings == 1).await;
+    yields(50).await;
+    assert_eq!(spy.counts(), (1, 0, 0, 0));
+    let warning = WARNINGS.lock().unwrap()[0].clone();
+    assert!(
+        warning.contains(std::any::type_name::<SelectionCoordinator>()),
+        "{warning}"
+    );
+    assert!(warning.contains("skipping tick"), "{warning}");
+    assert_eq!(spy.rec.clocks.lock().unwrap().snapshot(), before);
+    assert_eq!(h.manager.read().await.list_sessions().await.len(), 2);
+    assert!(backend.has_session(lead) && backend.has_session(member));
+
+    manage_index(&spy.app, &h, std::iter::once(4));
+    tokio::time::advance(TICK).await;
+    settle_until(&spy, |(.., saves)| saves == 1).await;
+    yields(50).await;
+    let cwd = lead_cwd.to_string_lossy().into_owned();
+    assert_eq!(
+        *spy.rec.notices.lock().unwrap(),
+        vec![Badge::Idle(cwd, anchor)]
+    );
+    assert_eq!(spy.rec.saved.lock().unwrap()[0], before);
+    assert_eq!(WARNINGS.lock().unwrap().len(), 1);
+
+    let queries = spy.counts().1;
+    tokio::time::advance(TICK).await;
+    settle_until(&spy, |(_, q, ..)| q > queries).await;
+    yields(50).await;
+    assert_eq!(spy.counts().2, 1, "same anchor: no repeated badge");
+    assert_eq!(spy.counts().3, 1, "clean map: no second save");
+
+    shutdown.token().cancel();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("run stops on cancellation")
+        .unwrap();
+    let after = spy.counts();
+    tokio::time::advance(TICK * 3).await;
+    yields(50).await;
+    assert_eq!(spy.counts(), after);
+    assert_eq!(h.manager.read().await.list_sessions().await.len(), 2);
+    println!("{AUTOCLOSE_DONE}");
+}

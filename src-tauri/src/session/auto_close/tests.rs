@@ -1,12 +1,12 @@
 use super::*;
 
 #[derive(Default)]
-struct AutoCloseBackend {
+pub(crate) struct AutoCloseBackend {
     live: Mutex<HashSet<Uuid>>,
 }
 
 impl AutoCloseBackend {
-    fn set_live(&self, id: Uuid) {
+    pub(crate) fn set_live(&self, id: Uuid) {
         self.live.lock().unwrap().insert(id);
     }
 }
@@ -365,7 +365,7 @@ struct AutoCloseFixture {
     services: RecordingServices,
 }
 
-async fn auto_close_session(
+pub(crate) async fn auto_close_session(
     manager: &tokio::sync::RwLock<SessionManager>,
     cwd: &std::path::Path,
     coding_agent: Option<String>,
@@ -566,25 +566,25 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
 }
 
 #[derive(Debug, PartialEq)]
-enum Badge {
+pub(crate) enum Badge {
     Idle(String, DateTime<Utc>),
     Closed(String, DateTime<Utc>),
 }
 
-struct RecordingServices {
+pub(crate) struct RecordingServices {
     settings: SettingsState,
     manager: Arc<tokio::sync::RwLock<SessionManager>>,
     pty: Arc<Mutex<PtyManager>>,
     idle: Arc<IdleDetector>,
     coordinator: SelectionCoordinator,
-    clocks: CoordinatorClocksState,
-    notices: Mutex<Vec<Badge>>,
-    saved: Mutex<Vec<HashMap<String, ClockEntry>>>,
+    pub(crate) clocks: CoordinatorClocksState,
+    pub(crate) notices: Mutex<Vec<Badge>>,
+    pub(crate) saved: Mutex<Vec<HashMap<String, ClockEntry>>>,
     missing: Mutex<Option<&'static str>>,
 }
 
 impl RecordingServices {
-    fn new(
+    pub(crate) fn new(
         settings: SettingsState,
         (manager, pty, idle): (
             Arc<tokio::sync::RwLock<SessionManager>>,
