@@ -28,15 +28,24 @@ const REPAINT_GRACE: Duration = Duration::from_secs(10);
 /// can be killed) and is also the spawn-race guard (untracked -> not established).
 const WAKE_GRACE: Duration = Duration::from_secs(30);
 
+/// The five required handles for one tick, acquired together before any work.
+pub(crate) struct AutoCloseInputs {
+    pub(crate) settings: SettingsState,
+    pub(crate) session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
+    pub(crate) pty_manager: Arc<Mutex<PtyManager>>,
+    pub(crate) idle_detector: Arc<IdleDetector>,
+    pub(crate) selection_coordinator: SelectionCoordinator,
+}
+
 pub(crate) trait AutoCloseServices: Send + Sync {
-    fn settings(&self) -> SettingsState;
-    fn session_manager(&self) -> Arc<tokio::sync::RwLock<SessionManager>>;
-    fn pty_manager(&self) -> Arc<Mutex<PtyManager>>;
-    fn idle_detector(&self) -> Arc<IdleDetector>;
-    fn selection_coordinator(&self) -> SelectionCoordinator;
+    /// The required handles, or the type name of the first one that is missing.
+    fn inputs(&self) -> Result<AutoCloseInputs, &'static str>;
     fn coordinator_clocks(&self) -> Option<CoordinatorClocksState>;
     fn idle_badge(&self, cwd: &str, at: DateTime<Utc>);
     fn auto_closed_badge(&self, cwd: &str, at: DateTime<Utc>);
+    fn save_clocks(&self, map: &HashMap<String, ClockEntry>) -> Result<(), String> {
+        crate::config::coordinator_clocks::save_map(map)
+    }
 }
 
 pub(crate) struct AutoClose;
@@ -54,8 +63,14 @@ impl AutoClose {
                 biased;
                 () = shutdown.token().cancelled() => break,
                 () = tokio::time::sleep(TICK) => {
-                    tick(&services, &mut last_emitted).await;
-                    flush_clocks(&services); // debounced disk flush for the badge store
+                    match tick(&services, &mut last_emitted).await {
+                        // debounced disk flush for the badge store
+                        Ok(()) => flush_clocks(&services),
+                        Err(missing) => log::warn!(
+                            target: "auto-close",
+                            "[auto-close] {missing} is not managed; skipping tick"
+                        ),
+                    }
                 }
             }
         }
@@ -181,16 +196,21 @@ fn destroyed_is_team_coordinator(destroyed_id: Uuid, coord_id_of_team: Option<Uu
     coord_id_of_team == Some(destroyed_id)
 }
 
-async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<String, i64>) {
-    let settings = services.settings();
+async fn tick(
+    services: &impl AutoCloseServices,
+    last_emitted: &mut HashMap<String, i64>,
+) -> Result<(), &'static str> {
+    let AutoCloseInputs {
+        settings,
+        session_manager: session_mgr,
+        pty_manager: pty_mgr,
+        idle_detector: idle,
+        selection_coordinator: coordinator,
+    } = services.inputs()?;
     let close_settings = read_close_settings(&settings).await;
     // NOTE: the enabled/timeout gate moved DOWN: steps 1-2 (advance + badge
     // emit) run even when auto-close is OFF (the badge is informational). Only
     // step 3 (kill) is gated.
-
-    let session_mgr = services.session_manager();
-    let pty_mgr = services.pty_manager();
-    let idle = services.idle_detector();
 
     // Agent-owned sessions + their team key (read lock released here).
     let candidates = session_mgr.read().await.agent_team_members().await;
@@ -227,7 +247,7 @@ async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<Stri
     let tick_utc = Utc::now();
     let now_secs = tick_utc.timestamp();
     let Some(clocks) = services.coordinator_clocks() else {
-        return;
+        return Ok(());
     };
 
     // (1) ADVANCE last_activity_at from each member's eligible team-clock stamp.
@@ -246,7 +266,7 @@ async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<Stri
 
     // (3) KILL: gated on the setting; SAME anchor; established + timeout.
     let Some(policy) = auto_close_policy(close_settings, now_secs) else {
-        return;
+        return Ok(());
     };
     // The snapshot already reflects step 1's advance; reuse it without re-locking.
     let to_close = closeable_members(
@@ -260,9 +280,8 @@ async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<Stri
     );
 
     if to_close.is_empty() {
-        return;
+        return Ok(());
     }
-    let coordinator = services.selection_coordinator();
     let teams = AutoCloseTeams {
         id_to_team: &id_to_team,
         coord_refs: &coord_refs,
@@ -279,7 +298,7 @@ async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<Stri
     )
     .await
     else {
-        return;
+        return Ok(());
     };
 
     // Mark each genuinely-closed team's coordinator row "auto-closed" and
@@ -293,6 +312,7 @@ async fn tick(services: &impl AutoCloseServices, last_emitted: &mut HashMap<Stri
             });
         }
     }
+    Ok(())
 }
 
 /// Emit only changed, valid anchors and discard teams that no longer exist.
@@ -666,11 +686,11 @@ fn flush_clocks(services: &impl AutoCloseServices) {
             }
             guard.snapshot()
         };
-        if let Err(e) = crate::config::coordinator_clocks::save_map(&snapshot) {
+        if let Err(e) = services.save_clocks(&snapshot) {
             log::warn!("[coordinator-clocks] save failed: {e}");
         }
     }
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
