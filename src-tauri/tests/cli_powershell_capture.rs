@@ -522,8 +522,13 @@ static ISOLATION_INVENTORY: &[Entry] = &[
             include_str!("cli_behavior_contract/main.rs"),
             include_str!("cli_behavior_contract/public_commands.rs"),
         ),
-        3,
-        &[("run", 1), ("run_task_title", 1), ("invoke", 1)],
+        4,
+        &[
+            ("run", 1),
+            ("run_task_title", 1),
+            ("invoke", 1),
+            ("run_list_sessions_p01", 1),
+        ],
         &[],
     ),
     (
