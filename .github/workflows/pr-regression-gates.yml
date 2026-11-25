@@ -920,7 +920,7 @@ jobs:
           )"
           export ISSUE1850_DIAGNOSTICS
           gate_path=scripts/pr-regression/issue1850-release-build.sh
-          gate_pin=d8527ee18c70ff0edde6c88118d6ce452b76d92291ea23c560f8a3deb922f6c8
+          gate_pin=f4e002938c6676509f7d8d91fa5bf570c43af9ff90c0b7d1832053b364027d27
           gate_load() {
           node - "$gate_path" "$gate_pin" <<'NODE_GATE'
           const fs = require('node:fs');
@@ -1129,7 +1129,7 @@ jobs:
           gate_run() { builtin eval "${gate_program%.}"; }
           set -euo pipefail
           gate_path=scripts/pr-regression/issue1850-release-windows.sh
-          gate_pin=e6104a7d5ff5d37ee6c23379ae77f0c988f5f45ca82d3ba4a81a595d0dd942b0
+          gate_pin=422aab8403ab54e78c73d48e379976e7162f9f19f3d8e0869ac99e55ae67f03f
           gate_load() {
           node - "$gate_path" "$gate_pin" <<'NODE_GATE'
           const fs = require('node:fs');
@@ -2043,7 +2043,7 @@ jobs:
           gate_run() { builtin eval "${gate_program%.}"; }
           set -euo pipefail
           gate_path=scripts/pr-regression/issue1850-release-unix.sh
-          gate_pin=c2532a7d31858fc222d7c0bb628080b121dc44c0a0f78a1f8e3e15574c5736ac
+          gate_pin=c96d5175d29ac60645f26efefd1f9e985aaa1e41d24a00d77af427338d97d0f3
           gate_load() {
           node - "$gate_path" "$gate_pin" <<'NODE_GATE'
           const fs = require('node:fs');
