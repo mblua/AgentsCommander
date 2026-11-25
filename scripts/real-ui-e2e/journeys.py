@@ -332,8 +332,11 @@ class Run:
     def wait_dialog(self):
         gtk = self.desk.gtk_portal_pid
 
+        seen = []
+
         def dialog():
             views = self.desk.windows()
+            seen[:] = views
             if any(w["pid"] not in (self.app.pid, gtk) for w in views):
                 raise Failure("unexpected_dialog_owner", self.stage)
             hits = [w for w in views if w["conId"] != self.main_con]
@@ -344,7 +347,17 @@ class Run:
                 return hit
             return None
 
-        return self.poll(STEP_S, dialog, "portal_dialog_missing")
+        try:
+            return self.poll(STEP_S, dialog, "portal_dialog_missing")
+        except Failure:
+            # Diagnostic only (job log): which views existed when the wait ended.
+            roles = {self.app.pid: "app", gtk: "portal"}
+            shown = [{"owner": roles.get(w["pid"], "other"), "name": w["name"],
+                      "focused": w["focused"], "main": w["conId"] == self.main_con}
+                     for w in seen]
+            print(f"portal_dialog_missing: portalPid={'set' if gtk else 'none'} "
+                  f"views={json.dumps(shown)}", file=sys.stderr)
+            raise
 
     def dialog_key(self, args, dialog):
         try:
