@@ -755,7 +755,7 @@ fn assert_git_discovery(owner: &GitState, first: &GitSweeper, second: &GitSweepe
 
 const P03_CHILD: &str = "AC5206_P03_GIT_CHILD";
 
-static P03_ERRORS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+pub(crate) static P03_ERRORS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 struct P03Log;
 
@@ -771,15 +771,14 @@ impl log::Log for P03Log {
     fn flush(&self) {}
 }
 
-/// Runs `name` again in a child of this test binary, so its process-wide logger is its own.
-/// Returns true inside the child; in the parent it waits for and checks the child.
-fn p03_in_child(name: &str) -> bool {
+/// Reruns `module::name` in a child of this test binary (its own process logger); true in it.
+pub(crate) fn p03_in_child(module: &str, name: &str) -> bool {
     if std::env::var_os(P03_CHILD).is_some() {
         log::set_logger(&P03Log).expect("child installs the error logger");
         log::set_max_level(log::LevelFilter::Error);
         return true;
     }
-    let path = module_path!().split_once("::").expect("crate path").1;
+    let path = module.split_once("::").expect("crate path").1;
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([format!("{path}::{name}").as_str(), "--exact", "--nocapture"])
         .args(["--test-threads", "1"])
@@ -805,7 +804,8 @@ fn p03_in_child(name: &str) -> bool {
 /// A failed build logs once per identity, with cause and effect, and never runs the work.
 #[test]
 fn a_failed_git_runtime_build_logs_once_and_skips_the_work() {
-    if !p03_in_child("a_failed_git_runtime_build_logs_once_and_skips_the_work") {
+    let test = "a_failed_git_runtime_build_logs_once_and_skips_the_work";
+    if !p03_in_child(module_path!(), test) {
         return;
     }
     for (name, effect) in [
