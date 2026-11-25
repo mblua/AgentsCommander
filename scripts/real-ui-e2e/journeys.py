@@ -139,19 +139,33 @@ class Run:
 
     def click(self, selector):
         self.require_main_focus()
-        self.require_target(self.ui("ui-query", selector), selector)
-        reply = self.ui("ui-click", selector)
         if selector == MENU_NEW_PROJECT:
-            # The item closes its menu, so the bridge's post-click snapshot may show it
-            # hidden. The query above proved it visible and enabled; here the click must
-            # be exactly on it, and its effect, the authenticated chooser, is required by
-            # the caller (wait_dialog).
-            target = reply.get("target") or {}
-            if (reply.get("ok") is not True or reply.get("action") != "click"
-                    or target.get("testId") != selector):
-                raise Failure("target_not_usable", self.stage)
+            self.click_menu_item(selector)
             return
-        self.require_target(reply, selector)
+        self.require_target(self.ui("ui-query", selector), selector)
+        self.require_target(self.ui("ui-click", selector), selector)
+
+    def click_menu_item(self, selector):
+        """Click a menu item that closes its menu, so the post-click snapshot may be hidden.
+
+        The query proves exactly one visible, enabled match in the main window; focus is
+        checked again before the click; the click reply must name the main window and the
+        same selector. Its effect (the authenticated chooser) is checked by the caller.
+        """
+        query = self.ui("ui-query", selector, check=False)
+        if query.get("error") == "duplicate_selector":
+            raise Failure("selector_not_unique", self.stage)
+        if (query.get("ok") is not True or query.get("window") != "main"
+                or query.get("selector") != selector):
+            raise Failure("target_not_usable", self.stage)
+        self.require_target(query, selector)
+        self.require_main_focus()
+        reply = self.ui("ui-click", selector)
+        target = reply.get("target") or {}
+        if (reply.get("ok") is not True or reply.get("action") != "click"
+                or reply.get("window") != "main" or reply.get("selector") != selector
+                or target.get("testId") != selector):
+            raise Failure("target_not_usable", self.stage)
 
     def wait_selector(self, selector, seconds=STEP_S):
         reply = self.ui("ui-wait", selector, "--timeout-ms", str(int(seconds * 1000)),
