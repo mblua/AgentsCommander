@@ -13,7 +13,9 @@ pub async fn pick_folder(
     default_path: Option<String>,
     title: Option<String>,
 ) -> Result<Option<String>, String> {
-    let title = title.as_deref().unwrap_or("Select parent folder for the new agent");
+    let title = title
+        .as_deref()
+        .unwrap_or("Select parent folder for the new agent");
     let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
 
     if let Some(ref p) = default_path {
