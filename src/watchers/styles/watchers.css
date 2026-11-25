@@ -345,7 +345,8 @@ body,
   /* Wrapped rather than scrolled: a nested horizontal scroller inside a vertically
      scrolling table is worse for a row already capped at 256 bytes. */
   white-space: pre-wrap;
-  word-break: break-word;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 /* ── Empty states ─────────────────────────────────────────────────────────── */

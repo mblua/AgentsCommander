@@ -29,7 +29,7 @@ interface Variant {
 
 function replaceExactlyOnce(code: string, anchor: string, replacement: string): string {
   const first = code.indexOf(anchor);
-  if (first < 0 || code.indexOf(anchor, first + anchor.length) >= 0) {
+  if (first < 0 || code.includes(anchor, first + anchor.length)) {
     throw new Error(`issue-4945 fixture: anchor must occur exactly once: ${anchor}`);
   }
   return code.slice(0, first) + replacement + code.slice(first + anchor.length);

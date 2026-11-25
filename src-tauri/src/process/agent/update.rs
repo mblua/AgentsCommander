@@ -314,18 +314,25 @@ impl TargetProcessOwner {
         cleanup_required: bool,
         attempt: &mut crate::process::host::job::SettlementAttempt,
     ) {
+        if cleanup_required {
+            self.terminate_direct_child();
+            self.await_direct_child_exit(attempt).await;
+        }
+        drop(self.child.take());
+    }
+
+    /// Kills the containment scope and the direct child, recording each failure.
+    fn terminate_direct_child(&mut self) {
         let defects = &mut self.defects;
 
         #[cfg(windows)]
-        if cleanup_required {
-            if let Some(job) = self.job.as_ref() {
-                if let Err(error) = job.terminate_checked() {
-                    defects.push(format!("job termination failed: {error}"));
-                }
+        if let Some(job) = self.job.as_ref() {
+            if let Err(error) = job.terminate_checked() {
+                defects.push(format!("job termination failed: {error}"));
             }
         }
         #[cfg(unix)]
-        if cleanup_required && self.pgid > 0 {
+        if self.pgid > 0 {
             // SAFETY: self.pgid > 0 makes its negation a representable group
             // selector. kill accepts SIGKILL and has no caller-memory arguments.
             let result = unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
@@ -336,49 +343,53 @@ impl TargetProcessOwner {
                 ));
             }
         }
-        if cleanup_required {
-            if let Some(child) = self.child.as_mut() {
-                if let Err(error) = child.start_kill() {
-                    defects.push(format!("direct child termination failed: {error}"));
-                }
+        if let Some(child) = self.child.as_mut() {
+            if let Err(error) = child.start_kill() {
+                defects.push(format!("direct child termination failed: {error}"));
             }
         }
-        if cleanup_required {
-            if let Some(child) = self.child.as_mut() {
-                let mut wait_defect_recorded = false;
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(_)) => break,
-                        Ok(None) => {}
-                        Err(error) => {
-                            if !wait_defect_recorded {
-                                defects.push(format!("direct child wait failed: {error}"));
-                                wait_defect_recorded = true;
-                            }
-                        }
+    }
+
+    /// Polls the direct child until it exits, re-killing on each attempt expiry.
+    async fn await_direct_child_exit(
+        &mut self,
+        attempt: &mut crate::process::host::job::SettlementAttempt,
+    ) {
+        let defects = &mut self.defects;
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        let mut wait_defect_recorded = false;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {}
+                Err(error) => {
+                    if !wait_defect_recorded {
+                        defects.push(format!("direct child wait failed: {error}"));
+                        wait_defect_recorded = true;
                     }
-                    if attempt.expired() {
-                        record_update_attempt_expiry(defects, "direct-child settlement");
-                        #[cfg(windows)]
-                        if let Some(job) = self.job.as_ref() {
-                            let _ = job.terminate_checked();
-                        }
-                        #[cfg(unix)]
-                        if self.pgid > 0 {
-                            // SAFETY: self.pgid > 0 makes its negation a valid group selector.
-                            // kill accepts SIGKILL and takes no pointers into Rust memory.
-                            unsafe {
-                                libc::kill(-self.pgid, libc::SIGKILL);
-                            }
-                        }
-                        let _ = child.start_kill();
-                        attempt.restart();
-                    }
-                    tokio::time::sleep(PROCESS_SETTLEMENT_POLL.min(attempt.remaining())).await;
                 }
             }
+            if attempt.expired() {
+                record_update_attempt_expiry(defects, "direct-child settlement");
+                #[cfg(windows)]
+                if let Some(job) = self.job.as_ref() {
+                    let _ = job.terminate_checked();
+                }
+                #[cfg(unix)]
+                if self.pgid > 0 {
+                    // SAFETY: self.pgid > 0 makes its negation a valid group selector.
+                    // kill accepts SIGKILL and takes no pointers into Rust memory.
+                    unsafe {
+                        libc::kill(-self.pgid, libc::SIGKILL);
+                    }
+                }
+                let _ = child.start_kill();
+                attempt.restart();
+            }
+            tokio::time::sleep(PROCESS_SETTLEMENT_POLL.min(attempt.remaining())).await;
         }
-        drop(self.child.take());
     }
 
     async fn settle_native_proof(

@@ -1871,7 +1871,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
           onMount(() => cancelRef?.focus());
           return (
           <div
-            class="rm-modal-backdrop"
+            class="rm-modal-backdrop" role="none"
             // The guard is load-bearing, not decoration: mousedown bubbles up
             // from the dialog, so an unguarded preventDefault here would also
             // cancel every press INSIDE the modal and kill text selection of

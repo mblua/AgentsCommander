@@ -112,7 +112,7 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
   };
 
   const repoList = () => (
-    <div class="modal-overlay" onKeyDown={handleKeyDown}>
+    <div class="modal-overlay" role="none" onKeyDown={handleKeyDown}>
       <div class="agent-modal">
         {/* Header */}
           <div class="agent-search-container">

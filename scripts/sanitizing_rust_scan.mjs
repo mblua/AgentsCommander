@@ -537,8 +537,8 @@ function scanItems(ctx) {
   for (let i = 0; i < ctx.tokens.length; i++) if (!itemKeywordSkipped(ctx, i)) scanItem(ctx, i);
 }
 function letEnd(tokens, i) {
-  let end = i + 1;
-  for (; end < tokens.length && tokens[end].text !== ';'; end++) {
+  let end = i;
+  while (++end < tokens.length && tokens[end].text !== ';') {
     if (opens[tokens[end].text]) end = tokens[end].mate;
     else if (tokens[end].text === '}') break;
   }

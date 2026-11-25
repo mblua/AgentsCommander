@@ -1,7 +1,6 @@
 use super::*;
 use crate::config::settings::AppSettings;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
 
 /// Auto-cleaned temp dir; mirrors `cli::task_ops::tests::FixtureRoot`.
 struct FixtureRoot(PathBuf);
@@ -36,23 +35,14 @@ impl FixtureRoot {
 
 // ── register_existing_project ────────────────────────────────────────
 
-/// CWD is process-wide; restore on Drop. Any other test that mutates
-/// CWD in this same module would race — keep this confined.
+/// CWD is process-wide; restore on Drop. Tests that change it run in
+/// their own child process (`crate::test_support::run_case`).
 struct CwdGuard(PathBuf);
 
 impl Drop for CwdGuard {
     fn drop(&mut self) {
         let _ = std::env::set_current_dir(&self.0);
     }
-}
-
-static CWD_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-
-fn cwd_lock() -> std::sync::MutexGuard<'static, ()> {
-    CWD_MUTEX
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn create_ac_project(path: &Path) {

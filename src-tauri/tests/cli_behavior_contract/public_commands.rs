@@ -815,6 +815,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// Asserts the LF, exited-stderr and rc-1 stderr edges of one p01 case.
+fn p01_edges(stdout: &[u8], expected: &[u8], args: &[&str], stderr: &str, code: Option<i32>) {
+    if let Some((b'\n', body)) = stdout.split_last() {
+        assert_ne!(body, expected, "LF is part of the contract");
+    }
+    if args.last() == Some(&"exited") {
+        assert!(!stderr.contains("[WARN]"), "{stderr}");
+    }
+    if code == Some(1) {
+        assert!(stderr.contains("Error: invalid status 'bogus'"), "{stderr}");
+    }
+}
+
 #[test]
 fn list_sessions_stdout_matches_pin_bytes() {
     let golden: serde_json::Value =
@@ -838,15 +851,7 @@ fn list_sessions_stdout_matches_pin_bytes() {
             "{args:?}: {stderr}"
         );
         assert_eq!(stdout, expected.as_bytes(), "{args:?} stdout bytes");
-        if let Some((b'\n', body)) = stdout.split_last() {
-            assert_ne!(body, expected.as_bytes(), "LF is part of the contract");
-        }
-        if args.last() == Some(&"exited") {
-            assert!(!stderr.contains("[WARN]"), "{stderr}");
-        }
-        if code == Some(1) {
-            assert!(stderr.contains("Error: invalid status 'bogus'"), "{stderr}");
-        }
+        p01_edges(&stdout, expected.as_bytes(), args, &stderr, code);
         decoded.push(String::from_utf8(stdout).expect("utf-8 stdout"));
     }
     assert!(decoded[3].is_empty());

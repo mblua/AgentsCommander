@@ -182,7 +182,7 @@ const EditLoopModal: Component<{
   onCleanup(() => document.removeEventListener("keydown", handleDocumentKeyDown));
 
   return (
-    <div class="modal-overlay" onKeyDown={handleKeyDown}>
+    <div class="modal-overlay" role="none" onKeyDown={handleKeyDown}>
       <div class="agent-modal loop-modal">
         <div class="agent-modal-header">
           <span class="agent-modal-title">Edit Loop</span>

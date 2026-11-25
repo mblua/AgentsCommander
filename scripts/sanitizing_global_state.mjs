@@ -58,7 +58,8 @@ function threadIdentityStart(ts, first) {
 const stateType = /(?:^|::)(?:Mutex|RwLock|Atomic\w*|OnceLock|OnceCell|Lazy|LazyLock)$/;
 function canonical(scan, tokens) {
   const out = [];
-  for (let i = 0; i < tokens.length; i++) {
+  let i = -1;
+  while (++i < tokens.length) {
     if (tokens[i].text === '::' && tokens[i + 1]?.kind === 'ident' &&
       tokens[i - 1]?.kind !== 'ident') i++;
     const t = tokens[i];

@@ -316,8 +316,13 @@ const EditTeamModal: Component<{
           <Show when={step() === 1}>
             <div class="new-agent-form">
               <div class="new-agent-field">
-                <label class="new-agent-label">Team name</label>
-                <input class="agent-search-input" value={props.teamName} disabled />
+                <label class="new-agent-label" for="edit-team-name">Team name</label>
+                <input
+                  id="edit-team-name"
+                  class="agent-search-input"
+                  value={props.teamName}
+                  disabled
+                />
               </div>
               <div class="new-agent-field">
                 <label class="new-agent-label" style={{ opacity: 0.6 }}>

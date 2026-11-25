@@ -22,7 +22,8 @@ function extraChecks(path, m, before, violation) {
 // Comma-separated arguments of the group opened at `open`, as lists of token indexes.
 function args(ts, open) {
   const out = [[]];
-  for (let i = open + 1; i < ts[open].mate; i++) {
+  let i = open;
+  while (++i < ts[open].mate) {
     if (ts[i].text === ',') { out.push([]); continue; }
     out.at(-1).push(i);
     if (['(', '[', '{'].includes(ts[i].text)) i = ts[i].mate;
@@ -44,22 +45,32 @@ function requiresTest(ts, a) {
 function testRanges(ts) {
   const ranges = [];
   for (let i = 0; i + 3 < ts.length; i++) {
-    if (ts[i].text !== '#' || ts[i + 1].text !== '[' || ts[i + 2].name !== 'cfg' ||
-      ts[i + 3].text !== '(') continue;
-    const pred = args(ts, i + 3);
-    if (pred.length !== 1 || !requiresTest(ts, pred[0])) continue;
-    let k = ts[i + 1].mate + 1;
-    while (ts[k]?.text === '#' && ts[k + 1]?.text === '[') k = ts[k + 1].mate + 1;
-    for (; k < ts.length; k++) {
-      const t = ts[k];
-      if (t.text === ';' || t.text === ',') break;
-      if (t.text === ')' || t.text === ']' || t.text === '}') { k--; break; }
-      if (t.text === '(' || t.text === '[') { k = t.mate; continue; }
-      if (t.text === '{') { k = t.mate; if (!continuation.has(ts[k + 1]?.text)) break; }
-    }
+    if (!isTestCfgAttr(ts, i)) continue;
+    const k = testRangeEnd(ts, i);
     ranges.push([ts[i].start, ts[Math.min(k, ts.length - 1)].end]);
   }
   return ranges;
+}
+// True when the tokens at `i` open `#[cfg(<predicate>)]` that holds only under `test`.
+function isTestCfgAttr(ts, i) {
+  if (ts[i].text !== '#' || ts[i + 1].text !== '[' || ts[i + 2].name !== 'cfg' ||
+    ts[i + 3].text !== '(') return false;
+  const pred = args(ts, i + 3);
+  return pred.length === 1 && requiresTest(ts, pred[0]);
+}
+// Index of the last token covered by the `#[cfg(test)]` attribute at `i`.
+function testRangeEnd(ts, i) {
+  let k = ts[i + 1].mate + 1;
+  while (ts[k]?.text === '#' && ts[k + 1]?.text === '[') k = ts[k + 1].mate + 1;
+  k--;
+  while (++k < ts.length) {
+    const t = ts[k];
+    if (t.text === ';' || t.text === ',') break;
+    if (t.text === ')' || t.text === ']' || t.text === '}') { k--; break; }
+    if (t.text === '(' || t.text === '[') { k = t.mate; continue; }
+    if (t.text === '{') { k = t.mate; if (!continuation.has(ts[k + 1]?.text)) break; }
+  }
+  return k;
 }
 function measure(path, scan) {
   const m = metric(), ts = scan.tokens, ranges = testRanges(ts);
