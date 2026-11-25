@@ -52,21 +52,22 @@ function activateFrom(label: HTMLLabelElement): { start: HTMLElement; targets: H
 
 function expectLabelFocusesControl(label: HTMLLabelElement, control: Element): void {
   const { targets } = activateFrom(label);
-  expect(targets.length === 1 && targets[0] === control).toBe(true);
-  expect(document.activeElement === control).toBe(true);
+  expect(targets).toHaveLength(1);
+  expect(targets[0]).toBe(control);
+  expect(document.activeElement).toBe(control);
 }
 
 function expectLabelLeavesFocus(label: HTMLLabelElement): void {
   const { start, targets } = activateFrom(label);
   expect(targets).toEqual([]);
-  expect(document.activeElement === start).toBe(true);
+  expect(document.activeElement).toBe(start);
 }
 
 /** Positive control: proves the association checks above can fail. */
 function expectMismatchBreaksAssociation(text: string, id: string): void {
   const pair = expectLabelAssociation(text, id);
   pair.label.htmlFor = "edit-loop-missing";
-  expect(pair.label.control).toBe(null);
+  expect(pair.label.control).toBeNull();
   expect(pair.control.labels).toHaveLength(0);
   expect(() => expectLabelAssociation(text, id)).toThrow();
   expectLabelLeavesFocus(pair.label);

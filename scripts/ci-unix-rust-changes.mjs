@@ -218,7 +218,7 @@ function selfTest() {
     ['B1', ''], ['B2', '{"a": 1}\n'], ['B3', 'not json\n'], ['B4', catalog([DATA, DATA])],
     ['B5', catalog([NEIGHBOUR, DATA])], ['B6', catalog(['/abs.yml'])],
     ['B7', catalog(['.github/*.yml'])], ['B8', catalog(['a/../b.yml'])],
-    ['B9', catalog(['a\\b.yml'])], ['B10', catalog([7])],
+    ['B9', catalog([String.raw`a\b.yml`])], ['B10', catalog([7])],
   ];
   try {
     git(['init', '-q']);

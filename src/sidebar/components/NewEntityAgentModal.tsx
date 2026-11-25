@@ -195,7 +195,7 @@ const NewEntityAgentModal: Component<{
   };
 
   return (
-    <div class="modal-overlay" onKeyDown={handleKeyDown}>
+    <div class="modal-overlay" role="none" onKeyDown={handleKeyDown}>
       <div class="agent-modal">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Agent</span>
@@ -327,8 +327,9 @@ const NewEntityAgentModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Name</label>
+            <label class="new-agent-label" for="new-agent-name">Name</label>
             <input
+              id="new-agent-name"
               ref={nameRef!}
               class="agent-search-input"
               value={name()}
@@ -343,8 +344,9 @@ const NewEntityAgentModal: Component<{
           </div>
 
           <div class="new-agent-field">
-            <label class="new-agent-label">Description</label>
+            <label class="new-agent-label" for="new-agent-description">Description</label>
             <textarea
+              id="new-agent-description"
               class="entity-textarea"
               value={description()}
               onInput={(e) => {

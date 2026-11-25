@@ -690,7 +690,7 @@ const ProjectPanel: Component = () => {
         try {
           await SessionAPI.restart(existing.id, { skipAutoResume: false });
           if (isTauri) {
-            await WindowAPI.ensureTerminal();
+            await WindowAPI.focusMain();
           }
         } catch (e) {
           console.error("Failed to wake session:", e);
@@ -704,7 +704,7 @@ const ProjectPanel: Component = () => {
         const detachedLabel = `terminal-${existing.id.replaceAll("-", "")}`;
         const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
         if (!detachedWin) {
-          await WindowAPI.ensureTerminal();
+          await WindowAPI.focusMain();
         }
       }
       return;
@@ -3313,6 +3313,7 @@ const ProjectPanel: Component = () => {
                 <div
                   class="session-context-menu"
                   style={{ left: `${ctxMenuPos().x}px`, top: `${ctxMenuPos().y}px` }}
+                  role="none"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
@@ -3536,6 +3537,7 @@ const ProjectPanel: Component = () => {
                         <div
                           class="session-context-menu"
                           style={{ left: `${workgroupsHeaderCtxMenu()!.x}px`, top: `${workgroupsHeaderCtxMenu()!.y}px` }}
+                          role="none"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
@@ -3666,6 +3668,7 @@ const ProjectPanel: Component = () => {
                         <div
                           class="session-context-menu"
                           style={{ left: `${loopsHeaderCtxMenu()!.x}px`, top: `${loopsHeaderCtxMenu()!.y}px` }}
+                          role="none"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
@@ -3813,6 +3816,7 @@ const ProjectPanel: Component = () => {
                         <div
                           class="session-context-menu"
                           style={{ left: `${agentCtxMenu()!.x}px`, top: `${agentCtxMenu()!.y}px` }}
+                          role="none"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
@@ -3851,6 +3855,7 @@ const ProjectPanel: Component = () => {
                         <div
                           class="session-context-menu"
                           style={{ left: `${agentsHeaderCtxMenu()!.x}px`, top: `${agentsHeaderCtxMenu()!.y}px` }}
+                          role="none"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
@@ -4053,6 +4058,7 @@ const ProjectPanel: Component = () => {
                         <div
                           class="session-context-menu"
                           style={{ left: `${teamsHeaderCtxMenu()!.x}px`, top: `${teamsHeaderCtxMenu()!.y}px` }}
+                          role="none"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
@@ -4082,6 +4088,7 @@ const ProjectPanel: Component = () => {
                 <div
                   class="session-context-menu"
                   style={{ left: `${teamCtxMenu()!.x}px`, top: `${teamCtxMenu()!.y}px` }}
+                  role="none"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
@@ -4127,6 +4134,7 @@ const ProjectPanel: Component = () => {
                 <div
                   class="session-context-menu"
                   style={{ left: `${wgCtxMenu()!.x}px`, top: `${wgCtxMenu()!.y}px` }}
+                  role="none"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
@@ -4141,7 +4149,7 @@ const ProjectPanel: Component = () => {
                       setWgCtxMenu(null);
                     }}
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style={{ "flex-shrink": "0" }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style={{ "flex-shrink": "0" }} aria-hidden="true">
                       <polyline points="3 6 5 6 21 6" />
                       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                     </svg>
@@ -4157,6 +4165,7 @@ const ProjectPanel: Component = () => {
                 <div
                   class="session-context-menu"
                   style={{ left: `${loopCtxMenu()!.x}px`, top: `${loopCtxMenu()!.y}px` }}
+                  role="none"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
@@ -4312,6 +4321,7 @@ const ProjectPanel: Component = () => {
                   class="session-context-menu"
                   ref={replicaCtxMenuEl}
                   style={{ left: `${replicaCtxMenu()!.x}px`, top: `${replicaCtxMenu()!.y}px` }}
+                  role="none"
                   onClick={(e) => e.stopPropagation()}
                   onMouseEnter={cancelReplicaCtxMenuClose}
                   onMouseLeave={() => {
@@ -5074,7 +5084,7 @@ const ProjectPanel: Component = () => {
               const detachedLabel = `terminal-${newSession.id.replaceAll("-", "")}`;
               const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
               if (!detachedWin) {
-                await WindowAPI.ensureTerminal();
+                await WindowAPI.focusMain();
               }
             }
             setPendingLaunch(null);

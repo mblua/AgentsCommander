@@ -22,7 +22,7 @@ function expectLabelAssociation(text: string, id: string) {
   expect(el).toBeInstanceOf(HTMLInputElement);
   const control = el as HTMLInputElement;
   const all = control.labels ? [...control.labels] : [];
-  expect(all.length).toBe(1);
+  expect(all).toHaveLength(1);
   const label = all[0];
   expect(label.htmlFor).toBe(id);
   expect(label.textContent?.trim()).toBe(text);
