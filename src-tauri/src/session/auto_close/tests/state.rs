@@ -53,6 +53,21 @@ fn manage_index(
     }
 }
 
+/// All five returned handles are the managed ones. The coordinator has no identity
+/// accessor, so its shared shutdown token stands in: cancelling the returned
+/// coordinator's token is seen by the managed one and not by an unrelated decoy.
+fn assert_same_handles(inputs: AutoCloseInputs, h: &Handles) {
+    assert!(Arc::ptr_eq(&inputs.settings, &h.settings));
+    assert!(Arc::ptr_eq(&inputs.session_manager, &h.manager));
+    assert!(Arc::ptr_eq(&inputs.pty_manager, &h.pty));
+    assert!(Arc::ptr_eq(&inputs.idle_detector, &h.idle));
+    let decoy = handles().coordinator;
+    assert!(!h.coordinator.shutdown_token().is_cancelled());
+    inputs.selection_coordinator.shutdown_token().cancel();
+    assert!(h.coordinator.shutdown_token().is_cancelled());
+    assert!(!decoy.shutdown_token().is_cancelled());
+}
+
 #[test]
 fn tauri_inputs_name_each_missing_type_and_return_the_managed_handles() {
     let names = [
@@ -62,22 +77,24 @@ fn tauri_inputs_name_each_missing_type_and_return_the_managed_handles() {
         std::any::type_name::<Arc<IdleDetector>>(),
         std::any::type_name::<SelectionCoordinator>(),
     ];
-    let h = handles();
     for (skip, name) in names.iter().enumerate() {
-        let app = app_without(&h, skip);
-        let handle = app.handle();
-        assert_eq!(AutoCloseServices::inputs(handle).err(), Some(*name));
-        manage_index(&app, &h, std::iter::once(skip));
-        let inputs = AutoCloseServices::inputs(handle).expect("all five managed");
-        assert!(Arc::ptr_eq(&inputs.settings, &h.settings));
-        assert!(Arc::ptr_eq(&inputs.session_manager, &h.manager));
-        assert!(Arc::ptr_eq(&inputs.pty_manager, &h.pty));
-        assert!(Arc::ptr_eq(&inputs.idle_detector, &h.idle));
-        assert!(handle.coordinator_clocks().is_none());
-        let clocks: CoordinatorClocksState = Arc::new(Mutex::new(CoordinatorClocks::default()));
-        app.manage(clocks.clone());
-        assert!(Arc::ptr_eq(&clocks, &handle.coordinator_clocks().unwrap()));
-        assert!(AutoCloseServices::inputs(handle).is_ok());
+        for clock_present in [false, true] {
+            let h = handles();
+            let app = app_without(&h, skip);
+            let handle = app.handle();
+            let clocks: CoordinatorClocksState = Arc::new(Mutex::new(CoordinatorClocks::default()));
+            if clock_present {
+                app.manage(clocks.clone());
+            }
+            assert_eq!(AutoCloseServices::inputs(handle).err(), Some(*name));
+            manage_index(&app, &h, std::iter::once(skip));
+            let inputs = AutoCloseServices::inputs(handle).expect("all five managed");
+            match handle.coordinator_clocks() {
+                Some(managed) => assert!(clock_present && Arc::ptr_eq(&clocks, &managed)),
+                None => assert!(!clock_present),
+            }
+            assert_same_handles(inputs, &h);
+        }
     }
 }
 
