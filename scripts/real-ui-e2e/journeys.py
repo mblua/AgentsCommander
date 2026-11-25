@@ -325,12 +325,20 @@ class Run:
             time.sleep(pause)
         # GTK ignores the virtual keyboard's Return here, so the header-bar Select
         # button (top right, 48 px in from the edge, 22 px down) is clicked instead.
+        # The first click can only dismiss the location bar's completion popup, so a
+        # second click follows while the dialog still has focus.
         rect = dialog["rect"]
-        try:
-            self.desk.click(rect["x"] + rect["width"] - 48, rect["y"] + 22, dialog["conId"],
-                            self.desk.gtk_portal_pid, self.stage)
-        except dk.DesktopError as exc:
-            raise Failure(exc.code, self.stage) from exc
+        for attempt in range(2):
+            focus = self.desk.focused()
+            if not (focus and focus["conId"] == dialog["conId"]):
+                break
+            print(f"J1 clicking Select, attempt {attempt + 1}", file=sys.stderr)
+            try:
+                self.desk.click(rect["x"] + rect["width"] - 48, rect["y"] + 22, dialog["conId"],
+                                self.desk.gtk_portal_pid, self.stage)
+            except dk.DesktopError as exc:
+                raise Failure(exc.code, self.stage) from exc
+            time.sleep(0.8)
         # Fallback keys. The accept mnemonic depends on the portal label (_Select or _Open).
         accepts = [("return", ["-k", "Return"]), ("alt_s", ["-M", "alt", "s", "-m", "alt"]),
                    ("alt_o", ["-M", "alt", "o", "-m", "alt"])]
