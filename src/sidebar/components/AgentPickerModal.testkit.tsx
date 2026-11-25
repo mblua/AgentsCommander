@@ -516,7 +516,7 @@ export function installPickerHooks(): void {
   });
 
   afterEach(() => {
-    // Same cleanup as innerHTML = "", without a raw-HTML sink in a non-test file.
+    // Empties the body like the old cleanup; the raw-HTML sink scan reads this non-test file.
     document.body.replaceChildren();
     vi.clearAllMocks();
   });
