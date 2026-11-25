@@ -118,10 +118,20 @@ pub(crate) fn case_name(path: &str) -> &str {
     path.strip_prefix("agentscommander_lib::").unwrap_or(path)
 }
 
+/// libtest arguments of a #5174 child after its single selector.
+#[cfg(test)]
+const CASE_ARGS: [&str; 5] = [
+    "--exact",
+    "--test-threads=1",
+    "--show-output",
+    "--format=pretty",
+    "--color=never",
+];
+
 /// Child side of a #5174 process case. Returns the scenario when this
 /// process is the child that runs `path`, and `None` in the ordinary parent.
-/// A marker that names another test, an unknown scenario or a libtest
-/// command line that does not select exactly `--exact <name>` fails the test.
+/// A marker that names another test, an unknown scenario or a command line
+/// other than the one `run_case` builds (`<name>` plus `CASE_ARGS`) fails.
 #[cfg(test)]
 pub(crate) fn case_child(path: &str, scenarios: &[&'static str]) -> Option<&'static str> {
     let name = case_name(path);
@@ -133,10 +143,10 @@ pub(crate) fn case_child(path: &str, scenarios: &[&'static str]) -> Option<&'sta
     };
     assert_eq!(fqn, name, "AC_5174_CASE names another test");
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let selectors: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+    let expected: Vec<&str> = std::iter::once(name).chain(CASE_ARGS).collect();
     assert!(
-        args.iter().any(|a| a == "--exact") && selectors == [name],
-        "AC_5174_CASE child must select only `--exact {name}`: {args:?}"
+        args == expected,
+        "AC_5174_CASE child must run exactly {expected:?}: {args:?}"
     );
     let found = scenarios.iter().find(|s| **s == scenario).copied();
     Some(found.unwrap_or_else(|| panic!("unknown AC_5174_CASE scenario {scenario:?}")))
@@ -148,6 +158,13 @@ pub(crate) fn case_done(path: &str, scenario: &str) {
     println!("AC5174_DONE {} {scenario}", case_name(path));
 }
 
+/// Best-effort diagnostic line: never panics, unlike `eprintln!`.
+#[cfg(test)]
+fn case_log(line: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
+
 /// Child process owned by a #5174 parent. It holds the child logs and every
 /// parent input until the child is reaped; the reap is attempted only once.
 #[cfg(test)]
@@ -156,48 +173,74 @@ struct CaseChild {
     directory: Option<tempfile::TempDir>,
     inputs: Vec<tempfile::TempDir>,
     reaped: Option<bool>,
+    started: std::time::Instant,
+    label: String,
 }
 
 #[cfg(test)]
 impl CaseChild {
-    /// Kill, then poll up to 10 s for the reap. Later calls return the first outcome.
+    /// Kill, then poll up to 10 s for the reap. The outcome is stored before
+    /// any diagnostic, so later calls (also from Drop) return it unchanged.
     fn reap(&mut self) -> bool {
         if let Some(reaped) = self.reaped {
             return reaped;
         }
+        self.reaped = Some(false);
         let started = std::time::Instant::now();
         let kill = self.process.kill();
-        let mut poll = Ok(None);
+        let mut first_error = None;
+        let mut last = Ok(None);
         while started.elapsed() < std::time::Duration::from_secs(10) {
-            poll = self.process.try_wait();
-            match poll {
-                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
-                _ => break,
+            last = self.process.try_wait();
+            match &last {
+                Ok(Some(_)) => break,
+                Ok(None) => {}
+                Err(error) => {
+                    first_error.get_or_insert_with(|| error.to_string());
+                }
             }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let reaped = matches!(poll, Ok(Some(_)));
-        eprintln!(
-            "#5174 reap child pid {}: kill {kill:?}, poll {poll:?}, reaped={reaped} in {:?}",
-            self.process.id(),
-            started.elapsed()
-        );
+        let reaped = matches!(last, Ok(Some(_)));
         self.reaped = Some(reaped);
+        case_log(format_args!(
+            "#5174 reap {}: parent pid {} child pid {}: kill {kill:?}, last poll {last:?}, \
+             first poll error {first_error:?}, reaped={reaped} after {:?}, case {:?}",
+            self.label,
+            std::process::id(),
+            self.process.id(),
+            started.elapsed(),
+            self.started.elapsed()
+        ));
         reaped
     }
 
-    /// Keep the logs and every input on disk; returns the logs directory.
+    /// Keep the logs and every input on disk and report where they are.
     fn retain(&mut self) -> Option<std::path::PathBuf> {
-        for input in self.inputs.drain(..) {
-            eprintln!("#5174 input retained at {}", input.keep().display());
+        let inputs: Vec<_> = self.inputs.drain(..).map(tempfile::TempDir::keep).collect();
+        let directory = self.directory.take().map(tempfile::TempDir::keep);
+        if directory.is_none() && inputs.is_empty() {
+            return None;
         }
-        self.directory.take().map(tempfile::TempDir::keep)
+        case_log(format_args!(
+            "#5174 retained {}: logs {directory:?}, inputs {inputs:?}",
+            self.label
+        ));
+        directory
     }
 
     /// Fail the parent, keeping the child logs and inputs.
     fn fail(&mut self, reason: &str) -> ! {
         let reaped = self.reap();
         let directory = self.retain();
-        panic!("{reason}; reaped={reaped}; child logs retained at {directory:?}");
+        panic!(
+            "{reason}; {}; parent pid {} child pid {}; reaped={reaped} after {:?}; \
+             child logs retained at {directory:?}",
+            self.label,
+            std::process::id(),
+            self.process.id(),
+            self.started.elapsed()
+        );
     }
 }
 
@@ -224,13 +267,14 @@ pub(crate) fn run_case(
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     let name = case_name(path);
+    let started = Instant::now();
     let directory = tempfile::tempdir().expect("case directory");
     let config = directory.path().join("config");
     std::fs::create_dir(&config).expect("case config");
     let mut command = Command::new(std::env::current_exe().expect("current exe"));
     command
-        .args([name, "--exact", "--test-threads=1", "--show-output"])
-        .args(["--format=pretty", "--color=never"])
+        .arg(name)
+        .args(CASE_ARGS)
         .env_remove("RUST_TEST_NOCAPTURE")
         .env("AGENTSCOMMANDER_CONFIG_DIR", &config)
         .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &config)
@@ -249,8 +293,9 @@ pub(crate) fn run_case(
         directory: Some(directory),
         inputs,
         reaped: None,
+        started,
+        label: format!("case {name} {scenario}"),
     };
-    let started = Instant::now();
     let status = loop {
         match owner.process.try_wait() {
             Ok(Some(status)) => {
@@ -261,15 +306,16 @@ pub(crate) fn run_case(
                 std::thread::sleep(Duration::from_millis(20));
             }
             Ok(None) => owner.fail("case child deadline"),
-            Err(_) => owner.fail("case child poll failed"),
+            Err(error) => owner.fail(&format!("case child poll failed: {error}")),
         }
     };
-    eprintln!(
-        "#5174 case {name} {scenario}: parent pid {} child pid {} {status} in {:?}",
+    case_log(format_args!(
+        "#5174 {}: parent pid {} child pid {} {status} in {:?}",
+        owner.label,
         std::process::id(),
         owner.process.id(),
         started.elapsed()
-    );
+    ));
     let stdout = owner
         .directory
         .as_ref()
