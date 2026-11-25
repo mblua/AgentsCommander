@@ -215,61 +215,12 @@ pub(crate) fn combined_shutdown_retained_diagnostics_with_scanner(
     )
 }
 
-fn remove_container_route_until(
-    weak_pty_mgr: &std::sync::Weak<Mutex<PtyManager>>,
-    session_id: uuid::Uuid,
-    deadline: std::time::Instant,
-) -> Result<(), crate::pty::container_backend::RouteRemovalError> {
-    let Some(pty_mgr) = weak_pty_mgr.upgrade() else {
-        return Ok(());
-    };
-    loop {
-        if std::time::Instant::now() >= deadline {
-            return Err(crate::pty::container_backend::RouteRemovalError::Deadline(
-                "ptyManager",
-            ));
-        }
-        match pty_mgr.try_lock() {
-            Ok(pty_manager) => match pty_manager.try_remove_route_if_kind(
-                session_id,
-                crate::pty::backend::SessionBackendKind::ContainerTransport,
-            ) {
-                Ok(()) => return Ok(()),
-                Err(crate::pty::manager::PtyRouteRemovalError::LockPoisoned) => {
-                    return Err(
-                        crate::pty::container_backend::RouteRemovalError::LockPoisoned(
-                            "ptyRouteRegistry",
-                        ),
-                    );
-                }
-                Err(crate::pty::manager::PtyRouteRemovalError::Busy) => {}
-            },
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                return Err(
-                    crate::pty::container_backend::RouteRemovalError::LockPoisoned("ptyManager"),
-                );
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {}
-        }
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(crate::pty::container_backend::RouteRemovalError::Deadline(
-                "ptyManager",
-            ));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(2).min(remaining));
-    }
-}
-
 pub(crate) fn install_container_route_remover(pty_mgr: &Arc<Mutex<PtyManager>>) {
-    let weak_pty_mgr = Arc::downgrade(pty_mgr);
-    let container_backend = pty_mgr
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .container_backend();
-    container_backend.set_route_remover(Arc::new(move |session_id, deadline| {
-        remove_container_route_until(&weak_pty_mgr, session_id, deadline)
-    }));
+    PtyManager::install_container_route_remover_with_clock(
+        pty_mgr,
+        std::time::Instant::now,
+        std::thread::sleep,
+    );
 }
 
 // Issue #609 - cached "npm update available" result. Set ONCE by the startup

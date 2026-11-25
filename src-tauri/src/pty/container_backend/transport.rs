@@ -6,10 +6,10 @@
 use super::root_key;
 use super::{
     resources_from_state, ActiveSession, AttachingSession, ContainerSessionState,
-    ContainerTransportBackend, HostToBridgeFrame, HostToBridgeTextFrame, RemovedSessionResources,
-    RouteRemovalError, TransportAttachError, TransportTicketError, CLEANUP_TASK_TIMEOUT,
-    CONTAINER_SHUTDOWN_POLL, MAX_TRANSPORT_FRAME_BYTES, TRANSPORT_LOST_EXIT_CODE,
-    TRANSPORT_PROTOCOL_VERSION,
+    ContainerSweepClock, ContainerTransportBackend, HostToBridgeFrame, HostToBridgeTextFrame,
+    RemovedSessionResources, RouteRemovalError, TransportAttachError, TransportTicketError,
+    CLEANUP_TASK_TIMEOUT, CONTAINER_SHUTDOWN_POLL, MAX_TRANSPORT_FRAME_BYTES,
+    TRANSPORT_LOST_EXIT_CODE, TRANSPORT_PROTOCOL_VERSION,
 };
 use crate::errors::AppError;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -301,6 +301,7 @@ impl ContainerTransportBackend {
         &self,
         session_id: Uuid,
         deadline: Instant,
+        clock: &ContainerSweepClock,
     ) -> Result<Option<RemovedSessionResources>, RouteRemovalError> {
         let removed = loop {
             match self.sessions.try_lock() {
@@ -309,11 +310,10 @@ impl ContainerTransportBackend {
                     return Err(RouteRemovalError::LockPoisoned("containerSessionRegistry"))
                 }
                 Err(TryLockError::WouldBlock) => {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
+                    let site = "containerSessionRegistry";
+                    if !clock.wait_until(site, deadline, CONTAINER_SHUTDOWN_POLL) {
                         return Err(RouteRemovalError::Deadline("containerSessionRegistry"));
                     }
-                    std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
                 }
             }
         };

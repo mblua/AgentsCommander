@@ -83,17 +83,153 @@ pub(crate) trait ContainerBackgroundTasks {
 
 type RouteRemover = Arc<dyn Fn(Uuid, Instant) -> Result<(), RouteRemovalError> + Send + Sync>;
 
+type SweepNow = Arc<dyn Fn() -> Instant + Send + Sync>;
+type SweepWait = Arc<dyn Fn(&'static str, Duration) + Send + Sync>;
+
+/// Clock read and bounded wait of one global sweep invocation. Production uses
+/// `Instant::now` and `std::thread::sleep`; tests pass a logical clock by invocation.
+#[derive(Clone)]
+pub(super) struct ContainerSweepClock {
+    now: SweepNow,
+    wait: SweepWait,
+    #[cfg(test)]
+    probe: Option<Arc<dyn Fn(SweepProbe) + Send + Sync>>,
+}
+
+/// Test-only marks published by the sweep at its admission decisions.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SweepProbe {
+    TransferCut,
+    TransferAttempt(Uuid),
+    DrainCut,
+    EpochStartEntered,
+    EpochOpened,
+}
+
+/// First idle decision a real worker takes in a GlobalSweep epoch, sent once per epoch.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SweepIdleAck {
+    pub(super) global_sweep: bool,
+    pub(super) observed: Instant,
+    pub(super) live: bool,
+    pub(super) terminating: bool,
+    pub(super) producers: usize,
+    pub(super) remaining: Option<Duration>,
+}
+
+#[cfg(test)]
+pub(super) struct SweepIdleObserver {
+    sender: std::sync::mpsc::Sender<SweepIdleAck>,
+    acked: bool,
+}
+
+#[cfg(test)]
+impl shutdown_work::ContainerShutdownWorkState {
+    pub(super) fn rearm_idle_ack(&mut self) {
+        if let Some(observer) = self.idle_observer.as_mut() {
+            observer.acked = false;
+        }
+    }
+
+    /// Non-blocking send under the state guard; `remaining` is the Condvar operand.
+    pub(super) fn ack_idle(&mut self, observed: Instant, remaining: Option<Duration>) {
+        let ack = SweepIdleAck {
+            global_sweep: self.phase == shutdown_work::ContainerShutdownPhase::GlobalSweep,
+            observed,
+            live: remaining.is_some(),
+            terminating: self.terminating,
+            producers: self.active_producers,
+            remaining,
+        };
+        if let Some(observer) = self
+            .idle_observer
+            .as_mut()
+            .filter(|observer| !observer.acked)
+        {
+            observer.acked = true;
+            let _ = observer.sender.send(ack);
+        }
+    }
+}
+
+#[cfg(test)]
+impl ContainerShutdownWorkRegistry {
+    pub(super) fn set_idle_observer_for_test(&self, sender: std::sync::mpsc::Sender<SweepIdleAck>) {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .idle_observer = Some(SweepIdleObserver {
+            sender,
+            acked: false,
+        });
+    }
+}
+
+static NATIVE_SWEEP_CLOCK: std::sync::OnceLock<ContainerSweepClock> = std::sync::OnceLock::new();
+
+impl ContainerSweepClock {
+    pub(super) fn native() -> Self {
+        NATIVE_SWEEP_CLOCK
+            .get_or_init(|| Self {
+                now: Arc::new(Instant::now),
+                wait: Arc::new(|_, step| std::thread::sleep(step)),
+                #[cfg(test)]
+                probe: None,
+            })
+            .clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test(
+        now: SweepNow,
+        wait: SweepWait,
+        probe: Option<Arc<dyn Fn(SweepProbe) + Send + Sync>>,
+    ) -> Self {
+        Self { now, wait, probe }
+    }
+
+    pub(super) fn now(&self) -> Instant {
+        (self.now)()
+    }
+
+    /// Waits `step`, capped to what is left before `deadline`; `false` when nothing is left.
+    pub(super) fn wait_until(&self, site: &'static str, deadline: Instant, step: Duration) -> bool {
+        let remaining = deadline.saturating_duration_since(self.now());
+        if remaining.is_zero() {
+            return false;
+        }
+        (self.wait)(site, step.min(remaining));
+        true
+    }
+
+    #[cfg(test)]
+    pub(super) fn probe(&self, mark: SweepProbe) {
+        if let Some(probe) = &self.probe {
+            probe(mark);
+        }
+    }
+}
+
 fn lock_mutex_until<T>(mutex: &Mutex<T>, deadline: Instant) -> Option<MutexGuard<'_, T>> {
+    lock_mutex_until_with_clock(mutex, deadline, &ContainerSweepClock::native())
+}
+
+fn lock_mutex_until_with_clock<'a, T>(
+    mutex: &'a Mutex<T>,
+    deadline: Instant,
+    clock: &ContainerSweepClock,
+) -> Option<MutexGuard<'a, T>> {
     loop {
         match mutex.try_lock() {
             Ok(guard) => return Some(guard),
             Err(TryLockError::Poisoned(error)) => return Some(error.into_inner()),
             Err(TryLockError::WouldBlock) => {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
+                if !clock.wait_until("lockMutex", deadline, CONTAINER_SHUTDOWN_POLL) {
                     return None;
                 }
-                std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
             }
         }
     }
@@ -443,6 +579,14 @@ impl ContainerTransportBackend {
         &self,
         deadline: Instant,
     ) -> Result<Option<RouteRemover>, RouteRemovalError> {
+        self.route_remover_until_with_clock(deadline, &ContainerSweepClock::native())
+    }
+
+    fn route_remover_until_with_clock(
+        &self,
+        deadline: Instant,
+        clock: &ContainerSweepClock,
+    ) -> Result<Option<RouteRemover>, RouteRemovalError> {
         loop {
             match self.route_remover.try_lock() {
                 Ok(route_remover) => return Ok(route_remover.clone()),
@@ -450,11 +594,10 @@ impl ContainerTransportBackend {
                     return Err(RouteRemovalError::LockPoisoned("routeRemoverRegistry"))
                 }
                 Err(TryLockError::WouldBlock) => {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
+                    let site = "routeRemoverRegistry";
+                    if !clock.wait_until(site, deadline, CONTAINER_SHUTDOWN_POLL) {
                         return Err(RouteRemovalError::Deadline("routeRemoverRegistry"));
                     }
-                    std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
                 }
             }
         }

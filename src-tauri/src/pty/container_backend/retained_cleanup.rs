@@ -3,7 +3,10 @@
 //! attempt succeeds; attempts are deduped per epoch and record their last error. It does not
 //! schedule attempts; `cleanup` and `sweep` decide when they run.
 
-use super::{lock_mutex_until, RemovedSessionResources, RouteRemovalError, RouteRemover};
+use super::{
+    lock_mutex_until_with_clock, ContainerSweepClock, RemovedSessionResources, RouteRemovalError,
+    RouteRemover,
+};
 use crate::errors::AppError;
 use crate::pty::container_runtime::{
     ContainerRuntime, ContainerRuntimeControl, ContainerRuntimeHandle,
@@ -176,22 +179,28 @@ impl RetainedContainerCleanupRegistry {
             .collect()
     }
 
-    pub(super) fn is_empty_until(&self, deadline: Instant) -> Option<bool> {
-        lock_mutex_until(&self.entries, deadline).map(|entries| entries.is_empty())
+    pub(super) fn is_empty_until(
+        &self,
+        deadline: Instant,
+        clock: &ContainerSweepClock,
+    ) -> Option<bool> {
+        lock_mutex_until_with_clock(&self.entries, deadline, clock)
+            .map(|entries| entries.is_empty())
     }
 
     pub(super) fn entries_for_sweep(
         &self,
         deadline: Instant,
         limit: usize,
+        clock: &ContainerSweepClock,
     ) -> Vec<Arc<RetainedContainerCleanup>> {
-        let Some(entries) = lock_mutex_until(&self.entries, deadline) else {
+        let Some(entries) = lock_mutex_until_with_clock(&self.entries, deadline, clock) else {
             return Vec::new();
         };
         let mut fresh = Vec::with_capacity(limit);
         let mut retries = Vec::with_capacity(limit);
         for entry in entries.values() {
-            if Instant::now() >= deadline {
+            if clock.now() >= deadline {
                 break;
             }
             let attempt = match entry.attempt.try_lock() {

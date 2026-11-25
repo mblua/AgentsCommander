@@ -4,7 +4,7 @@
 //! `shutdown_work` and per-entry attempts in `retained_cleanup`.
 
 use super::{
-    ContainerSessionState, ContainerShutdownReport, ContainerTransportBackend,
+    ContainerSessionState, ContainerShutdownReport, ContainerSweepClock, ContainerTransportBackend,
     CONTAINER_GLOBAL_SWEEP_RETRY_BACKOFF, CONTAINER_SHUTDOWN_POLL,
     CONTAINER_SHUTDOWN_QUEUE_CAPACITY,
 };
@@ -121,13 +121,23 @@ impl ContainerTransportBackend {
         &self,
         budget: Duration,
     ) -> ContainerShutdownReport {
-        let deadline = Instant::now() + budget;
+        self.stop_all_started_containers_blocking_with_clock(budget, &ContainerSweepClock::native())
+    }
+
+    /// One budget `D = clock.now() + budget`; every loop of this invocation reads `clock`.
+    pub(super) fn stop_all_started_containers_blocking_with_clock(
+        &self,
+        budget: Duration,
+        clock: &ContainerSweepClock,
+    ) -> ContainerShutdownReport {
+        let deadline = clock.now() + budget;
         let mut retained_residue = Vec::new();
-        let session_ids = self.installed_session_ids_for_shutdown(deadline, &mut retained_residue);
+        let session_ids =
+            self.installed_session_ids_for_shutdown(deadline, clock, &mut retained_residue);
         let route_remover = if session_ids.is_empty() {
             Ok(None)
         } else {
-            self.route_remover_until(deadline)
+            self.route_remover_until_with_clock(deadline, clock)
         };
         if let Err(error) = &route_remover {
             retained_residue.push(
@@ -147,14 +157,18 @@ impl ContainerTransportBackend {
         let control = ContainerRuntimeControl::default();
         control.request_shutdown(deadline);
         for session_id in session_ids {
-            if Instant::now() >= deadline {
+            if clock.now() >= deadline {
+                #[cfg(test)]
+                clock.probe(super::SweepProbe::TransferCut);
                 log::warn!(
                     "[container-transport] global shutdown cleanup budget exhausted before \
                         ownership transfer session={session_id} state=installed"
                 );
                 break;
             }
-            let resources = match self.remove_session_state_until(session_id, deadline) {
+            #[cfg(test)]
+            clock.probe(super::SweepProbe::TransferAttempt(session_id));
+            let resources = match self.remove_session_state_until(session_id, deadline, clock) {
                 Ok(Some(resources)) => resources,
                 Ok(None) => continue,
                 Err(error) => {
@@ -184,7 +198,7 @@ impl ContainerTransportBackend {
             );
         }
 
-        let work_report = self.drain_global_container_sweep(deadline, &control);
+        let work_report = self.drain_global_container_sweep(deadline, &control, clock);
         let mut retained = retained_residue;
         retained.extend(work_report.retained.into_iter().map(|context| {
             if context.starts_with("owner=") {
@@ -289,6 +303,7 @@ impl ContainerTransportBackend {
     fn installed_session_ids_for_shutdown(
         &self,
         deadline: Instant,
+        clock: &ContainerSweepClock,
         retained_residue: &mut Vec<String>,
     ) -> Vec<uuid::Uuid> {
         loop {
@@ -313,8 +328,8 @@ impl ContainerTransportBackend {
                     break Vec::new();
                 }
                 Err(TryLockError::WouldBlock) => {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
+                    let site = "installedContainerRegistry";
+                    if !clock.wait_until(site, deadline, CONTAINER_SHUTDOWN_POLL) {
                         retained_residue.push(
                             RetainedContainerOwnerContext {
                                 owner: "installedContainerRegistry",
@@ -332,7 +347,6 @@ impl ContainerTransportBackend {
                         );
                         break Vec::new();
                     }
-                    std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
                 }
             }
         }
@@ -342,22 +356,27 @@ impl ContainerTransportBackend {
         &self,
         deadline: Instant,
         control: &ContainerRuntimeControl,
+        clock: &ContainerSweepClock,
     ) -> ContainerShutdownReport {
         let mut work_report = ContainerShutdownReport {
             terminal: true,
             retained: Vec::new(),
         };
         loop {
-            if Instant::now() >= deadline {
+            if clock.now() >= deadline {
+                #[cfg(test)]
+                clock.probe(super::SweepProbe::DrainCut);
                 work_report.terminal = false;
                 work_report
                     .retained
                     .push("reason=global-sweep-deadline state=retained".to_string());
                 break;
             }
-            let entries = self
-                .cleanup_ownership
-                .entries_for_sweep(deadline, CONTAINER_SHUTDOWN_QUEUE_CAPACITY);
+            let entries = self.cleanup_ownership.entries_for_sweep(
+                deadline,
+                CONTAINER_SHUTDOWN_QUEUE_CAPACITY,
+                clock,
+            );
             let runtime_has_retained = self
                 .runtime
                 .as_ref()
@@ -366,12 +385,15 @@ impl ContainerTransportBackend {
                 && !runtime_has_retained
                 && !self
                     .shutdown_work
-                    .has_owned_work_until(deadline)
+                    .has_owned_work_until(deadline, clock)
                     .unwrap_or(true)
             {
                 break;
             }
-            if !self.shutdown_work.start_global_sweep_epoch(deadline) {
+            if !self
+                .shutdown_work
+                .start_global_sweep_epoch_with_clock(deadline, clock)
+            {
                 work_report.terminal = false;
                 work_report
                     .retained
@@ -379,14 +401,23 @@ impl ContainerTransportBackend {
                 break;
             }
 
-            let scheduled =
-                self.schedule_global_sweep_epoch(entries, runtime_has_retained, control, deadline);
+            #[cfg(test)]
+            clock.probe(super::SweepProbe::EpochOpened);
+            let scheduled = self.schedule_global_sweep_epoch(
+                entries,
+                runtime_has_retained,
+                control,
+                deadline,
+                clock,
+            );
 
-            work_report = self.shutdown_work.seal_and_drain_until(deadline);
-            if !work_report.terminal || Instant::now() >= deadline {
+            work_report = self
+                .shutdown_work
+                .seal_and_drain_until_with_clock(deadline, clock);
+            if !work_report.terminal || clock.now() >= deadline {
                 break;
             }
-            if !self.global_sweep_work_remaining(deadline) {
+            if !self.global_sweep_work_remaining(deadline, clock) {
                 break;
             }
             if scheduled == 0 {
@@ -395,11 +426,13 @@ impl ContainerTransportBackend {
                         state=retained"
                 );
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            if !clock.wait_until(
+                "sweepBackoff",
+                deadline,
+                CONTAINER_GLOBAL_SWEEP_RETRY_BACKOFF,
+            ) {
                 break;
             }
-            std::thread::sleep(CONTAINER_GLOBAL_SWEEP_RETRY_BACKOFF.min(remaining));
         }
         work_report
     }
@@ -410,16 +443,18 @@ impl ContainerTransportBackend {
         runtime_has_retained: bool,
         control: &ContainerRuntimeControl,
         deadline: Instant,
+        clock: &ContainerSweepClock,
     ) -> usize {
         let epoch = self.cleanup_attempt_epoch.fetch_add(1, Ordering::Relaxed);
         let mut scheduled = 0_usize;
         if runtime_has_retained {
             if let Some(runtime) = self.runtime.clone() {
-                if self.shutdown_work.spawn_global_sweep_owned_with_control(
+                if self.shutdown_work.spawn_global_sweep_owned_with_clock(
                     None,
                     "runtime-retained-cleanup",
                     control.clone(),
                     deadline,
+                    clock,
                     move |control| runtime.retry_retained_cleanups(control),
                 ) {
                     scheduled += 1;
@@ -427,18 +462,22 @@ impl ContainerTransportBackend {
             }
         }
         for entry in entries {
-            if Instant::now() >= deadline {
+            if clock.now() >= deadline {
                 break;
             }
             let ownership = Arc::clone(&self.cleanup_ownership);
             let session_id = entry.session_id;
             let reason = entry.reason;
-            if !self.shutdown_work.spawn_global_sweep_owned_with_control(
+            let attempt_clock = clock.clone();
+            if !self.shutdown_work.spawn_global_sweep_owned_with_clock(
                 Some(session_id),
                 reason,
                 control.clone(),
                 deadline,
-                move |control| ownership.attempt(entry, epoch, control),
+                clock,
+                move |control| {
+                    ownership.attempt_with_clock(entry, epoch, control, &|| attempt_clock.now());
+                },
             ) {
                 break;
             }
@@ -447,10 +486,10 @@ impl ContainerTransportBackend {
         scheduled
     }
 
-    fn global_sweep_work_remaining(&self, deadline: Instant) -> bool {
+    fn global_sweep_work_remaining(&self, deadline: Instant, clock: &ContainerSweepClock) -> bool {
         let cleanup_remaining = !self
             .cleanup_ownership
-            .is_empty_until(deadline)
+            .is_empty_until(deadline, clock)
             .unwrap_or(false);
         let runtime_remaining = self
             .runtime

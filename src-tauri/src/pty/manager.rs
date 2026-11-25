@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::pty::backend::{BackendSpawnSpec, PtyBackend, SessionBackendKind};
-use crate::pty::container_backend::ContainerTransportBackend;
+use crate::pty::container_backend::{ContainerTransportBackend, RouteRemovalError};
 use crate::pty::container_tokens::ContainerApiTokenManager;
 use crate::pty::context_scrape::{ContextSessionLiveness, ScreenRowsRead};
 use crate::pty::docker_runtime::DockerRuntime;
@@ -575,6 +575,61 @@ impl PtyManager {
 
     pub fn write_with_permit(permit: &PtyInputPermit, bytes: &[u8]) -> Result<(), AppError> {
         write_with_permit(permit, bytes)
+    }
+}
+
+impl PtyManager {
+    /// Installs the container route remover; `now` and `wait` drive its polling loop.
+    pub(crate) fn install_container_route_remover_with_clock(
+        pty_mgr: &Arc<Mutex<Self>>,
+        now: impl Fn() -> std::time::Instant + Send + Sync + 'static,
+        wait: impl Fn(std::time::Duration) + Send + Sync + 'static,
+    ) {
+        let weak_pty_mgr = Arc::downgrade(pty_mgr);
+        let container_backend = pty_mgr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .container_backend();
+        container_backend.set_route_remover(Arc::new(move |session_id, deadline| {
+            remove_container_route_until(&weak_pty_mgr, session_id, deadline, &now, &wait)
+        }));
+    }
+}
+
+fn remove_container_route_until(
+    weak_pty_mgr: &std::sync::Weak<Mutex<PtyManager>>,
+    session_id: Uuid,
+    deadline: std::time::Instant,
+    now: &dyn Fn() -> std::time::Instant,
+    wait: &dyn Fn(std::time::Duration),
+) -> Result<(), RouteRemovalError> {
+    let Some(pty_mgr) = weak_pty_mgr.upgrade() else {
+        return Ok(());
+    };
+    loop {
+        if now() >= deadline {
+            return Err(RouteRemovalError::Deadline("ptyManager"));
+        }
+        match pty_mgr.try_lock() {
+            Ok(pty_manager) => match pty_manager
+                .try_remove_route_if_kind(session_id, SessionBackendKind::ContainerTransport)
+            {
+                Ok(()) => return Ok(()),
+                Err(PtyRouteRemovalError::LockPoisoned) => {
+                    return Err(RouteRemovalError::LockPoisoned("ptyRouteRegistry"));
+                }
+                Err(PtyRouteRemovalError::Busy) => {}
+            },
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(RouteRemovalError::LockPoisoned("ptyManager"));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return Err(RouteRemovalError::Deadline("ptyManager"));
+        }
+        wait(std::time::Duration::from_millis(2).min(remaining));
     }
 }
 

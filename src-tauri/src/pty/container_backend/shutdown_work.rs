@@ -4,9 +4,10 @@
 //! what to clean; `cleanup`, `retained_cleanup` and `sweep` supply that work.
 
 use super::{
-    lock_mutex_until, ContainerShutdownReport, CONTAINER_SHUTDOWN_DROP_GRACE,
-    CONTAINER_SHUTDOWN_FALLBACK_CAPACITY, CONTAINER_SHUTDOWN_IDLE_RECHECK, CONTAINER_SHUTDOWN_POLL,
-    CONTAINER_SHUTDOWN_QUEUE_CAPACITY, CONTAINER_SHUTDOWN_WORKER_CAPACITY,
+    lock_mutex_until, lock_mutex_until_with_clock, ContainerShutdownReport, ContainerSweepClock,
+    CONTAINER_SHUTDOWN_DROP_GRACE, CONTAINER_SHUTDOWN_FALLBACK_CAPACITY,
+    CONTAINER_SHUTDOWN_IDLE_RECHECK, CONTAINER_SHUTDOWN_POLL, CONTAINER_SHUTDOWN_QUEUE_CAPACITY,
+    CONTAINER_SHUTDOWN_WORKER_CAPACITY,
 };
 use crate::pty::container_runtime::ContainerRuntimeControl;
 use std::collections::{HashMap, VecDeque};
@@ -57,8 +58,11 @@ pub(super) struct ContainerShutdownWorkState {
     pub(super) terminating: bool,
     pub(super) worker_count: usize,
     pub(super) sweep_deadline: Option<Instant>,
+    pub(super) sweep_clock: Option<ContainerSweepClock>,
     #[cfg(test)]
     pub(super) fail_worker_spawn: bool,
+    #[cfg(test)]
+    pub(super) idle_observer: Option<super::SweepIdleObserver>,
 }
 
 pub(super) struct ContainerShutdownWorkRegistry {
@@ -291,16 +295,32 @@ impl ContainerShutdownWorkRegistry {
         self.shared.state_changed.notify_all();
     }
 
+    #[cfg(test)]
     pub(super) fn start_global_sweep_epoch(&self, deadline: Instant) -> bool {
-        if Instant::now() >= deadline {
+        self.start_global_sweep_epoch_with_clock(deadline, &ContainerSweepClock::native())
+    }
+
+    /// Opens an epoch whose admission cuts and idle waits read `clock` against `deadline`.
+    pub(super) fn start_global_sweep_epoch_with_clock(
+        &self,
+        deadline: Instant,
+        clock: &ContainerSweepClock,
+    ) -> bool {
+        #[cfg(test)]
+        clock.probe(super::SweepProbe::EpochStartEntered);
+        if clock.now() >= deadline {
             return false;
         }
-        let Some(mut state) = lock_mutex_until(&self.shared.state, deadline) else {
+        let Some(mut state) = lock_mutex_until_with_clock(&self.shared.state, deadline, clock)
+        else {
             return false;
         };
         state.phase = ContainerShutdownPhase::GlobalSweep;
         state.terminating = false;
         state.sweep_deadline = Some(deadline);
+        state.sweep_clock = Some(clock.clone());
+        #[cfg(test)]
+        state.rearm_idle_ack();
         drop(state);
         self.shared.work_available.notify_all();
         let context = ContainerShutdownWorkContext {
@@ -311,8 +331,12 @@ impl ContainerShutdownWorkRegistry {
         self.ensure_workers(&context) > 0
     }
 
-    pub(super) fn has_owned_work_until(&self, deadline: Instant) -> Option<bool> {
-        lock_mutex_until(&self.shared.state, deadline).map(|state| {
+    pub(super) fn has_owned_work_until(
+        &self,
+        deadline: Instant,
+        clock: &ContainerSweepClock,
+    ) -> Option<bool> {
+        lock_mutex_until_with_clock(&self.shared.state, deadline, clock).map(|state| {
             state.active_producers > 0
                 || !state.queued.is_empty()
                 || !state.retained.is_empty()
@@ -321,6 +345,7 @@ impl ContainerShutdownWorkRegistry {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn spawn_global_sweep_owned_with_control<F>(
         &self,
         session_id: Option<Uuid>,
@@ -332,7 +357,25 @@ impl ContainerShutdownWorkRegistry {
     where
         F: FnOnce(&ContainerRuntimeControl) + Send + 'static,
     {
-        if Instant::now() >= deadline {
+        let clock = ContainerSweepClock::native();
+        self.spawn_global_sweep_owned_with_clock(
+            session_id, reason, control, deadline, &clock, work,
+        )
+    }
+
+    pub(super) fn spawn_global_sweep_owned_with_clock<F>(
+        &self,
+        session_id: Option<Uuid>,
+        reason: &'static str,
+        control: ContainerRuntimeControl,
+        deadline: Instant,
+        clock: &ContainerSweepClock,
+        work: F,
+    ) -> bool
+    where
+        F: FnOnce(&ContainerRuntimeControl) + Send + 'static,
+    {
+        if clock.now() >= deadline {
             return false;
         }
         let context = ContainerShutdownWorkContext {
@@ -343,13 +386,14 @@ impl ContainerShutdownWorkRegistry {
         if self.ensure_workers(&context) == 0 {
             return false;
         }
-        let Some(mut state) = lock_mutex_until(&self.shared.state, deadline) else {
+        let Some(mut state) = lock_mutex_until_with_clock(&self.shared.state, deadline, clock)
+        else {
             return false;
         };
         if state.phase != ContainerShutdownPhase::GlobalSweep
             || state.terminating
             || state.queued.len() >= CONTAINER_SHUTDOWN_QUEUE_CAPACITY
-            || Instant::now() >= deadline
+            || clock.now() >= deadline
         {
             return false;
         }
@@ -490,8 +534,13 @@ impl ContainerShutdownWorkRegistry {
     }
 
     pub(super) fn begin_shutdown(&self, deadline: Instant) -> bool {
+        self.begin_shutdown_with_clock(deadline, &ContainerSweepClock::native())
+    }
+
+    fn begin_shutdown_with_clock(&self, deadline: Instant, clock: &ContainerSweepClock) -> bool {
         self.shared.control.request_shutdown(deadline);
-        let Some(mut state) = lock_mutex_until(&self.shared.state, deadline) else {
+        let Some(mut state) = lock_mutex_until_with_clock(&self.shared.state, deadline, clock)
+        else {
             self.shared.work_available.notify_all();
             self.shared.state_changed.notify_all();
             log::error!(
@@ -509,21 +558,30 @@ impl ContainerShutdownWorkRegistry {
     }
 
     pub(super) fn seal_and_drain_until(&self, deadline: Instant) -> ContainerShutdownReport {
-        if !self.begin_shutdown(deadline) {
+        self.seal_and_drain_until_with_clock(deadline, &ContainerSweepClock::native())
+    }
+
+    pub(super) fn seal_and_drain_until_with_clock(
+        &self,
+        deadline: Instant,
+        clock: &ContainerSweepClock,
+    ) -> ContainerShutdownReport {
+        if !self.begin_shutdown_with_clock(deadline, clock) {
             return ContainerShutdownReport {
                 terminal: false,
                 retained: vec!["reason=shutdown-begin state=retained".to_string()],
             };
         }
-        let drained = self.wait_for_drain_until(deadline);
+        let drained = self.wait_for_drain_until(deadline, clock);
         let worker_lock_retained = self.join_finished_workers_bounded();
         self.shutdown_report(drained, worker_lock_retained)
     }
 
-    fn wait_for_drain_until(&self, deadline: Instant) -> bool {
+    fn wait_for_drain_until(&self, deadline: Instant, clock: &ContainerSweepClock) -> bool {
         let mut drained = false;
         loop {
-            let Some(mut state) = lock_mutex_until(&self.shared.state, deadline) else {
+            let Some(mut state) = lock_mutex_until_with_clock(&self.shared.state, deadline, clock)
+            else {
                 break;
             };
             let work_drained = state.active_producers == 0
@@ -536,14 +594,9 @@ impl ContainerShutdownWorkRegistry {
             }
             drained = work_drained && state.worker_count == 0;
             drop(state);
-            if drained {
+            if drained || !clock.wait_until("drainPoll", deadline, CONTAINER_SHUTDOWN_POLL) {
                 break;
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            std::thread::sleep(CONTAINER_SHUTDOWN_POLL.min(remaining));
         }
         drained
     }
@@ -823,31 +876,45 @@ pub(super) fn container_shutdown_worker(shared: Arc<ContainerShutdownWorkShared>
                     decrement_shutdown_worker_count(&mut state, &shared);
                     break None;
                 }
-                let effective_deadline = if state.phase == ContainerShutdownPhase::GlobalSweep {
-                    state.sweep_deadline
-                } else {
-                    shared.control.shutdown_deadline()
+                // A GlobalSweep epoch decides with the clock it opened with.
+                let (effective_deadline, clock) =
+                    if state.phase == ContainerShutdownPhase::GlobalSweep {
+                        (state.sweep_deadline, state.sweep_clock.clone())
+                    } else {
+                        (shared.control.shutdown_deadline(), None)
+                    };
+                let now = || {
+                    clock
+                        .as_ref()
+                        .map_or_else(Instant::now, ContainerSweepClock::now)
                 };
-                match effective_deadline {
-                    Some(deadline) if Instant::now() >= deadline => {
+                let observed = effective_deadline.map(|deadline| (deadline, now()));
+                match observed {
+                    Some((deadline, observed)) if observed >= deadline => {
                         if state.active_producers == 0 {
                             if state.phase == ContainerShutdownPhase::Accepting {
                                 state.phase = ContainerShutdownPhase::Draining;
                             }
                             state.terminating = true;
+                            #[cfg(test)]
+                            state.ack_idle(observed, None);
                             shared.work_available.notify_all();
                             shared.state_changed.notify_all();
                             decrement_shutdown_worker_count(&mut state, &shared);
                             break None;
                         }
+                        #[cfg(test)]
+                        state.ack_idle(observed, None);
                         state = shared
                             .work_available
                             .wait_timeout(state, CONTAINER_SHUTDOWN_IDLE_RECHECK)
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .0;
                     }
-                    Some(deadline) => {
-                        let remaining = deadline.saturating_duration_since(Instant::now());
+                    Some((deadline, _observed)) => {
+                        let remaining = deadline.saturating_duration_since(now());
+                        #[cfg(test)]
+                        state.ack_idle(_observed, Some(remaining));
                         state = shared
                             .work_available
                             .wait_timeout(state, remaining)
