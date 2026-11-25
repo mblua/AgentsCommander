@@ -311,11 +311,15 @@ class Run:
         dialog = self.wait_dialog()
         # A key sent before the chooser takes keyboard input is lost: ctrl+l then never
         # opens the location bar and the typed path lands in the search box instead.
+        # A leading "/" also opens that bar, but it takes focus a moment later: keys
+        # typed before then still go to the search box. So "/" goes alone, and the rest
+        # of the path follows after a pause, one key every 20 ms.
         time.sleep(1.0)
-        steps = [["-M", "ctrl", "l", "-m", "ctrl"], [canonical], ["-k", "Return"]]
-        for step in steps:
+        steps = [(["-M", "ctrl", "l", "-m", "ctrl"], 0.3), (["/"], 1.0),
+                 (["-d", "20", canonical.lstrip("/")], 0.3), (["-k", "Return"], 0.3)]
+        for step, pause in steps:
             self.dialog_key(step, dialog)
-            time.sleep(0.3)
+            time.sleep(pause)
         # The chooser may only enter the folder on Return; then the accept button
         # confirms it. Its mnemonic depends on the portal label (_Select or _Open).
         accepts = [("return", ["-k", "Return"]), ("alt_s", ["-M", "alt", "s", "-m", "alt"]),
