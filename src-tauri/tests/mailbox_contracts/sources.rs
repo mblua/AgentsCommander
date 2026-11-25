@@ -448,10 +448,9 @@ pub struct LogSite {
 pub struct MutatorRef {
     /// Item path plus the ordinal of the reference inside that item.
     pub site: String,
-    pub owner: Option<String>,
+    /// The owner's full path as written (`a::Owner` of `a::Owner::f` or `<a::Owner>::f`).
+    pub owner: Option<Vec<String>>,
     pub form: &'static str,
-    /// The owner is reached through a module path (`a::Owner::…`), not a local name.
-    pub qualified: bool,
     /// Name scopes visible at the reference, innermost first, ending at its module.
     pub chain: Vec<String>,
 }
@@ -465,6 +464,8 @@ pub struct Index {
     pub aliases: BTreeMap<(String, String), String>,
     /// `(scope, name) -> full path` of the names a `use` brings into that scope.
     pub uses: BTreeMap<(String, String), Vec<String>>,
+    /// `(scope, name) -> target path` of each type alias.
+    pub type_paths: BTreeMap<(String, String), Vec<String>>,
     /// Module paths glob-imported (`use a::*`) into each scope.
     pub globs: BTreeMap<String, Vec<Vec<String>>>,
     /// `(scope, name)` of the types declared in that scope.
@@ -642,18 +643,22 @@ impl Collector<'_> {
         }
     }
 
-    fn mutator_ref(&mut self, owner: Option<String>, form: &'static str, qualified: bool) {
+    fn mutator_ref(&mut self, owner: Option<Vec<String>>, form: &'static str) {
         let item = self.site();
         let n = self.refs_in_site.entry(item.clone()).or_insert(0);
         *n += 1;
         let site = format!("{item} (reference #{n} in this item)");
-        let owner = owner.map(|o| if o == "Self" { self.self_owner() } else { o });
+        let owner = owner.map(|mut o| {
+            if o.len() == 1 && o[0] == "Self" {
+                o[0] = self.self_owner();
+            }
+            o
+        });
         let chain = self.chain();
         self.index.refs.push(MutatorRef {
             site,
             owner,
             form,
-            qualified,
             chain,
         });
     }
@@ -677,22 +682,12 @@ impl Collector<'_> {
                 _ => None,
             };
             match (punct(1), punct(2)) {
-                (Some('.'), _) => self.mutator_ref(None, "method call in macro", false),
+                (Some('.'), _) => self.mutator_ref(None, "method call in macro"),
                 (Some(':'), Some(':')) => {
-                    // The owner is the nearest name before `::`, past a closing `>` of
-                    // `<path::Owner>::`; a `:` right before it means a module path.
-                    let at = trees[..i - 2]
-                        .iter()
-                        .rposition(|t| matches!(t, Tok::Ident(_)));
-                    let owner = at.and_then(|j| match &trees[j] {
-                        Tok::Ident(q) => Some(q.clone()),
-                        _ => None,
-                    });
-                    let before = at.and_then(|j| j.checked_sub(1)).map(|j| &trees[j]);
-                    let qualified = matches!(before, Some(Tok::Punct(':')));
-                    self.mutator_ref(owner, "path in macro", qualified);
+                    let owner = macro_owner(&trees[..i - 2]);
+                    self.mutator_ref(owner, "path in macro");
                 }
-                _ => self.mutator_ref(None, "bare reference in macro", false),
+                _ => self.mutator_ref(None, "bare reference in macro"),
             }
         }
     }
@@ -722,6 +717,39 @@ impl Collector<'_> {
             });
         }
     }
+}
+
+pub fn segments(path: &syn::Path) -> Vec<String> {
+    path.segments
+        .iter()
+        .map(|s| s.ident.unraw().to_string())
+        .collect()
+}
+
+/// The path written before `::mutator` in macro tokens: `a::b::Owner`, also inside
+/// `<a::b::Owner>`. `None` when the tokens are not such a path.
+fn macro_owner(before: &[Tok]) -> Option<Vec<String>> {
+    let mut end = before.len();
+    if let Some(Tok::Punct('>')) = before.last() {
+        end -= 1;
+    }
+    let mut path = Vec::new();
+    let mut at = end;
+    loop {
+        let Some(Tok::Ident(name)) = at.checked_sub(1).map(|j| &before[j]) else {
+            return None;
+        };
+        path.insert(0, name.clone());
+        at -= 1;
+        match (
+            at.checked_sub(1).map(|j| &before[j]),
+            at.checked_sub(2).map(|j| &before[j]),
+        ) {
+            (Some(Tok::Punct(':')), Some(Tok::Punct(':'))) => at -= 2,
+            _ => break,
+        }
+    }
+    Some(path)
 }
 
 pub fn first_literal(mac: &syn::Macro) -> Option<String> {
@@ -791,6 +819,10 @@ impl<'ast> Visit<'ast> for Collector<'_> {
                 if let Some(target) = type_ident(&t.ty) {
                     self.name(t.ident.unraw().to_string(), target);
                 }
+                if let syn::Type::Path(p) = &*t.ty {
+                    let key = (self.scope(), t.ident.unraw().to_string());
+                    self.index.type_paths.insert(key, segments(&p.path));
+                }
                 visit::visit_item_type(self, t);
             }
             syn::Item::Struct(s) => {
@@ -857,22 +889,21 @@ impl<'ast> Visit<'ast> for Collector<'_> {
         }
         match expr {
             Expr::MethodCall(call) if call.method.unraw() == MUTATOR => {
-                self.mutator_ref(None, "method call", false);
+                self.mutator_ref(None, "method call");
             }
             Expr::Path(path) if last_ident(&path.path).as_deref() == Some(MUTATOR) => {
+                // `<a::Owner>::f` names the owner by the qself type's full path.
                 let owner = match &path.qself {
-                    Some(q) => type_ident(&q.ty),
+                    Some(q) => match &*q.ty {
+                        syn::Type::Path(t) if t.qself.is_none() => Some(segments(&t.path)),
+                        _ => None,
+                    },
                     None => {
-                        let segs = &path.path.segments;
-                        (segs.len() >= 2).then(|| segs[segs.len() - 2].ident.unraw().to_string())
+                        let segs = segments(&path.path);
+                        (segs.len() >= 2).then(|| segs[..segs.len() - 1].to_vec())
                     }
                 };
-                // `<a::Owner>::f` names Owner through a module path, like `a::Owner::f`.
-                let qualified = match &path.qself {
-                    Some(q) => !matches!(&*q.ty, syn::Type::Path(t) if t.path.segments.len() == 1),
-                    None => path.path.segments.len() > 2,
-                };
-                self.mutator_ref(owner, "path", qualified);
+                self.mutator_ref(owner, "path");
             }
             _ => {}
         }

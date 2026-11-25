@@ -651,18 +651,44 @@ fn provenance_controls() {
     ] {
         Fixture::base()
             .edit(DELIVERY, call, &format!("{bind}\n        {named}"))
-            .rejects(why, "unresolved call to Mailbox::", DELIVERY);
+            .rejects(why, "unsupported form Mailbox::", DELIVERY);
     }
     Fixture::base()
         .edit(DELIVERY, call, &named)
         .accepts("owner named by its declaration");
+    // a4 Grinch: a separate block's import does not bind the call's name.
+    Fixture::base()
+        .edit(
+            DELIVERY,
+            call,
+            &format!(
+                "use crate::otro::Mailbox;\n        \
+                 {{ use super::delivery::Mailbox; }}\n        {named}"
+            ),
+        )
+        .rejects(
+            "import in a separate block",
+            "unsupported form Mailbox::",
+            DELIVERY,
+        );
+    Fixture::base()
+        .edit(
+            DELIVERY,
+            call,
+            &format!("use crate::otro::Mailbox;\n        {call}"),
+        )
+        .accepts("Self call next to a body import of a homonym");
     Fixture::base()
         .edit(
             DELIVERY,
             call,
             &format!("use super::delivery::Mailbox;\n        {named}"),
         )
-        .accepts("body import of the real owner");
+        .rejects(
+            "body import, even of the real owner",
+            "unsupported form Mailbox::",
+            DELIVERY,
+        );
 }
 
 /// Pattern guards and every successful `Ok` form.
@@ -763,8 +789,36 @@ fn scope_controls() {
             )
             .rejects(why, T10, "delivery.rs::b::h (reference #1");
     }
+    // a4 Grinch: an alias outside the tree is not answered by an in-tree homonym.
+    Fixture::base()
+        .append(
+            DELIVERY,
+            "\npub struct ClockAlias;\nimpl ClockAlias { fn mark_auto_closed(&mut self) {} }\n",
+        )
+        .append(
+            DELIVERY,
+            "\nfn g() { let r = <crate::otro::ClockAlias>::mark_auto_closed; }\n",
+        )
+        .rejects(
+            "UFCS path outside the tree",
+            T10,
+            "delivery.rs::g (reference #1",
+        );
+    Fixture::base()
+        .append(
+            DELIVERY,
+            concat!(
+                "\nfn g() { let r = ",
+                "<crate::config::coordinator_clocks::CoordinatorClocks>::mark_auto_closed; }\n"
+            ),
+        )
+        .rejects(
+            "UFCS full path of the real owner",
+            T10,
+            "delivery.rs::g (reference #1",
+        );
     let alias = "\npub type Alias = CoordinatorClocks;\n";
-    let local = "\nmod local {\n    use crate::other::Plain as Alias;\n    \
+    let local = "\nmod local {\n    use super::Plain as Alias;\n    \
         fn h() { let f = Alias::mark_auto_closed; }\n}\n";
     Fixture::base()
         .append("clocks.rs", alias)

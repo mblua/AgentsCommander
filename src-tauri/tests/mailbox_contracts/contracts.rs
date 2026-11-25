@@ -61,7 +61,7 @@ fn close_marker_errors(index: &Index) -> Vec<String> {
         let resolved = r
             .owner
             .as_deref()
-            .map(|o| resolve_owner(index, &r.chain, o, r.qualified));
+            .map(|o| resolve_owner(index, &r.chain, o));
         let unresolved = |why: &str| {
             format!(
                 "T10 close-marker restore: {why} owner {:?} of {MUTATOR} ({}) at {}",
@@ -916,9 +916,18 @@ impl Paths<'_> {
             // A method on another value: only methods can answer it.
             named.filter(|f| f.sig.receiver().is_some()).collect()
         } else {
-            named
-                .filter(|f| qualifier_reaches(self.index, func, path, receiver, f))
-                .collect()
+            let mut reached = Vec::new();
+            for f in named {
+                match qualifier_reaches(self.index, func, path, receiver, f) {
+                    Ok(true) => reached.push(f),
+                    Ok(false) => {}
+                    Err(e) => {
+                        self.fail(func, &e);
+                        return flows;
+                    }
+                }
+            }
+            reached
         };
         let target = match candidates.as_slice() {
             [one] => *one,

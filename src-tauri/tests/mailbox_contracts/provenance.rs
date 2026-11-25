@@ -25,25 +25,106 @@ pub enum Owner {
     Ambiguous,
 }
 
-/// Resolves `name` in the scopes visible at the reference first (innermost first,
-/// stopping at its module), so a homonym declared in another module cannot change it.
-/// A name reached through a module path skips the local scopes: every definition in
-/// the tree must then agree.
-pub fn resolve_owner(index: &Index, chain: &[String], name: &str, qualified: bool) -> Owner {
-    for scope in chain.iter().filter(|_| !qualified) {
-        let key = (scope.clone(), name.to_string());
-        if let Some(target) = index.aliases.get(&key) {
-            return resolve_global(index, target, 0);
-        }
-        if index.declared.contains(&key) {
-            return if name == OWNER {
-                Owner::Clocks
-            } else {
-                Owner::Other
+/// The full path of the real owner, the only one outside the tree a path may name.
+const OWNER_PATH: [&str; 4] = ["crate", "config", "coordinator_clocks", OWNER];
+
+/// Resolves the owner path written at a reference, through the scopes visible there.
+/// A single name is looked up innermost first (imports, aliases, declarations, globs);
+/// a module path is followed through the indexed tree. A path leaving the tree
+/// resolves only when it is the real owner's: anything else outside is `Unknown`.
+pub fn resolve_owner(index: &Index, chain: &[String], path: &[String]) -> Owner {
+    owner_at(index, chain, path, 0)
+}
+
+fn owner_at(index: &Index, chain: &[String], path: &[String], depth: usize) -> Owner {
+    if depth > MAX_DEPTH {
+        return Owner::Unknown;
+    }
+    match path {
+        [] => Owner::Unknown,
+        [name] => (0..chain.len())
+            .find_map(|i| owner_in(index, &chain[i..], name, depth))
+            .unwrap_or_else(|| resolve_global(index, name, 0)),
+        [module @ .., name] => {
+            let Some(scope) = chain.first() else {
+                return Owner::Unknown;
             };
+            match module_target(index, scope, module) {
+                Some((_, Some(target))) => {
+                    owner_in(index, &[target], name, depth + 1).unwrap_or(Owner::Unknown)
+                }
+                Some((abs, None)) if abs.iter().chain([name]).eq(OWNER_PATH.iter()) => {
+                    Owner::Clocks
+                }
+                _ => Owner::Unknown,
+            }
         }
     }
-    resolve_global(index, name, 0)
+}
+
+/// What `name` denotes when the first scope of `chain` binds it; `None` when it does
+/// not. What it binds to is read from that scope outward.
+fn owner_in(index: &Index, chain: &[String], name: &str, depth: usize) -> Option<Owner> {
+    let scope = chain.first()?;
+    let key = (scope.clone(), name.to_string());
+    if index.declared.contains(&key) {
+        return Some(if name == OWNER {
+            Owner::Clocks
+        } else {
+            Owner::Other
+        });
+    }
+    if let Some(path) = index.uses.get(&key).or_else(|| index.type_paths.get(&key)) {
+        return Some(owner_at(index, chain, path, depth + 1));
+    }
+    if index.aliases.contains_key(&key) {
+        return Some(Owner::Unknown);
+    }
+    let mut seen = BTreeSet::new();
+    for module in index.globs.get(scope).into_iter().flatten() {
+        match module_target(index, scope, module) {
+            Some((_, Some(target))) => seen.extend(owner_in(index, &[target], name, depth + 1)),
+            _ => {
+                seen.insert(Owner::Unknown);
+            }
+        }
+    }
+    match seen.len() {
+        0 => None,
+        1 => seen.into_iter().next(),
+        _ => Some(Owner::Ambiguous),
+    }
+}
+
+/// The absolute module path `segs` names from `scope`, with its scope key when the
+/// module is in the indexed tree. `None` when the path cannot be read.
+fn module_target(
+    index: &Index,
+    scope: &str,
+    segs: &[String],
+) -> Option<(Vec<String>, Option<String>)> {
+    let mut module = index.scope_module.get(scope)?.clone();
+    for (i, seg) in segs.iter().enumerate() {
+        match seg.as_str() {
+            "crate" if i == 0 => module = vec!["crate".to_string()],
+            "self" if i == 0 => {}
+            "super" if module.len() > 1 => {
+                module.pop();
+            }
+            "super" | "self" | "crate" => return None,
+            _ if i == 0
+                && !index
+                    .modules
+                    .contains_key(&[&module[..], std::slice::from_ref(seg)].concat()) =>
+            {
+                // Not a child module: an external crate or a name this check does not read.
+                return None;
+            }
+            _ => module.push(seg.clone()),
+        }
+    }
+    let key = index.modules.get(&module).cloned();
+    Some((module, key))
 }
 
 /// A name imported from elsewhere: every definition of it in the tree must agree.
@@ -100,7 +181,7 @@ pub fn entry_env(index: &Index, func: &FnInfo) -> Result<BTreeMap<String, Origin
     }
     let mut calls = Vec::new();
     for caller in &index.fns {
-        for args in calls_to(index, caller, func) {
+        for args in calls_to(index, caller, func)? {
             calls.push((caller, args));
         }
     }
@@ -256,9 +337,26 @@ fn calls_named(block: &Block, name: &str) -> Vec<Vec<Expr>> {
     calls.1
 }
 
-/// Calls in `caller` that resolve to `callee`, honoring the path qualifier.
-fn calls_to(index: &Index, caller: &FnInfo, callee: &FnInfo) -> Vec<Vec<Expr>> {
-    struct Calls<'a>(&'a Index, &'a FnInfo, &'a FnInfo, Vec<Vec<Expr>>);
+/// Calls in `caller` that resolve to `callee`, honoring the path qualifier. A call
+/// of that name in a form the check does not read is an error.
+fn calls_to(index: &Index, caller: &FnInfo, callee: &FnInfo) -> Result<Vec<Vec<Expr>>, String> {
+    struct Calls<'a>(
+        &'a Index,
+        &'a FnInfo,
+        &'a FnInfo,
+        Vec<Vec<Expr>>,
+        Vec<String>,
+    );
+    impl Calls<'_> {
+        fn reached(&mut self, path: &syn::Path, receiver: Option<&Expr>) -> bool {
+            let (index, caller, callee) = (self.0, self.1, self.2);
+            qualifier_reaches(index, caller, path, receiver, callee).unwrap_or_else(|e| {
+                self.4
+                    .push(format!("{}::{}: {e}", caller.file, caller.name));
+                false
+            })
+        }
+    }
     impl<'ast> Visit<'ast> for Calls<'_> {
         fn visit_stmt(&mut self, stmt: &'ast Stmt) {
             if !stmt_test_only(stmt) {
@@ -269,12 +367,12 @@ fn calls_to(index: &Index, caller: &FnInfo, callee: &FnInfo) -> Vec<Vec<Expr>> {
             if is_test_only(expr_attrs(expr)) {
                 return;
             }
-            let (index, caller, callee) = (self.0, self.1, self.2);
+            let callee = self.2;
             match expr {
                 Expr::Call(c) => {
                     if let Expr::Path(p) = &*c.func {
                         if last_ident(&p.path).as_deref() == Some(callee.name.as_str())
-                            && qualifier_reaches(index, caller, &p.path, None, callee)
+                            && self.reached(&p.path, None)
                         {
                             self.3.push(c.args.iter().cloned().collect());
                         }
@@ -282,13 +380,7 @@ fn calls_to(index: &Index, caller: &FnInfo, callee: &FnInfo) -> Vec<Vec<Expr>> {
                 }
                 Expr::MethodCall(m)
                     if m.method.unraw() == callee.name
-                        && qualifier_reaches(
-                            index,
-                            caller,
-                            &syn::Path::from(m.method.clone()),
-                            Some(&m.receiver),
-                            callee,
-                        ) =>
+                        && self.reached(&syn::Path::from(m.method.clone()), Some(&m.receiver)) =>
                 {
                     self.3.push(m.args.iter().cloned().collect());
                 }
@@ -297,46 +389,86 @@ fn calls_to(index: &Index, caller: &FnInfo, callee: &FnInfo) -> Vec<Vec<Expr>> {
             visit::visit_expr(self, expr);
         }
     }
-    let mut calls = Calls(index, caller, callee, Vec::new());
+    let mut calls = Calls(index, caller, callee, Vec::new(), Vec::new());
     calls.visit_block(&caller.block);
-    calls.3
+    match calls.4.first() {
+        Some(error) => Err(error.clone()),
+        None => Ok(calls.3),
+    }
 }
 
 /// Whether a call written as `path` (with `receiver` for a method call) in
-/// `caller` names `callee`: `Self::`/`self.`/`Owner::` reach methods of that
-/// owner, a bare name reaches a free function of the same file. Owner names are
-/// resolved to their declaration at both ends; a name that does not resolve with
-/// certainty reaches nothing, so the call is reported unresolved where it is made.
+/// `caller` names `callee`. Only a closed set of forms is read: `self.f`, `Self::f`
+/// (the owner of the impl, as declared where the impl is written), `Owner::f` with
+/// `Owner` bound only at module level, and a bare free function of the same file.
+/// `Err` is an unsupported or uncertain form, reported where the call is made.
 pub fn qualifier_reaches(
     index: &Index,
     caller: &FnInfo,
     path: &syn::Path,
     receiver: Option<&Expr>,
     callee: &FnInfo,
-) -> bool {
+) -> Result<bool, String> {
     let segs = &path.segments;
     if receiver.is_none() && segs.len() > 2 {
-        // `a::Owner::f` names a module this check does not resolve: not the callee.
-        return false;
+        return Err(format!("unsupported form {}", quote_path(path)));
     }
     let qual = (segs.len() >= 2).then(|| segs[segs.len() - 2].ident.unraw().to_string());
-    let owner = |f: &FnInfo| {
-        f.owner
-            .as_deref()
-            .and_then(|o| declaration(index, &f.chain, o).ok())
+    let name = last_ident(path).unwrap_or_default();
+    // Names bound inside a body (by `use`, an alias or an item, in any block) are not
+    // read: a call through one is unsupported, whatever the binding order.
+    let body_binds = |n: &str| {
+        caller.chain[..caller.chain.len().saturating_sub(1)]
+            .iter()
+            .any(|scope| {
+                let key = (scope.clone(), n.to_string());
+                index.uses.contains_key(&key)
+                    || index.aliases.contains_key(&key)
+                    || index.declared.contains(&key)
+                    || index.globs.contains_key(scope)
+            })
     };
-    let same_owner = || owner(callee).is_some() && owner(callee) == owner(caller);
+    let impl_owner = |f: &FnInfo| -> Result<(String, String), String> {
+        let owner = f.owner.as_deref().ok_or("not a method")?;
+        declaration(index, &f.chain[f.chain.len().saturating_sub(1)..], owner)
+    };
+    let same_owner = || -> Result<bool, String> {
+        match (impl_owner(caller), impl_owner(callee)) {
+            (Ok(a), Ok(b)) => Ok(a == b),
+            (Err(e), _) => Err(format!("owner of the caller: {e}")),
+            (Ok(_), Err(_)) => Ok(false),
+        }
+    };
     match (receiver, qual.as_deref()) {
         (Some(r), _) => {
-            matches!(r, Expr::Path(p) if p.path.is_ident("self"))
-                && callee.sig.receiver().is_some()
-                && same_owner()
+            if !matches!(r, Expr::Path(p) if p.path.is_ident("self")) {
+                return Ok(false);
+            }
+            Ok(callee.sig.receiver().is_some() && same_owner()?)
         }
-        (None, Some("Self")) => same_owner(),
+        (None, Some("Self")) => Ok(callee.owner.is_some() && same_owner()?),
         (None, Some(q)) if q.starts_with(char::is_uppercase) => {
-            owner(callee).is_some() && declaration(index, &caller.chain, q).ok() == owner(callee)
+            if body_binds(q) {
+                return Err(format!(
+                    "unsupported form {}: {q} is bound in a body",
+                    quote_path(path)
+                ));
+            }
+            let Ok(target) = impl_owner(callee) else {
+                return Ok(false);
+            };
+            let module = &caller.chain[caller.chain.len().saturating_sub(1)..];
+            let found = declaration(index, module, q)
+                .map_err(|e| format!("unsupported form {}: {e}", quote_path(path)))?;
+            Ok(found == target)
         }
-        (None, _) => callee.owner.is_none() && callee.file == caller.file,
+        (None, Some(q)) => Err(format!("unsupported form {}: module {q}", quote_path(path))),
+        (None, None) => {
+            if body_binds(&name) {
+                return Err(format!("unsupported form {name}: bound in a body"));
+            }
+            Ok(callee.owner.is_none() && callee.file == caller.file)
+        }
     }
 }
 
