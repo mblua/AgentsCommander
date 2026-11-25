@@ -357,6 +357,12 @@ class Run:
                      for w in seen]
             print(f"portal_dialog_missing: portalPid={'set' if gtk else 'none'} "
                   f"views={json.dumps(shown)}", file=sys.stderr)
+            logs = self.desk.path("logs")
+            for name in sorted(os.listdir(logs)) if os.path.isdir(logs) else []:
+                with open(os.path.join(logs, name), "rb") as h:
+                    tail = h.read().decode("utf-8", "replace").splitlines()[-40:]
+                print(f"--- {name} (last {len(tail)} lines)", file=sys.stderr)
+                print("\n".join(tail), file=sys.stderr)
             raise
 
     def dialog_key(self, args, dialog):
