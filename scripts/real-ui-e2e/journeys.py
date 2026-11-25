@@ -321,7 +321,11 @@ class Run:
             focus = self.desk.focused()
             return focus and focus["conId"] == self.main_con and focus["pid"] == self.app.pid
 
-        self.poll(STEP_S, back_in_main, "main_focus_not_restored")
+        try:
+            self.poll(STEP_S, back_in_main, "main_focus_not_restored")
+        except Failure:
+            self.dump_views("main_focus_not_restored", self.desk.windows())
+            raise
         self.wait_selector(header)
         self.poll(STEP_S, lambda: os.path.isdir(os.path.join(canonical, ".ac")),
                   "project_ac_missing")
@@ -350,20 +354,24 @@ class Run:
         try:
             return self.poll(STEP_S, dialog, "portal_dialog_missing")
         except Failure:
-            # Diagnostic only (job log): which views existed when the wait ended.
-            roles = {self.app.pid: "app", gtk: "portal"}
-            shown = [{"owner": roles.get(w["pid"], "other"), "name": w["name"],
-                      "focused": w["focused"], "main": w["conId"] == self.main_con}
-                     for w in seen]
-            print(f"portal_dialog_missing: portalPid={'set' if gtk else 'none'} "
-                  f"views={json.dumps(shown)}", file=sys.stderr)
-            logs = self.desk.path("logs")
-            for name in sorted(os.listdir(logs)) if os.path.isdir(logs) else []:
-                with open(os.path.join(logs, name), "rb") as h:
-                    tail = h.read().decode("utf-8", "replace").splitlines()[-40:]
-                print(f"--- {name} (last {len(tail)} lines)", file=sys.stderr)
-                print("\n".join(tail), file=sys.stderr)
+            self.dump_views("portal_dialog_missing", seen)
             raise
+
+    def dump_views(self, code, views):
+        # Diagnostic only (job log): which views existed when a wait ended.
+        gtk = self.desk.gtk_portal_pid
+        roles = {self.app.pid: "app", gtk: "portal"}
+        shown = [{"owner": roles.get(w["pid"], "other"), "name": w["name"],
+                  "focused": w["focused"], "main": w["conId"] == self.main_con}
+                 for w in views]
+        print(f"{code}: portalPid={'set' if gtk else 'none'} "
+              f"views={json.dumps(shown)}", file=sys.stderr)
+        logs = self.desk.path("logs")
+        for name in sorted(os.listdir(logs)) if os.path.isdir(logs) else []:
+            with open(os.path.join(logs, name), "rb") as h:
+                tail = h.read().decode("utf-8", "replace").splitlines()[-40:]
+            print(f"--- {name} (last {len(tail)} lines)", file=sys.stderr)
+            print("\n".join(tail), file=sys.stderr)
 
     def dialog_key(self, args, dialog):
         try:
