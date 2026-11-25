@@ -293,10 +293,24 @@ pub struct ContainerTransportBackend {
     /// Spy: how many times the real prepublish resize mark ran.
     #[cfg(test)]
     resize_marks_for_test: Arc<std::sync::atomic::AtomicUsize>,
+    /// Per-backend observer of the deadline each shutdown entry receives.
+    #[cfg(test)]
+    shutdown_stage_observer: Arc<Mutex<Option<ShutdownStageObserver>>>,
 }
 
 #[cfg(test)]
 type ResizePublishedHook = Box<dyn FnMut(&ContainerTransportBackend) + Send>;
+
+/// Shutdown entry seen by a test observer, with the deadline it received.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShutdownStage {
+    Begin(std::time::Instant),
+    Drain(std::time::Instant),
+}
+
+#[cfg(test)]
+pub(crate) type ShutdownStageObserver = Arc<dyn Fn(ShutdownStage) + Send + Sync>;
 
 impl ContainerTransportBackend {
     pub fn new(
@@ -340,12 +354,28 @@ impl ContainerTransportBackend {
             resize_published_hook: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             resize_marks_for_test: Arc::default(),
+            #[cfg(test)]
+            shutdown_stage_observer: Arc::new(Mutex::new(None)),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn set_resize_published_hook(&self, hook: ResizePublishedHook) {
         *self.resize_published_hook.lock().unwrap() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_shutdown_stage_observer_for_test(&self, observer: ShutdownStageObserver) {
+        *self.shutdown_stage_observer.lock().unwrap() = Some(observer);
+    }
+
+    /// Copies the observer under its lock and calls it with the lock released.
+    #[cfg(test)]
+    fn observe_shutdown_stage(&self, stage: ShutdownStage) {
+        let observer = self.shutdown_stage_observer.lock().unwrap().clone();
+        if let Some(observer) = observer {
+            observer(stage);
+        }
     }
 
     #[cfg(test)]
