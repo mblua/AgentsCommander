@@ -1,4 +1,4 @@
-use super::write_stdout;
+use super::*;
 use std::io::{self, Read, Write};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -9,8 +9,13 @@ const CHILD_ENV: &str = "AC_I4016_STDOUT_ERROR_CHILD_7D91C2";
 const CHILD_TEST: &str = "cli::stdout::tests::broken_pipe_child";
 const MODE_MARKER: &str = "I4016_STDOUT_CHILD_MODE_";
 const UNEXPECTED_RETURN: &str = "I4016_STDOUT_UNEXPECTED_RETURN";
+const REPORT_ATTEMPT: &str = "I5206_STDOUT_REPORT_ATTEMPT";
+const PANIC_HOOK: &str = "I5206_STDOUT_PANIC_HOOK";
 const ERROR_DISPLAY: &str = "i4016 synthetic stdout failure";
 const CHILD_DEADLINE: Duration = Duration::from_secs(10);
+/// What libtest itself prints on the child's stdout before the test exits. The
+/// child always runs on one thread, so the banner includes the test name.
+const HARNESS_STDOUT: &str = "\nrunning 1 test\ntest cli::stdout::tests::broken_pipe_child ... ";
 
 fn render(args: std::fmt::Arguments<'_>) -> Vec<u8> {
     let mut out = Vec::new();
@@ -40,6 +45,18 @@ fn argument_ending_in_lf_gets_one_more_lf() {
     assert_eq!(render(format_args!("line\n")), b"line\n\n");
 }
 
+#[test]
+fn successful_write_returns_without_reporting() {
+    let mut out = Vec::new();
+    let mut reported = false;
+    write_stdout_with_error(&mut out, format_args!("ok"), |_| {
+        reported = true;
+        Ok(())
+    });
+    assert_eq!(out, b"ok\n");
+    assert!(!reported, "the diagnostic writer must not run on success");
+}
+
 /// Writer that fails every write with the selected kind.
 struct FailingWriter(io::ErrorKind);
 
@@ -58,7 +75,7 @@ fn mode_kind(mode: &str) -> io::ErrorKind {
         "broken_pipe" => io::ErrorKind::BrokenPipe,
         "permission_denied" => io::ErrorKind::PermissionDenied,
         "write_zero" => io::ErrorKind::WriteZero,
-        "other" => io::ErrorKind::Other,
+        "other" | "report_fails" => io::ErrorKind::Other,
         unknown => panic!("unknown child error mode {unknown:?}"),
     }
 }
@@ -72,12 +89,23 @@ fn broken_pipe_child() {
     let mode = mode.into_string().expect("child mode is UTF-8");
     let kind = mode_kind(&mode);
     eprintln!("{MODE_MARKER}{mode}");
-    write_stdout(&mut FailingWriter(kind), format_args!("payload"));
+    if mode == "report_fails" {
+        std::panic::set_hook(Box::new(|_| eprintln!("{PANIC_HOOK}")));
+        let mut attempts = 0;
+        write_stdout_with_error(&mut FailingWriter(kind), format_args!("payload"), |_| {
+            attempts += 1;
+            eprintln!("{REPORT_ATTEMPT}{attempts}");
+            Err(io::Error::other("diagnostic writer failed"))
+        });
+    } else {
+        write_stdout(&mut FailingWriter(kind), format_args!("payload"));
+    }
     panic!("{UNEXPECTED_RETURN}");
 }
 
 struct ChildOutcome {
     code: Option<i32>,
+    stdout: String,
     stderr: String,
 }
 
@@ -96,9 +124,10 @@ fn run_child(mode: &str) -> ChildOutcome {
     );
     let exe = std::env::current_exe().expect("current test executable");
     let mut child = Command::new(exe)
-        .args(["--exact", CHILD_TEST, "--nocapture"])
+        .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
         .env(CHILD_ENV, mode)
         .env_remove("RUST_BACKTRACE")
+        .env_remove("RUST_TEST_THREADS")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -118,11 +147,12 @@ fn run_child(mode: &str) -> ChildOutcome {
         }
         thread::sleep(Duration::from_millis(20));
     };
-    stdout.join().expect("join child stdout");
+    let stdout = stdout.join().expect("join child stdout");
     let stderr = stderr.join().expect("join child stderr");
     ChildOutcome {
         code: status.code(),
-        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        stdout: String::from_utf8(stdout).expect("child stdout is UTF-8"),
+        stderr: String::from_utf8(stderr).expect("child stderr is UTF-8"),
     }
 }
 
@@ -146,13 +176,20 @@ fn assert_single_mode_marker(outcome: &ChildOutcome, mode: &str) {
     );
 }
 
-fn panic_message_lines(outcome: &ChildOutcome) -> usize {
-    let expected = format!("failed printing to stdout: {ERROR_DISPLAY}");
-    outcome
-        .stderr
-        .lines()
-        .filter(|line| line.trim_end_matches('\r') == expected)
-        .count()
+/// Both channels in full, byte for byte: stdout holds only the harness banner
+/// and stderr exactly the mode marker followed by `lines`, each ending in one LF.
+fn assert_channels(outcome: &ChildOutcome, mode: &str, lines: &[&str]) {
+    assert_eq!(
+        outcome.stdout, HARNESS_STDOUT,
+        "child stdout (stderr: {:?})",
+        outcome.stderr
+    );
+    let mut want = format!("{MODE_MARKER}{mode}\n");
+    for line in lines {
+        want.push_str(line);
+        want.push('\n');
+    }
+    assert_eq!(outcome.stderr, want, "child stderr");
 }
 
 #[test]
@@ -160,42 +197,54 @@ fn broken_pipe_exits_zero_without_panic() {
     let outcome = run_child("broken_pipe");
     assert_single_mode_marker(&outcome, "broken_pipe");
     assert_eq!(outcome.code, Some(0), "child stderr: {}", outcome.stderr);
-    assert!(
-        !outcome.stderr.contains("panicked"),
-        "child stderr: {}",
-        outcome.stderr
-    );
-    assert_eq!(panic_message_lines(&outcome), 0);
+    assert_channels(&outcome, "broken_pipe", &[]);
 }
 
-fn assert_error_mode_panics(mode: &str) {
+fn assert_error_mode_exits_one(mode: &str) {
     let outcome = run_child(mode);
     assert_single_mode_marker(&outcome, mode);
-    assert!(
-        outcome.code.is_some_and(|code| code != 0),
-        "{mode} child must fail, got {:?}: {}",
-        outcome.code,
-        outcome.stderr
-    );
+    assert_eq!(outcome.code, Some(1), "child stderr: {}", outcome.stderr);
+    let diagnostic = format!("failed printing to stdout: {ERROR_DISPLAY}");
+    assert_channels(&outcome, mode, &[diagnostic.as_str()]);
+}
+
+#[test]
+fn permission_denied_exits_one_with_message() {
+    assert_error_mode_exits_one("permission_denied");
+}
+
+#[test]
+fn write_zero_exits_one_with_message() {
+    assert_error_mode_exits_one("write_zero");
+}
+
+#[test]
+fn other_error_exits_one_with_message() {
+    assert_error_mode_exits_one("other");
+}
+
+#[test]
+fn failed_diagnostic_is_tried_once_and_still_exits_one() {
+    let outcome = run_child("report_fails");
+    assert_single_mode_marker(&outcome, "report_fails");
+    assert_eq!(outcome.code, Some(1), "child stderr: {}", outcome.stderr);
+    let attempts: Vec<&str> = outcome
+        .stderr
+        .lines()
+        .filter(|line| line.contains(REPORT_ATTEMPT))
+        .collect();
     assert_eq!(
-        panic_message_lines(&outcome),
-        1,
+        attempts,
+        [format!("{REPORT_ATTEMPT}1").as_str()],
         "child stderr: {}",
         outcome.stderr
     );
-}
-
-#[test]
-fn permission_denied_panics_with_message() {
-    assert_error_mode_panics("permission_denied");
-}
-
-#[test]
-fn write_zero_panics_with_message() {
-    assert_error_mode_panics("write_zero");
-}
-
-#[test]
-fn other_error_panics_with_message() {
-    assert_error_mode_panics("other");
+    assert!(
+        !outcome.stderr.contains(PANIC_HOOK),
+        "child stderr: {}",
+        outcome.stderr
+    );
+    // The failing report wrote nothing itself: only its one attempt marker.
+    let attempt = format!("{REPORT_ATTEMPT}1");
+    assert_channels(&outcome, "report_fails", &[attempt.as_str()]);
 }
