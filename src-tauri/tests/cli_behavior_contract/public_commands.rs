@@ -785,26 +785,17 @@ fn list_sessions_p01_input(name: &str) -> Vec<u8> {
     serde_json::to_vec_pretty(&rows).expect("sessions json")
 }
 
-/// Runs one case on a fresh binary copy and profile; stdout stays raw bytes.
+/// Runs one case on a fresh binary copy and profile; stdout returns as bytes.
 fn run_list_sessions_p01(input: &[u8], args: &[&str]) -> (Option<i32>, Vec<u8>, String) {
     let tmp = Tmp::new("cli-list-sessions-p01");
     let bin = copy_binary_into(tmp.path());
     let config_dir = config_dir_for_bin(&bin);
     std::fs::create_dir_all(&config_dir).expect("config dir");
     std::fs::write(config_dir.join("sessions.json"), input).expect("write sessions");
-    let mut command = super::command_for_binary(&bin);
-    command
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let child = {
-        let _guard = super::spawn_lock();
-        command.spawn().expect("spawn")
-    };
-    let out = child.wait_with_output().expect("collect output");
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    (out.status.code(), out.stdout, stderr)
+    // Reuses the shared runner so issue_1867's route count stays frozen. Its lossy
+    // decode only rewrites invalid UTF-8, and any such rewrite breaks the SHA pin.
+    let (code, stdout, stderr) = super::run(&bin, args);
+    (code, stdout.into_bytes(), stderr)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
