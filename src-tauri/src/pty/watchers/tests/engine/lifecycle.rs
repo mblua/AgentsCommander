@@ -227,6 +227,9 @@ fn p03_harness() -> Harness {
     harness
 }
 
+/// Linux TID of the last `p03_run` engine thread.
+static P03_TID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
 /// Runs `run_with_runtime` on its own thread; returns (joined in time, join was Ok).
 fn p03_run<F>(engine: &Arc<WatcherEngine>, make: F, shutdown: &ShutdownSignal) -> (bool, bool)
 where
@@ -236,6 +239,9 @@ where
     let (engine, shutdown) = (Arc::clone(engine), shutdown.clone());
     let (done, wait) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || {
+        #[cfg(target_os = "linux")]
+        // SAFETY: gettid has no preconditions.
+        P03_TID.store(unsafe { libc::gettid() }, Ordering::SeqCst);
         engine.run_with_runtime(make, shutdown);
         let _ = done.send(());
     });
@@ -249,12 +255,12 @@ type ShutdownSignal = crate::shutdown::ShutdownSignal;
 /// error with the name, the cause and the frozen samples, and never reads or ticks.
 #[test]
 fn a_failed_engine_runtime_logs_once_and_never_ticks() {
-    if !p03_in_child(
+    let Some(_done) = p03_in_child(
         module_path!(),
         "a_failed_engine_runtime_logs_once_and_never_ticks",
-    ) {
+    ) else {
         return;
-    }
+    };
     type Make = Box<dyn FnOnce() -> std::io::Result<tokio::runtime::Runtime> + Send>;
     let cases: [(&str, Make); 4] = [
         (
@@ -377,12 +383,12 @@ fn the_engine_cancelled_before_its_first_tick_never_ticks() {
 /// A tick panic is still contained: one PANICKED error, the thread ends cleanly.
 #[test]
 fn a_panicking_tick_is_contained_with_the_real_runtime() {
-    if !p03_in_child(
+    let Some(_done) = p03_in_child(
         module_path!(),
         "a_panicking_tick_is_contained_with_the_real_runtime",
-    ) {
+    ) else {
         return;
-    }
+    };
     let harness = p03_harness();
     let engine = WatcherEngine::new(
         Arc::clone(&harness.backends) as Arc<dyn WatcherBackendSource>,
@@ -425,15 +431,20 @@ impl WatcherPatternSource for PanickingPatterns {
 #[cfg(target_os = "linux")]
 #[test]
 fn the_production_runtime_fails_cleanly_when_descriptors_run_out() {
-    if !p03_in_child(
+    let Some(_done) = p03_in_child(
         module_path!(),
         "the_production_runtime_fails_cleanly_when_descriptors_run_out",
-    ) {
+    ) else {
         return;
-    }
+    };
     let count = |dir: &str| std::fs::read_dir(dir).unwrap().count();
     let harness = p03_harness();
-    let (fds, tasks) = (count("/proc/self/fd"), count("/proc/self/task"));
+    let tids = || -> std::collections::BTreeSet<String> {
+        let dir = std::fs::read_dir("/proc/self/task").unwrap();
+        dir.map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect()
+    };
+    let (fds, tasks, pre) = (count("/proc/self/fd"), count("/proc/self/task"), tids());
     assert_eq!(
         fds, 4,
         "three inherited descriptors plus the directory being read"
@@ -451,14 +462,30 @@ fn the_production_runtime_fails_cleanly_when_descriptors_run_out() {
     // SAFETY: setrlimit on this process with a valid pointer to an initialized rlimit.
     assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &low) }, 0);
     let shutdown = ShutdownSignal::new();
+    let start = Instant::now();
     let run = p03_run(&harness.engine, WatcherEngine::RUNTIME_FACTORY, &shutdown);
+    let (joined, fds_at_join) = (Instant::now(), count("/proc/self/fd"));
     // SAFETY: setrlimit on this process with a valid pointer to an initialized rlimit.
     assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &old) }, 0);
-    assert_eq!(run, (true, true));
-    // A joined thread can stay listed in /proc/self/task for a moment after join returns.
-    let settled = Instant::now() + Duration::from_secs(1);
-    while count("/proc/self/task") > tasks && Instant::now() < settled {
-        std::thread::sleep(Duration::from_millis(5));
+    assert_eq!((run, fds_at_join), ((true, true), 4));
+    // Only the joined engine TID may stay listed for a moment after join returns.
+    let engine = P03_TID.load(Ordering::SeqCst).to_string();
+    let deadline = (joined + Duration::from_secs(1)).min(start + Duration::from_secs(3));
+    let mut now = tids();
+    eprintln!("post-join: engine {engine}, PRE {pre:?}, first {now:?}");
+    while now != pre {
+        let extra: Vec<&String> = now.difference(&pre).collect();
+        assert!(
+            pre.is_subset(&now) && extra == [&engine],
+            "{now:?} vs {pre:?}"
+        );
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !left.is_zero(),
+            "joined engine thread {engine} still listed"
+        );
+        std::thread::sleep(left.min(Duration::from_millis(5)));
+        now = tids();
     }
     assert_eq!(
         (count("/proc/self/fd"), count("/proc/self/task")),

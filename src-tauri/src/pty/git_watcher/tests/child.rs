@@ -11,7 +11,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 const P03_CHILD: &str = "AC5206_P03_GIT_CHILD";
-const P03_ARGS: [&str; 4] = ["--exact", "--nocapture", "--test-threads", "1"];
+const P03_ARGS: [&str; 4] = ["--exact", "--show-output", "--test-threads", "1"];
+const P03_DONE: &str = "AC5206_P03_DONE";
 const WAIT: Duration = Duration::from_secs(45);
 const CLEANUP: Duration = Duration::from_secs(10);
 const LIMIT: Duration = Duration::from_secs(55);
@@ -100,8 +101,43 @@ impl Drop for P03Child {
     }
 }
 
-/// Reruns `module::name` in a child of this test binary (its own process logger); true in it.
-pub(crate) fn p03_in_child(module: &str, name: &str) -> bool {
+/// Held by the child test; on a clean (non-panicking) end it writes the one receipt.
+pub(crate) struct P03Done(String);
+
+impl Drop for P03Done {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            // Through the test capture, so --show-output prints it after the result line.
+            println!("{P03_DONE} {}", self.0);
+        }
+    }
+}
+
+/// The child's private stdout must show exactly this test passing, once, and its receipt.
+fn p03_oracle(stdout: &str, fqn: &str) -> Result<(), String> {
+    let count = |want: &str| stdout.lines().filter(|l| *l == want).count();
+    let summaries: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.starts_with("test result: "))
+        .collect();
+    let receipts = stdout.lines().filter(|l| l.starts_with(P03_DONE)).count();
+    let ok = count(&format!("test {fqn} ... ok")) == 1
+        && summaries.len() == 1
+        && summaries[0].starts_with("test result: ok. 1 passed; 0 failed; ")
+        && receipts == 1
+        && count(&format!("{P03_DONE} {fqn}")) == 1;
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "child {fqn}: stdout does not prove one passing run with its receipt"
+        ))
+    }
+}
+
+/// Reruns `module::name` in a child of this test binary (its own process logger). In the
+/// child it returns the receipt token to hold until the end of the test; in the parent None.
+pub(crate) fn p03_in_child(module: &str, name: &str) -> Option<P03Done> {
     let fqn = format!("{}::{name}", module.split_once("::").expect("crate path").1);
     if let Some(mark) = std::env::var_os(P03_CHILD) {
         let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -113,7 +149,7 @@ pub(crate) fn p03_in_child(module: &str, name: &str) -> bool {
         }
         log::set_logger(&P03Log).expect("child installs the error logger");
         log::set_max_level(log::LevelFilter::Error);
-        return true;
+        return Some(P03Done(fqn));
     }
     let fatal = P03_FATAL.lock().expect("P03 relaunch guard poisoned");
     assert!(
@@ -130,6 +166,7 @@ pub(crate) fn p03_in_child(module: &str, name: &str) -> bool {
         .arg(&fqn)
         .args(P03_ARGS)
         .env(P03_CHILD, &fqn)
+        .env_remove("RUST_TEST_NOCAPTURE")
         .env("AGENTSCOMMANDER_CONFIG_DIR", dir.path().join("config"))
         .stdin(std::process::Stdio::null())
         .stdout(out("stdout"))
@@ -157,10 +194,19 @@ pub(crate) fn p03_in_child(module: &str, name: &str) -> bool {
         }
     };
     owner.done = true;
-    if !status.success() {
+    let stdout = owner
+        .dir
+        .as_ref()
+        .map(|d| std::fs::read_to_string(d.path().join("stdout")));
+    let verdict = match stdout {
+        _ if !status.success() => Err(format!("child {fqn} failed: {status}")),
+        Some(Ok(text)) => p03_oracle(&text, &fqn),
+        other => Err(format!("child {fqn}: stdout unreadable: {other:?}")),
+    };
+    if let Err(why) = verdict {
         let files = owner.dir.take().map(tempfile::TempDir::keep);
         drop(owner);
-        panic!("child {fqn} failed: {status}, files kept in {files:?}");
+        panic!("{why}; files kept in {files:?}");
     }
-    false
+    None
 }

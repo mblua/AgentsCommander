@@ -760,9 +760,9 @@ pub(crate) use child::{p03_in_child, P03_ERRORS};
 #[test]
 fn a_failed_git_runtime_build_logs_once_and_skips_the_work() {
     let test = "a_failed_git_runtime_build_logs_once_and_skips_the_work";
-    if !p03_in_child(module_path!(), test) {
+    let Some(_done) = p03_in_child(module_path!(), test) else {
         return;
-    }
+    };
     for (name, effect) in [
         ("GitWatcher", WATCHER_STOPPED),
         ("GitSweeper", SWEEP_STOPPED),
