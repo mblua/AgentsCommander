@@ -61,7 +61,7 @@ fn close_marker_errors(index: &Index) -> Vec<String> {
         let resolved = r
             .owner
             .as_deref()
-            .map(|o| resolve_owner(index, &r.chain, o));
+            .map(|o| resolve_owner(index, &r.chain, o, r.qualified));
         let unresolved = |why: &str| {
             format!(
                 "T10 close-marker restore: {why} owner {:?} of {MUTATOR} ({}) at {}",
@@ -873,7 +873,15 @@ impl Paths<'_> {
             }
         }
         for arm in chosen {
-            let start = live.iter().map(|s| Flow::Next(*s)).collect();
+            let mut start: Vec<Flow> = live.iter().map(|s| Flow::Next(*s)).collect();
+            if let Some((_, guard)) = &arm.guard {
+                // A guard runs before its body; an exit inside it is an exit of the arm.
+                start = self.expr(func, guard, notice, start, depth);
+                let (next, exits): (Vec<Flow>, Vec<Flow>) =
+                    start.into_iter().partition(|f| matches!(f, Flow::Next(_)));
+                out.extend(exits);
+                start = next;
+            }
             out.extend(self.expr(func, &arm.body, notice, start, depth));
         }
         out

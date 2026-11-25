@@ -411,6 +411,8 @@ pub struct MutatorRef {
     pub site: String,
     pub owner: Option<String>,
     pub form: &'static str,
+    /// The owner is reached through a module path (`a::Owner::…`), not a local name.
+    pub qualified: bool,
     /// Name scopes visible at the reference, innermost first, ending at its module.
     pub chain: Vec<String>,
 }
@@ -556,7 +558,7 @@ impl Collector<'_> {
         }
     }
 
-    fn mutator_ref(&mut self, owner: Option<String>, form: &'static str) {
+    fn mutator_ref(&mut self, owner: Option<String>, form: &'static str, qualified: bool) {
         let item = self.site();
         let n = self.refs_in_site.entry(item.clone()).or_insert(0);
         *n += 1;
@@ -567,6 +569,7 @@ impl Collector<'_> {
             site,
             owner,
             form,
+            qualified,
             chain,
         });
     }
@@ -590,15 +593,16 @@ impl Collector<'_> {
                 _ => None,
             };
             match (punct(1), punct(2)) {
-                (Some('.'), _) => self.mutator_ref(None, "method call in macro"),
+                (Some('.'), _) => self.mutator_ref(None, "method call in macro", false),
                 (Some(':'), Some(':')) => {
                     let owner = trees[..i - 2].iter().rev().find_map(|t| match t {
                         Tok::Ident(q) => Some(q.clone()),
                         _ => None,
                     });
-                    self.mutator_ref(owner, "path in macro");
+                    let qualified = matches!(trees.get(i.wrapping_sub(4)), Some(Tok::Punct(':')));
+                    self.mutator_ref(owner, "path in macro", qualified);
                 }
-                _ => self.mutator_ref(None, "bare reference in macro"),
+                _ => self.mutator_ref(None, "bare reference in macro", false),
             }
         }
     }
@@ -767,7 +771,7 @@ impl<'ast> Visit<'ast> for Collector<'_> {
         }
         match expr {
             Expr::MethodCall(call) if call.method.unraw() == MUTATOR => {
-                self.mutator_ref(None, "method call");
+                self.mutator_ref(None, "method call", false);
             }
             Expr::Path(path) if last_ident(&path.path).as_deref() == Some(MUTATOR) => {
                 let owner = match &path.qself {
@@ -777,7 +781,8 @@ impl<'ast> Visit<'ast> for Collector<'_> {
                         (segs.len() >= 2).then(|| segs[segs.len() - 2].ident.unraw().to_string())
                     }
                 };
-                self.mutator_ref(owner, "path");
+                let qualified = path.qself.is_none() && path.path.segments.len() > 2;
+                self.mutator_ref(owner, "path", qualified);
             }
             _ => {}
         }

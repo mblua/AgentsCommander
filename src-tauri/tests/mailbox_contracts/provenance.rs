@@ -27,8 +27,10 @@ pub enum Owner {
 
 /// Resolves `name` in the scopes visible at the reference first (innermost first,
 /// stopping at its module), so a homonym declared in another module cannot change it.
-pub fn resolve_owner(index: &Index, chain: &[String], name: &str) -> Owner {
-    for scope in chain {
+/// A name reached through a module path skips the local scopes: every definition in
+/// the tree must then agree.
+pub fn resolve_owner(index: &Index, chain: &[String], name: &str, qualified: bool) -> Owner {
+    for scope in chain.iter().filter(|_| !qualified) {
         let key = (scope.clone(), name.to_string());
         if let Some(target) = index.aliases.get(&key) {
             return resolve_global(index, target, 0);
@@ -116,6 +118,19 @@ pub fn entry_env(index: &Index, func: &FnInfo) -> Result<BTreeMap<String, Origin
             func.file, func.name, caller.file, caller.name
         ));
     }
+    let entry_params: BTreeSet<String> = params(&entry.sig).into_iter().map(|(n, _)| n).collect();
+    let rebound: BTreeSet<String> = bound_names(&entry.block)
+        .intersection(&entry_params)
+        .cloned()
+        .collect();
+    for arg in args.iter() {
+        if let Some(name) = used_names(arg).into_iter().find(|n| rebound.contains(n)) {
+            return Err(format!(
+                "{DELIVER} rebinds {name} before the call to {}::{}",
+                func.file, func.name
+            ));
+        }
+    }
     let names = params(&func.sig);
     if names.len() != args.len() {
         return Err(format!(
@@ -172,6 +187,40 @@ fn entry_roles(entry: &FnInfo) -> Result<BTreeMap<String, &'static str>, String>
     };
     roles.insert(session.clone(), SESSION_PARAM);
     Ok(roles)
+}
+
+/// Names bound by a pattern anywhere in the production code of `block`.
+fn bound_names(block: &Block) -> BTreeSet<String> {
+    struct Bound(BTreeSet<String>);
+    impl<'ast> Visit<'ast> for Bound {
+        fn visit_stmt(&mut self, stmt: &'ast Stmt) {
+            if !stmt_test_only(stmt) {
+                visit::visit_stmt(self, stmt);
+            }
+        }
+        fn visit_pat_ident(&mut self, p: &'ast syn::PatIdent) {
+            self.0.insert(p.ident.unraw().to_string());
+            visit::visit_pat_ident(self, p);
+        }
+    }
+    let mut bound = Bound(BTreeSet::new());
+    bound.visit_block(block);
+    bound.0
+}
+
+/// Single-identifier paths read by `expr`.
+fn used_names(expr: &Expr) -> BTreeSet<String> {
+    struct Used(BTreeSet<String>);
+    impl<'ast> Visit<'ast> for Used {
+        fn visit_expr_path(&mut self, p: &'ast syn::ExprPath) {
+            if let Some(i) = p.path.get_ident() {
+                self.0.insert(i.unraw().to_string());
+            }
+        }
+    }
+    let mut used = Used(BTreeSet::new());
+    used.visit_expr(expr);
+    used.0
 }
 
 /// Argument lists of the production calls in `block` to a function named `name`.
@@ -262,6 +311,10 @@ pub fn qualifier_reaches(
     callee: &FnInfo,
 ) -> bool {
     let segs = &path.segments;
+    if receiver.is_none() && segs.len() > 2 {
+        // `a::Owner::f` names a module this check does not resolve: not the callee.
+        return false;
+    }
     let qual = (segs.len() >= 2).then(|| segs[segs.len() - 2].ident.unraw().to_string());
     match (receiver, qual.as_deref()) {
         (Some(r), _) => {

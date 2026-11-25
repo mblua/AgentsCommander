@@ -335,7 +335,8 @@ fn close_marker_controls() {
         )
         .append(
             "clocks.rs",
-            "\npub struct Other;\nfn h() { let f = Other::mark_auto_closed; }\n",
+            "\npub struct Other;\nimpl Other {\n    fn mark_auto_closed(&mut self) {}\n}\n\
+             fn h() { let f = Other::mark_auto_closed; }\n",
         )
         .accepts("test-only value and a homonym of another type");
     Fixture::base()
@@ -613,6 +614,31 @@ fn provenance_controls() {
     Fixture::base()
         .append(DELIVERY, quiet)
         .accepts("an uncalled homonym helper of another type");
+    for (name, value) in [("session_id", "Uuid::nil()"), ("target", "spare_target")] {
+        Fixture::base()
+            .edit(
+                DELIVERY,
+                call,
+                &format!("let {name} = {value};\n        {call}"),
+            )
+            .rejects(
+                "entry parameter shadowed",
+                &format!("rebinds {name}"),
+                DELIVERY,
+            );
+    }
+    // The homonym lives outside the mailbox tree, as in a real misrouted call.
+    Fixture::base()
+        .edit(
+            DELIVERY,
+            call,
+            &call.replace("Self::", "crate::otro::Mailbox::"),
+        )
+        .rejects(
+            "module-qualified homonym",
+            "delivery ContextAlert",
+            DELIVERY,
+        );
 }
 
 /// Pattern guards and every successful `Ok` form.
@@ -636,7 +662,10 @@ fn guard_and_exit_controls() {
             "delivery ContextAlert",
             DELIVERY,
         );
-    let tail = "        Self::log_internal_system_notice_delivery(session_id, target, notice);\n        Ok(())";
+    let tail = concat!(
+        "        Self::log_internal_system_notice_delivery(session_id, target, notice);\n",
+        "        Ok(())"
+    );
     Fixture::base()
         .edit(DELIVERY, tail, &tail.replace("Ok(())", "Result::Ok(())"))
         .accepts("qualified Ok tail");
@@ -644,9 +673,33 @@ fn guard_and_exit_controls() {
         .edit(
             DELIVERY,
             ".await?;\n",
-            ".await?;\n        if early() {\n            return std::result::Result::Ok(());\n        }\n",
+            concat!(
+                ".await?;\n        if early() {\n",
+                "            return std::result::Result::Ok(());\n        }\n"
+            ),
         )
-        .rejects("qualified Ok return before the INFO", "delivery ContextAlert", DELIVERY);
+        .rejects(
+            "qualified Ok return before the INFO",
+            "delivery ContextAlert",
+            DELIVERY,
+        );
+    Fixture::base()
+        .edit(
+            DELIVERY,
+            ".await?;\n",
+            concat!(
+                ".await?;\n        match () {\n            () if {\n",
+                "                if session_id.is_nil() {\n                    return Ok(());\n",
+                "                }\n                true\n",
+                "            } => {}\n            _ => {}\n",
+                "        }\n"
+            ),
+        )
+        .rejects(
+            "Ok returned inside a match guard",
+            "delivery ContextAlert",
+            DELIVERY,
+        );
     Fixture::base()
         .edit(DELIVERY, tail, &tail.replace("Ok(())", "finish()"))
         .rejects(
@@ -658,6 +711,16 @@ fn guard_and_exit_controls() {
 
 /// Owner names resolve in the reference's own scopes first.
 fn scope_controls() {
+    let other_alias = "\nmod b {\n    struct Other;\n    type ClockAlias = Other;\n    \
+        fn h() { let f = super::super::clocks::ClockAlias::mark_auto_closed; }\n}\n";
+    Fixture::base()
+        .append("clocks.rs", "\npub type ClockAlias = CoordinatorClocks;\n")
+        .append(DELIVERY, other_alias)
+        .rejects(
+            "module path to an alias",
+            T10,
+            "delivery.rs::b::h (reference #1",
+        );
     let alias = "\npub type Alias = CoordinatorClocks;\n";
     let local = "\nmod local {\n    use crate::other::Plain as Alias;\n    \
         fn h() { let f = Alias::mark_auto_closed; }\n}\n";
@@ -774,6 +837,14 @@ fn mailbox_sources_cover_moves() {
             "fn l(c: &mut X) { c.mark_auto_closed(&f, t); }\n",
         )
         .rejects("#[path] inside an inline module", T10, "inline/custom.rs");
+    Fixture::base()
+        .edit(
+            "../mailbox.rs",
+            "mod clocks;",
+            "mod clocks;\nmod inline {\n    #[path = \"custom.rs\"]\n    mod leaf;\n}",
+        )
+        .add("inline/custom.rs", "pub fn l() {}\n")
+        .accepts("valid #[path] inside an inline module");
 
     discovery_failures();
 }
