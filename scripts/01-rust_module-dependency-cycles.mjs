@@ -3615,7 +3615,7 @@ function reportRunError(err) {
     process.stderr.write(`analysis error: ${err.message}\n`);
     return 3;
   }
-  process.stderr.write(`internal error: ${err && err.message}\n`);
+  process.stderr.write(`internal error: ${err?.message}\n`);
   if (err?.stack) process.stderr.write(`${err.stack}\n`);
   return 3;
 }
@@ -5003,7 +5003,7 @@ function runSelfTest() {
         const outcome = helper.run(fixture.run);
         fixture.assert(outcome.result, helper, outcome);
       } catch (err) {
-        failures.push(`threw: ${err && err.message}`);
+        failures.push(`threw: ${err?.message}`);
       }
 
       if (failures.length === 0) {
