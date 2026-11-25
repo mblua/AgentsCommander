@@ -4,44 +4,5 @@
   "threshold": 100,
   "toolchain": "1.98.1",
   "sourceCommit": "af830ff15ccd2990e468e683b14f2a471b655380",
-  "entries": [
-    {
-      "id": "rust:src-tauri/src/config/session_context.rs::legacy_rendered_default_context_for_generation",
-      "name": "legacy_rendered_default_context_for_generation",
-      "anchor": "4a221d65b426",
-      "sites": {
-        "linux": {
-          "lines": 210,
-          "production": true
-        },
-        "macos": {
-          "lines": 210,
-          "production": true
-        },
-        "windows": {
-          "lines": 183,
-          "production": true
-        }
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/lib.rs::invoke_handler",
-      "name": "invoke_handler",
-      "anchor": "6414ea1057d7",
-      "sites": {
-        "linux": {
-          "lines": 195,
-          "production": true
-        },
-        "macos": {
-          "lines": 195,
-          "production": true
-        },
-        "windows": {
-          "lines": 195,
-          "production": true
-        }
-      }
-    }
-  ]
+  "entries": []
 }

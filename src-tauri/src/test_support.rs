@@ -354,3 +354,22 @@ pub(crate) fn run_case(
     }
     println!("AC5174_OK {name} {scenario}");
 }
+
+/// Routes registered in `invoke_handler`, in order and with their original
+/// prefixes (`commands::` or the local `c::` alias). Unit tests only.
+#[cfg(test)]
+pub(crate) fn invoke_handler_routes(source: &str) -> Vec<&str> {
+    let (_, body) = source
+        .split_once(concat!(
+            "observer.observe_invokes(tauri::generate_handler!",
+            "["
+        ))
+        .expect("lib.rs must open the invoke handler list");
+    let (list, _) = body
+        .split_once("])")
+        .expect("lib.rs must close the invoke handler list");
+    list.split(',')
+        .map(str::trim)
+        .filter(|route| !route.is_empty())
+        .collect()
+}
