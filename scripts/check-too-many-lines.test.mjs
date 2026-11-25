@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   parseCapture, observations, compare, merge, ratchet, counts, originalAbsent,
   validateEnvelope, validateBaseline, normalizeFile, checkEnvironment, parseArgs, selfTestResult,
@@ -288,12 +289,16 @@ function run(step) {
 const APT_ACTION = '.github/actions/restore-pr-apt-cache/action.yml';
 const APT_JOBS = ['clippy-linux', 'rust-test-linux', 'rust-regression-linux',
   'rust-release-parity-linux'];
-// The catalog lists exactly the local action manifests the workflow calls, and
-// the expected inventory is pinned here independently of the catalog under test.
+const RELEASE_SCRIPTS = ['build', 'unix', 'windows']
+  .map(kind => `scripts/pr-regression/issue1850-release-${kind}.sh`);
+// The catalog lists the local action manifests the workflow calls and the release
+// scripts its steps load; the inventory is pinned here independently of the catalog.
 function catalogContract(workflow, catalog) {
   const calls = [...workflow.matchAll(/^\s+uses: \.\/(\S+)$/gm)].map(m => `${m[1]}/action.yml`);
   assert.deepEqual([...new Set(calls)].sort(), [APT_ACTION]);
-  assert.deepEqual(parsePathCatalog(catalog, PATH_CATALOG), [APT_ACTION]);
+  assert.deepEqual(parsePathCatalog(catalog, PATH_CATALOG), [APT_ACTION, ...RELEASE_SCRIPTS]);
+  const loaded = [...workflow.matchAll(/^\s+gate_path=(\S+)$/gm)].map(m => m[1]);
+  assert.deepEqual([...new Set(loaded)].sort(), [...RELEASE_SCRIPTS].sort());
   const parsed = jobs(workflow);
   for (const job of APT_JOBS) {
     const third = steps(parsed.get(job))[2];
@@ -706,3 +711,114 @@ test('detector commands run from a candidate checkout that deletes or renames th
       assert.equal(fs.readFileSync(output, 'utf8'), 'match=true\n', id);
     }
   }));
+
+// #4944 P02: the six long #1850 release steps load three pinned Bash files from
+// the event commit. Read sites, aliases and pins from the workflow and the blobs from HEAD.
+const RELEASE_FILE = kind => `scripts/pr-regression/issue1850-release-${kind}.sh`;
+const RELEASE_SITES = [
+  ['issue-1850-release-windows', 9, 'build', 40], ['issue-1850-release-windows', 10, 'windows', 20],
+  ['rust-regression-linux', 22, 'build', 40], ['rust-regression-linux', 23, 'unix', 20],
+  ['issue-1850-release-macos', 9, 'build', 60], ['issue-1850-release-macos', 10, 'unix', 20]];
+const RELEASE_NAMES = { build: '"IS #1850 focused release build"',
+  assert: '"IS #1850 focused release assertions (prebuilt harness)"' };
+function headBlob(file) {
+  const r = spawnSync('git', ['--no-replace-objects', 'cat-file', 'blob', `HEAD:${file}`]);
+  assert.equal(r.status, 0, `missing HEAD blob ${file}`); return r.stdout;
+}
+function releaseBody(step) {
+  const lines = step.split('\n'), at = lines.findIndex(l => l.startsWith('        run: '));
+  const body = [];
+  for (const line of lines.slice(at + 1)) {
+    if (line && !line.startsWith('          ')) break;
+    body.push(line.slice(10));
+  }
+  return { header: lines[at].slice(13), body: body.join('\n').trimEnd() + '\n' };
+}
+function releaseLoader(kind, body, blob) {
+  const file = RELEASE_FILE(kind);
+  assert.deepEqual([...body.matchAll(/^gate_path=(.*)$/gm)].map(m => m[1]), [file], kind);
+  const pins = [...body.matchAll(/^gate_pin=([0-9a-f]{64})$/gm)].map(m => m[1]);
+  const got = createHash('sha256').update(blob(file)).digest('hex');
+  assert.deepEqual(pins, [got], `${file}: pin ${pins} != HEAD SHA-256 ${got}`);
+  for (const text of ["'--no-replace-objects', '-C', root, 'cat-file', 'blob', ref + ':' + file]",
+    'GITHUB_SHA: ref', "if (got !== pin) throw new Error('actual SHA-256 ' + got);",
+    'gate_program=$(gate_load) || {\n  gate_rc=$?\n', 'process.exitCode = 1;'])
+    assert.ok(body.includes(text), `${kind} loader lacks ${text}`);
+  assert.doesNotMatch(body, /\bcat\b(?!-file)/, `${kind} loader depends on cat`);
+  if (kind === 'build') {
+    const lines = body.split('\n');
+    assert.equal(lines[0], 'set -euo pipefail');
+    assert.equal(lines[16], 'export ISSUE1850_DIAGNOSTICS', 'init must precede the loader');
+    assert.equal(lines[17], `gate_path=${file}`);
+    assert.ok(body.includes("fs.writeFileSync(program, bytes, { flag: 'wx', mode: 0o400 });"));
+    assert.ok(body.endsWith('  exit "$gate_rc"\n}\n. "$gate_program"\n'), 'build tail');
+    for (const text of ['metadata.json', 'cargo-messages.jsonl', 'GITHUB_OUTPUT'])
+      assert.ok(body.includes(text), `build preflight lacks ${text}`);
+  } else {
+    assert.ok(body.startsWith('gate_run() { builtin eval "${gate_program%.}"; }\n'));
+    assert.ok(body.includes("if (bytes.includes(0)) throw new Error('NUL in Bash input');"));
+    assert.ok(body.includes('  } 2>&1 | tee test-1850-release.log\n  exit "$gate_rc"\n}\n'));
+    assert.ok(body.endsWith('[[ $gate_program == *. ]] || exit 1\ngate_run "$@"\n'));
+  }
+}
+function releaseContract(text, blob = headBlob) {
+  const parsed = jobs(text), defined = new Map();
+  for (const [job, n, kind, timeout] of RELEASE_SITES) {
+    const list = steps(parsed.get(job)), step = list[n - 1];
+    const assertion = kind !== 'build', anchor = `issue1850_release_${kind}_script`;
+    assert.ok(step.startsWith(`      - name: ${RELEASE_NAMES[assertion ? 'assert' : 'build']}\n`),
+      `${job} YAML ${n}`);
+    if (!assertion) assert.ok(step.includes('\n        id: issue1850_release_build\n'), job);
+    const keys = ['working-directory: src-tauri', 'shell: bash', `timeout-minutes: ${timeout}`];
+    for (const key of keys)
+      assert.ok(step.includes(`\n        ${key}\n`), `${job} YAML ${n} ${key}`);
+    const { header, body } = releaseBody(step);
+    const alias = job.endsWith('macos') || (job === 'rust-regression-linux' && !assertion);
+    const expected = alias ? `*${anchor}` : kind === 'windows' ? '|' : `&${anchor} |`;
+    assert.equal(header, expected, `${job} YAML ${n} form`);
+    if (!alias) { assert.ok(!defined.has(kind), kind); defined.set(kind, body); }
+    const upload = list[n];
+    assert.ok(assertion ? upload.startsWith('      - name: "Upload IS #1850 release diagnostics"\n')
+      : true, `${job} upload after assertions`);
+    if (assertion) for (const text of ['if: always()', 'timeout-minutes: 5',
+      'uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2',
+      'retention-days: 14', 'compression-level: 6', 'include-hidden-files: false',
+      "outputs.diagnostics-dir || format('{0}/issue1850-release-not-started', runner.temp)",
+      'if-no-files-found: warn',
+      'src-tauri/test-1850-release.log', 'issue1850-release-not-started',
+      'name: issue1850-release-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}'])
+      assert.ok(upload.includes(text), `${job} upload lacks ${text}`);
+  }
+  assert.deepEqual([...defined.keys()].sort(), ['build', 'unix', 'windows']);
+  for (const [kind, body] of defined) releaseLoader(kind, body, blob);
+}
+test('release steps load pinned scripts from the event commit', () => releaseContract(workflow));
+test('release loader mutants break the release contract', () => {
+  const pin = /^(\s+gate_pin=)[0-9a-f]{64}$/m;
+  const mutants = [
+    workflow.replace(pin, `$1${'0'.repeat(64)}`),
+    workflow.replace("'blob', ref + ':' + file]", "'blob', ':' + file]"),
+    workflow.replace("if (got !== pin) throw new Error('actual SHA-256 ' + got);", ''),
+    workflow.replace('run: *issue1850_release_unix_script', 'run: *issue1850_release_build_script'),
+    workflow.replace('run: *issue1850_release_build_script', 'run: *issue1850_release_unix_script'),
+    workflow.replace('          export ISSUE1850_DIAGNOSTICS\n          gate_path=',
+      '          gate_path=').replace('NODE_GATE\n          }\n', 'NODE_GATE\n          }\n' +
+      '          export ISSUE1850_DIAGNOSTICS\n'),
+    workflow.replace('metadata.json', 'metadata.txt'),
+    workflow.replace('  } 2>&1 | tee test-1850-release.log\n', '  } 2>&1\n'),
+    workflow.replace('process.exitCode = 1;', 'process.exitCode = 0;'),
+    workflow.replace("const bytes = execFileSync('git'", "const bytes = execFileSync('cat'"),
+    workflow.replace('test-1850-release.log\n          if-no-files-found: warn',
+      'test-1850-release.log\n          if-no-files-found: ignore'),
+    workflow.replace('ISSUE1850_DIAGNOSTICS\n          gate_path=scripts/pr-regression/' +
+      'issue1850-release-build.sh', 'ISSUE1850_DIAGNOSTICS\n          gate_path=' +
+      'scripts/pr-regression/issue1850-release-unix.sh')];
+  for (const [i, text] of mutants.entries()) {
+    assert.notEqual(text, workflow, `mutant ${i} did not apply`);
+    assert.throws(() => releaseContract(text), `mutant ${i}`);
+  }
+  const edited = file => file.endsWith('unix.sh')
+    ? Buffer.concat([headBlob(file), Buffer.from('#\n')]) : headBlob(file);
+  assert.throws(() => releaseContract(workflow, edited));
+  assert.throws(() => releaseContract(workflow, () => { throw new Error('absent blob'); }));
+});

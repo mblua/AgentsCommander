@@ -280,8 +280,14 @@ fn lib_registers_list_unresolved_loop_targets() {
     let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("read lib.rs");
 
+    let routes = crate::test_support::invoke_handler_routes(&source);
+
     assert!(
-        source.contains("commands::loops::list_unresolved_loop_targets"),
+        routes.iter().any(|route| matches!(
+            *route,
+            "commands::loops::list_unresolved_loop_targets"
+                | "c::loops::list_unresolved_loop_targets"
+        )),
         "lib.rs must register list_unresolved_loop_targets"
     );
 }
