@@ -293,3 +293,74 @@ pub(crate) fn open_resource_monitor(windows: &impl ResourceMonitorWindows) -> Re
 
     Ok(())
 }
+
+/// The size the activity window opens at when no geometry was ever saved. Wider
+/// than tall because the table is four columns (time, watcher, session, captures) and the
+/// captures cell is the one that must not be cramped.
+const WATCHERS_DEFAULT_WIDTH: f64 = 980.0;
+const WATCHERS_DEFAULT_HEIGHT: f64 = 640.0;
+const WATCHERS_MIN_WIDTH: f64 = 640.0;
+const WATCHERS_MIN_HEIGHT: f64 = 420.0;
+
+/// Open the singleton watcher activity window, or focus it and re-scope it to `session_id`.
+///
+/// `focus_existing` looks the window up and, when it exists, focuses it and returns it with
+/// the focus result. `build` creates the window with its scope, inner size, minimum size and
+/// optional logical position. Both run synchronously while the scope guard is held.
+pub(crate) async fn open_watchers<W, B>(
+    scope: &tokio::sync::Mutex<Option<uuid::Uuid>>,
+    session_id: &str,
+    events: &impl crate::pty_wiring::WatchersScopeEvents,
+    focus_existing: impl FnOnce() -> Option<(W, Result<(), String>)>,
+    build: B,
+) -> Result<(), String>
+where
+    B: FnOnce(uuid::Uuid, (f64, f64), (f64, f64), Option<(f64, f64)>) -> Result<(), String>,
+{
+    // Parsed and re-rendered rather than interpolated as received: the value lands in a URL
+    // query string, and the canonical hyphenated form cannot carry an `&` or a `#`. Rejecting
+    // a non-UUID also matches `get_watcher_activity` (`commands/pty.rs:550`). It happens
+    // before the guard is taken, so a rejected id contends with nothing and leaves the
+    // authoritative scope alone.
+    let session_id = uuid::Uuid::parse_str(session_id).map_err(|e| e.to_string())?;
+
+    // ONE critical section, from the state write through the existence check and whichever
+    // branch runs, including the emit. Not two regions: splitting it leaves this interleaving.
+    // A writes scope A and pauses; B writes scope B, creates the window with B in its URL; A
+    // resumes, finds a window, and emits A. The authoritative state then says B while the last
+    // event says A, so a window that is already listening lands on A and disagrees with
+    // `get_watchers_scope`. Holding one guard across the whole body makes the last write and
+    // the last emit the same call by construction.
+    let mut scope = scope.lock().await;
+    *scope = Some(session_id);
+
+    if let Some((_existing, focused)) = focus_existing() {
+        // A focus that fails must not swallow the re-scope, which is the substantive half of
+        // this call and the only one the user can see go wrong.
+        if let Err(error) = focused {
+            log::warn!(
+                target: "agentscommander_lib::commands::window",
+                "[watchers] focusing the activity window failed: {error}"
+            );
+        }
+        events.request_watchers_scope(session_id)?;
+        return Ok(());
+    }
+
+    // Geometry is restored here rather than by `initWindowGeometry`, which this window stays
+    // away from (plan 4.12); `focus_main_window` is the precedent for reading a persisted
+    // rect straight into the builder.
+    let saved = config::settings::load_settings();
+    let (size, position) = match &saved.watchers_geometry {
+        Some(geo) => ((geo.width, geo.height), Some((geo.x, geo.y))),
+        None => ((WATCHERS_DEFAULT_WIDTH, WATCHERS_DEFAULT_HEIGHT), None),
+    };
+    build(
+        session_id,
+        size,
+        (WATCHERS_MIN_WIDTH, WATCHERS_MIN_HEIGHT),
+        position,
+    )?;
+
+    Ok(())
+}

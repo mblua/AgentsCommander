@@ -571,6 +571,13 @@ impl WatcherPatternSource for WatcherPatterns {
     }
 }
 
+/// Re-scope request for an already-open watcher activity window (B4 port).
+///
+/// The window domain calls it while it holds the scope guard; the events edge emits it.
+pub(crate) trait WatchersScopeEvents {
+    fn request_watchers_scope(&self, session_id: uuid::Uuid) -> Result<(), String>;
+}
+
 /// Delivery of one coalesced batch, behind two plain `Fn`s.
 ///
 /// Mould: `PtyOutputTarget` (`output.rs:58-92`), which wraps an `AppHandle` the same way and

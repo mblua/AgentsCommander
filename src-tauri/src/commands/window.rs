@@ -47,13 +47,6 @@ impl WindowDestroyAudit {
 /// most of the time.
 pub(crate) const WATCHERS_WINDOW_LABEL: &str = "watchers";
 const RESOURCE_MONITOR_DOCK_WIDTH: u32 = 420;
-/// The size the activity window opens at when no geometry was ever saved. Wider
-/// than tall because the table is four columns (time, watcher, session, captures) and the
-/// captures cell is the one that must not be cramped.
-const WATCHERS_DEFAULT_WIDTH: f64 = 980.0;
-const WATCHERS_DEFAULT_HEIGHT: f64 = 640.0;
-const WATCHERS_MIN_WIDTH: f64 = 640.0;
-const WATCHERS_MIN_HEIGHT: f64 = 420.0;
 
 fn window_outer_rect<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
@@ -814,69 +807,56 @@ pub async fn open_watchers_window<R: tauri::Runtime>(
     scope: State<'_, WatchersScopeState>,
     session_id: String,
 ) -> Result<(), String> {
+    crate::window::open_watchers(
+        &scope.scope,
+        &session_id,
+        &app,
+        || focus_watchers_window(&app),
+        |session_id, size, minimum, position| {
+            build_watchers_window(&app, session_id, size, minimum, position)
+        },
+    )
+    .await
+}
+
+/// Look up the watcher activity window and, when it exists, focus it.
+fn focus_watchers_window<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Option<(tauri::WebviewWindow<R>, Result<(), String>)> {
+    let existing = app.get_webview_window(WATCHERS_WINDOW_LABEL)?;
+    let focused = existing.set_focus().map_err(|error| error.to_string());
+    Some((existing, focused))
+}
+
+/// Build the watcher activity window scoped to `session_id`.
+fn build_watchers_window<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Uuid,
+    size: (f64, f64),
+    minimum: (f64, f64),
+    position: Option<(f64, f64)>,
+) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
-
-    // Parsed and re-rendered rather than interpolated as received: the value lands in a URL
-    // query string, and the canonical hyphenated form cannot carry an `&` or a `#`. Rejecting
-    // a non-UUID also matches `get_watcher_activity` (`commands/pty.rs:550`). It happens
-    // before the guard is taken, so a rejected id contends with nothing and leaves the
-    // authoritative scope alone.
-    let session_id = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-
-    // ONE critical section, from the state write through the existence check and whichever
-    // branch runs, including the emit. Not two regions: splitting it leaves this interleaving.
-    // A writes scope A and pauses; B writes scope B, creates the window with B in its URL; A
-    // resumes, finds a window, and emits A. The authoritative state then says B while the last
-    // event says A, so a window that is already listening lands on A and disagrees with
-    // `get_watchers_scope`. Holding one guard across the whole body makes the last write and
-    // the last emit the same call by construction.
-    let mut scope = scope.scope.lock().await;
-    *scope = Some(session_id);
-
-    if let Some(existing) = app.get_webview_window(WATCHERS_WINDOW_LABEL) {
-        // A focus that fails must not swallow the re-scope, which is the substantive half of
-        // this call and the only one the user can see go wrong.
-        if let Err(error) = existing.set_focus() {
-            log::warn!("[watchers] focusing the activity window failed: {error}");
-        }
-        app.emit_to(
-            WATCHERS_WINDOW_LABEL,
-            "watchers_scope_request",
-            serde_json::json!({ "sessionId": session_id.to_string() }),
-        )
-        .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    // Geometry is restored here rather than by `initWindowGeometry`, which this window stays
-    // away from (plan 4.12); `focus_main_window` (`:635-641`) is the precedent for reading a
-    // persisted rect straight into the builder.
-    let saved = crate::config::settings::load_settings();
 
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/icon.png"))
         .expect("Failed to load app icon");
 
     let mut builder = WebviewWindowBuilder::new(
-        &app,
+        app,
         WATCHERS_WINDOW_LABEL,
         WebviewUrl::App(format!("index.html?window=watchers&sessionId={session_id}").into()),
     )
-    .title(format!(
-        "Watcher Activity - {}",
-        crate::config::profile::app_title_suffix()
-    ))
+    .title(format!("Watcher Activity - {}", window_title_suffix()))
     .icon(icon)
     .map_err(|e| e.to_string())?
-    .min_inner_size(WATCHERS_MIN_WIDTH, WATCHERS_MIN_HEIGHT)
+    .min_inner_size(minimum.0, minimum.1)
     .decorations(false)
     .zoom_hotkeys_enabled(false);
 
-    if let Some(geo) = &saved.watchers_geometry {
-        builder = builder
-            .inner_size(geo.width, geo.height)
-            .position(geo.x, geo.y);
+    if let Some((x, y)) = position {
+        builder = builder.inner_size(size.0, size.1).position(x, y);
     } else {
-        builder = builder.inner_size(WATCHERS_DEFAULT_WIDTH, WATCHERS_DEFAULT_HEIGHT);
+        builder = builder.inner_size(size.0, size.1);
     }
 
     builder.build().map_err(|e| e.to_string())?;
