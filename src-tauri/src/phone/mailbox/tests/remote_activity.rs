@@ -682,24 +682,30 @@ fn notice_5190(context: bool, tag: &str) -> (InternalSystemNotice, String, Strin
         let (member, wg) = (format!("member-{tag}"), format!("wg-77-{tag}"));
         let notice =
             InternalSystemNotice::for_context_alert(member.clone(), wg.clone(), 83, vec![61, 83]);
-        let payload = format!("\n[AC context alert] `{member}` in `{wg}` reached threshold(s): 61%, 83%. No action taken; you decide any follow-up.");
-        let info = format!("[context-alert] delivered coordinatorSession={{id}} project=proj-a workgroup={wg} member={member} observed=83 thresholds=[61, 83]");
+        let payload = format!(
+            "\n[AC context alert] `{member}` in `{wg}` reached threshold(s): 61%, 83%. \
+             No action taken; you decide any follow-up."
+        );
+        let info = format!(
+            "[context-alert] delivered coordinatorSession={{id}} project=proj-a \
+             workgroup={wg} member={member} observed=83 thresholds=[61, 83]"
+        );
         return (notice.unwrap(), payload, info);
     }
-    let (repo, branch, sha) = (format!("org/{tag}"), format!("branch/{tag}"), "9f1e2d3");
-    let at = "2026-11-25 03:00:00-03:00";
-    let notice = InternalSystemNotice::for_remote_activity(
-        RemoteNoticeKind::CiStarted,
-        repo.clone(),
-        branch.clone(),
-        sha.to_string(),
-        String::new(),
-        None,
-        at.to_string(),
-        None,
+    let (at, sha) = ("2026-11-25 03:00:00-03:00", "9f1e2d3");
+    let (repo, branch) = (format!("org/{tag}"), format!("branch/{tag}"));
+    let (r, b, s, t) = (repo.clone(), branch.clone(), sha.into(), at.into());
+    let kind = RemoteNoticeKind::CiStarted;
+    let notice =
+        InternalSystemNotice::for_remote_activity(kind, r, b, s, String::new(), None, t, None);
+    let payload = format!(
+        "\n[AgentsCommander] CI started on {repo} {branch} (commit {sha}) at {at}. \
+         Status notice only; no action is required."
     );
-    let payload = format!("\n[AgentsCommander] CI started on {repo} {branch} (commit {sha}) at {at}. Status notice only; no action is required.");
-    let info = format!("[remote-activity] delivered coordinatorSession={{id}} project=proj-a kind=CiStarted repo={repo} branch={branch} sha={sha}");
+    let info = format!(
+        "[remote-activity] delivered coordinatorSession={{id}} project=proj-a \
+         kind=CiStarted repo={repo} branch={branch} sha={sha}"
+    );
     (notice.unwrap(), payload, info)
 }
 
@@ -772,10 +778,8 @@ async fn run_5190(context: bool, t10: bool) {
     let lead = fixture.sender_cwd.clone();
     let target = InternalSystemTarget::for_context_alert(CANONICAL_WAKE_FROM.into(), lead).unwrap();
     let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
-    let backend = pty
-        .lock()
-        .unwrap()
-        .backend_for_kind(SessionBackendKind::LocalProcess);
+    let local = SessionBackendKind::LocalProcess;
+    let backend = pty.lock().unwrap().backend_for_kind(local);
     *MOCK_5190.lock().unwrap() = Some(Arc::clone(&backend));
     let mock = mock_5190(&backend);
     let sessions = app.state::<Sessions5190>().inner().clone();
@@ -789,10 +793,7 @@ async fn run_5190(context: bool, t10: bool) {
         let id = add_mailbox_session_with_shape(&app, cwd, "lead", status, bot, shell, agent, root)
             .await;
         mock.set_live(id);
-        pty.lock()
-            .unwrap()
-            .try_record_route(id, SessionBackendKind::LocalProcess)
-            .unwrap();
+        pty.lock().unwrap().try_record_route(id, local).unwrap();
         ready_5190(&app, id).await;
         deliver_5190(&app, &target, notice).await;
         let info = check_5190(mock, id, (&payload, &info), None);
@@ -805,10 +806,8 @@ async fn run_5190(context: bool, t10: bool) {
     let cwd = target.replica_dir().to_string_lossy().into_owned();
     let key = crate::config::teams::agent_fqn_from_path(&cwd);
     assert_eq!(key, target.fqn(), "marker key is the target replica");
-    assert!(
-        sessions.read().await.list_sessions().await.is_empty(),
-        "no session before"
-    );
+    let none_before = sessions.read().await.list_sessions().await.is_empty();
+    assert!(none_before, "no session before");
     assert!(mock.live.lock().unwrap().is_empty() && mock.writes.lock().unwrap().is_empty());
     let seeded = chrono::DateTime::from_timestamp(1_795_000_000, 0).unwrap();
     let (observed, consumed, before) = {
@@ -837,10 +836,7 @@ async fn run_5190(context: bool, t10: bool) {
     });
     deliver_5190(&app, &target, notice).await;
     let id = ready.await.unwrap();
-    assert!(
-        mock.live.lock().unwrap().contains(&id),
-        "real spawn in the mock backend"
-    );
+    assert!(mock.live.lock().unwrap().contains(&id), "real spawn");
     let list = sessions.read().await.list_sessions().await;
     let spawned: Vec<_> = list
         .iter()
@@ -853,7 +849,11 @@ async fn run_5190(context: bool, t10: bool) {
     let info = check_5190(mock, id, (&payload, &info), Some(&reopen));
     let after = clocks.lock().unwrap().auto_closed_at(&key);
     assert_eq!(after, None);
-    println!("AC5190-T10 scenario={scenario} target={fqn} key={key} seeded={seeded:?} observed={observed:?} consumed={consumed} before={before:?} reopen={reopen:?} cwd={cwd:?} session={id} writes=3/3 info={info:?} after={after:?}");
+    println!(
+        "AC5190-T10 scenario={scenario} target={fqn} key={key} seeded={seeded:?} \
+         observed={observed:?} consumed={consumed} before={before:?} reopen={reopen:?} \
+         cwd={cwd:?} session={id} writes=3/3 info={info:?} after={after:?}"
+    );
 }
 
 #[test]
@@ -876,10 +876,8 @@ fn mailbox_delivery_and_close_marker_5190() {
     let mut child = std::process::Command::new(std::env::current_exe().unwrap());
     child.args([NAME_5190, "--exact", "--nocapture", "--test-threads=1"]);
     let out = child.env(CHILD_5190, "1").output().unwrap();
-    let (stdout, stderr) = (
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
         "child failed: {}\n{stdout}\n{stderr}",
