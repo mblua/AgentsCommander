@@ -566,7 +566,7 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
-        "src-tauri/src/pty/git_watcher/tests.rs",
+        "src-tauri/src/pty/git_watcher/tests/child.rs",
         1,
         0,
         &[(TestOnly, 1)],

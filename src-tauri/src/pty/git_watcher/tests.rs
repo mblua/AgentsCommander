@@ -753,53 +753,8 @@ fn assert_git_discovery(owner: &GitState, first: &GitSweeper, second: &GitSweepe
 
 // ----- #5206 P03: observer runtime start -----------------------------------------------
 
-const P03_CHILD: &str = "AC5206_P03_GIT_CHILD";
-
-pub(crate) static P03_ERRORS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-struct P03Log;
-
-impl log::Log for P03Log {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() == log::Level::Error
-    }
-    fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            P03_ERRORS.lock().unwrap().push(record.args().to_string());
-        }
-    }
-    fn flush(&self) {}
-}
-
-/// Reruns `module::name` in a child of this test binary (its own process logger); true in it.
-pub(crate) fn p03_in_child(module: &str, name: &str) -> bool {
-    if std::env::var_os(P03_CHILD).is_some() {
-        log::set_logger(&P03Log).expect("child installs the error logger");
-        log::set_max_level(log::LevelFilter::Error);
-        return true;
-    }
-    let path = module.split_once("::").expect("crate path").1;
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([format!("{path}::{name}").as_str(), "--exact", "--nocapture"])
-        .args(["--test-threads", "1"])
-        .env(P03_CHILD, "1")
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn the child test");
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            assert!(status.success(), "child {name} failed: {status}");
-            return false;
-        }
-        if std::time::Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("child {name} timed out");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
+mod child;
+pub(crate) use child::{p03_in_child, P03_ERRORS};
 
 /// A failed build logs once per identity, with cause and effect, and never runs the work.
 #[test]

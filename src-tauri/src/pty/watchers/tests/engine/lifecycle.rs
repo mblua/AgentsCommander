@@ -455,6 +455,11 @@ fn the_production_runtime_fails_cleanly_when_descriptors_run_out() {
     // SAFETY: setrlimit on this process with a valid pointer to an initialized rlimit.
     assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &old) }, 0);
     assert_eq!(run, (true, true));
+    // A joined thread can stay listed in /proc/self/task for a moment after join returns.
+    let settled = Instant::now() + Duration::from_secs(1);
+    while count("/proc/self/task") > tasks && Instant::now() < settled {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(
         (count("/proc/self/fd"), count("/proc/self/task")),
         (fds, tasks)
