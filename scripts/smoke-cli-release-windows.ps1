@@ -128,6 +128,63 @@ function Set-Issue1577LogText {
     )
 }
 
+# Checks the adjacent-refusal child's exit code, stdout and exact stderr.
+function Add-Issue1577OutputErrors {
+    param(
+        $Errors,
+        [bool]$TimedOut,
+        $ExitCode,
+        [string]$Stdout,
+        [string]$Stderr,
+        [string]$Candidate
+    )
+
+    if ($timedOut) {
+        $errors.Add("copied release CLI timed out after 15 seconds") | Out-Null
+    }
+    if ($exitCode -ne 1) {
+        $errors.Add("expected exit code 1, got $exitCode") | Out-Null
+    }
+    $stdoutBytes = [System.Text.Encoding]::UTF8.GetByteCount($stdout)
+    if ($stdoutBytes -ne 0) {
+        $errors.Add("expected byte-empty stdout, got $stdoutBytes UTF-8 byte(s)") | Out-Null
+    }
+
+    $nativeReason = ([System.ComponentModel.Win32Exception]::new(183)).Message.Trim()
+    if (-not $nativeReason.EndsWith(".")) {
+        $nativeReason += "."
+    }
+    $osReason = "$nativeReason (os error 183)"
+    $expectedStderr = "AgentsCommander cannot start because configuration directory `"$candidate`" could not be safely selected: write probe could not create configuration directory `"$candidate`" after 1 attempt(s): $osReason. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.`n"
+    if ($stderr -cne $expectedStderr) {
+        $errors.Add("stderr did not match the exact adjacent-refusal startup message") | Out-Null
+    }
+    foreach ($forbidden in @("[log] file logging to", "[instance-gitignore]", "panicked at", "stack backtrace:", '"ok":', '"peers":')) {
+        if ($stderr.Contains($forbidden)) {
+            $errors.Add("stderr contained forbidden startup residue: $forbidden") | Out-Null
+        }
+    }
+}
+
+# Checks that no startup artifact or write-probe residue appeared under bin/cli-root.
+function Add-Issue1577ResidueErrors {
+    param(
+        $Errors,
+        [string]$BinDir,
+        [string]$CliRoot
+    )
+
+    $criticalNames = @("app.log", ".gitignore", "master-token.txt", "web-token.txt", "daemon.pid", "settings.json", "app-outbox-path.txt")
+    foreach ($criticalName in $criticalNames) {
+        if (@(Get-ChildItem -Force -Recurse -LiteralPath $binDir, $cliRoot -ErrorAction SilentlyContinue | Where-Object { $_.Name -ceq $criticalName }).Count -gt 0) {
+            $errors.Add("critical startup artifact appeared: $criticalName") | Out-Null
+        }
+    }
+    if (@(Get-ChildItem -Force -Recurse -LiteralPath $binDir, $cliRoot -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".agentscommander-write-probe-*.tmp" }).Count -gt 0) {
+        $errors.Add("write-probe residue appeared") | Out-Null
+    }
+}
+
 function Invoke-Issue1577AdjacentRefusalGate {
     param(
         [Parameter(Mandatory=$true)] [string]$BinaryPath,
@@ -221,31 +278,7 @@ function Invoke-Issue1577AdjacentRefusalGate {
         Set-Issue1577LogText -Path $stdoutPath -Text $stdout
         Set-Issue1577LogText -Path $stderrPath -Text $stderr
 
-        if ($timedOut) {
-            $errors.Add("copied release CLI timed out after 15 seconds") | Out-Null
-        }
-        if ($exitCode -ne 1) {
-            $errors.Add("expected exit code 1, got $exitCode") | Out-Null
-        }
-        $stdoutBytes = [System.Text.Encoding]::UTF8.GetByteCount($stdout)
-        if ($stdoutBytes -ne 0) {
-            $errors.Add("expected byte-empty stdout, got $stdoutBytes UTF-8 byte(s)") | Out-Null
-        }
-
-        $nativeReason = ([System.ComponentModel.Win32Exception]::new(183)).Message.Trim()
-        if (-not $nativeReason.EndsWith(".")) {
-            $nativeReason += "."
-        }
-        $osReason = "$nativeReason (os error 183)"
-        $expectedStderr = "AgentsCommander cannot start because configuration directory `"$candidate`" could not be safely selected: write probe could not create configuration directory `"$candidate`" after 1 attempt(s): $osReason. Set AGENTSCOMMANDER_CONFIG_DIR to a writable directory and restart.`n"
-        if ($stderr -cne $expectedStderr) {
-            $errors.Add("stderr did not match the exact adjacent-refusal startup message") | Out-Null
-        }
-        foreach ($forbidden in @("[log] file logging to", "[instance-gitignore]", "panicked at", "stack backtrace:", '"ok":', '"peers":')) {
-            if ($stderr.Contains($forbidden)) {
-                $errors.Add("stderr contained forbidden startup residue: $forbidden") | Out-Null
-            }
-        }
+        Add-Issue1577OutputErrors -Errors $errors -TimedOut $timedOut -ExitCode $exitCode -Stdout $stdout -Stderr $stderr -Candidate $candidate
 
         $after = Get-Issue1577TreeSnapshot -Roots $snapshotRoots
         Set-Issue1577LogText -Path $afterPath -Text $after
@@ -255,15 +288,7 @@ function Invoke-Issue1577AdjacentRefusalGate {
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
             $errors.Add("candidate file changed type or disappeared: $candidate") | Out-Null
         }
-        $criticalNames = @("app.log", ".gitignore", "master-token.txt", "web-token.txt", "daemon.pid", "settings.json", "app-outbox-path.txt")
-        foreach ($criticalName in $criticalNames) {
-            if (@(Get-ChildItem -Force -Recurse -LiteralPath $binDir, $cliRoot -ErrorAction SilentlyContinue | Where-Object { $_.Name -ceq $criticalName }).Count -gt 0) {
-                $errors.Add("critical startup artifact appeared: $criticalName") | Out-Null
-            }
-        }
-        if (@(Get-ChildItem -Force -Recurse -LiteralPath $binDir, $cliRoot -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ".agentscommander-write-probe-*.tmp" }).Count -gt 0) {
-            $errors.Add("write-probe residue appeared") | Out-Null
-        }
+        Add-Issue1577ResidueErrors -Errors $errors -BinDir $binDir -CliRoot $cliRoot
     } catch {
         $errors.Add($_.Exception.ToString()) | Out-Null
     } finally {
