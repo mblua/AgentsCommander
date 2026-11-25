@@ -1,268 +1,8 @@
 use super::*;
-
-/// Backend over `runtime` with no broadcaster, lifecycle sender or token manager.
-fn backend_with_runtime(runtime: Arc<dyn ContainerRuntime>) -> ContainerTransportBackend {
-    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
-    let idle_detector = IdleDetector::new(|_| {}, |_| {});
-    ContainerTransportBackend::with_runtime(
-        output_senders,
-        idle_detector,
-        None,
-        None,
-        runtime,
-        None,
-    )
-}
-
-/// Registers an active runtime handle for `session_id` on container `container-<id>`.
-fn insert_runtime_handle(
-    backend: &ContainerTransportBackend,
-    session_id: Uuid,
-) -> mpsc::Receiver<HostToBridgeFrame> {
-    backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
-        session_id,
-        container_id: format!("container-{session_id}"),
-    })
-}
-
-/// The sweep dropped the transport state but kept the runtime cleanup owner
-/// for `session_id`, and nothing was stopped yet.
-fn assert_runtime_owner_retained(
-    backend: &ContainerTransportBackend,
-    runtime: &RecordingRuntime,
-    session_id: Uuid,
-) {
-    assert!(!backend.contains_transport_state_for_test(session_id));
-    assert_eq!(
-        backend.retained_runtime_cleanup_sessions_for_test(),
-        vec![session_id]
-    );
-    assert!(runtime.stopped().is_empty());
-}
-
-fn production_route_remover_fixture(
-    runtime: Arc<RecordingRuntime>,
-) -> (
-    Arc<ContainerTransportBackend>,
-    Arc<Mutex<PtyManager>>,
-    Uuid,
-    mpsc::Receiver<HostToBridgeFrame>,
-) {
-    let backend = Arc::new(backend_with_runtime(runtime));
-    let local_backend: Arc<dyn PtyBackend> = backend.clone();
-    let pty_manager = Arc::new(Mutex::new(PtyManager::new_for_test_with_container_backend(
-        local_backend,
-        Arc::clone(&backend),
-    )));
-    let session_id = Uuid::new_v4();
-    let receiver = insert_runtime_handle(&backend, session_id);
-    pty_manager
-        .lock()
-        .unwrap()
-        .record_route(session_id, SessionBackendKind::ContainerTransport);
-    crate::install_container_route_remover(&pty_manager);
-    (backend, pty_manager, session_id, receiver)
-}
-
-fn assert_exact_production_route_residue(
-    backend: &ContainerTransportBackend,
-    report: &ContainerShutdownReport,
-    session_id: Uuid,
-    error: &str,
-) {
-    let expected = format!(
-        "owner=containerCleanup session={session_id} reason=global-shutdown-sweep program=none \
-            runtimeHandle=true state=retained inFlight=false lastError=route removal failed: \
-            {error}"
-    );
-    assert!(report.retained.iter().any(|context| {
-        context.contains("owner=containerCleanup")
-            && context.contains(&format!("session={session_id}"))
-            && context.contains("runtimeHandle=true")
-            && (context.contains("state=retained") || context.contains("state=inFlight"))
-    }));
-    if report.retained.iter().any(|context| context == &expected) {
-        return;
-    }
-    let transition_deadline = Instant::now() + Duration::from_secs(1);
-    loop {
-        let contexts = backend
-            .cleanup_ownership
-            .contexts()
-            .into_iter()
-            .map(|context| context.diagnostic())
-            .collect::<Vec<_>>();
-        if contexts.iter().any(|context| context == &expected) {
-            return;
-        }
-        assert!(
-            Instant::now() < transition_deadline,
-            "expected={expected:?} report={:?} live={contexts:?}",
-            report.retained
-        );
-        std::thread::yield_now();
-    }
-}
-
-#[test]
-fn production_route_remover_outer_lock_deadline_retains_real_ownership() {
-    let runtime = Arc::new(RecordingRuntime::default());
-    let (backend, pty_manager, session_id, _receiver) =
-        production_route_remover_fixture(Arc::clone(&runtime));
-    let manager_guard = pty_manager.lock().unwrap();
-    let budget = Duration::from_millis(150);
-    let (report_sender, report_receiver) = std::sync::mpsc::channel();
-    let sweep_backend = Arc::clone(&backend);
-    let sweep = std::thread::spawn(move || {
-        let started_at = Instant::now();
-        let report = sweep_backend.stop_all_started_containers_blocking(budget);
-        report_sender
-            .send((started_at.elapsed(), report))
-            .expect("publish real outer-lock route-removal report");
-    });
-
-    let (elapsed, report) = report_receiver
-        .recv_timeout(budget + Duration::from_millis(500))
-        .expect("real production route remover returns while outer mutex remains held");
-    sweep.join().expect("join bounded real-lock global sweep");
-
-    assert!(!report.terminal, "retained={:?}", report.retained);
-    assert!(
-        elapsed <= budget + Duration::from_millis(400),
-        "real outer-lock route removal exceeded the absolute deadline: {elapsed:?}"
-    );
-    assert_runtime_owner_retained(&backend, &runtime, session_id);
-    assert_eq!(
-        manager_guard.backend_kind(session_id),
-        Some(SessionBackendKind::ContainerTransport)
-    );
-    assert_exact_production_route_residue(
-        &backend,
-        &report,
-        session_id,
-        "route removal deadline reached owner=ptyManager",
-    );
-    assert!(!crate::shutdown_persistence_allowed(true, report.terminal));
-
-    drop(manager_guard);
-    let terminal = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
-    assert!(terminal.terminal, "retained={:?}", terminal.retained);
-    assert_eq!(runtime.stopped(), vec![session_id]);
-    assert!(backend.retained_cleanup_sessions_for_test().is_empty());
-    assert_eq!(pty_manager.lock().unwrap().backend_kind(session_id), None);
-}
-
-#[test]
-fn production_route_remover_outer_poison_is_exact_structured_residue() {
-    let runtime = Arc::new(RecordingRuntime::default());
-    let (backend, pty_manager, session_id, _receiver) =
-        production_route_remover_fixture(Arc::clone(&runtime));
-    let poison_manager = Arc::clone(&pty_manager);
-    let poison = std::thread::spawn(move || {
-        let _manager_guard = poison_manager.lock().unwrap();
-        panic!("poison the real outer PTY manager mutex");
-    });
-    assert!(
-        poison.join().is_err(),
-        "outer mutex poison fixture must panic"
-    );
-
-    // Poison path retries until the budget ends: 1 s is also the run time.
-    let budget = Duration::from_secs(1);
-    let started_at = Instant::now();
-    let report = backend.stop_all_started_containers_blocking(budget);
-    let elapsed = started_at.elapsed();
-
-    assert!(!report.terminal, "retained={:?}", report.retained);
-    assert!(
-        elapsed <= budget + Duration::from_millis(400),
-        "outer-poison route removal exceeded the absolute deadline: {elapsed:?}"
-    );
-    assert_runtime_owner_retained(&backend, &runtime, session_id);
-    let poisoned_guard = match pty_manager.lock() {
-        Ok(_) => panic!("outer PTY manager mutex unexpectedly recovered poison"),
-        Err(error) => error.into_inner(),
-    };
-    assert_eq!(
-        poisoned_guard.backend_kind(session_id),
-        Some(SessionBackendKind::ContainerTransport)
-    );
-    drop(poisoned_guard);
-    assert_exact_production_route_residue(
-        &backend,
-        &report,
-        session_id,
-        "route removal lock poisoned owner=ptyManager",
-    );
-    assert!(!crate::shutdown_persistence_allowed(true, report.terminal));
-
-    pty_manager.clear_poison();
-    let terminal = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
-    assert!(terminal.terminal, "retained={:?}", terminal.retained);
-    assert_eq!(runtime.stopped(), vec![session_id]);
-    assert_eq!(pty_manager.lock().unwrap().backend_kind(session_id), None);
-}
-
-#[test]
-fn production_route_remover_registry_poison_is_exact_structured_residue() {
-    let runtime = Arc::new(RecordingRuntime::default());
-    let (backend, pty_manager, session_id, _receiver) =
-        production_route_remover_fixture(Arc::clone(&runtime));
-    pty_manager.lock().unwrap().poison_route_registry_for_test();
-
-    let budget = Duration::from_secs(1);
-    let started_at = Instant::now();
-    let report = backend.stop_all_started_containers_blocking(budget);
-    let elapsed = started_at.elapsed();
-
-    assert!(!report.terminal, "retained={:?}", report.retained);
-    assert!(
-        elapsed <= budget + Duration::from_millis(400),
-        "route-registry poison removal exceeded the absolute deadline: {elapsed:?}"
-    );
-    assert_runtime_owner_retained(&backend, &runtime, session_id);
-    assert_eq!(
-        pty_manager.lock().unwrap().backend_kind(session_id),
-        Some(SessionBackendKind::ContainerTransport)
-    );
-    assert_exact_production_route_residue(
-        &backend,
-        &report,
-        session_id,
-        "route removal lock poisoned owner=ptyRouteRegistry",
-    );
-    assert!(!crate::shutdown_persistence_allowed(true, report.terminal));
-
-    pty_manager
-        .lock()
-        .unwrap()
-        .clear_route_registry_poison_for_test();
-    let terminal = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
-    assert!(terminal.terminal, "retained={:?}", terminal.retained);
-    assert_eq!(runtime.stopped(), vec![session_id]);
-    assert_eq!(pty_manager.lock().unwrap().backend_kind(session_id), None);
-}
-
-#[test]
-fn production_route_remover_healthy_path_is_terminal_once() {
-    let runtime = Arc::new(RecordingRuntime::default());
-    let (backend, pty_manager, session_id, _receiver) =
-        production_route_remover_fixture(Arc::clone(&runtime));
-
-    let report = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
-
-    assert!(report.terminal, "retained={:?}", report.retained);
-    assert!(report.retained.is_empty());
-    assert_eq!(runtime.stopped(), vec![session_id]);
-    assert_eq!(pty_manager.lock().unwrap().backend_kind(session_id), None);
-    assert!(backend.retained_cleanup_sessions_for_test().is_empty());
-    assert!(crate::shutdown_persistence_allowed(true, report.terminal));
-
-    let second = backend.stop_all_started_containers_blocking(Duration::from_millis(100));
-    assert!(second.terminal, "retained={:?}", second.retained);
-    assert_eq!(runtime.stopped(), vec![session_id]);
-}
-
+use super::{
+    assert_runtime_owner_retained, backend_with_runtime, insert_runtime_handle,
+    production_route_remover_fixture, SweepDriver,
+};
 #[test]
 fn blocked_global_sweep_route_remover_returns_at_deadline_with_retained_owner() {
     let runtime = Arc::new(RecordingRuntime::default());
@@ -286,34 +26,19 @@ fn blocked_global_sweep_route_remover_returns_at_deadline_with_retained_owner() 
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recv()
-            .expect("release blocked route remover");
+            .ok();
         Ok(())
     }));
 
-    let budget = Duration::from_millis(150);
-    let (report_sender, report_receiver) = std::sync::mpsc::channel();
-    let sweep_backend = Arc::clone(&backend);
-    let sweep = std::thread::spawn(move || {
-        let started_at = Instant::now();
-        let report = sweep_backend.stop_all_started_containers_blocking(budget);
-        report_sender
-            .send((started_at.elapsed(), report))
-            .expect("publish blocked route-remover report");
+    let driver = SweepDriver::new(&["epochOpened", "drainPoll"]);
+    let _rescue = Rescue(Arc::clone(&driver));
+    let report = sweep_at_deadline(&driver, &backend, |_| {
+        route_entered_rx
+            .recv_timeout(WATCHDOG)
+            .expect("global sweep enters the deterministic blocked route remover");
     });
 
-    route_entered_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("global sweep enters the deterministic blocked route remover");
-    let (elapsed, report) = report_receiver
-        .recv_timeout(budget + Duration::from_millis(500))
-        .expect("global sweep returns while route remover remains blocked");
-    sweep.join().expect("join bounded global sweep caller");
-
     assert!(!report.terminal, "retained={:?}", report.retained);
-    assert!(
-        elapsed <= budget + Duration::from_millis(400),
-        "blocked route remover exceeded the absolute deadline: {elapsed:?}"
-    );
     assert_runtime_owner_retained(&backend, &runtime, session_id);
     assert_eq!(route_calls.load(Ordering::SeqCst), 1);
     assert!(
@@ -381,41 +106,36 @@ fn poisoned_global_sweep_route_removal_is_structured_residue() {
 
 #[test]
 fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
-    let runtime = Arc::new(crate::pty::docker_runtime::DockerRuntime::new());
+    let driver = SweepDriver::new(&["epochOpened", "drainPoll"]);
+    let _rescue = Rescue(Arc::clone(&driver));
+    let mut docker = crate::pty::docker_runtime::DockerRuntime::new();
+    let (now, wait) = (Arc::clone(&driver), Arc::clone(&driver));
+    docker.set_retry_clock_for_test(
+        Arc::new(move || now.now()),
+        Arc::new(move |_| wait.wait("dockerRetry")),
+    );
+    let runtime = Arc::new(docker);
     let readers = runtime.retain_blocked_command_readers_for_test(
         "global-sweep-reader",
         "docker-reader-fixture",
         "reader cleanup failed OPENAI_API_KEY=sk-proj-global-sweep-secret\nnested failure",
     );
     assert_eq!(runtime.active_reader_count(), 2);
+    let retained_before = runtime.retained_cleanup_contexts();
+    assert_eq!(
+        retained_before.len(),
+        1,
+        "one command owner before the sweep"
+    );
     let (retry_entered, retry_release) = runtime.install_command_retry_gate_for_test();
     let backend = Arc::new(backend_with_runtime(runtime.clone()));
-    let budget = Duration::from_millis(150);
-    let (report_sender, report_receiver) = std::sync::mpsc::channel();
-    let sweep_backend = Arc::clone(&backend);
-    let sweep = std::thread::spawn(move || {
-        let started_at = Instant::now();
-        let report = sweep_backend.stop_all_started_containers_blocking(budget);
-        report_sender
-            .send((started_at.elapsed(), report))
-            .expect("publish blocked Docker-command global-sweep report");
+    let report = sweep_at_deadline(&driver, &backend, |_| {
+        retry_entered
+            .recv_timeout(WATCHDOG)
+            .expect("production runtime retry publishes its in-flight transition");
     });
 
-    retry_entered
-        .recv_timeout(Duration::from_secs(1))
-        .expect("production runtime retry publishes its in-flight transition");
-    let (elapsed, report) = report_receiver
-        .recv_timeout(budget + Duration::from_millis(500))
-        .expect("global sweep returns while the Docker command retry remains active");
-    sweep
-        .join()
-        .expect("join bounded Docker-command sweep caller");
-
     assert!(!report.terminal, "retained={:?}", report.retained);
-    assert!(
-        elapsed <= budget + Duration::from_millis(400),
-        "in-flight Docker command exceeded the global-sweep deadline: {elapsed:?}"
-    );
     let expected = "owner=dockerCommand session=none reason=global-sweep-reader \
         program=docker-reader-fixture runtimeHandle=none state=inFlight inFlight=true \
         lastError=reader cleanup failed OPENAI_API_KEY=[REDACTED]\\nnested failure";
@@ -453,10 +173,20 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
         .send(())
         .expect("release the deterministic in-flight retry gate");
     wait_for_docker_owner_retained(&runtime);
+    let retained_after = runtime.retained_cleanup_contexts();
+    assert_eq!(retained_after[0].last_error, retained_before[0].last_error);
     assert_eq!(runtime.active_reader_count(), 2);
     readers.release();
+    let readers_limit = Instant::now() + WATCHDOG;
+    while runtime.active_reader_count() != 0 {
+        assert!(
+            Instant::now() < readers_limit,
+            "released readers did not exit"
+        );
+        std::thread::yield_now();
+    }
     let retry_control = ContainerRuntimeControl::default();
-    retry_control.request_shutdown(Instant::now() + Duration::from_secs(1));
+    retry_control.request_shutdown(driver.now() + Duration::from_secs(1));
     runtime.retry_retained_cleanups(&retry_control);
     assert!(runtime.retained_cleanup_contexts().is_empty());
     assert_eq!(runtime.active_reader_count(), 0);
@@ -464,6 +194,7 @@ fn docker_command_owner_stays_visible_during_real_global_sweep_retry() {
     let terminal = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
     assert!(terminal.terminal, "retained={:?}", terminal.retained);
     assert!(terminal.retained.is_empty());
+    assert!(crate::shutdown_persistence_allowed(true, terminal.terminal));
 }
 
 fn assert_combined_with_selection_fixtures(expected: &str, report_retained: &[String]) {
@@ -561,11 +292,10 @@ fn high_cardinality_runtime_contexts(runtime_entries: usize) -> Vec<RetainedCont
         .collect()
 }
 
-#[test]
-fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
-    const INSTALLED_ENTRIES: usize = 180;
-    const RUNTIME_ENTRIES: usize = 180;
+const INSTALLED_ENTRIES: usize = 180;
+const RUNTIME_ENTRIES: usize = 180;
 
+fn high_cardinality_backend() -> ContainerTransportBackend {
     let runtime_contexts = high_cardinality_runtime_contexts(RUNTIME_ENTRIES);
     let runtime = Arc::new(RetainedContextRuntime {
         contexts: runtime_contexts,
@@ -575,17 +305,49 @@ fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
         let session_id = Uuid::from_u128(20_000 + index as u128);
         let _receiver = insert_runtime_handle(&backend, session_id);
     }
+    backend
+}
 
+#[test]
+fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
+    let backend = high_cardinality_backend();
     let budget = Duration::ZERO;
     let started_at = Instant::now();
     let report = backend.stop_all_started_containers_blocking(budget);
     let elapsed = started_at.elapsed();
 
-    assert!(!report.terminal);
     assert!(
         elapsed <= Duration::from_millis(250),
         "high-cardinality scheduling exceeded its advertised deadline: {elapsed:?}"
     );
+    assert_high_cardinality_report(report);
+}
+
+/// Causal companion: at a fixed `D = origin` the transfer and drain cuts fire before any
+/// ownership transfer, epoch start, work or wait.
+#[test]
+fn high_cardinality_retained_scheduling_cuts_at_the_logical_deadline() {
+    let backend = high_cardinality_backend();
+    let driver = SweepDriver::new(&[]);
+    let clock = driver.clock();
+    let report = backend.stop_all_started_containers_blocking_with_clock(Duration::ZERO, &clock);
+
+    assert_eq!(driver.probes(SweepProbe::TransferCut), 1);
+    let probes = driver.probes.lock().unwrap().clone();
+    let transfers = probes
+        .iter()
+        .filter(|mark| matches!(mark, SweepProbe::TransferAttempt(_)));
+    assert_eq!(transfers.count(), 0, "{probes:?}");
+    assert_eq!(driver.probes(SweepProbe::DrainCut), 1);
+    assert_eq!(driver.probes(SweepProbe::EpochStartEntered), 0);
+    assert_eq!(driver.waits.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.shutdown_work.observation(), (false, 0, 0, 0));
+    assert!(backend.cleanup_ownership.entries().is_empty());
+    assert_high_cardinality_report(report);
+}
+
+fn assert_high_cardinality_report(report: ContainerShutdownReport) {
+    assert!(!report.terminal);
     assert_eq!(
         report
             .retained
@@ -653,7 +415,17 @@ fn high_cardinality_retained_scheduling_obeys_the_advertised_deadline() {
 
 type RetainedEntry = Arc<super::super::retained_cleanup::RetainedContainerCleanup>;
 
-const REAL_POISON: &str = "route removal failed: route removal lock poisoned owner=ptyManager";
+/// Real poisons of the outer PTY mutex and of the route registry, with their exact text.
+const REAL_POISONS: [(bool, &str); 2] = [
+    (
+        false,
+        "route removal failed: route removal lock poisoned owner=ptyManager",
+    ),
+    (
+        true,
+        "route removal failed: route removal lock poisoned owner=ptyRouteRegistry",
+    ),
+];
 
 struct ClockedSweepFixture {
     backend: Arc<ContainerTransportBackend>,
@@ -711,22 +483,29 @@ impl ClockedSweepFixture {
     }
 
     /// Records the real poison through the production remover; never seeded.
-    fn record_real_poison(&self, epoch: u64) -> String {
-        let poison_manager = Arc::clone(&self.pty_manager);
-        let poison = std::thread::spawn(move || {
-            let _manager_guard = poison_manager.lock().unwrap();
-            panic!("poison the real outer PTY manager mutex");
-        });
-        assert!(
-            poison.join().is_err(),
-            "outer mutex poison fixture must panic"
-        );
+    fn record_real_poison(&self, epoch: u64, (registry, error): (bool, &str)) -> String {
+        if registry {
+            self.pty_manager
+                .lock()
+                .unwrap()
+                .poison_route_registry_for_test();
+        } else {
+            let poison_manager = Arc::clone(&self.pty_manager);
+            let poison = std::thread::spawn(move || {
+                let _manager_guard = poison_manager.lock().unwrap();
+                panic!("poison the real outer PTY manager mutex");
+            });
+            assert!(
+                poison.join().is_err(),
+                "outer mutex poison fixture must panic"
+            );
+        }
         let before = self.before_deadline();
         self.attempt(epoch, &|| before);
-        assert_eq!(self.last_error().as_deref(), Some(REAL_POISON));
+        assert_eq!(self.last_error().as_deref(), Some(error));
         let context = self.context();
         assert!(
-            context.ends_with(&format!("lastError={REAL_POISON}")),
+            context.ends_with(&format!("lastError={error}")),
             "{context}"
         );
         context
@@ -767,6 +546,9 @@ impl ClockedSweepFixture {
 
     fn assert_cleaned_after_retry(&self, epoch: u64) {
         self.pty_manager.clear_poison();
+        let manager = self.pty_manager.lock().unwrap();
+        manager.clear_route_registry_poison_for_test();
+        drop(manager);
         let before = self.before_deadline();
         self.attempt(epoch, &|| before);
         assert_eq!(self.runtime.stopped(), vec![self.session_id]);
@@ -817,8 +599,14 @@ fn observing_clock<'a>(
 
 #[test]
 fn global_sweep_pre_remover_expiry_preserves_real_poison_error() {
+    for poison in REAL_POISONS {
+        pre_remover_expiry_preserves(poison);
+    }
+}
+
+fn pre_remover_expiry_preserves(poison: (bool, &str)) {
     let fixture = ClockedSweepFixture::new();
-    let context = fixture.record_real_poison(1);
+    let context = fixture.record_real_poison(1, poison);
     let admission = fixture.before_deadline();
     assert!(admission < fixture.deadline);
     let observed = Mutex::new(Vec::new());
@@ -832,7 +620,7 @@ fn global_sweep_pre_remover_expiry_preserves_real_poison_error() {
         [admission, observed[0].2],
         [fixture.before_deadline(), fixture.deadline]
     );
-    assert_eq!(fixture.last_error().as_deref(), Some(REAL_POISON));
+    assert_eq!(fixture.last_error().as_deref(), Some(poison.1));
     assert_eq!(fixture.context(), context);
     fixture.assert_retained(2);
 
@@ -841,8 +629,14 @@ fn global_sweep_pre_remover_expiry_preserves_real_poison_error() {
 
 #[test]
 fn global_sweep_invoked_deadline_preserves_real_poison_error() {
+    for poison in REAL_POISONS {
+        invoked_deadline_preserves(poison);
+    }
+}
+
+fn invoked_deadline_preserves(poison: (bool, &str)) {
     let fixture = ClockedSweepFixture::new();
-    let context = fixture.record_real_poison(1);
+    let context = fixture.record_real_poison(1, poison);
     let production = fixture
         .backend
         .route_remover_until(Instant::now() + Duration::from_secs(1));
@@ -855,7 +649,7 @@ fn global_sweep_invoked_deadline_preserves_real_poison_error() {
         *calls.lock().unwrap(),
         vec![(fixture.session_id, fixture.deadline)]
     );
-    assert_eq!(fixture.last_error().as_deref(), Some(REAL_POISON));
+    assert_eq!(fixture.last_error().as_deref(), Some(poison.1));
     assert_eq!(fixture.context(), context);
     fixture.assert_retained(2);
 

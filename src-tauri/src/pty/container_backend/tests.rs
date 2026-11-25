@@ -75,11 +75,6 @@ struct SequencedStopRuntime {
     active_deadline_seen: AtomicBool,
 }
 
-struct PermanentlyBlockedStopRuntime {
-    stop_calls: AtomicUsize,
-    active_deadline_seen: AtomicBool,
-}
-
 struct RetainedContextRuntime {
     contexts: Vec<RetainedContainerOwnerContext>,
 }
@@ -157,45 +152,6 @@ impl ContainerRuntime for SequencedStopRuntime {
         {
             Ok(()) => Ok(()),
             Err(error) => Err(AppError::Other(error.to_string())),
-        }
-    }
-
-    fn cleanup_labeled_orphans(
-        &self,
-        _live_sessions: &HashSet<Uuid>,
-        _timeout: Duration,
-    ) -> Result<ContainerCleanupReport, AppError> {
-        Ok(ContainerCleanupReport::default())
-    }
-}
-
-impl ContainerRuntime for PermanentlyBlockedStopRuntime {
-    fn start(
-        &self,
-        request: ContainerStartRequest,
-        _control: &ContainerRuntimeControl,
-    ) -> Result<ContainerRuntimeHandle, AppError> {
-        Ok(ContainerRuntimeHandle {
-            session_id: request.session_id,
-            container_id: format!("container-{}", request.session_id),
-        })
-    }
-
-    fn stop(
-        &self,
-        _handle: &ContainerRuntimeHandle,
-        _timeout: Duration,
-        control: &ContainerRuntimeControl,
-    ) -> Result<(), AppError> {
-        self.stop_calls.fetch_add(1, Ordering::SeqCst);
-        if control
-            .remaining()
-            .is_some_and(|remaining| !remaining.is_zero())
-        {
-            self.active_deadline_seen.store(true, Ordering::SeqCst);
-        }
-        loop {
-            std::thread::park();
         }
     }
 
@@ -422,6 +378,281 @@ async fn issue_2158_container_resize_marks_before_publish() {
         );
     }
 }
+
+/// Backend over `runtime` with no broadcaster, lifecycle sender or token manager.
+fn backend_with_runtime(runtime: Arc<dyn ContainerRuntime>) -> ContainerTransportBackend {
+    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+    let idle_detector = IdleDetector::new(|_| {}, |_| {});
+    ContainerTransportBackend::with_runtime(
+        output_senders,
+        idle_detector,
+        None,
+        None,
+        runtime,
+        None,
+    )
+}
+
+/// Registers an active runtime handle for `session_id` on container `container-<id>`.
+fn insert_runtime_handle(
+    backend: &ContainerTransportBackend,
+    session_id: Uuid,
+) -> mpsc::Receiver<HostToBridgeFrame> {
+    backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
+        session_id,
+        container_id: format!("container-{session_id}"),
+    })
+}
+
+/// The sweep dropped the transport state but kept the runtime cleanup owner
+/// for `session_id`, and nothing was stopped yet.
+fn assert_runtime_owner_retained(
+    backend: &ContainerTransportBackend,
+    runtime: &RecordingRuntime,
+    session_id: Uuid,
+) {
+    assert!(!backend.contains_transport_state_for_test(session_id));
+    assert_eq!(
+        backend.retained_runtime_cleanup_sessions_for_test(),
+        vec![session_id]
+    );
+    assert!(runtime.stopped().is_empty());
+}
+
+fn production_route_remover_fixture(
+    runtime: Arc<RecordingRuntime>,
+) -> (
+    Arc<ContainerTransportBackend>,
+    Arc<Mutex<PtyManager>>,
+    Uuid,
+    mpsc::Receiver<HostToBridgeFrame>,
+) {
+    let backend = Arc::new(backend_with_runtime(runtime));
+    let local_backend: Arc<dyn PtyBackend> = backend.clone();
+    let pty_manager = Arc::new(Mutex::new(PtyManager::new_for_test_with_container_backend(
+        local_backend,
+        Arc::clone(&backend),
+    )));
+    let session_id = Uuid::new_v4();
+    let receiver = insert_runtime_handle(&backend, session_id);
+    pty_manager
+        .lock()
+        .unwrap()
+        .record_route(session_id, SessionBackendKind::ContainerTransport);
+    crate::install_container_route_remover(&pty_manager);
+    (backend, pty_manager, session_id, receiver)
+}
+
+/// Logical clock of one sweep invocation: `now` is an atomic load and only the conductor
+/// moves it. A wait on a gated site acks the site and parks until that site is stepped;
+/// other sites return at once. `rescue` opens every gate past any deadline.
+struct SweepDriver {
+    origin: Instant,
+    offset: AtomicU64,
+    gates: Mutex<(HashMap<&'static str, u64>, bool)>,
+    changed: std::sync::Condvar,
+    acks: std::sync::mpsc::Sender<&'static str>,
+    ack_rx: Mutex<(std::sync::mpsc::Receiver<&'static str>, Vec<&'static str>)>,
+    waits: AtomicUsize,
+    probes: Mutex<Vec<SweepProbe>>,
+}
+
+const WATCHDOG: Duration = Duration::from_secs(5);
+
+impl SweepDriver {
+    /// Starts at an origin already past on the physical clock, gating `sites`.
+    fn new(sites: &[&'static str]) -> Arc<Self> {
+        let (acks, ack_rx) = std::sync::mpsc::channel();
+        let origin = Instant::now() - Duration::from_secs(120);
+        Arc::new(Self {
+            origin,
+            offset: AtomicU64::new(0),
+            gates: Mutex::new((sites.iter().map(|site| (*site, 0)).collect(), false)),
+            changed: std::sync::Condvar::new(),
+            acks,
+            ack_rx: Mutex::new((ack_rx, Vec::new())),
+            waits: AtomicUsize::new(0),
+            probes: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn now(&self) -> Instant {
+        self.origin + Duration::from_nanos(self.offset.load(Ordering::SeqCst))
+    }
+
+    fn set(&self, at: Instant) {
+        let offset = at.duration_since(self.origin).as_nanos();
+        self.offset
+            .store(offset.try_into().unwrap(), Ordering::SeqCst);
+    }
+
+    fn wait(&self, site: &'static str) {
+        self.waits.fetch_add(1, Ordering::SeqCst);
+        let mut gates = self.gates.lock().unwrap();
+        let Some(generation) = gates.0.get(site).copied().filter(|_| !gates.1) else {
+            return;
+        };
+        let _ = self.acks.send(site);
+        let limit = Instant::now() + WATCHDOG;
+        while gates.0.get(site) == Some(&generation) && !gates.1 && Instant::now() < limit {
+            gates = self.changed.wait_timeout(gates, WATCHDOG).unwrap().0;
+        }
+    }
+
+    fn step(&self, site: &'static str) {
+        *self
+            .gates
+            .lock()
+            .unwrap()
+            .0
+            .get_mut(site)
+            .expect("gated site") += 1;
+        self.changed.notify_all();
+    }
+
+    /// Opens every gate without moving the clock.
+    fn open(&self) {
+        self.gates.lock().unwrap().1 = true;
+        self.changed.notify_all();
+    }
+
+    fn rescue(&self) {
+        self.set(self.now() + Duration::from_secs(3600));
+        self.open();
+    }
+
+    /// Next ack of `site`; acks of other sites stay queued. Panics after the watchdog.
+    fn ack(&self, site: &'static str) {
+        let (receiver, backlog) = &mut *self.ack_rx.lock().unwrap();
+        let limit = Instant::now() + WATCHDOG;
+        if let Some(index) = backlog.iter().position(|seen| *seen == site) {
+            backlog.remove(index);
+            return;
+        }
+        while Instant::now() < limit {
+            match receiver.recv_timeout(WATCHDOG) {
+                Ok(seen) if seen == site => return,
+                Ok(other) => backlog.push(other),
+                Err(_) => break,
+            }
+        }
+        panic!("no wait acknowledged at site {site}");
+    }
+
+    /// Fails if `site` acks a new wait before `done` holds.
+    fn settle(&self, site: &'static str, mut done: impl FnMut() -> bool) {
+        let (receiver, backlog) = &mut *self.ack_rx.lock().unwrap();
+        backlog.extend(receiver.try_iter());
+        assert!(!backlog.contains(&site), "{site} waited again");
+        let limit = Instant::now() + WATCHDOG;
+        while !done() {
+            assert_ne!(receiver.try_recv().ok(), Some(site), "{site} waited again");
+            assert!(Instant::now() < limit, "{site} did not settle");
+            std::thread::yield_now();
+        }
+    }
+
+    fn probes(&self, mark: SweepProbe) -> usize {
+        self.probes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|seen| **seen == mark)
+            .count()
+    }
+
+    fn clock(self: &Arc<Self>) -> ContainerSweepClock {
+        let (now, wait, probe) = (Arc::clone(self), Arc::clone(self), Arc::clone(self));
+        ContainerSweepClock::for_test(
+            Arc::new(move || now.now()),
+            Arc::new(move |site, _| wait.wait(site)),
+            Some(Arc::new(move |mark| {
+                probe.probes.lock().unwrap().push(mark);
+                if mark == SweepProbe::EpochOpened {
+                    probe.wait("epochOpened");
+                }
+            })),
+        )
+    }
+
+    /// Runs the real sweep with this clock on its own thread.
+    fn spawn_sweep(
+        self: &Arc<Self>,
+        backend: &Arc<ContainerTransportBackend>,
+        budget: Duration,
+    ) -> (
+        std::thread::JoinHandle<()>,
+        std::sync::mpsc::Receiver<ContainerShutdownReport>,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (backend, clock) = (Arc::clone(backend), self.clock());
+        let caller = std::thread::spawn(move || {
+            let report = backend.stop_all_started_containers_blocking_with_clock(budget, &clock);
+            let _ = sender.send(report);
+        });
+        (caller, receiver)
+    }
+}
+
+/// Opens every gate when the test returns or unwinds, before any join.
+struct Rescue(Arc<SweepDriver>);
+
+impl Drop for Rescue {
+    fn drop(&mut self) {
+        self.0.rescue();
+    }
+}
+
+/// Rows 7/12/13: validates the worker's idle ack before dispatch, waits for `entered(D)`,
+/// re-evaluates once at `D - EPSILON` with the caller pending, then takes the report at D.
+fn sweep_at_deadline(
+    driver: &Arc<SweepDriver>,
+    backend: &Arc<ContainerTransportBackend>,
+    entered: impl FnOnce(Instant),
+) -> ContainerShutdownReport {
+    let (idle_sender, idle) = std::sync::mpsc::channel();
+    backend
+        .shutdown_work
+        .set_idle_observer_for_test(idle_sender);
+    let start = driver.now();
+    let (caller, report) = driver.spawn_sweep(backend, EPSILON);
+    driver.ack("epochOpened");
+    assert_live_idle(&idle, start);
+    driver.step("epochOpened");
+    entered(start + EPSILON);
+    driver.ack("drainPoll");
+    driver.step("drainPoll");
+    driver.ack("drainPoll");
+    assert!(report.try_recv().is_err(), "the caller is pending before D");
+    driver.set(start + EPSILON);
+    driver.step("drainPoll");
+    let mut at_deadline = None;
+    driver.settle("drainPoll", || {
+        at_deadline = report.try_recv().ok();
+        at_deadline.is_some()
+    });
+    caller.join().expect("join the sweep caller");
+    at_deadline.expect("report at D")
+}
+
+/// The first idle decision of the real worker at `D - EPSILON`: alive, not terminating,
+/// `remaining` exactly `EPSILON`.
+fn assert_live_idle(idle: &std::sync::mpsc::Receiver<SweepIdleAck>, at: Instant) {
+    let ack = idle.recv_timeout(WATCHDOG).expect("worker idle ack");
+    assert_eq!(
+        ack,
+        SweepIdleAck {
+            global_sweep: true,
+            observed: at,
+            live: true,
+            terminating: false,
+            producers: 0,
+            remaining: Some(EPSILON),
+        }
+    );
+}
+
+const EPSILON: Duration = Duration::from_secs(1);
 
 mod global_sweep;
 mod lifecycle;
