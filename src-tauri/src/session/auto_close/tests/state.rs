@@ -114,13 +114,12 @@ impl log::Log for AutoCloseLog {
     fn flush(&self) {}
 }
 
-/// Delegates the five handles to a real mock `AppHandle`; spies on everything else.
+/// Delegates the five handles to a real mock `AppHandle`; badges and saves go to the
+/// shared `RecordingServices` spy, and clock queries are counted.
 struct Delegated {
     app: tauri::AppHandle<tauri::test::MockRuntime>,
-    clocks: CoordinatorClocksState,
+    rec: RecordingServices,
     clock_queries: AtomicUsize,
-    notices: Mutex<Vec<Badge>>,
-    saved: Mutex<Vec<HashMap<String, ClockEntry>>>,
 }
 
 impl AutoCloseServices for Arc<Delegated> {
@@ -129,23 +128,16 @@ impl AutoCloseServices for Arc<Delegated> {
     }
     fn coordinator_clocks(&self) -> Option<CoordinatorClocksState> {
         self.clock_queries.fetch_add(1, Ordering::SeqCst);
-        Some(self.clocks.clone())
+        self.rec.coordinator_clocks()
     }
     fn idle_badge(&self, cwd: &str, at: DateTime<Utc>) {
-        self.notices
-            .lock()
-            .unwrap()
-            .push(Badge::Idle(cwd.into(), at));
+        self.rec.idle_badge(cwd, at);
     }
     fn auto_closed_badge(&self, cwd: &str, at: DateTime<Utc>) {
-        self.notices
-            .lock()
-            .unwrap()
-            .push(Badge::Closed(cwd.into(), at));
+        self.rec.auto_closed_badge(cwd, at);
     }
     fn save_clocks(&self, map: &HashMap<String, ClockEntry>) -> Result<(), String> {
-        self.saved.lock().unwrap().push(map.clone());
-        Ok(())
+        self.rec.save_clocks(map)
     }
 }
 
@@ -154,8 +146,8 @@ impl Delegated {
         (
             WARNINGS.lock().unwrap().len(),
             self.clock_queries.load(Ordering::SeqCst),
-            self.notices.lock().unwrap().len(),
-            self.saved.lock().unwrap().len(),
+            self.rec.notices.lock().unwrap().len(),
+            self.rec.saved.lock().unwrap().len(),
         )
     }
 }
@@ -207,10 +199,17 @@ async fn run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task() {
     let app = app_without(&h, 4);
     let spy = Arc::new(Delegated {
         app: app.handle().clone(),
-        clocks: Arc::new(Mutex::new(seeded)),
+        rec: RecordingServices::new(
+            h.settings.clone(),
+            (
+                Arc::clone(&h.manager),
+                Arc::clone(&h.pty),
+                Arc::clone(&h.idle),
+            ),
+            h.coordinator.clone(),
+            Arc::new(Mutex::new(seeded)),
+        ),
         clock_queries: AtomicUsize::new(0),
-        notices: Mutex::new(Vec::new()),
-        saved: Mutex::new(Vec::new()),
     });
     let shutdown = crate::shutdown::ShutdownSignal::new();
     let task = tokio::spawn(AutoClose::run(Arc::clone(&spy), shutdown.clone()));
@@ -226,7 +225,7 @@ async fn run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task() {
         "{warning}"
     );
     assert!(warning.contains("skipping tick"), "{warning}");
-    assert_eq!(spy.clocks.lock().unwrap().snapshot(), before);
+    assert_eq!(spy.rec.clocks.lock().unwrap().snapshot(), before);
     assert_eq!(h.manager.read().await.list_sessions().await.len(), 2);
     assert!(backend.has_session(lead) && backend.has_session(member));
 
@@ -235,8 +234,11 @@ async fn run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task() {
     settle_until(&spy, |(.., saves)| saves == 1).await;
     yields(50).await;
     let cwd = lead_cwd.to_string_lossy().into_owned();
-    assert_eq!(*spy.notices.lock().unwrap(), vec![Badge::Idle(cwd, anchor)]);
-    assert_eq!(spy.saved.lock().unwrap()[0], before);
+    assert_eq!(
+        *spy.rec.notices.lock().unwrap(),
+        vec![Badge::Idle(cwd, anchor)]
+    );
+    assert_eq!(spy.rec.saved.lock().unwrap()[0], before);
     assert_eq!(WARNINGS.lock().unwrap().len(), 1);
 
     let queries = spy.counts().1;

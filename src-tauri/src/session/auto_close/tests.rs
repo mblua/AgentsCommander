@@ -446,17 +446,12 @@ async fn auto_close_fixture() -> AutoCloseFixture {
     let telegram: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
         TelegramBridgeManager::new(output_senders),
     ));
-    let services = RecordingServices {
-        settings: settings.clone(),
-        manager: manager.clone(),
-        pty: pty.clone(),
-        idle: idle.clone(),
-        coordinator: coordinator.clone(),
-        clocks: clocks.clone(),
-        notices: Mutex::new(Vec::new()),
-        saved: Mutex::new(Vec::new()),
-        missing: Mutex::new(None),
-    };
+    let services = RecordingServices::new(
+        settings.clone(),
+        (manager.clone(), pty.clone(), idle.clone()),
+        coordinator.clone(),
+        clocks.clone(),
+    );
     let app = tauri::test::mock_builder()
         .manage(crate::commands::session::selection_executor::state::<
             tauri::test::MockRuntime,
@@ -586,6 +581,31 @@ struct RecordingServices {
     notices: Mutex<Vec<Badge>>,
     saved: Mutex<Vec<HashMap<String, ClockEntry>>>,
     missing: Mutex<Option<&'static str>>,
+}
+
+impl RecordingServices {
+    fn new(
+        settings: SettingsState,
+        (manager, pty, idle): (
+            Arc<tokio::sync::RwLock<SessionManager>>,
+            Arc<Mutex<PtyManager>>,
+            Arc<IdleDetector>,
+        ),
+        coordinator: SelectionCoordinator,
+        clocks: CoordinatorClocksState,
+    ) -> Self {
+        Self {
+            settings,
+            manager,
+            pty,
+            idle,
+            coordinator,
+            clocks,
+            notices: Mutex::new(Vec::new()),
+            saved: Mutex::new(Vec::new()),
+            missing: Mutex::new(None),
+        }
+    }
 }
 
 impl AutoCloseServices for RecordingServices {
