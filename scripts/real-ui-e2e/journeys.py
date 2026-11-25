@@ -139,7 +139,12 @@ class Run:
     def click(self, selector):
         self.require_main_focus()
         self.require_target(self.ui("ui-query", selector), selector)
-        self.require_target(self.ui("ui-click", selector), selector)
+        # The bridge snapshots the target after the click, so an element the click
+        # closes (a menu item) is no longer visible. Usability is checked by the
+        # query above; here only the clicked element's identity.
+        clicked = self.ui("ui-click", selector).get("target") or {}
+        if clicked.get("testId") != selector:
+            raise Failure("target_not_usable", self.stage)
 
     def wait_selector(self, selector, seconds=STEP_S):
         reply = self.ui("ui-wait", selector, "--timeout-ms", str(int(seconds * 1000)),
