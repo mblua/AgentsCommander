@@ -169,9 +169,13 @@ describe("TutorialOverlay", () => {
   it("three DOM changes in one frame call sync once", async () => {
     await startRun();
     const spy = vi.spyOn(tutorialStore, "sync");
+    // Different sources in separate microtasks, all inside one frame.
     target("x.one");
-    target("x.two");
-    must("actionBar.newOpen").setAttribute("data-ac-state", "open");
+    await Promise.resolve();
+    window.dispatchEvent(new Event("resize"));
+    await Promise.resolve();
+    document.body.dispatchEvent(new Event("scroll"));
+    expect(frames.length).toBe(1);
     await flush();
     expect(spy).toHaveBeenCalledTimes(1);
   });
@@ -197,6 +201,38 @@ describe("TutorialOverlay", () => {
     document.body.appendChild(el);
     await flush();
     expect(must("tutorial.bubble").textContent).not.toContain(HIDDEN);
+  });
+
+  it("team wizard steps 1 -> 2 -> 3 move the bubble and the ring", async () => {
+    const path = "/work/team";
+    const names = ["personal-assistant", "accountant", "social-media-expert"];
+    const p = {
+      path, folderName: "team", loops: [], contextTemplateUpdates: [], teams: [], workgroups: [],
+      agents: names.map((n) => ({ name: n, path: `${path}/.ac/_agent_${n}`, roleExists: true })),
+    } as unknown as ProjectState;
+    const ctx: RunCtx = { ...startCtx(0), step: "dialog", projectPath: path, goalKey: "team" };
+    vi.spyOn(projectStore, "projects", "get").mockReturnValue([p]);
+    vi.spyOn(tutorialStore, "ctx", "get").mockReturnValue(ctx);
+    vi.spyOn(tutorialStore, "active", "get").mockReturnValue(true);
+    vi.spyOn(tutorialStore, "sync").mockImplementation(() => {});
+    const modal = target("newTeam.modal");
+    modal.setAttribute("data-ac-state", "step-1");
+    const name = target("newTeam.name", { top: 100, left: 20, width: 30, height: 40 });
+    await mountLayer({ tutorialHintDismissed: true });
+    const text = () => must("tutorial.bubble").textContent ?? "";
+    expect(text()).toContain("Name the team my-team");
+    expect(must("tutorial.ring").style.top).toBe("96px");
+    name.remove();
+    target("newTeam.agents", { top: 200, left: 20, width: 30, height: 40 });
+    target("newTeam.create", { top: 300, left: 20, width: 30, height: 40 });
+    modal.setAttribute("data-ac-state", "step-2");
+    await flush();
+    expect(text()).toContain("Check personal-assistant");
+    expect(must("tutorial.ring").style.top).toBe("196px");
+    modal.setAttribute("data-ac-state", "step-3"); // attribute-only change
+    await flush();
+    expect(text()).toContain("Click Create.");
+    expect(must("tutorial.ring").style.top).toBe("296px");
   });
 
   it("Exit tutorial ends the run", async () => {

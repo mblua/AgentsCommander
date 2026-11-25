@@ -12,6 +12,7 @@ const BUBBLE_W = 260;
 const TutorialOverlay: Component<{ tick: number; probe: Probe }> = (props) => {
   let bubble: HTMLDivElement | undefined;
   const v = createMemo(() => {
+    void props.tick; // view() reads the DOM (e.g. team wizard step), so re-run per frame
     const ctx = tutorialStore.ctx;
     return ctx ? view(ctx, props.probe) : null;
   });
