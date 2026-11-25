@@ -100,7 +100,7 @@ pub fn entry_env(index: &Index, func: &FnInfo) -> Result<BTreeMap<String, Origin
     }
     let mut calls = Vec::new();
     for caller in &index.fns {
-        for args in calls_to(caller, func) {
+        for args in calls_to(index, caller, func) {
             calls.push((caller, args));
         }
     }
@@ -257,8 +257,8 @@ fn calls_named(block: &Block, name: &str) -> Vec<Vec<Expr>> {
 }
 
 /// Calls in `caller` that resolve to `callee`, honoring the path qualifier.
-fn calls_to(caller: &FnInfo, callee: &FnInfo) -> Vec<Vec<Expr>> {
-    struct Calls<'a>(&'a FnInfo, &'a FnInfo, Vec<Vec<Expr>>);
+fn calls_to(index: &Index, caller: &FnInfo, callee: &FnInfo) -> Vec<Vec<Expr>> {
+    struct Calls<'a>(&'a Index, &'a FnInfo, &'a FnInfo, Vec<Vec<Expr>>);
     impl<'ast> Visit<'ast> for Calls<'_> {
         fn visit_stmt(&mut self, stmt: &'ast Stmt) {
             if !stmt_test_only(stmt) {
@@ -269,42 +269,46 @@ fn calls_to(caller: &FnInfo, callee: &FnInfo) -> Vec<Vec<Expr>> {
             if is_test_only(expr_attrs(expr)) {
                 return;
             }
-            let (caller, callee) = (self.0, self.1);
+            let (index, caller, callee) = (self.0, self.1, self.2);
             match expr {
                 Expr::Call(c) => {
                     if let Expr::Path(p) = &*c.func {
                         if last_ident(&p.path).as_deref() == Some(callee.name.as_str())
-                            && qualifier_reaches(caller, &p.path, None, callee)
+                            && qualifier_reaches(index, caller, &p.path, None, callee)
                         {
-                            self.2.push(c.args.iter().cloned().collect());
+                            self.3.push(c.args.iter().cloned().collect());
                         }
                     }
                 }
                 Expr::MethodCall(m)
                     if m.method.unraw() == callee.name
                         && qualifier_reaches(
+                            index,
                             caller,
                             &syn::Path::from(m.method.clone()),
                             Some(&m.receiver),
                             callee,
                         ) =>
                 {
-                    self.2.push(m.args.iter().cloned().collect());
+                    self.3.push(m.args.iter().cloned().collect());
                 }
                 _ => {}
             }
             visit::visit_expr(self, expr);
         }
     }
-    let mut calls = Calls(caller, callee, Vec::new());
+    let mut calls = Calls(index, caller, callee, Vec::new());
     calls.visit_block(&caller.block);
-    calls.2
+    calls.3
 }
 
 /// Whether a call written as `path` (with `receiver` for a method call) in
-/// `caller` can name `callee`: `Self::`/`self.`/`Owner::` reach methods of that
-/// owner, a bare name reaches a free function of the same file.
+/// `caller` names `callee`: `Self::`/`self.`/`Owner::` reach methods of that
+/// owner, a bare name reaches a free function of the same file. Owner names are
+/// resolved to their declaration at both ends; a name that does not resolve with
+/// certainty reaches nothing, so the call is reported unresolved where it is made.
 pub fn qualifier_reaches(
+    index: &Index,
     caller: &FnInfo,
     path: &syn::Path,
     receiver: Option<&Expr>,
@@ -316,16 +320,102 @@ pub fn qualifier_reaches(
         return false;
     }
     let qual = (segs.len() >= 2).then(|| segs[segs.len() - 2].ident.unraw().to_string());
+    let owner = |f: &FnInfo| {
+        f.owner
+            .as_deref()
+            .and_then(|o| declaration(index, &f.chain, o).ok())
+    };
+    let same_owner = || owner(callee).is_some() && owner(callee) == owner(caller);
     match (receiver, qual.as_deref()) {
         (Some(r), _) => {
             matches!(r, Expr::Path(p) if p.path.is_ident("self"))
-                && callee.owner == caller.owner
                 && callee.sig.receiver().is_some()
+                && same_owner()
         }
-        (None, Some("Self")) => callee.owner.is_some() && callee.owner == caller.owner,
-        (None, Some(q)) if q.starts_with(char::is_uppercase) => callee.owner.as_deref() == Some(q),
+        (None, Some("Self")) => same_owner(),
+        (None, Some(q)) if q.starts_with(char::is_uppercase) => {
+            owner(callee).is_some() && declaration(index, &caller.chain, q).ok() == owner(callee)
+        }
         (None, _) => callee.owner.is_none() && callee.file == caller.file,
     }
+}
+
+/// The declaration `(scope, name)` a type name used under `chain` denotes,
+/// following `use` paths through the indexed module tree.
+pub fn declaration(
+    index: &Index,
+    chain: &[String],
+    name: &str,
+) -> Result<(String, String), String> {
+    for scope in chain {
+        if let Some(found) = declared_in(index, scope, name, 0)? {
+            return Ok(found);
+        }
+    }
+    Err(format!("{name} is neither declared nor imported by name"))
+}
+
+fn declared_in(
+    index: &Index,
+    scope: &str,
+    name: &str,
+    depth: usize,
+) -> Result<Option<(String, String)>, String> {
+    if depth > MAX_DEPTH {
+        return Err(format!("{name}: import chain too deep"));
+    }
+    let key = (scope.to_string(), name.to_string());
+    if index.declared.contains(&key) {
+        return Ok(Some(key));
+    }
+    if let Some(path) = index.uses.get(&key) {
+        let (last, module) = path.split_last().ok_or("empty use path")?;
+        let target = module_scope(index, scope, module)?;
+        return declared_in(index, &target, last, depth + 1)?
+            .ok_or_else(|| format!("{} does not declare {last}", quote_segs(path)))
+            .map(Some);
+    }
+    if index.aliases.contains_key(&key) {
+        return Err(format!("{name} is a type alias in {scope}"));
+    }
+    // Names a scope binds itself win; glob imports answer only for the rest.
+    let mut found = BTreeSet::new();
+    for module in index.globs.get(scope).into_iter().flatten() {
+        let target = module_scope(index, scope, module)?;
+        found.extend(declared_in(index, &target, name, depth + 1)?);
+    }
+    match found.len() {
+        0 | 1 => Ok(found.into_iter().next()),
+        _ => Err(format!("{name} is glob-imported from disagreeing modules")),
+    }
+}
+
+/// The scope key of the module `segs` names from `scope`.
+fn module_scope(index: &Index, scope: &str, segs: &[String]) -> Result<String, String> {
+    let here = index
+        .scope_module
+        .get(scope)
+        .ok_or("scope without a module")?;
+    let mut module = here.clone();
+    for (i, seg) in segs.iter().enumerate() {
+        match seg.as_str() {
+            "crate" if i == 0 => module = vec!["crate".to_string()],
+            "self" if i == 0 => {}
+            "super" if module.len() > 1 => {
+                module.pop();
+            }
+            _ => module.push(seg.clone()),
+        }
+    }
+    index
+        .modules
+        .get(&module)
+        .cloned()
+        .ok_or_else(|| format!("module {} is outside the indexed tree", module.join("::")))
+}
+
+fn quote_segs(segs: &[String]) -> String {
+    segs.join("::")
 }
 
 // ------------------------------------------------------------------ exits and paths

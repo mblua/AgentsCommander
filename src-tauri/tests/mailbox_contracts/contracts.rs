@@ -917,7 +917,7 @@ impl Paths<'_> {
             named.filter(|f| f.sig.receiver().is_some()).collect()
         } else {
             named
-                .filter(|f| qualifier_reaches(func, path, receiver, f))
+                .filter(|f| qualifier_reaches(self.index, func, path, receiver, f))
                 .collect()
         };
         let target = match candidates.as_slice() {

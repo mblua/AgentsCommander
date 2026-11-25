@@ -37,6 +37,8 @@ pub struct Source {
     pub path: String,
     pub file: syn::File,
     pub role: Role,
+    /// Module path of the file, starting at `crate`.
+    pub module: Vec<String>,
 }
 
 /// Result of discovery: every source plus the trace of real I/O.
@@ -59,6 +61,7 @@ struct Walker<'a> {
     parsed: BTreeMap<String, syn::File>,
     /// Contexts (`true` = test) already walked for each file.
     seen: BTreeMap<String, BTreeSet<bool>>,
+    modules: BTreeMap<String, Vec<String>>,
 }
 
 /// Discovers `facade` (repo-relative, e.g. `src-tauri/src/phone/mailbox.rs`) under `repo`.
@@ -74,6 +77,7 @@ pub fn discover(repo: &Path, facade: &str) -> Result<Tree, String> {
         events: vec![format!("MB_WALK\t{facade}")],
         parsed: BTreeMap::new(),
         seen: BTreeMap::new(),
+        modules: BTreeMap::new(),
     };
     let mut physical = BTreeSet::new();
     walker.list(&boundary, &mut physical)?;
@@ -81,7 +85,8 @@ pub fn discover(repo: &Path, facade: &str) -> Result<Tree, String> {
         return Err(format!("{boundary}: empty module tree"));
     }
     physical.insert(facade.to_string());
-    walker.walk_file(facade, false)?;
+    let root = facade_module(facade)?;
+    walker.walk_file(facade, false, root)?;
     let reached: BTreeSet<String> = walker.seen.keys().cloned().collect();
     if let Some(orphan) = physical.difference(&reached).next() {
         return Err(format!(
@@ -101,7 +106,13 @@ pub fn discover(repo: &Path, facade: &str) -> Result<Tree, String> {
         walker
             .events
             .push(format!("MB_SOURCE\t{}\t{path}", role.label()));
-        sources.push(Source { path, file, role });
+        let module = walker.modules[&path].clone();
+        sources.push(Source {
+            path,
+            file,
+            role,
+            module,
+        });
     }
     Ok(Tree {
         sources,
@@ -151,14 +162,17 @@ impl Walker<'_> {
         Ok(())
     }
 
-    fn walk_file(&mut self, rel: &str, test: bool) -> Result<(), String> {
+    fn walk_file(&mut self, rel: &str, test: bool, module: Vec<String>) -> Result<(), String> {
         if !self.seen.entry(rel.to_string()).or_default().insert(test) {
             return Ok(());
         }
         self.parse(rel)?;
+        self.modules
+            .entry(rel.to_string())
+            .or_insert_with(|| module.clone());
         let items = self.parsed[rel].items.clone();
         let dir = child_dir(rel, rel == self.facade);
-        self.walk_items(rel, &dir, &items, test, false)
+        self.walk_items(rel, &dir, &items, test, false, &module)
     }
 
     fn walk_items(
@@ -168,6 +182,7 @@ impl Walker<'_> {
         items: &[Item],
         test: bool,
         inline: bool,
+        parent: &[String],
     ) -> Result<(), String> {
         for item in items {
             match item {
@@ -175,13 +190,14 @@ impl Walker<'_> {
                     let edge = test || is_test_only(&module.attrs);
                     let name = module.ident.to_string();
                     let name = name.trim_start_matches("r#");
+                    let child = [parent, &[name.to_string()]].concat();
                     let path_attr = path_literal(&module.attrs)
                         .map_err(|e| format!("{rel}: mod {name}: {e}"))?;
                     match (&module.content, path_attr) {
                         (Some((_, inner)), path_attr) => {
                             let sub = path_attr
                                 .map_or_else(|| format!("{dir}/{name}"), |p| format!("{dir}/{p}"));
-                            self.walk_items(rel, &sub, inner, edge, true)?;
+                            self.walk_items(rel, &sub, inner, edge, true, &child)?;
                         }
                         (None, Some(p)) => {
                             // Outside inline modules `#[path]` is relative to the
@@ -190,11 +206,11 @@ impl Walker<'_> {
                             let base = if inline { dir } else { parent_dir(rel) };
                             let target = normalize(&format!("{base}/{p}"))
                                 .ok_or_else(|| format!("{rel}: mod {name}: path escapes"))?;
-                            self.enter(rel, name, &target, edge)?;
+                            self.enter(rel, name, &target, edge, child.clone())?;
                         }
                         (None, None) => {
                             let target = self.resolve(rel, dir, name)?;
-                            self.enter(rel, name, &target, edge)?;
+                            self.enter(rel, name, &target, edge, child.clone())?;
                         }
                     }
                 }
@@ -207,7 +223,14 @@ impl Walker<'_> {
         Ok(())
     }
 
-    fn enter(&mut self, rel: &str, name: &str, target: &str, test: bool) -> Result<(), String> {
+    fn enter(
+        &mut self,
+        rel: &str,
+        name: &str,
+        target: &str,
+        test: bool,
+        module: Vec<String>,
+    ) -> Result<(), String> {
         if !target.starts_with(&format!("{}/", self.boundary)) {
             return Err(format!(
                 "{rel}: mod {name}: {target} is outside {}",
@@ -217,7 +240,7 @@ impl Walker<'_> {
         if !self.abs(target).is_file() {
             return Err(format!("{rel}: mod {name}: missing source {target}"));
         }
-        self.walk_file(target, test)
+        self.walk_file(target, test, module)
     }
 
     fn resolve(&self, rel: &str, dir: &str, name: &str) -> Result<String, String> {
@@ -230,6 +253,18 @@ impl Walker<'_> {
             (false, false) => Err(format!("{rel}: mod {name}: missing source {flat}")),
         }
     }
+}
+
+/// `crate::a::b` for a facade at `<crate>/src/a/b.rs`.
+fn facade_module(facade: &str) -> Result<Vec<String>, String> {
+    let (_, rest) = facade
+        .split_once("/src/")
+        .ok_or_else(|| format!("{facade}: facade is not under a src directory"))?;
+    let rest = rest.trim_end_matches(".rs");
+    Ok(std::iter::once("crate")
+        .chain(rest.split('/'))
+        .map(str::to_string)
+        .collect())
 }
 
 fn parent_dir(rel: &str) -> &str {
@@ -336,8 +371,10 @@ pub fn inventory(tree: &Tree) -> Index {
             func: Vec::new(),
             missing_arm: 0,
             scopes: vec![(source.path.clone(), true)],
+            modules: vec![source.module.clone()],
             refs_in_site: BTreeMap::new(),
         };
+        collector.enter_scope(source.path.clone(), true, source.module.clone());
         collector.visit_file(&source.file);
     }
     index
@@ -395,6 +432,8 @@ pub struct FnInfo {
     pub name: String,
     pub sig: syn::Signature,
     pub block: Block,
+    /// Name scopes visible in the body, innermost (the body) first, ending at its module.
+    pub chain: Vec<String>,
 }
 
 pub struct LogSite {
@@ -424,8 +463,15 @@ pub struct Index {
     pub refs: Vec<MutatorRef>,
     /// `(scope, name) -> target name` for renames, type aliases and imports.
     pub aliases: BTreeMap<(String, String), String>,
+    /// `(scope, name) -> full path` of the names a `use` brings into that scope.
+    pub uses: BTreeMap<(String, String), Vec<String>>,
+    /// Module paths glob-imported (`use a::*`) into each scope.
+    pub globs: BTreeMap<String, Vec<Vec<String>>>,
     /// `(scope, name)` of the types declared in that scope.
     pub declared: BTreeSet<(String, String)>,
+    /// Module path of every name scope, and the scope key of every module.
+    pub scope_module: BTreeMap<String, Vec<String>>,
+    pub modules: BTreeMap<Vec<String>, String>,
     pub errors: Vec<String>,
 }
 
@@ -437,6 +483,8 @@ pub struct Collector<'a> {
     pub missing_arm: usize,
     /// Name scopes: the file, inline modules (`true`) and function bodies (`false`).
     pub scopes: Vec<(String, bool)>,
+    /// Module path of each open module scope.
+    pub modules: Vec<Vec<String>>,
     pub refs_in_site: BTreeMap<String, usize>,
 }
 
@@ -522,6 +570,29 @@ impl Collector<'_> {
         chain
     }
 
+    fn enter_scope(&mut self, key: String, module: bool, path: Vec<String>) {
+        if module {
+            self.index.modules.insert(path.clone(), key.clone());
+        }
+        self.index.scope_module.insert(key, path);
+    }
+
+    fn push_scope(&mut self, key: String, module: Option<String>) {
+        let mut path = self.modules.last().cloned().unwrap_or_default();
+        if let Some(name) = &module {
+            path.push(name.clone());
+            self.modules.push(path.clone());
+        }
+        self.enter_scope(key.clone(), module.is_some(), path);
+        self.scopes.push((key, module.is_some()));
+    }
+
+    fn pop_scope(&mut self) {
+        if self.scopes.pop().is_some_and(|(_, module)| module) {
+            self.modules.pop();
+        }
+    }
+
     fn name(&mut self, name: String, target: String) {
         self.index.aliases.insert((self.scope(), name), target);
     }
@@ -538,23 +609,36 @@ impl Collector<'_> {
             name: sig.ident.unraw().to_string(),
             sig: sig.clone(),
             block: block.clone(),
+            chain: Vec::new(),
         });
-        self.index.fns.len() - 1
+        let at = self.index.fns.len() - 1;
+        self.push_scope(format!("{}::fn {}#{at}", self.scope(), sig.ident), None);
+        self.index.fns[at].chain = self.chain();
+        at
     }
 
-    fn record_use(&mut self, tree: &syn::UseTree) {
+    fn record_use(&mut self, tree: &syn::UseTree, prefix: &[String]) {
+        let import = |this: &mut Self, from: &syn::Ident, to: &syn::Ident| {
+            let (from, to) = (from.unraw().to_string(), to.unraw().to_string());
+            let path = [prefix, std::slice::from_ref(&from)].concat();
+            this.index.uses.insert((this.scope(), to.clone()), path);
+            this.name(to, from);
+        };
         match tree {
-            syn::UseTree::Path(p) => self.record_use(&p.tree),
-            syn::UseTree::Name(n) => {
-                let name = n.ident.unraw().to_string();
-                self.name(name.clone(), name);
+            syn::UseTree::Path(p) => {
+                self.record_use(&p.tree, &[prefix, &[p.ident.unraw().to_string()]].concat());
             }
-            syn::UseTree::Rename(r) => {
-                let (from, to) = (r.ident.unraw().to_string(), r.rename.unraw().to_string());
-                self.name(to, from);
+            syn::UseTree::Name(n) => import(self, &n.ident, &n.ident),
+            syn::UseTree::Rename(r) => import(self, &r.ident, &r.rename),
+            syn::UseTree::Group(g) => g.items.iter().for_each(|t| self.record_use(t, prefix)),
+            syn::UseTree::Glob(_) => {
+                let scope = self.scope();
+                self.index
+                    .globs
+                    .entry(scope)
+                    .or_default()
+                    .push(prefix.to_vec());
             }
-            syn::UseTree::Group(g) => g.items.iter().for_each(|t| self.record_use(t)),
-            syn::UseTree::Glob(_) => {}
         }
     }
 
@@ -595,11 +679,17 @@ impl Collector<'_> {
             match (punct(1), punct(2)) {
                 (Some('.'), _) => self.mutator_ref(None, "method call in macro", false),
                 (Some(':'), Some(':')) => {
-                    let owner = trees[..i - 2].iter().rev().find_map(|t| match t {
+                    // The owner is the nearest name before `::`, past a closing `>` of
+                    // `<path::Owner>::`; a `:` right before it means a module path.
+                    let at = trees[..i - 2]
+                        .iter()
+                        .rposition(|t| matches!(t, Tok::Ident(_)));
+                    let owner = at.and_then(|j| match &trees[j] {
                         Tok::Ident(q) => Some(q.clone()),
                         _ => None,
                     });
-                    let qualified = matches!(trees.get(i.wrapping_sub(4)), Some(Tok::Punct(':')));
+                    let before = at.and_then(|j| j.checked_sub(1)).map(|j| &trees[j]);
+                    let qualified = matches!(before, Some(Tok::Punct(':')));
                     self.mutator_ref(owner, "path in macro", qualified);
                 }
                 _ => self.mutator_ref(None, "bare reference in macro", false),
@@ -681,24 +771,22 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             syn::Item::Fn(f) => {
                 let at = self.push_fn(&f.sig, &f.block);
                 self.func.push(at);
-                self.scopes
-                    .push((format!("{}::fn {}#{at}", self.scope(), f.sig.ident), false));
                 visit::visit_item_fn(self, f);
-                self.scopes.pop();
+                self.pop_scope();
                 self.func.pop();
             }
             syn::Item::Mod(m) if m.content.is_some() => {
-                self.scopes
-                    .push((format!("{}::{}", self.scope(), m.ident.unraw()), true));
+                let name = m.ident.unraw().to_string();
+                self.push_scope(format!("{}::{name}", self.scope()), Some(name));
                 visit::visit_item_mod(self, m);
-                self.scopes.pop();
+                self.pop_scope();
             }
             syn::Item::Impl(i) => {
                 self.owner.push(type_ident(&i.self_ty));
                 visit::visit_item_impl(self, i);
                 self.owner.pop();
             }
-            syn::Item::Use(u) => self.record_use(&u.tree),
+            syn::Item::Use(u) => self.record_use(&u.tree, &[]),
             syn::Item::Type(t) => {
                 if let Some(target) = type_ident(&t.ty) {
                     self.name(t.ident.unraw().to_string(), target);
@@ -722,10 +810,8 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             syn::ImplItem::Fn(f) if !is_test_only(&f.attrs) => {
                 let at = self.push_fn(&f.sig, &f.block);
                 self.func.push(at);
-                self.scopes
-                    .push((format!("{}::fn {}#{at}", self.scope(), f.sig.ident), false));
                 visit::visit_impl_item_fn(self, f);
-                self.scopes.pop();
+                self.pop_scope();
                 self.func.pop();
             }
             syn::ImplItem::Fn(_) => {}
@@ -781,7 +867,11 @@ impl<'ast> Visit<'ast> for Collector<'_> {
                         (segs.len() >= 2).then(|| segs[segs.len() - 2].ident.unraw().to_string())
                     }
                 };
-                let qualified = path.qself.is_none() && path.path.segments.len() > 2;
+                // `<a::Owner>::f` names Owner through a module path, like `a::Owner::f`.
+                let qualified = match &path.qself {
+                    Some(q) => !matches!(&*q.ty, syn::Type::Path(t) if t.path.segments.len() == 1),
+                    None => path.path.segments.len() > 2,
+                };
                 self.mutator_ref(owner, "path", qualified);
             }
             _ => {}

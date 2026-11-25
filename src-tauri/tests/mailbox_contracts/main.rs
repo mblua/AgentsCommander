@@ -639,6 +639,30 @@ fn provenance_controls() {
             "delivery ContextAlert",
             DELIVERY,
         );
+    // A name the body rebinds is resolved there, never by its text alone.
+    let named = call.replace("Self::", "Mailbox::");
+    for (why, bind) in [
+        ("body import of a homonym", "use crate::otro::Mailbox;"),
+        (
+            "body alias of a homonym",
+            "type Mailbox = crate::otro::Mailbox;",
+        ),
+        ("body import of an unknown module", "use otro::Mailbox;"),
+    ] {
+        Fixture::base()
+            .edit(DELIVERY, call, &format!("{bind}\n        {named}"))
+            .rejects(why, "unresolved call to Mailbox::", DELIVERY);
+    }
+    Fixture::base()
+        .edit(DELIVERY, call, &named)
+        .accepts("owner named by its declaration");
+    Fixture::base()
+        .edit(
+            DELIVERY,
+            call,
+            &format!("use super::delivery::Mailbox;\n        {named}"),
+        )
+        .accepts("body import of the real owner");
 }
 
 /// Pattern guards and every successful `Ok` form.
@@ -721,6 +745,24 @@ fn scope_controls() {
             T10,
             "delivery.rs::b::h (reference #1",
         );
+    for (why, value) in [
+        (
+            "UFCS module path to an alias",
+            "<super::super::clocks::ClockAlias>::mark_auto_closed",
+        ),
+        (
+            "UFCS module path in a macro",
+            "vec![<super::super::clocks::ClockAlias>::mark_auto_closed]",
+        ),
+    ] {
+        Fixture::base()
+            .append("clocks.rs", "\npub type ClockAlias = CoordinatorClocks;\n")
+            .append(
+                DELIVERY,
+                &other_alias.replace("super::super::clocks::ClockAlias::mark_auto_closed", value),
+            )
+            .rejects(why, T10, "delivery.rs::b::h (reference #1");
+    }
     let alias = "\npub type Alias = CoordinatorClocks;\n";
     let local = "\nmod local {\n    use crate::other::Plain as Alias;\n    \
         fn h() { let f = Alias::mark_auto_closed; }\n}\n";
