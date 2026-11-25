@@ -659,7 +659,6 @@ fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
     };
     ready.wait();
     assert_eq!(runtime.active_reader_count(), 2);
-
     let poll = DockerProcessState::COMMAND_POLL_FOR_TEST;
     let epsilon = Duration::from_millis(1);
     let started_at = Instant::now();
@@ -693,7 +692,6 @@ fn permanently_blocked_command_readers_are_retained_at_the_deadline() {
         .process_state
         .retain_reader_owner_at_deadline(owner)
         .to_string();
-
     assert!(
         error.contains("readers exceeded the absolute deadline"),
         "{error}"
@@ -856,7 +854,6 @@ fn retained_command_retry_uses_one_clock_through_termination() {
         })),
         worker: Some(worker),
     };
-
     let drive = RetryGateDrive {
         entered: &entered,
         release_gate: &release_gate,
