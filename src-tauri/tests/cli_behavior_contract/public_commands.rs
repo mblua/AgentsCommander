@@ -744,3 +744,135 @@ fn window_info_no_gui_contract() {
         assert_eq!(json["error"], "window_info_unsupported_on_platform");
     }
 }
+
+/// `list-sessions` argv cases frozen in `fixtures/list-sessions/p01.json`.
+const LIST_SESSIONS_P01_CASES: [(&str, &[&str]); 5] = [
+    ("full", &["list-sessions"]),
+    ("full", &["list-sessions", "--status", "RUNNING"]),
+    ("full", &["list-sessions", "--status", "exited"]),
+    ("full", &["list-sessions", "--status", "bogus"]),
+    ("empty", &["list-sessions"]),
+];
+
+/// Seeded `sessions.json` bytes: raised-hand rows plus every status, an
+/// escaped name, a row without id and a trailing duplicate of the first row.
+fn list_sessions_p01_input(name: &str) -> Vec<u8> {
+    if name == "empty" {
+        return b"[]".to_vec();
+    }
+    let mut rows = raised_hand_sessions_fixture().as_array().unwrap().clone();
+    let first = rows[0].clone();
+    for (digit, status) in [("6", "active"), ("7", "idle"), ("8", ""), ("9", "")] {
+        let mut row = rows[1].clone();
+        row["id"] = serde_json::json!(format!(
+            "{0}{0}{0}{0}{0}{0}{0}{0}-0000-0000-0000-00000000000{0}",
+            digit
+        ));
+        row["name"] = serde_json::json!(format!("p01-{digit}"));
+        row["status"] = serde_json::json!(status);
+        rows.push(row);
+    }
+    rows[5]["name"] = serde_json::json!("tab\there \"quoted\"");
+    rows[7]["status"] = serde_json::json!({ "exited": -7 });
+    let last = rows[8].as_object_mut().unwrap();
+    for key in ["status", "waitingForInput", "createdAt"] {
+        last.remove(key);
+    }
+    let mut no_id = rows[1].clone();
+    no_id.as_object_mut().unwrap().remove("id");
+    no_id["name"] = serde_json::json!("p01-no-id");
+    rows.extend([no_id, first]);
+    serde_json::to_vec_pretty(&rows).expect("sessions json")
+}
+
+/// Runs one case on a fresh binary copy and profile; stdout stays raw bytes.
+fn run_list_sessions_p01(input: &[u8], args: &[&str]) -> (Option<i32>, Vec<u8>, String) {
+    let tmp = Tmp::new("cli-list-sessions-p01");
+    let bin = copy_binary_into(tmp.path());
+    let config_dir = config_dir_for_bin(&bin);
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+    std::fs::write(config_dir.join("sessions.json"), input).expect("write sessions");
+    let mut command = super::command_for_binary(&bin);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = {
+        let _guard = super::spawn_lock();
+        command.spawn().expect("spawn")
+    };
+    let out = child.wait_with_output().expect("collect output");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    (out.status.code(), out.stdout, stderr)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Asserts the LF, exited-stderr and rc-1 stderr edges of one p01 case.
+fn p01_edges(stdout: &[u8], expected: &[u8], args: &[&str], stderr: &str, code: Option<i32>) {
+    if let Some((b'\n', body)) = stdout.split_last() {
+        assert_ne!(body, expected, "LF is part of the contract");
+    }
+    if args.last() == Some(&"exited") {
+        assert!(!stderr.contains("[WARN]"), "{stderr}");
+    }
+    if code == Some(1) {
+        assert!(stderr.contains("Error: invalid status 'bogus'"), "{stderr}");
+    }
+}
+
+#[test]
+fn list_sessions_stdout_matches_pin_bytes() {
+    let golden: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/list-sessions/p01.json")).expect("fixture");
+    for (name, sha) in golden["inputs"].as_object().expect("inputs") {
+        assert_eq!(sha256_hex(&list_sessions_p01_input(name)), *sha, "{name}");
+    }
+    let cases = golden["cases"].as_array().expect("cases");
+    assert_eq!(cases.len(), LIST_SESSIONS_P01_CASES.len());
+    let mut decoded = Vec::new();
+    for (case, (input, args)) in cases.iter().zip(LIST_SESSIONS_P01_CASES) {
+        assert_eq!(case["input"], input);
+        assert_eq!(case["argv"], serde_json::json!(args));
+        let expected = case["stdout"].as_str().expect("stdout");
+        assert_eq!(sha256_hex(expected.as_bytes()), case["stdoutSha256"]);
+        assert_eq!(expected.len() as u64, case["stdoutLen"].as_u64().unwrap());
+        let (code, stdout, stderr) = run_list_sessions_p01(&list_sessions_p01_input(input), args);
+        assert_eq!(
+            code.map(i64::from),
+            case["rc"].as_i64(),
+            "{args:?}: {stderr}"
+        );
+        assert_eq!(stdout, expected.as_bytes(), "{args:?} stdout bytes");
+        p01_edges(&stdout, expected.as_bytes(), args, &stderr, code);
+        decoded.push(String::from_utf8(stdout).expect("utf-8 stdout"));
+    }
+    assert!(decoded[3].is_empty());
+    let rows = |i: usize| -> Vec<serde_json::Value> {
+        serde_json::from_str(&decoded[i]).expect("stdout JSON array")
+    };
+    let all = rows(0);
+    let statuses: Vec<_> = all.iter().map(|row| row["status"].to_string()).collect();
+    let expected = r#""running","running","running","running",{"exited":0},"active","idle""#;
+    assert_eq!(
+        statuses.join(","),
+        format!(r#"{expected},{{"exited":-7}},"unknown","running""#)
+    );
+    assert_eq!(all[9], all[0], "duplicate row kept");
+    assert_eq!(all[5]["name"], "tab\there \"quoted\"");
+    assert_eq!(all[8]["waitingForInput"], false);
+    assert_eq!(all[8]["createdAt"], "");
+    assert!(all.iter().all(|row| row["name"] != "p01-no-id"));
+    assert_eq!(rows(1).len(), 5);
+    assert!(rows(1).iter().all(|row| row["status"] == "running"));
+    let exited: Vec<_> = rows(2).iter().map(|row| row["id"].clone()).collect();
+    assert_eq!(exited, [all[4]["id"].clone(), all[7]["id"].clone()]);
+    assert!(rows(4).is_empty());
+}

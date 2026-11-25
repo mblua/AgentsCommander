@@ -274,7 +274,11 @@ const Titlebar: Component = () => {
           {layoutOpen() && (
             <div class="layout-dropdown" data-ac-testid="titlebar.layout.menu">
               <div class="layout-section-label">Side</div>
-              <div class="layout-segmented" role="group" aria-label="Sidebar side">
+              <fieldset
+                class="layout-segmented"
+                aria-label="Sidebar side"
+                style={{ border: "0", margin: "0", "min-width": "0" }}
+              >
                 <For each={SIDEBAR_SIDE_PRESETS}>
                   {(preset) => (
                     <button
@@ -287,7 +291,7 @@ const Titlebar: Component = () => {
                     </button>
                   )}
                 </For>
-              </div>
+              </fieldset>
               <div class="layout-section-label">Width</div>
               <For each={SIDEBAR_WIDTH_PRESETS}>
                 {(preset) => (

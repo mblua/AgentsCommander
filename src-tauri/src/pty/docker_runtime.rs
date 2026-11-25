@@ -44,7 +44,15 @@ pub struct DockerRuntime {
     program: String,
     process_state: DockerProcessState,
     retained_start_cleanups: Arc<RetainedDockerStartCleanupRegistry>,
+    #[cfg(test)]
+    retry_clock: Option<RetryClockForTest>,
 }
+
+#[cfg(test)]
+type RetryClockForTest = (
+    Arc<dyn Fn() -> Instant + Send + Sync>,
+    Arc<dyn Fn(Duration) + Send + Sync>,
+);
 
 impl Default for DockerRuntime {
     fn default() -> Self {
@@ -58,6 +66,8 @@ impl DockerRuntime {
             program: "docker".to_string(),
             process_state: DockerProcessState::default(),
             retained_start_cleanups: Arc::new(RetainedDockerStartCleanupRegistry::default()),
+            #[cfg(test)]
+            retry_clock: None,
         }
     }
 
@@ -67,6 +77,8 @@ impl DockerRuntime {
             program: program.into(),
             process_state: DockerProcessState::default(),
             retained_start_cleanups: Arc::new(RetainedDockerStartCleanupRegistry::default()),
+            #[cfg(test)]
+            retry_clock: None,
         }
     }
 
@@ -79,6 +91,8 @@ impl DockerRuntime {
             program: program.into(),
             process_state: DockerProcessState::with_recorded_commands(recorded_commands),
             retained_start_cleanups: Arc::new(RetainedDockerStartCleanupRegistry::default()),
+            #[cfg(test)]
+            retry_clock: None,
         }
     }
 
@@ -92,6 +106,8 @@ impl DockerRuntime {
             program: program.into(),
             process_state: DockerProcessState::with_scripted_commands(recorded_commands, results),
             retained_start_cleanups: Arc::new(RetainedDockerStartCleanupRegistry::default()),
+            #[cfg(test)]
+            retry_clock: None,
         }
     }
 
@@ -121,6 +137,43 @@ impl DockerRuntime {
         &self,
     ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         self.process_state.install_command_retry_gate_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_retry_clock_for_test(
+        &mut self,
+        now: Arc<dyn Fn() -> Instant + Send + Sync>,
+        wait: Arc<dyn Fn(Duration) + Send + Sync>,
+    ) {
+        self.retry_clock = Some((now, wait));
+    }
+
+    fn retry_retained_cleanups_with_clock(
+        &self,
+        control: &ContainerRuntimeControl,
+        now: &dyn Fn() -> Instant,
+        retry_commands_until: &dyn Fn(Instant),
+    ) {
+        let deadline = control
+            .shutdown_deadline()
+            .unwrap_or_else(|| now() + CONTAINER_STOP_TIMEOUT);
+        let entries = self
+            .retained_start_cleanups
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for entry in entries {
+            if now() >= deadline {
+                break;
+            }
+            self.attempt_retained_start_cleanup(entry, control);
+        }
+        if now() < deadline {
+            retry_commands_until(deadline);
+        }
     }
 
     pub fn build_run_command(
@@ -711,26 +764,17 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     fn retry_retained_cleanups(&self, control: &ContainerRuntimeControl) {
-        let deadline = control
-            .shutdown_deadline()
-            .unwrap_or_else(|| Instant::now() + CONTAINER_STOP_TIMEOUT);
-        let entries = self
-            .retained_start_cleanups
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for entry in entries {
-            if Instant::now() >= deadline {
-                break;
-            }
-            self.attempt_retained_start_cleanup(entry, control);
+        #[cfg(test)]
+        if let Some((now, wait)) = self.retry_clock.clone() {
+            self.retry_retained_cleanups_with_clock(control, &*now, &|deadline| {
+                self.process_state
+                    .retry_until_with_clock(deadline, &*now, &*wait);
+            });
+            return;
         }
-        if Instant::now() < deadline {
+        self.retry_retained_cleanups_with_clock(control, &Instant::now, &|deadline| {
             self.process_state.retry_until(deadline);
-        }
+        });
     }
 
     fn retained_cleanup_contexts(&self) -> Vec<RetainedContainerOwnerContext> {

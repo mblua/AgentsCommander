@@ -1249,9 +1249,9 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
             data-ac-testid="resourceMonitor.filter"
             data-ac-role="toolbar"
           >
-            <div
+            <fieldset
               class="rm-filter-segment"
-              role="group"
+              style={{ border: "0", margin: "0", "min-width": "0" }}
               aria-label="Filter by status"
               data-ac-testid="resourceMonitor.filter.status"
               data-ac-role="group"
@@ -1274,12 +1274,12 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                   </button>
                 )}
               </For>
-            </div>
+            </fieldset>
 
             <Show when={projectOptions().length > 0}>
-              <div
+              <fieldset
                 class="rm-filter-group"
-                role="group"
+                style={{ border: "0", margin: "0", padding: "0", "min-width": "0" }}
                 aria-label="Filter by project"
                 data-ac-testid="resourceMonitor.filter.project"
                 data-ac-role="group"
@@ -1305,13 +1305,13 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                     </button>
                   )}
                 </For>
-              </div>
+              </fieldset>
             </Show>
 
             <Show when={workgroupOptions().length > 0}>
-              <div
+              <fieldset
                 class="rm-filter-group"
-                role="group"
+                style={{ border: "0", margin: "0", padding: "0", "min-width": "0" }}
                 aria-label="Filter by room"
                 data-ac-testid="resourceMonitor.filter.workgroup"
                 data-ac-role="group"
@@ -1337,13 +1337,13 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                     </button>
                   )}
                 </For>
-              </div>
+              </fieldset>
             </Show>
 
             <Show when={roleOptions().length > 0}>
-              <div
+              <fieldset
                 class="rm-filter-group"
-                role="group"
+                style={{ border: "0", margin: "0", padding: "0", "min-width": "0" }}
                 aria-label="Filter by role"
                 data-ac-testid="resourceMonitor.filter.role"
                 data-ac-role="group"
@@ -1369,7 +1369,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                     </button>
                   )}
                 </For>
-              </div>
+              </fieldset>
             </Show>
 
             <div
@@ -1871,7 +1871,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
           onMount(() => cancelRef?.focus());
           return (
           <div
-            class="rm-modal-backdrop"
+            class="rm-modal-backdrop" role="none"
             // The guard is load-bearing, not decoration: mousedown bubbles up
             // from the dialog, so an unguarded preventDefault here would also
             // cancel every press INSIDE the modal and kill text selection of

@@ -161,6 +161,12 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     (
+        "src-tauri/src/events/session/tests.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
         "src-tauri/src/phone/mailbox/tests/test_settle/root_protection.rs",
         1,
         0,

@@ -1,12 +1,12 @@
 use super::*;
 
 #[derive(Default)]
-struct AutoCloseBackend {
+pub(crate) struct AutoCloseBackend {
     live: Mutex<HashSet<Uuid>>,
 }
 
 impl AutoCloseBackend {
-    fn set_live(&self, id: Uuid) {
+    pub(crate) fn set_live(&self, id: Uuid) {
         self.live.lock().unwrap().insert(id);
     }
 }
@@ -365,7 +365,7 @@ struct AutoCloseFixture {
     services: RecordingServices,
 }
 
-async fn auto_close_session(
+pub(crate) async fn auto_close_session(
     manager: &tokio::sync::RwLock<SessionManager>,
     cwd: &std::path::Path,
     coding_agent: Option<String>,
@@ -446,15 +446,12 @@ async fn auto_close_fixture() -> AutoCloseFixture {
     let telegram: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
         TelegramBridgeManager::new(output_senders),
     ));
-    let services = RecordingServices {
-        settings: settings.clone(),
-        manager: manager.clone(),
-        pty: pty.clone(),
-        idle: idle.clone(),
-        coordinator: coordinator.clone(),
-        clocks: clocks.clone(),
-        notices: Mutex::new(Vec::new()),
-    };
+    let services = RecordingServices::new(
+        settings.clone(),
+        (manager.clone(), pty.clone(), idle.clone()),
+        coordinator.clone(),
+        clocks.clone(),
+    );
     let app = tauri::test::mock_builder()
         .manage(crate::commands::session::selection_executor::state::<
             tauri::test::MockRuntime,
@@ -520,7 +517,7 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
         });
     }
 
-    tick(app.handle(), &mut HashMap::new()).await;
+    assert_eq!(tick(app.handle(), &mut HashMap::new()).await, Ok(()));
 
     assert!(manager.read().await.list_sessions().await.is_empty());
     assert!(!backend.has_session(fixture.coordinator_id));
@@ -569,36 +566,60 @@ async fn selected_idle_team_closes_as_one_batch_and_clears_selection_once() {
 }
 
 #[derive(Debug, PartialEq)]
-enum Badge {
+pub(crate) enum Badge {
     Idle(String, DateTime<Utc>),
     Closed(String, DateTime<Utc>),
 }
 
-struct RecordingServices {
+pub(crate) struct RecordingServices {
     settings: SettingsState,
     manager: Arc<tokio::sync::RwLock<SessionManager>>,
     pty: Arc<Mutex<PtyManager>>,
     idle: Arc<IdleDetector>,
     coordinator: SelectionCoordinator,
-    clocks: CoordinatorClocksState,
-    notices: Mutex<Vec<Badge>>,
+    pub(crate) clocks: CoordinatorClocksState,
+    pub(crate) notices: Mutex<Vec<Badge>>,
+    pub(crate) saved: Mutex<Vec<HashMap<String, ClockEntry>>>,
+    missing: Mutex<Option<&'static str>>,
+}
+
+impl RecordingServices {
+    pub(crate) fn new(
+        settings: SettingsState,
+        (manager, pty, idle): (
+            Arc<tokio::sync::RwLock<SessionManager>>,
+            Arc<Mutex<PtyManager>>,
+            Arc<IdleDetector>,
+        ),
+        coordinator: SelectionCoordinator,
+        clocks: CoordinatorClocksState,
+    ) -> Self {
+        Self {
+            settings,
+            manager,
+            pty,
+            idle,
+            coordinator,
+            clocks,
+            notices: Mutex::new(Vec::new()),
+            saved: Mutex::new(Vec::new()),
+            missing: Mutex::new(None),
+        }
+    }
 }
 
 impl AutoCloseServices for RecordingServices {
-    fn settings(&self) -> SettingsState {
-        self.settings.clone()
-    }
-    fn session_manager(&self) -> Arc<tokio::sync::RwLock<SessionManager>> {
-        self.manager.clone()
-    }
-    fn pty_manager(&self) -> Arc<Mutex<PtyManager>> {
-        self.pty.clone()
-    }
-    fn idle_detector(&self) -> Arc<IdleDetector> {
-        self.idle.clone()
-    }
-    fn selection_coordinator(&self) -> SelectionCoordinator {
-        self.coordinator.clone()
+    fn inputs(&self) -> Result<AutoCloseInputs, &'static str> {
+        if let Some(missing) = *self.missing.lock().unwrap() {
+            return Err(missing);
+        }
+        Ok(AutoCloseInputs {
+            settings: self.settings.clone(),
+            session_manager: self.manager.clone(),
+            pty_manager: self.pty.clone(),
+            idle_detector: self.idle.clone(),
+            selection_coordinator: self.coordinator.clone(),
+        })
     }
     fn coordinator_clocks(&self) -> Option<CoordinatorClocksState> {
         Some(self.clocks.clone())
@@ -615,6 +636,10 @@ impl AutoCloseServices for RecordingServices {
             .unwrap()
             .push(Badge::Closed(cwd.into(), at));
     }
+    fn save_clocks(&self, map: &HashMap<String, ClockEntry>) -> Result<(), String> {
+        self.saved.lock().unwrap().push(map.clone());
+        Ok(())
+    }
 }
 
 #[tokio::test]
@@ -627,8 +652,8 @@ async fn recording_tick_deduplicates_and_advances_idle_badges() {
         .await
         .coordinator_auto_close_enabled = false;
     let mut emitted = HashMap::new();
-    tick(services, &mut emitted).await;
-    tick(services, &mut emitted).await;
+    assert_eq!(tick(services, &mut emitted).await, Ok(()));
+    assert_eq!(tick(services, &mut emitted).await, Ok(()));
     let first = DateTime::from_timestamp(fixture.anchor.timestamp(), 0).unwrap();
     assert_eq!(
         *services.notices.lock().unwrap(),
@@ -640,7 +665,7 @@ async fn recording_tick_deduplicates_and_advances_idle_badges() {
         .lock()
         .unwrap()
         .note_user_message("myproj:wg-1-team/lead", next);
-    tick(services, &mut emitted).await;
+    assert_eq!(tick(services, &mut emitted).await, Ok(()));
     assert_eq!(
         *services.notices.lock().unwrap(),
         vec![
@@ -661,15 +686,15 @@ async fn recording_tick_purges_removed_teams_and_reemits_same_anchor() {
         .await
         .coordinator_auto_close_enabled = false;
     let mut emitted = HashMap::new();
-    tick(services, &mut emitted).await;
+    assert_eq!(tick(services, &mut emitted).await, Ok(()));
     let removed = std::mem::replace(
         &mut services.manager,
         Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
     );
-    tick(services, &mut emitted).await;
+    assert_eq!(tick(services, &mut emitted).await, Ok(()));
     assert!(emitted.is_empty());
     services.manager = removed;
-    tick(services, &mut emitted).await;
+    assert_eq!(tick(services, &mut emitted).await, Ok(()));
     let anchor = DateTime::from_timestamp(fixture.anchor.timestamp(), 0).unwrap();
     assert_eq!(
         *services.notices.lock().unwrap(),
@@ -688,8 +713,8 @@ async fn recording_tick_closes_only_coordinator_badges_once() {
     let fixture = auto_close_fixture().await;
     let services = &fixture.services;
     let mut emitted = HashMap::new();
-    tick(services, &mut emitted).await;
-    tick(services, &mut emitted).await;
+    assert_eq!(tick(services, &mut emitted).await, Ok(()));
+    assert_eq!(tick(services, &mut emitted).await, Ok(()));
     assert!(services
         .manager
         .read()
@@ -799,57 +824,6 @@ fn tauri_badge_adapter_preserves_event_names_and_complete_payloads() {
         )
     );
     assert!(rx.try_recv().is_err());
-}
-
-fn assert_state_panic<T: Send + Sync + 'static>(
-    app: &tauri::AppHandle<tauri::test::MockRuntime>,
-    getter: impl FnOnce(),
-) {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-    use tauri::Manager;
-    let expected = format!(
-        "state() called before manage() for {}",
-        std::any::type_name::<T>()
-    );
-    let real = catch_unwind(AssertUnwindSafe(|| {
-        app.state::<T>();
-    }));
-    let adapted = catch_unwind(AssertUnwindSafe(getter));
-    for result in [real, adapted] {
-        let payload = result.expect_err("missing required state must panic");
-        assert_eq!(
-            *payload.downcast::<String>().expect("String panic payload"),
-            expected
-        );
-    }
-}
-
-#[test]
-fn tauri_state_adapter_preserves_required_panics_and_optional_clock_identity() {
-    use tauri::Manager;
-    let app = tauri::test::mock_builder()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
-    let handle = app.handle();
-    assert_state_panic::<SettingsState>(handle, || {
-        handle.settings();
-    });
-    assert_state_panic::<Arc<tokio::sync::RwLock<SessionManager>>>(handle, || {
-        handle.session_manager();
-    });
-    assert_state_panic::<Arc<Mutex<PtyManager>>>(handle, || {
-        handle.pty_manager();
-    });
-    assert_state_panic::<Arc<IdleDetector>>(handle, || {
-        handle.idle_detector();
-    });
-    assert_state_panic::<SelectionCoordinator>(handle, || {
-        handle.selection_coordinator();
-    });
-    assert!(handle.coordinator_clocks().is_none());
-    let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
-    app.manage(clocks.clone());
-    assert!(Arc::ptr_eq(&clocks, &handle.coordinator_clocks().unwrap()));
 }
 
 // Team activity clock: real `advance_team_activity`, injected time.
@@ -997,3 +971,5 @@ fn issue_2158_tick_protects_silent_coordinator() {
         assert!(seeded || closing.contains(&coord) && closing.contains(&member));
     }
 }
+
+mod state;

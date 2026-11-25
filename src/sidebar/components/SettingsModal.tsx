@@ -22,8 +22,8 @@ import type {
   QuotaSourceConfig,
 } from "../../shared/types";
 import { agentsUnreadableNotice } from "../../shared/types";
-import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI, PtyAPI } from "../../shared/ipc";
-import { assertCodingAgentMoveOrder, onCodingAgentSettingsUpdated } from "../../shared/ipc";
+import { SettingsAPI, TelegramAPI, ReposAPI, CodingAgentsAPI, PtyAPI, assertCodingAgentMoveOrder,
+  onCodingAgentSettingsUpdated } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
 import { validateScreenshotHotkeySyntax } from "../../shared/screenshot-hotkey";
 import { letterFromCaptureEvent, parseAppHotkey } from "../../shared/app-hotkey";
@@ -3550,10 +3550,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             <span>Isolate CODEX_HOME for this Codex agent</span>
           </label>
           <Show when={agent.isolatedHome}>
-            <div
+            <output
               class="settings-codex-home-preview warning settings-env-managed"
               title="Variable seteada por AgentsCommander"
-              role="status"
+              style={{ display: "block" }}
               aria-label="Variable seteada por AgentsCommander"
               data-ac-testid={`settings.agentRow.${agentIndex}.codexHomeIsolation.preview`}
               data-ac-role="status"
@@ -3563,7 +3563,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               <Show when={hasUserCodexHome()}>
                 <span> Saved CODEX_HOME rows are kept but overridden while isolation is on.</span>
               </Show>
-            </div>
+            </output>
           </Show>
           <Show when={!agent.isolatedHome && hasUserCodexHome()}>
             <div

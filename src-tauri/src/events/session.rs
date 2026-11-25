@@ -24,7 +24,7 @@ use crate::phone::mailbox::{
 use crate::pty::context_scrape::ContextScraper;
 use crate::pty::idle_detector::IdleDetector;
 use crate::pty::manager::PtyManager;
-use crate::session::auto_close::{AutoClose, AutoCloseServices};
+use crate::session::auto_close::{AutoClose, AutoCloseInputs, AutoCloseServices};
 use crate::session::context_alerts::{ContextAlertMonitor, ContextAlertServices};
 use crate::session::manager::SessionManager;
 use crate::session::purge_guard::PurgeGuard;
@@ -147,37 +147,28 @@ fn start_on<R: Runtime>(
     )
 }
 
-fn auto_close_state<R: Runtime, T: Clone + Send + Sync + 'static>(app: &AppHandle<R>) -> T {
+#[cfg_attr(
+    not(test),
+    deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)
+)]
+fn auto_close_state<R: Runtime, T: Clone + Send + Sync + 'static>(
+    app: &AppHandle<R>,
+) -> Result<T, &'static str> {
     app.try_state::<T>()
-        .unwrap_or_else(|| {
-            panic!(
-                "state() called before manage() for {}",
-                std::any::type_name::<T>()
-            )
-        })
-        .inner()
-        .clone()
+        .map(|state| state.inner().clone())
+        .ok_or_else(std::any::type_name::<T>)
 }
 
 impl<R: Runtime> AutoCloseServices for AppHandle<R> {
-    fn settings(&self) -> SettingsState {
-        auto_close_state(self)
-    }
-
-    fn session_manager(&self) -> Arc<tokio::sync::RwLock<SessionManager>> {
-        auto_close_state(self)
-    }
-
-    fn pty_manager(&self) -> Arc<Mutex<PtyManager>> {
-        auto_close_state(self)
-    }
-
-    fn idle_detector(&self) -> Arc<IdleDetector> {
-        auto_close_state(self)
-    }
-
-    fn selection_coordinator(&self) -> SelectionCoordinator {
-        auto_close_state(self)
+    fn inputs(&self) -> Result<AutoCloseInputs, &'static str> {
+        // Resolved in this order; the first missing type is reported.
+        Ok(AutoCloseInputs {
+            settings: auto_close_state::<R, SettingsState>(self)?,
+            session_manager: auto_close_state::<R, Arc<tokio::sync::RwLock<SessionManager>>>(self)?,
+            pty_manager: auto_close_state::<R, Arc<Mutex<PtyManager>>>(self)?,
+            idle_detector: auto_close_state::<R, Arc<IdleDetector>>(self)?,
+            selection_coordinator: auto_close_state::<R, SelectionCoordinator>(self)?,
+        })
     }
 
     fn coordinator_clocks(&self) -> Option<CoordinatorClocksState> {

@@ -179,7 +179,7 @@ const NewWorkgroupModal: Component<{
   });
 
   return (
-    <div class="modal-overlay" onKeyDown={handleKeyDown} onKeyUp={releaseHeldKey}>
+    <div class="modal-overlay" role="none" onKeyDown={handleKeyDown} onKeyUp={releaseHeldKey}>
       <div class="agent-modal new-room-modal" data-ac-testid="newRoom.modal" data-ac-role="dialog">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Room</span>
@@ -216,7 +216,14 @@ const NewWorkgroupModal: Component<{
               onCompositionEnd={() => { compositionActive = false; }}
             />
             <Show when={filteredTeams().length === 0}>
-              <div role="status" class="new-room-hint" data-ac-testid="newRoom.team.empty">{props.teams.length === 0 ? "No teams available." : "No teams match your search."}</div>
+              <output
+                class="new-room-hint"
+                data-ac-role="status"
+                data-ac-testid="newRoom.team.empty"
+                style={{ display: "block" }}
+              >
+                {props.teams.length === 0 ? "No teams available." : "No teams match your search."}
+              </output>
             </Show>
             <div
               ref={listElement}

@@ -447,3 +447,553 @@ fn issue_3950_native_fail_ws() {
     );
     println!("\nISSUE3950_MUTANT_REJECTED case=native_short_circuit");
 }
+
+// ----- #5206 AutoClose missing managed state (AppHandle port and run) -----
+
+use crate::config::coordinator_clocks::{ClockEntry, CoordinatorClocks, CoordinatorClocksState};
+use crate::config::settings::SettingsState;
+use crate::pty::idle_detector::IdleDetector;
+use crate::pty::manager::PtyManager;
+use crate::session::auto_close::tests::{
+    auto_close_session, AutoCloseBackend, Badge, RecordingServices,
+};
+use crate::session::auto_close::{AutoClose, AutoCloseInputs};
+use crate::session::manager::SessionManager;
+use crate::session::selection::SelectionCoordinator;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tauri::Manager;
+
+/// The AutoClose tick period, kept local so no production constant is exposed.
+const TICK: Duration = Duration::from_secs(60);
+const AUTOCLOSE_FQN: &str =
+    "events::session::tests::run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task";
+const AUTOCLOSE_CHILD: &str = "AC_5206_AUTOCLOSE_CHILD";
+const AUTOCLOSE_DONE: &str = "AC5206_AUTOCLOSE_DONE skip-recover";
+const AUTOCLOSE_ARGS: [&str; 5] = [
+    "--exact",
+    "--test-threads=1",
+    "--show-output",
+    "--format=pretty",
+    "--color=never",
+];
+
+/// Child mode needs the exact private mark and the exact argv of this one test; any
+/// other mark, combination or extra argument fails before a logger is installed.
+fn autoclose_child_mode() -> bool {
+    let Some(mark) = std::env::var_os(AUTOCLOSE_CHILD) else {
+        return false;
+    };
+    assert_eq!(mark, "skip-recover", "unrecognized {AUTOCLOSE_CHILD}");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut expected = vec![AUTOCLOSE_FQN.to_string()];
+    expected.extend(AUTOCLOSE_ARGS.iter().map(|a| a.to_string()));
+    assert_eq!(args, expected, "child argv must select only this test");
+    true
+}
+
+/// The parent's handle on a child it must reap (`Child`, or a double in the probes).
+trait Reap {
+    fn pid(&self) -> u32;
+    fn kill(&mut self) -> std::io::Result<()>;
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>>;
+}
+
+impl Reap for std::process::Child {
+    fn pid(&self) -> u32 {
+        self.id()
+    }
+    fn kill(&mut self) -> std::io::Result<()> {
+        std::process::Child::kill(self)
+    }
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        std::process::Child::try_wait(self)
+    }
+}
+
+/// What the bounded reap saw. Only `status: Some` confirms the child is gone.
+#[derive(Debug, Default)]
+struct ReapReport {
+    pid: u32,
+    status: Option<std::process::ExitStatus>,
+    /// Kill and poll errors, oldest first, the last eight kept.
+    errors: Vec<String>,
+    elapsed: Duration,
+}
+
+impl ReapReport {
+    fn note(&mut self, what: &str, error: std::io::Error) {
+        if self.errors.len() == 8 {
+            self.errors.remove(0);
+        }
+        self.errors.push(format!("{what}: {error}"));
+    }
+    fn describe(&self) -> String {
+        let reaped = if self.status.is_some() { "yes" } else { "no" };
+        format!("pid: {}\nreaped: {reaped}\n{self:#?}\n", self.pid)
+    }
+}
+
+/// Kill, then poll until `limit`. A poll error neither confirms nor ends the wait; it
+/// retries the kill. Only `Ok(Some(status))` confirms.
+fn reap_bounded(child: &mut impl Reap, limit: Duration) -> ReapReport {
+    let started = std::time::Instant::now();
+    let pid = child.pid();
+    let mut report = ReapReport {
+        pid,
+        ..Default::default()
+    };
+    let mut kill = true;
+    loop {
+        if std::mem::take(&mut kill) {
+            if let Err(error) = child.kill() {
+                report.note("kill", error);
+            }
+        }
+        match child.try_wait() {
+            Ok(status) => report.status = status,
+            Err(error) => {
+                report.note("poll", error);
+                kill = true;
+            }
+        }
+        if report.status.is_some() || started.elapsed() >= limit {
+            report.elapsed = started.elapsed();
+            return report;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// One supervised child and its private root. Failure and Drop share one bounded reap;
+/// the root is kept, with `diagnostics.txt`, on any failure, on unwind and whenever the
+/// reap is not confirmed. A failing `sink` (stderr) never stops that retention.
+struct Supervised<R: Reap> {
+    child: R,
+    directory: Option<tempfile::TempDir>,
+    started: std::time::Instant,
+    reap_limit: Duration,
+    reap: Option<ReapReport>,
+    sink: Box<dyn std::io::Write>,
+}
+
+impl<R: Reap> Supervised<R> {
+    fn new(child: R, directory: tempfile::TempDir) -> Self {
+        Self {
+            child,
+            directory: Some(directory),
+            started: std::time::Instant::now(),
+            reap_limit: Duration::from_secs(10),
+            reap: None,
+            sink: Box::new(std::io::stderr()),
+        }
+    }
+
+    /// Waits up to `deadline` from spawn; a timeout or poll error reaps and retains.
+    fn wait(&mut self, deadline: Duration) -> Result<std::process::ExitStatus, PathBuf> {
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => {
+                    // Status known: `kill` is a no-op and the poll confirms at once.
+                    self.reap = Some(reap_bounded(&mut self.child, Duration::ZERO));
+                    return Ok(status);
+                }
+                Ok(None) if self.started.elapsed() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => return Err(self.retain("child deadline")),
+                Err(error) => return Err(self.retain(&format!("child poll failed: {error}"))),
+            }
+        }
+    }
+
+    fn confirmed(&mut self) -> bool {
+        if self.reap.is_none() {
+            self.reap = Some(reap_bounded(&mut self.child, self.reap_limit));
+        }
+        self.reap.as_ref().is_some_and(|r| r.status.is_some())
+    }
+
+    /// Reaps (bounded) if still needed, then keeps the root with its diagnostics.
+    fn retain(&mut self, reason: &str) -> PathBuf {
+        let confirmed = self.confirmed();
+        let root = match self.directory.take() {
+            Some(directory) => directory.keep(),
+            None => return PathBuf::new(),
+        };
+        let report = self.reap.as_ref().map(ReapReport::describe);
+        let report = report.unwrap_or_default();
+        let text = format!(
+            "reason: {reason}\nsince spawn: {:?}\nconfirmed: {confirmed}\n{report}",
+            self.started.elapsed()
+        );
+        let _ = std::fs::write(root.join("diagnostics.txt"), &text);
+        let _ = writeln!(self.sink, "{reason}; retained {}", root.display());
+        root
+    }
+}
+
+impl<R: Reap> Drop for Supervised<R> {
+    fn drop(&mut self) {
+        if self.directory.is_none() {
+            return;
+        }
+        if !self.confirmed() {
+            self.retain("dropped with the child reap unconfirmed");
+        } else if std::thread::panicking() {
+            self.retain("dropped during unwind");
+        }
+    }
+}
+
+/// Exactly the libtest output of one passing run of `AUTOCLOSE_FQN` with one receipt.
+fn child_stdout_verdict(stdout: &str) -> Result<(), &'static str> {
+    let lines: Vec<&str> = stdout.lines().collect();
+    let count = |keep: &dyn Fn(&str) -> bool| lines.iter().filter(|l| keep(l)).count();
+    let ok_line = format!("test {AUTOCLOSE_FQN} ... ok");
+    if count(&|l| l.starts_with("running ")) != 1 || count(&|l| l == "running 1 test") != 1 {
+        return Err("expected one `running 1 test` line");
+    }
+    if count(&|l| l.starts_with("test ") && l.contains(" ... ")) != 1
+        || count(&|l| l == ok_line) != 1
+    {
+        return Err("expected exactly one success line, for this test");
+    }
+    let summary = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; ";
+    if count(&|l| l.contains("test result:")) != 1 || count(&|l| l.starts_with(summary)) != 1 {
+        return Err("expected exactly one summary, of one passing test");
+    }
+    let mark = AUTOCLOSE_DONE.split(' ').next().unwrap_or(AUTOCLOSE_DONE);
+    if count(&|l| l.contains(mark)) != 1 || count(&|l| l == AUTOCLOSE_DONE) != 1 {
+        return Err("expected exactly one receipt, for this scenario");
+    }
+    Ok(())
+}
+
+/// The only `Command` of this file: the test binary itself, private stdout/stderr
+/// files, null stdin and a private config dir on the Command only.
+fn spawn_test_binary(args: &[&str], mark: Option<&str>) -> Supervised<std::process::Child> {
+    use std::process::{Command, Stdio};
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config");
+    std::fs::create_dir(&config).unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(std::fs::File::create(directory.path().join("stdout.txt")).unwrap())
+        .stderr(std::fs::File::create(directory.path().join("stderr.txt")).unwrap())
+        .env_remove("RUST_TEST_NOCAPTURE")
+        .env_remove(AUTOCLOSE_CHILD)
+        .env("AGENTSCOMMANDER_CONFIG_DIR", &config)
+        .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &config);
+    if let Some(mark) = mark {
+        command.env(AUTOCLOSE_CHILD, mark);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    Supervised::new(command.spawn().unwrap(), directory)
+}
+
+/// Parent verdict on one child: `Ok(stdout)` only for status 0 and the exact oracle.
+fn check_child(
+    child: &mut Supervised<std::process::Child>,
+    deadline: Duration,
+) -> Result<String, PathBuf> {
+    let status = child.wait(deadline)?;
+    let path = child
+        .directory
+        .as_ref()
+        .map(|d| d.path().join("stdout.txt"));
+    let stdout = path.and_then(|p| std::fs::read_to_string(p).ok());
+    let stdout = stdout.unwrap_or_default();
+    if !status.success() {
+        return Err(child.retain(&format!("child status {status}")));
+    }
+    child_stdout_verdict(&stdout).map_err(|why| child.retain(why))?;
+    Ok(stdout)
+}
+
+/// Parent side of the AutoClose run test (#5206).
+fn run_autoclose_child() {
+    let args = [&[AUTOCLOSE_FQN][..], &AUTOCLOSE_ARGS].concat();
+    let mut child = spawn_test_binary(&args, Some("skip-recover"));
+    let stdout = check_child(&mut child, Duration::from_secs(45));
+    let stdout = stdout.unwrap_or_else(|root| panic!("AutoClose child retained {root:?}"));
+    for line in stdout.lines() {
+        println!("child| {line}");
+    }
+}
+
+const LEAD: &str = "myproj:wg-1-team/lead";
+
+struct Handles {
+    settings: SettingsState,
+    manager: Arc<tokio::sync::RwLock<SessionManager>>,
+    pty: Arc<Mutex<PtyManager>>,
+    idle: Arc<IdleDetector>,
+    coordinator: SelectionCoordinator,
+}
+
+fn handles() -> Handles {
+    let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let backend = Arc::new(AutoCloseBackend::default());
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    Handles {
+        settings: crate::config::settings::new_settings_state(Default::default()),
+        coordinator: SelectionCoordinator::new(Arc::clone(&manager), shutdown.token().clone()),
+        manager,
+        pty: Arc::new(Mutex::new(PtyManager::new_for_test(backend))),
+        idle: IdleDetector::new(|_| {}, |_| {}),
+    }
+}
+
+/// A mock app managing every required handle except the one at `skip`.
+fn app_without(h: &Handles, skip: usize) -> tauri::App<tauri::test::MockRuntime> {
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    manage_index(&app, h, (0..5).filter(|i| *i != skip));
+    app
+}
+
+fn manage_index(
+    app: &impl Manager<tauri::test::MockRuntime>,
+    h: &Handles,
+    which: impl Iterator<Item = usize>,
+) {
+    for i in which {
+        match i {
+            0 => app.manage(h.settings.clone()),
+            1 => app.manage(Arc::clone(&h.manager)),
+            2 => app.manage(Arc::clone(&h.pty)),
+            3 => app.manage(Arc::clone(&h.idle)),
+            _ => app.manage(h.coordinator.clone()),
+        };
+    }
+}
+
+/// All five returned handles are the managed ones. The coordinator has no identity
+/// accessor, so its shared shutdown token stands in: cancelling the returned
+/// coordinator's token is seen by the managed one and not by an unrelated decoy.
+fn assert_same_handles(inputs: AutoCloseInputs, h: &Handles) {
+    assert!(Arc::ptr_eq(&inputs.settings, &h.settings));
+    assert!(Arc::ptr_eq(&inputs.session_manager, &h.manager));
+    assert!(Arc::ptr_eq(&inputs.pty_manager, &h.pty));
+    assert!(Arc::ptr_eq(&inputs.idle_detector, &h.idle));
+    let decoy = handles().coordinator;
+    assert!(!h.coordinator.shutdown_token().is_cancelled());
+    inputs.selection_coordinator.shutdown_token().cancel();
+    assert!(h.coordinator.shutdown_token().is_cancelled());
+    assert!(!decoy.shutdown_token().is_cancelled());
+}
+
+#[test]
+fn tauri_inputs_name_each_missing_type_and_return_the_managed_handles() {
+    let names = [
+        std::any::type_name::<SettingsState>(),
+        std::any::type_name::<Arc<tokio::sync::RwLock<SessionManager>>>(),
+        std::any::type_name::<Arc<Mutex<PtyManager>>>(),
+        std::any::type_name::<Arc<IdleDetector>>(),
+        std::any::type_name::<SelectionCoordinator>(),
+    ];
+    for (skip, name) in names.iter().enumerate() {
+        for clock_present in [false, true] {
+            let h = handles();
+            let app = app_without(&h, skip);
+            let handle = app.handle();
+            let clocks: CoordinatorClocksState = Arc::new(Mutex::new(CoordinatorClocks::default()));
+            if clock_present {
+                app.manage(clocks.clone());
+            }
+            assert_eq!(AutoCloseServices::inputs(handle).err(), Some(*name));
+            manage_index(&app, &h, std::iter::once(skip));
+            let inputs = AutoCloseServices::inputs(handle).expect("all five managed");
+            match handle.coordinator_clocks() {
+                Some(managed) => assert!(clock_present && Arc::ptr_eq(&clocks, &managed)),
+                None => assert!(!clock_present),
+            }
+            assert_same_handles(inputs, &h);
+        }
+    }
+}
+
+static WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+struct AutoCloseLog;
+
+impl log::Log for AutoCloseLog {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.target() == "auto-close"
+    }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) && record.level() == log::Level::Warn {
+            WARNINGS.lock().unwrap().push(record.args().to_string());
+        }
+    }
+    fn flush(&self) {}
+}
+
+/// Delegates the five handles to a real mock `AppHandle`; badges and saves go to the
+/// shared `RecordingServices` spy, and clock queries are counted.
+struct Delegated {
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    rec: RecordingServices,
+    clock_queries: AtomicUsize,
+}
+
+impl AutoCloseServices for Arc<Delegated> {
+    fn inputs(&self) -> Result<AutoCloseInputs, &'static str> {
+        AutoCloseServices::inputs(&self.app)
+    }
+    fn coordinator_clocks(&self) -> Option<CoordinatorClocksState> {
+        self.clock_queries.fetch_add(1, Ordering::SeqCst);
+        self.rec.coordinator_clocks()
+    }
+    fn idle_badge(&self, cwd: &str, at: DateTime<Utc>) {
+        self.rec.idle_badge(cwd, at);
+    }
+    fn auto_closed_badge(&self, cwd: &str, at: DateTime<Utc>) {
+        self.rec.auto_closed_badge(cwd, at);
+    }
+    fn save_clocks(&self, map: &HashMap<String, ClockEntry>) -> Result<(), String> {
+        self.rec.save_clocks(map)
+    }
+}
+
+impl Delegated {
+    fn counts(&self) -> (usize, usize, usize, usize) {
+        (
+            WARNINGS.lock().unwrap().len(),
+            self.clock_queries.load(Ordering::SeqCst),
+            self.rec.notices.lock().unwrap().len(),
+            self.rec.saved.lock().unwrap().len(),
+        )
+    }
+}
+
+async fn settle_until(spy: &Delegated, done: impl Fn((usize, usize, usize, usize)) -> bool) {
+    for _ in 0..10_000 {
+        if done(spy.counts()) {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("no observation: {:?}", spy.counts());
+}
+
+async fn yields(n: usize) {
+    for _ in 0..n {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task() {
+    use crate::pty::backend::{PtyBackend, SessionBackendKind};
+    // One process-wide logger: the body runs in a child of this exact test (#5206).
+    if !autoclose_child_mode() {
+        return run_autoclose_child();
+    }
+    log::set_logger(&AutoCloseLog).expect("child installs the auto-close logger");
+    log::set_max_level(log::LevelFilter::Warn);
+
+    // The child's fixtures live in the parent's private root, retained with its logs.
+    let config = std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("child config dir");
+    let case_root = Path::new(&config)
+        .parent()
+        .expect("private root")
+        .to_path_buf();
+    // A plain directory, not a TempDir: a child panic must not delete it on unwind; the
+    // parent removes the whole root only after accepting the receipt.
+    let fixture = case_root.join("fixture");
+    std::fs::create_dir(&fixture).unwrap();
+    let team = fixture.join("myproj/.ac/wg-1-team");
+    let (lead_cwd, member_cwd) = (team.join("__agent_lead"), team.join("__agent_rust"));
+    let h = handles();
+    let lead = auto_close_session(&h.manager, &lead_cwd, None, true).await;
+    let member = auto_close_session(&h.manager, &member_cwd, Some("codex".into()), false).await;
+    let backend = Arc::new(AutoCloseBackend::default());
+    *h.pty.lock().unwrap() = PtyManager::new_for_test(backend.clone());
+    for id in [lead, member] {
+        backend.set_live(id);
+        h.pty
+            .lock()
+            .unwrap()
+            .record_route(id, SessionBackendKind::LocalProcess);
+    }
+    // Disabled: badges only. Members are not tracked by the detector, so no activity
+    // advance moves the anchor between ticks.
+    h.settings.write().await.coordinator_auto_close_enabled = false;
+    let anchor = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+    let mut seeded = CoordinatorClocks::default();
+    assert!(seeded.note_user_message(LEAD, anchor));
+    let before = seeded.snapshot();
+    let app = app_without(&h, 4);
+    let spy = Arc::new(Delegated {
+        app: app.handle().clone(),
+        rec: RecordingServices::new(
+            h.settings.clone(),
+            (
+                Arc::clone(&h.manager),
+                Arc::clone(&h.pty),
+                Arc::clone(&h.idle),
+            ),
+            h.coordinator.clone(),
+            Arc::new(Mutex::new(seeded)),
+        ),
+        clock_queries: AtomicUsize::new(0),
+    });
+    let shutdown = crate::shutdown::ShutdownSignal::new();
+    let task = tokio::spawn(AutoClose::run(Arc::clone(&spy), shutdown.clone()));
+    yields(50).await;
+
+    tokio::time::advance(TICK).await;
+    settle_until(&spy, |(warnings, ..)| warnings == 1).await;
+    yields(50).await;
+    assert_eq!(spy.counts(), (1, 0, 0, 0));
+    let warning = WARNINGS.lock().unwrap()[0].clone();
+    assert!(
+        warning.contains(std::any::type_name::<SelectionCoordinator>()),
+        "{warning}"
+    );
+    assert!(warning.contains("skipping tick"), "{warning}");
+    assert_eq!(spy.rec.clocks.lock().unwrap().snapshot(), before);
+    assert_eq!(h.manager.read().await.list_sessions().await.len(), 2);
+    assert!(backend.has_session(lead) && backend.has_session(member));
+
+    manage_index(&spy.app, &h, std::iter::once(4));
+    tokio::time::advance(TICK).await;
+    settle_until(&spy, |(.., saves)| saves == 1).await;
+    yields(50).await;
+    let cwd = lead_cwd.to_string_lossy().into_owned();
+    assert_eq!(
+        *spy.rec.notices.lock().unwrap(),
+        vec![Badge::Idle(cwd, anchor)]
+    );
+    assert_eq!(spy.rec.saved.lock().unwrap()[0], before);
+    assert_eq!(WARNINGS.lock().unwrap().len(), 1);
+
+    let queries = spy.counts().1;
+    tokio::time::advance(TICK).await;
+    settle_until(&spy, |(_, q, ..)| q > queries).await;
+    yields(50).await;
+    assert_eq!(spy.counts().2, 1, "same anchor: no repeated badge");
+    assert_eq!(spy.counts().3, 1, "clean map: no second save");
+
+    shutdown.token().cancel();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("run stops on cancellation")
+        .unwrap();
+    let after = spy.counts();
+    tokio::time::advance(TICK * 3).await;
+    yields(50).await;
+    assert_eq!(spy.counts(), after);
+    assert_eq!(h.manager.read().await.list_sessions().await.len(), 2);
+    println!("{AUTOCLOSE_DONE}");
+}

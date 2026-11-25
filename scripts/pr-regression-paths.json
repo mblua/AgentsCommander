@@ -1,0 +1,6 @@
+[
+  ".github/actions/restore-pr-apt-cache/action.yml",
+  "scripts/pr-regression/issue1850-release-build.sh",
+  "scripts/pr-regression/issue1850-release-unix.sh",
+  "scripts/pr-regression/issue1850-release-windows.sh"
+]

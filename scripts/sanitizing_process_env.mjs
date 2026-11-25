@@ -36,7 +36,8 @@ function measure(path, scan) {
     write: path === 'src-tauri/src/main.rs',
   };
   const record = (rule, t) => hit(m,rule,t.line,occurrenceIdentity(scan,t));
-  for (let i = 0; i < ts.length; i++) {
+  let i = -1;
+  while (++i < ts.length) {
     if (ts[i].kind !== 'ident' || pathTail(ts, i)) continue;
     const r = qualified(scan, ts, i), value = r.path ?? (r.ambiguous ? r.raw : '');
     if (ts[r.end]?.text !== '(') continue;

@@ -537,8 +537,8 @@ function scanItems(ctx) {
   for (let i = 0; i < ctx.tokens.length; i++) if (!itemKeywordSkipped(ctx, i)) scanItem(ctx, i);
 }
 function letEnd(tokens, i) {
-  let end = i + 1;
-  for (; end < tokens.length && tokens[end].text !== ';'; end++) {
+  let end = i;
+  while (++end < tokens.length && tokens[end].text !== ';') {
     if (opens[tokens[end].text]) end = tokens[end].mate;
     else if (tokens[end].text === '}') break;
   }
@@ -741,7 +741,7 @@ function braceBodyEnd(code, b) {
 }
 function maskedFunctions(code) {
   const functions = [];
-  for (const m of code.matchAll(/\bfn\s+([A-Za-z_]\w*)\s*(?:<|\()/g)) {
+  for (const m of code.matchAll(/\bfn\s+([A-Za-z_]\w*)\s*[<(]/g)) {
     const b = code.indexOf('{', m.index), semi = code.indexOf(';', m.index);
     if (b < 0 || semi >= 0 && semi < b) continue;
     functions.push({ name: m[1], start: m.index, end: braceBodyEnd(code, b) });

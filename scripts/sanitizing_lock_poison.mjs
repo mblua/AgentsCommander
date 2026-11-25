@@ -22,7 +22,8 @@ function extraChecks(path, m, before, violation) {
 // Comma-separated arguments of the group opened at `open`, as lists of token indexes.
 function args(ts, open) {
   const out = [[]];
-  for (let i = open + 1; i < ts[open].mate; i++) {
+  let i = open;
+  while (++i < ts[open].mate) {
     if (ts[i].text === ',') { out.push([]); continue; }
     out.at(-1).push(i);
     if (['(', '[', '{'].includes(ts[i].text)) i = ts[i].mate;
@@ -50,7 +51,8 @@ function testRanges(ts) {
     if (pred.length !== 1 || !requiresTest(ts, pred[0])) continue;
     let k = ts[i + 1].mate + 1;
     while (ts[k]?.text === '#' && ts[k + 1]?.text === '[') k = ts[k + 1].mate + 1;
-    for (; k < ts.length; k++) {
+    k--;
+    while (++k < ts.length) {
       const t = ts[k];
       if (t.text === ';' || t.text === ',') break;
       if (t.text === ')' || t.text === ']' || t.text === '}') { k--; break; }

@@ -144,7 +144,7 @@ const RootAgentBanner: Component<{ compact?: boolean; railSide?: MainSidebarSide
     const detachedLabel = `terminal-${sessionId.replaceAll("-", "")}`;
     const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
     if (!detachedWin) {
-      await WindowAPI.ensureTerminal();
+      await WindowAPI.focusMain();
     }
   };
 
