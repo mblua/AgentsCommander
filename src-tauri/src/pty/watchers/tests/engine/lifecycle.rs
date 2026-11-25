@@ -468,24 +468,37 @@ fn the_production_runtime_fails_cleanly_when_descriptors_run_out() {
     // SAFETY: setrlimit on this process with a valid pointer to an initialized rlimit.
     assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &old) }, 0);
     assert_eq!((run, fds_at_join), ((true, true), 4));
-    // Only the joined engine TID may stay listed for a moment after join returns.
+    // The whole trial, join included, has its own 3 s ceiling.
+    let ceiling = start + Duration::from_secs(3);
+    assert!(joined <= ceiling, "trial took {:?}", joined - start);
+    // The final threads are exactly the child's main thread and this test thread.
+    // SAFETY: getpid and gettid have no preconditions.
+    let own = unsafe { [libc::getpid(), libc::gettid()] }.map(|t| t.to_string());
+    assert_eq!(pre, own.into_iter().collect(), "PRE threads");
+    // Only the joined engine TID may stay listed, and it must be gone by the deadline:
+    // every reading, the accepting one included, is taken before the deadline.
     let engine = P03_TID.load(Ordering::SeqCst).to_string();
-    let deadline = (joined + Duration::from_secs(1)).min(start + Duration::from_secs(3));
-    let mut now = tids();
-    eprintln!("post-join: engine {engine}, PRE {pre:?}, first {now:?}");
-    while now != pre {
+    let deadline = (joined + Duration::from_secs(1)).min(ceiling);
+    let mut seen_engine = false;
+    loop {
+        let now = tids();
+        let at = Instant::now();
+        assert!(at <= deadline, "settle read after the deadline: {now:?}");
+        if now == pre {
+            eprintln!("post-join: engine {engine} seen {seen_engine}, PRE {pre:?}, final {now:?}");
+            break;
+        }
         let extra: Vec<&String> = now.difference(&pre).collect();
         assert!(
             pre.is_subset(&now) && extra == [&engine],
             "{now:?} vs {pre:?}"
         );
-        let left = deadline.saturating_duration_since(Instant::now());
-        assert!(
-            !left.is_zero(),
-            "joined engine thread {engine} still listed"
+        seen_engine = true;
+        std::thread::sleep(
+            deadline
+                .saturating_duration_since(at)
+                .min(Duration::from_millis(5)),
         );
-        std::thread::sleep(left.min(Duration::from_millis(5)));
-        now = tids();
     }
     assert_eq!(
         (count("/proc/self/fd"), count("/proc/self/task")),
