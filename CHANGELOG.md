@@ -6,6 +6,37 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- Settings > Coding Agents has **Export** and **Import** buttons. Export saves every coding agent and its A/B/C profiles to `ac-coding-agents-exports_YYYYMMDD_HHMMSS.json`; when the file contains environment variable values, a red sticky warning says so. Import adds the file's agents with new IDs (a duplicated label gets ` (N)`) to the tab draft, kept only when you press Save; an invalid file changes nothing. (#5071, #5129, #5130, #5131)
+- On Linux, when sound alerts cannot play because the GStreamer element `autoaudiosink` (gst-plugins-good) is missing, the sidebar sound icon shows a warning badge; pressing it shows the install command for Arch, Debian/Ubuntu and Fedora. (#4843, #4853)
+- Settings > General > System > Logging has **Record IPC black box (renderer freeze diagnostics)** (`ipcBlackBoxEnabled`, off by default). A change applies after a restart. (#1707, #5166)
+- Hovering the **Preflight command** box lists `%AC_REPLICA_ROOT%`, `%AC_WORKSPACE_ROOT%` and `%AC_MATRIX_ROOT%`, what each resolves to, and that other `%VAR%` markers block launch and `$VAR` is not expanded. (#5139, #5143)
+
+### Changed
+
+- A confirmed screenshot now copies the PNG image to the clipboard. The new setting **Paste image path instead of image** (`screenshotCopyPath`, off by default) keeps the old behavior of copying the file path. The PNG is always saved, and the toast reads `Screenshot saved: <path>`. (#5178, #5199)
+- Session warning toasts name the agent and offer **See terminal** when its session is live. (#5146, #5150)
+- `engines.node` is `>=22` for development and CI. (#4896, #4897)
+
+### Fixed
+
+- Quitting the app no longer hangs forever on the final session save. (#4929, #4934)
+- The team idle clock ignores PTY resize repaints and the first repaint after a restore, so they no longer count as activity. (#2158, #4957)
+- In the Open Agent dialog, choosing a repository now opens the agent picker. (#5103, #5213)
+- Closing a session can recover a stuck response-close, but only when all close work is proven idle. (#3317, #4854)
+- CLI outbox messages are written atomically, so a reader never sees a half-written message. (#5081, #5082)
+- Select dropdowns are readable on Linux (WebKitGTK), and the Context History select has enough contrast in the light theme. (#5140, #5200)
+- Sidebar, main window and resource monitor controls use native elements and correct roles for screen readers. (#4924, #4962, #5001, #4945, #5183, #5061, #5220)
+
+### Security
+
+- Rust dependency updates for RUSTSEC-2026-0592 (`url` 2.5.9) and RUSTSEC-2026-0594 (`cookie` 0.18.3). (#4863, #4864, #4987, #4988)
+
+### Notes
+
+- About 160 behavior-preserving refactor, test, documentation and CI PRs: issue references removed from code comments and test titles, module docs for every Rust file, reasons for every lint `allow`, `unwrap`/`expect` lints in production code, module-cycle cuts, Sonar findings, less PTY output copying, smaller `tokio` and `reqwest` feature sets, and fewer flaky tests. (#4860, #4868, #4878, #4900, #4949, #4965, #4981, #5181, #5182, #5188, #5198)
+
 ## 0.48.0
 
 ### Added

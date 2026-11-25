@@ -87,6 +87,8 @@ impl ContainerTransportBackend {
     }
 
     pub(crate) fn begin_shutdown(&self, deadline: Instant) -> bool {
+        #[cfg(test)]
+        self.observe_shutdown_stage(super::ShutdownStage::Begin(deadline));
         self.shutdown_work.begin_shutdown(deadline)
     }
 
@@ -94,6 +96,8 @@ impl ContainerTransportBackend {
         &self,
         deadline: Instant,
     ) -> ContainerShutdownReport {
+        #[cfg(test)]
+        self.observe_shutdown_stage(super::ShutdownStage::Drain(deadline));
         self.shutdown_work.seal_and_drain_until(deadline)
     }
 

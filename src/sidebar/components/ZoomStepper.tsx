@@ -24,7 +24,13 @@ const ZoomStepper: Component = () => {
   };
 
   return (
-    <div class="titlebar-zoom-stepper" role="group" aria-label="UI zoom" data-ac-testid="titlebar.zoom">
+    <fieldset
+      class="titlebar-zoom-stepper"
+      aria-label="UI zoom"
+      data-ac-testid="titlebar.zoom"
+      data-ac-role="group"
+      style={{ border: "0", padding: "0", "min-width": "0" }}
+    >
       <button
         class="titlebar-zoom-btn"
         type="button"
@@ -55,7 +61,7 @@ const ZoomStepper: Component = () => {
       >
         +
       </button>
-    </div>
+    </fieldset>
   );
 };
 
