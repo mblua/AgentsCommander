@@ -210,6 +210,16 @@ impl DockerCommandOwner {
     }
 
     pub(crate) fn terminate_until(&mut self, deadline: Instant, canceled: bool) -> bool {
+        self.terminate_until_with_clock(deadline, canceled, &Instant::now, &std::thread::sleep)
+    }
+
+    pub(crate) fn terminate_until_with_clock(
+        &mut self,
+        deadline: Instant,
+        canceled: bool,
+        now: &dyn Fn() -> Instant,
+        wait: &dyn Fn(Duration),
+    ) -> bool {
         if let Some(child) = self.child.as_mut() {
             if let Err(error) = child.kill() {
                 log::debug!(
@@ -228,17 +238,26 @@ impl DockerCommandOwner {
             if self.child.is_none() && self.stdout.is_none() && self.stderr.is_none() {
                 return true;
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.saturating_duration_since(now());
             if remaining.is_zero() {
                 return false;
             }
-            std::thread::sleep(DOCKER_COMMAND_POLL.min(remaining));
+            wait(DOCKER_COMMAND_POLL.min(remaining));
         }
     }
 
     pub(crate) fn collect_output_until(
         &mut self,
         deadline: Instant,
+    ) -> Option<Result<DockerCommandOutput, AppError>> {
+        self.collect_output_until_with_clock(deadline, &Instant::now, &std::thread::sleep)
+    }
+
+    pub(crate) fn collect_output_until_with_clock(
+        &mut self,
+        deadline: Instant,
+        now: &dyn Fn() -> Instant,
+        wait: &dyn Fn(Duration),
     ) -> Option<Result<DockerCommandOutput, AppError>> {
         loop {
             let stdout_ready = self.stdout.as_ref().is_some_and(JoinHandle::is_finished);
@@ -248,11 +267,11 @@ impl DockerCommandOwner {
                 let stderr = self.stderr.take()?;
                 return Some(join_command_readers(stdout, stderr));
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.saturating_duration_since(now());
             if remaining.is_zero() {
                 return None;
             }
-            std::thread::sleep(DOCKER_COMMAND_POLL.min(remaining));
+            wait(DOCKER_COMMAND_POLL.min(remaining));
         }
     }
 
@@ -311,8 +330,17 @@ impl DockerCommandOwnership {
     }
 
     pub(crate) fn retry_until(&self, deadline: Instant) {
+        self.retry_until_with_clock(deadline, &Instant::now, &std::thread::sleep);
+    }
+
+    pub(crate) fn retry_until_with_clock(
+        &self,
+        deadline: Instant,
+        now: &dyn Fn() -> Instant,
+        wait: &dyn Fn(Duration),
+    ) {
         loop {
-            if Instant::now() >= deadline {
+            if now() >= deadline {
                 return;
             }
             let Some((id, mut owner, prior_error)) = ({
@@ -335,7 +363,9 @@ impl DockerCommandOwnership {
             #[cfg(test)]
             self.wait_at_retry_gate_for_test();
 
-            let outcome = catch_unwind(AssertUnwindSafe(|| owner.terminate_until(deadline, true)));
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                owner.terminate_until_with_clock(deadline, true, now, wait)
+            }));
             let (terminal, attempt_error) = match outcome {
                 Ok(true) => (true, None),
                 Ok(false) => (

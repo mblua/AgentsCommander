@@ -93,6 +93,20 @@ impl DockerProcessState {
         self.command_ownership.retry_until(deadline);
     }
 
+    #[cfg(test)]
+    pub(crate) fn retry_until_with_clock(
+        &self,
+        deadline: Instant,
+        now: &dyn Fn() -> Instant,
+        wait: &dyn Fn(std::time::Duration),
+    ) {
+        self.command_ownership
+            .retry_until_with_clock(deadline, now, wait);
+    }
+
+    #[cfg(test)]
+    pub(crate) const COMMAND_POLL_FOR_TEST: std::time::Duration = DOCKER_COMMAND_POLL;
+
     pub(crate) fn retained_contexts(&self) -> Vec<RetainedDockerCommandContext> {
         self.command_ownership.retained_contexts()
     }
