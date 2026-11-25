@@ -1,2 +1,1 @@
-import { loadA } from "./a";
-export const b = loadA;
+export { loadA as b } from "./a";
