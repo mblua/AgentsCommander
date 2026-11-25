@@ -264,7 +264,8 @@ impl BlockingSeedWorkTracker {
             if self.lock_state().work.is_empty() {
                 return true;
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining =
+                deadline.saturating_duration_since(tokio::time::Instant::now().into_std());
             if remaining.is_zero() || tokio::time::timeout(remaining, notified).await.is_err() {
                 return self.lock_state().work.is_empty();
             }

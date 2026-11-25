@@ -8,7 +8,7 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -635,29 +635,16 @@ impl SelectionCoordinator {
         ))
     }
 
-    pub(super) async fn close_and_join_with_budget(
+    /// Join the coordinator worker by `worker_deadline`; on expiry abort it and
+    /// join again until `deadline`, retaining the handle if it still runs.
+    async fn join_worker_within(
         &self,
         budget: Duration,
-    ) -> SelectionShutdownReport {
-        let started_at = Instant::now();
-        let deadline = started_at.checked_add(budget).unwrap_or(started_at);
-        let finalization_reserve = (budget / 4).min(SHUTDOWN_FINALIZATION_RESERVE_MAX);
-        let worker_deadline = deadline
-            .checked_sub(finalization_reserve)
-            .unwrap_or(started_at);
-        self.seal_retained_entries();
-        let queued_aborts = self.inner.blocking_seed_work.seal();
-        for abort in queued_aborts {
-            abort.abort();
-        }
-        self.inner.admission.close();
-        self.inner.create_tickets.close();
-        self.inner.shutdown.cancel();
-        let mut retained = Vec::new();
-        if !begin_container_shutdown(&self.inner, deadline) {
-            retained.push("reason=container-shutdown-signal state=retained".to_string());
-        }
-
+        finalization_reserve: Duration,
+        worker_deadline: std::time::Instant,
+        deadline: std::time::Instant,
+        retained: &mut Vec<String>,
+    ) {
         let handle = match self.inner.worker.try_lock() {
             Ok(mut worker) => worker.take(),
             Err(error) => {
@@ -669,7 +656,8 @@ impl SelectionCoordinator {
             }
         };
         if let Some(mut handle) = handle {
-            let remaining = worker_deadline.saturating_duration_since(Instant::now());
+            let remaining =
+                worker_deadline.saturating_duration_since(tokio::time::Instant::now().into_std());
             match tokio::time::timeout(remaining, &mut handle).await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
@@ -688,7 +676,8 @@ impl SelectionCoordinator {
                             outstandingCriticalKeys={critical_count}"
                     );
                     handle.abort();
-                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let remaining =
+                        deadline.saturating_duration_since(tokio::time::Instant::now().into_std());
                     match tokio::time::timeout(remaining, &mut handle).await {
                         Ok(Ok(())) => {}
                         Ok(Err(error)) => {
@@ -711,6 +700,39 @@ impl SelectionCoordinator {
                 }
             }
         }
+    }
+
+    pub(super) async fn close_and_join_with_budget(
+        &self,
+        budget: Duration,
+    ) -> SelectionShutdownReport {
+        let started_at = tokio::time::Instant::now().into_std();
+        let deadline = started_at.checked_add(budget).unwrap_or(started_at);
+        let finalization_reserve = (budget / 4).min(SHUTDOWN_FINALIZATION_RESERVE_MAX);
+        let worker_deadline = deadline
+            .checked_sub(finalization_reserve)
+            .unwrap_or(started_at);
+        self.seal_retained_entries();
+        let queued_aborts = self.inner.blocking_seed_work.seal();
+        for abort in queued_aborts {
+            abort.abort();
+        }
+        self.inner.admission.close();
+        self.inner.create_tickets.close();
+        self.inner.shutdown.cancel();
+        let mut retained = Vec::new();
+        if !begin_container_shutdown(&self.inner, deadline) {
+            retained.push("reason=container-shutdown-signal state=retained".to_string());
+        }
+
+        self.join_worker_within(
+            budget,
+            finalization_reserve,
+            worker_deadline,
+            deadline,
+            &mut retained,
+        )
+        .await;
 
         if !self
             .inner
@@ -722,8 +744,12 @@ impl SelectionCoordinator {
         }
 
         retained.extend(cleanup_pending_creates_after_join(&self.inner, deadline).await);
+        #[cfg(test)]
+        super::shutdown_cleanup::close_probe_at_site("between-joins").await;
         retained
             .extend(seal_and_drain_container_shutdown_work_after_join(&self.inner, deadline).await);
+        #[cfg(test)]
+        super::shutdown_cleanup::close_probe_at_site("return").await;
         match self.inner.critical_keys.try_lock() {
             Ok(mut keys) => keys.clear(),
             Err(error) => {
