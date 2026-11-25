@@ -927,11 +927,19 @@ fn history_cursor_pin_bytes_and_second_page() {
     assert_eq!(second, report(&agents, &after(&emitted[0].1)));
     let rest = sessions(&after(frozen("session"))).expect("rest");
     assert_eq!(rest.sessions_page.len(), 20);
+    let ids: Vec<Uuid> = rest
+        .sessions_page
+        .iter()
+        .map(|s| s.logical_session_id)
+        .collect();
+    assert_eq!(ids, (101..=120).map(Uuid::from_u128).collect::<Vec<_>>());
     assert_eq!(rest, sessions(&after(&emitted[1].1)).expect("live rest"));
     let tail = pages(&after(frozen("record"))).expect("tail");
     assert_eq!(
         (tail.records_page.len(), &tail.next_record_cursor),
         (50, &None)
     );
+    let ids: Vec<Uuid> = tail.records_page.iter().map(|r| r.record_id).collect();
+    assert_eq!(ids, (1100..1150).map(Uuid::from_u128).collect::<Vec<_>>());
     assert_eq!(tail, pages(&after(&emitted[2].1)).expect("live tail"));
 }
