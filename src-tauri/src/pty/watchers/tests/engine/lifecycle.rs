@@ -216,50 +216,55 @@ use std::time::Instant;
 
 const P03_CHILD: &str = "AC5206_P03_ENGINE_CHILD";
 
-static P03_ERRORS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The application error records of this (child) process, in order.
+struct P03Errors(Mutex<Vec<String>>);
 
-struct P03Log;
+static P03_LOG: P03Errors = P03Errors(Mutex::new(Vec::new()));
 
-impl log::Log for P03Log {
+impl log::Log for P03Errors {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() == log::Level::Error
+        metadata.level() <= log::Level::Error
     }
     fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            P03_ERRORS.lock().unwrap().push(record.args().to_string());
+        if record.level() <= log::Level::Error {
+            self.0.lock().unwrap().push(format!("{}", record.args()));
         }
     }
     fn flush(&self) {}
 }
 
-/// Runs `name` again in a child of this test binary, so its process-wide logger is its own.
+fn p03_errors() -> Vec<String> {
+    P03_LOG.0.lock().unwrap().clone()
+}
+
+/// The child half installs the process-wide logger and returns true. The parent half reruns
+/// exactly `name` in a child of this test binary and requires its success within 60 s.
 fn p03_in_child(name: &str) -> bool {
-    if std::env::var_os(P03_CHILD).is_some() {
-        log::set_logger(&P03Log).expect("child installs the error logger");
+    if std::env::var(P03_CHILD).is_ok() {
         log::set_max_level(log::LevelFilter::Error);
+        log::set_logger(&P03_LOG).expect("child installs the error logger");
         return true;
     }
-    let path = module_path!().split_once("::").expect("crate path").1;
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([format!("{path}::{name}").as_str(), "--exact", "--nocapture"])
-        .args(["--test-threads", "1"])
+    let test = format!("{}::{name}", module_path!().split_once("::").unwrap().1);
+    let exe = std::env::current_exe().unwrap();
+    let mut child = std::process::Command::new(exe)
+        .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
         .env(P03_CHILD, "1")
         .stdin(std::process::Stdio::null())
         .spawn()
         .expect("spawn the child test");
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            assert!(status.success(), "child {name} failed: {status}");
-            return false;
-        }
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("child {name} timed out");
-        }
+    // 3000 polls of 20 ms: the same 60 s budget, then the child is killed and reaped.
+    let status = (0..3000).find_map(|_| {
         std::thread::sleep(Duration::from_millis(20));
-    }
+        child.try_wait().unwrap()
+    });
+    let Some(status) = status else {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("child {name} timed out");
+    };
+    assert!(status.success(), "child {name} failed: {status}");
+    false
 }
 
 /// An engine with one agent session whose every tick would read the backend.
@@ -323,7 +328,7 @@ fn a_failed_engine_runtime_logs_once_and_never_ticks() {
             let whole = make; // capture the wrapper, not its field
             (whole.0)()
         };
-        let before = P03_ERRORS.lock().unwrap().len();
+        let before = p03_errors().len();
         let shutdown = ShutdownSignal::new();
         assert_eq!(
             p03_run(&harness.engine, factory, &shutdown),
@@ -333,7 +338,7 @@ fn a_failed_engine_runtime_logs_once_and_never_ticks() {
         assert_eq!(entered.load(Ordering::SeqCst), 1, "{cause}");
         assert_eq!(harness.backend.reads.load(Ordering::SeqCst), 0, "{cause}");
         assert_eq!(harness.engine.ticks.load(Ordering::SeqCst), 0, "{cause}");
-        let logs = P03_ERRORS.lock().unwrap()[before..].to_vec();
+        let logs = p03_errors()[before..].to_vec();
         assert_eq!(logs.len(), 1, "{cause}: {logs:?}");
         assert!(
             logs[0].contains("WatcherEngine") && logs[0].contains(cause),
@@ -434,7 +439,7 @@ fn a_panicking_tick_is_contained_with_the_real_runtime() {
         p03_run(&engine, WatcherEngine::RUNTIME_FACTORY, &shutdown),
         (true, true)
     );
-    let logs = P03_ERRORS.lock().unwrap().clone();
+    let logs = p03_errors();
     assert_eq!(logs.len(), 1, "{logs:?}");
     assert!(logs[0].contains("PANICKED"), "{logs:?}");
 }
@@ -497,7 +502,7 @@ fn the_production_runtime_fails_cleanly_when_descriptors_run_out() {
     );
     assert_eq!(harness.backend.reads.load(Ordering::SeqCst), 0);
     assert_eq!(harness.engine.ticks.load(Ordering::SeqCst), 0);
-    let logs = P03_ERRORS.lock().unwrap().clone();
+    let logs = p03_errors();
     assert_eq!(logs.len(), 1, "{logs:?}");
     assert!(
         logs[0].contains("WatcherEngine") && logs[0].contains("frozen"),
