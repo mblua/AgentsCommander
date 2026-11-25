@@ -1,4 +1,8 @@
 use super::*;
+use super::{
+    assert_runtime_owner_retained, backend_with_runtime, insert_runtime_handle,
+    production_route_remover_fixture, sweep_at_deadline, Rescue, SweepDriver, EPSILON, WATCHDOG,
+};
 
 #[tokio::test]
 async fn credential_binding_is_embedded_through_pending_attach_and_active_states() {
@@ -260,56 +264,122 @@ fn single_production_global_sweep_retries_a_failed_handle_to_terminal() {
     assert!(backend.retained_cleanup_sessions_for_test().is_empty());
 }
 
+/// Stop that acks `(control deadline, session, ordinal, exited)`; only the first call
+/// parks, until its release is sent or dropped.
+struct GatedStopRuntime {
+    calls: AtomicUsize,
+    acks: std::sync::mpsc::Sender<(Option<Instant>, Uuid, usize, bool)>,
+    release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl ContainerRuntime for GatedStopRuntime {
+    fn start(
+        &self,
+        request: ContainerStartRequest,
+        _control: &ContainerRuntimeControl,
+    ) -> Result<ContainerRuntimeHandle, AppError> {
+        Ok(ContainerRuntimeHandle {
+            session_id: request.session_id,
+            container_id: format!("container-{}", request.session_id),
+        })
+    }
+
+    fn stop(
+        &self,
+        handle: &ContainerRuntimeHandle,
+        _timeout: Duration,
+        control: &ContainerRuntimeControl,
+    ) -> Result<(), AppError> {
+        let ordinal = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let ack = |exited| {
+            (
+                control.shutdown_deadline(),
+                handle.session_id,
+                ordinal,
+                exited,
+            )
+        };
+        let _ = self.acks.send(ack(false));
+        let release = self.release.lock().unwrap().take();
+        if let Some(release) = release {
+            let _ = release.recv();
+            let _ = self.acks.send(ack(true));
+        }
+        Ok(())
+    }
+
+    fn cleanup_labeled_orphans(
+        &self,
+        _live_sessions: &HashSet<Uuid>,
+        _timeout: Duration,
+    ) -> Result<ContainerCleanupReport, AppError> {
+        Ok(ContainerCleanupReport::default())
+    }
+}
+
 #[test]
 fn permanently_blocked_stop_is_retained_without_exceeding_the_sweep_deadline() {
-    let runtime = Arc::new(PermanentlyBlockedStopRuntime {
-        stop_calls: AtomicUsize::new(0),
-        active_deadline_seen: AtomicBool::new(false),
+    let (acks, stop_acks) = std::sync::mpsc::channel();
+    let (release, release_receiver) = std::sync::mpsc::channel::<()>();
+    let runtime = Arc::new(GatedStopRuntime {
+        calls: AtomicUsize::new(0),
+        acks,
+        release: Mutex::new(Some(release_receiver)),
     });
-    let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
-    let idle_detector = IdleDetector::new(|_| {}, |_| {});
-    let backend = ContainerTransportBackend::with_runtime(
-        output_senders,
-        idle_detector,
-        None,
-        None,
-        runtime.clone(),
-        None,
-    );
+    let backend = Arc::new(backend_with_runtime(runtime.clone()));
     let session_id = Uuid::new_v4();
-    let _receiver = backend.insert_active_runtime_handle_for_test(ContainerRuntimeHandle {
-        session_id,
-        container_id: format!("container-{session_id}"),
-    });
+    let _receiver = insert_runtime_handle(&backend, session_id);
     let removed_routes = Arc::new(AtomicUsize::new(0));
     let route_count = Arc::clone(&removed_routes);
     backend.set_route_remover(Arc::new(move |_, _| {
         route_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }));
+    let driver = SweepDriver::new(&["epochOpened", "drainPoll"]);
+    let rescue = Rescue(Arc::clone(&driver));
 
-    let budget = Duration::from_millis(150);
-    let started_at = Instant::now();
-    let report = backend.stop_all_started_containers_blocking(budget);
-    let elapsed = started_at.elapsed();
+    let report = sweep_at_deadline(&driver, &backend, |deadline| {
+        let entered = stop_acks.recv_timeout(WATCHDOG).expect("stop entry ack");
+        assert_eq!(entered, (Some(deadline), session_id, 1, false));
+        assert_eq!(
+            removed_routes.load(Ordering::SeqCst),
+            1,
+            "removal precedes stop"
+        );
+    });
+    let deadline = driver.now();
 
     assert!(!report.terminal);
     assert!(
-        elapsed <= budget + Duration::from_millis(250),
-        "permanently blocked stop exceeded the sweep deadline: {elapsed:?}"
-    );
-    assert!(runtime.active_deadline_seen.load(Ordering::SeqCst));
-    assert_eq!(runtime.stop_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(removed_routes.load(Ordering::SeqCst), 1);
-    assert!(!backend.contains_transport_state_for_test(session_id));
-    assert!(
-        report
-            .retained
-            .iter()
-            .any(|context| context.contains(&session_id.to_string())),
+        report.retained.iter().any(|context| {
+            context.contains("owner=containerCleanup")
+                && context.contains(&format!("session={session_id}"))
+                && context.contains("state=inFlight")
+        }),
         "retained={:?}",
         report.retained
     );
+    assert!(stop_acks.try_recv().is_err(), "stop is still closed at D");
+    assert!(!backend.contains_transport_state_for_test(session_id));
+
+    drop(release);
+    let exited = stop_acks.recv_timeout(WATCHDOG).expect("stop exit ack");
+    assert_eq!(exited, (Some(deadline), session_id, 1, true));
+    let settle_limit = Instant::now() + WATCHDOG;
+    while !(backend.retained_cleanup_sessions_for_test().is_empty()
+        && backend.shutdown_work.observation().2 == 0
+        && backend.shutdown_work.observation().3 == 0)
+    {
+        assert!(
+            Instant::now() < settle_limit,
+            "the released stop did not settle"
+        );
+        std::thread::yield_now();
+    }
+    assert!(backend.cleanup_ownership.contexts().is_empty());
+    assert_eq!(runtime.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(removed_routes.load(Ordering::SeqCst), 1);
+    drop(rescue);
 }
 
 struct PendingReaperCancellation(crate::shutdown::ShutdownSignal);
@@ -379,4 +449,211 @@ async fn off_runtime_pending_reaper_ticks_immediately_and_releases_backend_on_ca
         weak.upgrade().is_none(),
         "cancelled reaper retained backend"
     );
+}
+
+fn assert_exact_production_route_residue(
+    backend: &ContainerTransportBackend,
+    report: &ContainerShutdownReport,
+    session_id: Uuid,
+    error: &str,
+) {
+    let expected = production_route_residue(session_id, error);
+    assert!(report.retained.contains(&expected), "{:?}", report.retained);
+    assert!(live_contexts(backend).contains(&expected));
+}
+
+fn production_route_residue(session_id: Uuid, error: &str) -> String {
+    format!(
+        "owner=containerCleanup session={session_id} reason=global-shutdown-sweep program=none \
+            runtimeHandle=true state=retained inFlight=false lastError=route removal failed: \
+            {error}"
+    )
+}
+
+fn live_contexts(backend: &ContainerTransportBackend) -> Vec<String> {
+    let contexts = backend.cleanup_ownership.contexts().into_iter();
+    contexts.map(|context| context.diagnostic()).collect()
+}
+
+/// Reinstalls the real remover body through `PtyManager` with the driver's clock.
+fn install_clocked_remover(pty_manager: &Arc<Mutex<PtyManager>>, driver: &Arc<SweepDriver>) {
+    let (now, wait) = (Arc::clone(driver), Arc::clone(driver));
+    PtyManager::install_container_route_remover_with_clock(
+        pty_manager,
+        move || now.now(),
+        move |_| wait.wait("ptyManager"),
+    );
+}
+
+/// One real retry with the gates open and the clock fixed before its new deadline.
+fn retry_to_terminal(
+    driver: &Arc<SweepDriver>,
+    backend: &ContainerTransportBackend,
+    pty_manager: &Arc<Mutex<PtyManager>>,
+    runtime: &RecordingRuntime,
+    session_id: Uuid,
+) {
+    driver.open();
+    let budget = Duration::from_secs(60);
+    let terminal = backend.stop_all_started_containers_blocking_with_clock(budget, &driver.clock());
+    assert!(terminal.terminal, "retained={:?}", terminal.retained);
+    assert_eq!(runtime.stopped(), vec![session_id]);
+    assert!(backend.retained_cleanup_sessions_for_test().is_empty());
+    assert_eq!(pty_manager.lock().unwrap().backend_kind(session_id), None);
+    assert!(crate::shutdown_persistence_allowed(true, terminal.terminal));
+}
+
+#[test]
+fn production_route_remover_outer_lock_deadline_retains_real_ownership() {
+    let runtime = Arc::new(RecordingRuntime::default());
+    let (backend, pty_manager, session_id, _receiver) =
+        production_route_remover_fixture(Arc::clone(&runtime));
+    let driver = SweepDriver::new(&["ptyManager", "drainPoll"]);
+    let rescue = Rescue(Arc::clone(&driver));
+    install_clocked_remover(&pty_manager, &driver);
+    let manager_guard = pty_manager.lock().unwrap();
+    let start = driver.now();
+    let (caller, report) = driver.spawn_sweep(&backend, EPSILON);
+
+    driver.ack("ptyManager");
+    driver.step("ptyManager");
+    driver.ack("ptyManager");
+    driver.ack("drainPoll");
+    assert!(report.try_recv().is_err(), "the caller is pending before D");
+    // The worker consumes D first and records Deadline(ptyManager); the caller follows.
+    driver.set(start + EPSILON);
+    driver.step("ptyManager");
+    let error = "route removal deadline reached owner=ptyManager";
+    let expected = production_route_residue(session_id, error);
+    driver.settle("ptyManager", || live_contexts(&backend).contains(&expected));
+    driver.step("drainPoll");
+    let report = report
+        .recv_timeout(WATCHDOG)
+        .expect("the caller returns at D");
+    caller.join().expect("join the sweep caller");
+
+    assert!(!report.terminal, "retained={:?}", report.retained);
+    assert_runtime_owner_retained(&backend, &runtime, session_id);
+    assert_eq!(
+        manager_guard.backend_kind(session_id),
+        Some(SessionBackendKind::ContainerTransport)
+    );
+    assert_exact_production_route_residue(&backend, &report, session_id, error);
+    assert!(!crate::shutdown_persistence_allowed(true, report.terminal));
+
+    drop(manager_guard);
+    retry_to_terminal(&driver, &backend, &pty_manager, &runtime, session_id);
+    drop(rescue);
+}
+
+/// Rows 10 and 11: the first epoch records the real poison and the caller reaches its
+/// backoff before D; at D, with the poison intact, it cuts without a new epoch.
+fn assert_poisoned_sweep_retained(
+    poison: impl FnOnce(&Arc<Mutex<PtyManager>>),
+    clear: impl FnOnce(&Arc<Mutex<PtyManager>>),
+    error: &str,
+) {
+    let runtime = Arc::new(RecordingRuntime::default());
+    let (backend, pty_manager, session_id, _receiver) =
+        production_route_remover_fixture(Arc::clone(&runtime));
+    let driver = SweepDriver::new(&["sweepBackoff"]);
+    let rescue = Rescue(Arc::clone(&driver));
+    install_clocked_remover(&pty_manager, &driver);
+    poison(&pty_manager);
+    let start = driver.now();
+    let (caller, report) = driver.spawn_sweep(&backend, EPSILON);
+
+    driver.ack("sweepBackoff");
+    let expected = production_route_residue(session_id, error);
+    assert!(live_contexts(&backend).contains(&expected));
+    assert!(report.try_recv().is_err(), "the caller is pending before D");
+    assert_eq!(driver.probes(SweepProbe::EpochStartEntered), 1);
+    driver.set(start + EPSILON);
+    driver.step("sweepBackoff");
+    let report = report
+        .recv_timeout(WATCHDOG)
+        .expect("the caller returns at D");
+    caller.join().expect("join the sweep caller");
+
+    assert_eq!(
+        driver.probes(SweepProbe::EpochStartEntered),
+        1,
+        "no epoch at D"
+    );
+    assert_eq!(driver.probes(SweepProbe::DrainCut), 1);
+    assert!(!report.terminal, "retained={:?}", report.retained);
+    assert_runtime_owner_retained(&backend, &runtime, session_id);
+    let manager = pty_manager
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(
+        manager.backend_kind(session_id),
+        Some(SessionBackendKind::ContainerTransport)
+    );
+    drop(manager);
+    assert_exact_production_route_residue(&backend, &report, session_id, error);
+    assert!(!crate::shutdown_persistence_allowed(true, report.terminal));
+
+    clear(&pty_manager);
+    retry_to_terminal(&driver, &backend, &pty_manager, &runtime, session_id);
+    drop(rescue);
+}
+
+#[test]
+fn production_route_remover_outer_poison_is_exact_structured_residue() {
+    assert_poisoned_sweep_retained(
+        |pty_manager| {
+            let poison_manager = Arc::clone(pty_manager);
+            let poison = std::thread::spawn(move || {
+                let _manager_guard = poison_manager.lock().unwrap();
+                panic!("poison the real outer PTY manager mutex");
+            });
+            assert!(
+                poison.join().is_err(),
+                "outer mutex poison fixture must panic"
+            );
+        },
+        |pty_manager| {
+            assert!(
+                pty_manager.is_poisoned(),
+                "the poison stayed intact through D"
+            );
+            pty_manager.clear_poison();
+        },
+        "route removal lock poisoned owner=ptyManager",
+    );
+}
+
+#[test]
+fn production_route_remover_registry_poison_is_exact_structured_residue() {
+    assert_poisoned_sweep_retained(
+        |pty_manager| pty_manager.lock().unwrap().poison_route_registry_for_test(),
+        |pty_manager| {
+            pty_manager
+                .lock()
+                .unwrap()
+                .clear_route_registry_poison_for_test();
+        },
+        "route removal lock poisoned owner=ptyRouteRegistry",
+    );
+}
+
+#[test]
+fn production_route_remover_healthy_path_is_terminal_once() {
+    let runtime = Arc::new(RecordingRuntime::default());
+    let (backend, pty_manager, session_id, _receiver) =
+        production_route_remover_fixture(Arc::clone(&runtime));
+
+    let report = backend.stop_all_started_containers_blocking(Duration::from_secs(1));
+
+    assert!(report.terminal, "retained={:?}", report.retained);
+    assert!(report.retained.is_empty());
+    assert_eq!(runtime.stopped(), vec![session_id]);
+    assert_eq!(pty_manager.lock().unwrap().backend_kind(session_id), None);
+    assert!(backend.retained_cleanup_sessions_for_test().is_empty());
+    assert!(crate::shutdown_persistence_allowed(true, report.terminal));
+
+    let second = backend.stop_all_started_containers_blocking(Duration::from_millis(100));
+    assert!(second.terminal, "retained={:?}", second.retained);
+    assert_eq!(runtime.stopped(), vec![session_id]);
 }
