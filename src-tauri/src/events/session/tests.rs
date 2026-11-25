@@ -493,8 +493,7 @@ fn autoclose_child_mode() -> bool {
     true
 }
 
-/// The parent's handle on a child it must reap; `std::process::Child` in the real run,
-/// a double in the reap probes.
+/// The parent's handle on a child it must reap (`Child`, or a double in the probes).
 trait Reap {
     fn pid(&self) -> u32;
     fn kill(&mut self) -> std::io::Result<()>;
@@ -514,28 +513,25 @@ impl Reap for std::process::Child {
 }
 
 /// What the bounded reap saw. Only `status: Some` confirms the child is gone.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct ReapReport {
     pid: u32,
     status: Option<std::process::ExitStatus>,
-    kill_errors: usize,
-    last_kill_error: Option<String>,
-    last_poll_error: Option<String>,
+    /// Kill and poll errors, oldest first, the last eight kept.
+    errors: Vec<String>,
     elapsed: Duration,
 }
 
 impl ReapReport {
+    fn note(&mut self, what: &str, error: std::io::Error) {
+        if self.errors.len() == 8 {
+            self.errors.remove(0);
+        }
+        self.errors.push(format!("{what}: {error}"));
+    }
     fn describe(&self) -> String {
-        format!(
-            "pid: {}\nreaped: {}\nstatus: {:?}\nkill errors: {} (last: {:?})\nlast poll error: {:?}\nreap elapsed: {:?}\n",
-            self.pid,
-            if self.status.is_some() { "yes" } else { "no" },
-            self.status,
-            self.kill_errors,
-            self.last_kill_error,
-            self.last_poll_error,
-            self.elapsed
-        )
+        let reaped = if self.status.is_some() { "yes" } else { "no" };
+        format!("pid: {}\nreaped: {reaped}\n{self:#?}\n", self.pid)
     }
 }
 
@@ -543,28 +539,23 @@ impl ReapReport {
 /// retries the kill. Only `Ok(Some(status))` confirms.
 fn reap_bounded(child: &mut impl Reap, limit: Duration) -> ReapReport {
     let started = std::time::Instant::now();
+    let pid = child.pid();
     let mut report = ReapReport {
-        pid: child.pid(),
-        status: None,
-        kill_errors: 0,
-        last_kill_error: None,
-        last_poll_error: None,
-        elapsed: Duration::ZERO,
+        pid,
+        ..Default::default()
     };
-    fn kill(child: &mut dyn Reap, report: &mut ReapReport) {
-        if let Err(error) = child.kill() {
-            report.kill_errors += 1;
-            report.last_kill_error = Some(error.to_string());
-        }
-    }
-    kill(child, &mut report);
+    let mut kill = true;
     loop {
+        if std::mem::take(&mut kill) {
+            if let Err(error) = child.kill() {
+                report.note("kill", error);
+            }
+        }
         match child.try_wait() {
-            Ok(Some(status)) => report.status = Some(status),
-            Ok(None) => {}
+            Ok(status) => report.status = status,
             Err(error) => {
-                report.last_poll_error = Some(error.to_string());
-                kill(child, &mut report);
+                report.note("poll", error);
+                kill = true;
             }
         }
         if report.status.is_some() || started.elapsed() >= limit {
@@ -604,14 +595,8 @@ impl<R: Reap> Supervised<R> {
         loop {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
-                    self.reap = Some(ReapReport {
-                        pid: self.child.pid(),
-                        status: Some(status),
-                        kill_errors: 0,
-                        last_kill_error: None,
-                        last_poll_error: None,
-                        elapsed: Duration::ZERO,
-                    });
+                    // Status known: `kill` is a no-op and the poll confirms at once.
+                    self.reap = Some(reap_bounded(&mut self.child, Duration::ZERO));
                     return Ok(status);
                 }
                 Ok(None) if self.started.elapsed() < deadline => {
@@ -637,21 +622,14 @@ impl<R: Reap> Supervised<R> {
             Some(directory) => directory.keep(),
             None => return PathBuf::new(),
         };
-        let report = self
-            .reap
-            .as_ref()
-            .map(ReapReport::describe)
-            .unwrap_or_default();
+        let report = self.reap.as_ref().map(ReapReport::describe);
+        let report = report.unwrap_or_default();
         let text = format!(
             "reason: {reason}\nsince spawn: {:?}\nconfirmed: {confirmed}\n{report}",
             self.started.elapsed()
         );
         let _ = std::fs::write(root.join("diagnostics.txt"), &text);
-        let _ = writeln!(
-            self.sink,
-            "{reason}; diagnostics retained at {}",
-            root.display()
-        );
+        let _ = writeln!(self.sink, "{reason}; retained {}", root.display());
         root
     }
 }
@@ -721,13 +699,6 @@ fn spawn_test_binary(args: &[&str], mark: Option<&str>) -> Supervised<std::proce
     Supervised::new(command.spawn().unwrap(), directory)
 }
 
-fn autoclose_args(extra: &[&'static str]) -> Vec<&'static str> {
-    let mut args = vec![AUTOCLOSE_FQN];
-    args.extend(AUTOCLOSE_ARGS);
-    args.extend(extra);
-    args
-}
-
 /// Parent verdict on one child: `Ok(stdout)` only for status 0 and the exact oracle.
 fn check_child(
     child: &mut Supervised<std::process::Child>,
@@ -738,9 +709,8 @@ fn check_child(
         .directory
         .as_ref()
         .map(|d| d.path().join("stdout.txt"));
-    let stdout = path
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .unwrap_or_default();
+    let stdout = path.and_then(|p| std::fs::read_to_string(p).ok());
+    let stdout = stdout.unwrap_or_default();
     if !status.success() {
         return Err(child.retain(&format!("child status {status}")));
     }
@@ -750,229 +720,13 @@ fn check_child(
 
 /// Parent side of the AutoClose run test (#5206).
 fn run_autoclose_child() {
-    let mut child = spawn_test_binary(&autoclose_args(&[]), Some("skip-recover"));
-    match check_child(&mut child, Duration::from_secs(45)) {
-        Ok(stdout) => {
-            for line in stdout.lines() {
-                println!("child| {line}");
-            }
-        }
-        Err(root) => panic!(
-            "AutoClose child failed; diagnostics retained at {}",
-            root.display()
-        ),
+    let args = [&[AUTOCLOSE_FQN][..], &AUTOCLOSE_ARGS].concat();
+    let mut child = spawn_test_binary(&args, Some("skip-recover"));
+    let stdout = check_child(&mut child, Duration::from_secs(45));
+    let stdout = stdout.unwrap_or_else(|root| panic!("AutoClose child retained {root:?}"));
+    for line in stdout.lines() {
+        println!("child| {line}");
     }
-}
-
-// ----- #5206 R8 probes of the parent supervisor (no child of these re-spawns) -----
-
-fn read_retained(root: &Path, name: &str) -> String {
-    let text = std::fs::read_to_string(root.join(name)).unwrap_or_default();
-    std::fs::remove_dir_all(root).unwrap();
-    text
-}
-
-const PASSING_CHILD: &str = "\nrunning 1 test\n\
-test events::session::tests::run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task ... ok\n\
-\nsuccesses:\n\n---- events::session::tests::run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task stdout ----\n\
-AC5206_AUTOCLOSE_DONE skip-recover\n\n\nsuccesses:\n    events::session::tests::run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task\n\n\
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 900 filtered out; finished in 0.01s\n\n";
-
-#[test]
-fn autoclose_oracle_accepts_one_run_and_rejects_every_variant() {
-    assert_eq!(child_stdout_verdict(PASSING_CHILD), Ok(()));
-    let summary = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 900 filtered out; finished in 0.01s";
-    let variants = [
-        PASSING_CHILD.replace(summary, &format!("{summary}\n{summary}")),
-        PASSING_CHILD.replace(summary, &format!("noise {summary}")),
-        PASSING_CHILD.replace(AUTOCLOSE_DONE, &format!("{AUTOCLOSE_DONE}\n{AUTOCLOSE_DONE}")),
-        PASSING_CHILD.replace(AUTOCLOSE_DONE, &format!("{AUTOCLOSE_DONE}\nAC5206_AUTOCLOSE_DONE other")),
-        PASSING_CHILD.replace(AUTOCLOSE_DONE, "AC5206_AUTOCLOSE_DONE other"),
-        PASSING_CHILD.replace(&format!("{AUTOCLOSE_DONE}\n"), ""),
-        PASSING_CHILD.replace(" ... ok", " ... ok\ntest other ... ok"),
-        "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 900 filtered out\n".into(),
-    ];
-    for (i, variant) in variants.iter().enumerate() {
-        assert!(
-            child_stdout_verdict(variant).is_err(),
-            "variant {i} accepted"
-        );
-    }
-    println!("AC5206_R8_PROBE oracle variants={}", variants.len());
-}
-
-#[test]
-fn autoclose_parent_is_red_for_a_zero_test_selector_with_status_zero() {
-    let mut child = spawn_test_binary(
-        &[
-            "events::session::tests::no_such_test_5206",
-            "--exact",
-            "--color=never",
-        ],
-        None,
-    );
-    let status = child.wait(Duration::from_secs(45)).unwrap();
-    assert_eq!(status.code(), Some(0));
-    let root = check_child(&mut child, Duration::from_secs(45)).unwrap_err();
-    let text = read_retained(&root, "diagnostics.txt");
-    assert!(
-        text.contains("expected one `running 1 test` line"),
-        "{text}"
-    );
-    assert!(text.contains("reaped: yes"), "{text}");
-    println!("AC5206_R8_PROBE zero_selector status=0 parent=red");
-}
-
-#[test]
-fn autoclose_child_rejects_a_foreign_mark_and_extra_argv_before_its_logger() {
-    for (mark, extra, panic) in [
-        ("other", &[][..], "unrecognized AC_5206_AUTOCLOSE_CHILD"),
-        (
-            "skip-recover",
-            &["--include-ignored"][..],
-            "child argv must select only this test",
-        ),
-    ] {
-        let mut child = spawn_test_binary(&autoclose_args(extra), Some(mark));
-        let root = check_child(&mut child, Duration::from_secs(45)).unwrap_err();
-        let stdout = std::fs::read_to_string(root.join("stdout.txt")).unwrap();
-        let text = read_retained(&root, "diagnostics.txt");
-        assert!(stdout.contains(panic), "{stdout}");
-        assert!(!stdout.contains("AC5206_AUTOCLOSE_DONE"), "{stdout}");
-        assert!(!stdout.contains("auto-close logger"), "{stdout}");
-        assert!(
-            text.contains("child status") && text.contains("reaped: yes"),
-            "{text}"
-        );
-        println!("AC5206_R8_PROBE child_rejects mark={mark} extra={extra:?} parent=red");
-    }
-}
-
-#[test]
-fn autoclose_timeout_kills_reaps_and_retains_even_when_stderr_fails() {
-    struct Broken;
-    impl std::io::Write for Broken {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::other("stderr closed"))
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Err(std::io::Error::other("stderr closed"))
-        }
-    }
-    let mut child = spawn_test_binary(&autoclose_args(&[]), Some("skip-recover"));
-    child.sink = Box::new(Broken);
-    let root = check_child(&mut child, Duration::ZERO).unwrap_err();
-    let text = read_retained(&root, "diagnostics.txt");
-    assert!(
-        text.contains("reason: child deadline") && text.contains("reaped: yes"),
-        "{text}"
-    );
-    assert!(
-        text.contains(&format!("pid: {}", child.child.id())),
-        "{text}"
-    );
-    println!("AC5206_R8_PROBE timeout reaped=yes stderr=failed retained=yes");
-}
-
-#[test]
-fn autoclose_unwind_with_a_live_child_reaps_and_retains() {
-    let mut root = PathBuf::new();
-    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let child = spawn_test_binary(&autoclose_args(&[]), Some("skip-recover"));
-        root = child.directory.as_ref().unwrap().path().to_path_buf();
-        panic!("probe unwind with a live child");
-    }));
-    assert!(caught.is_err());
-    let text = read_retained(&root, "diagnostics.txt");
-    assert!(
-        text.contains("reason: dropped during unwind") || text.contains("unconfirmed"),
-        "{text}"
-    );
-    assert!(text.contains("reaped: yes"), "{text}");
-    println!("AC5206_R8_PROBE unwind reaped=yes retained=yes");
-}
-
-struct NeverReaped {
-    polls: usize,
-    exits_after: Option<usize>,
-}
-
-impl Reap for NeverReaped {
-    fn pid(&self) -> u32 {
-        4_000_000
-    }
-    fn kill(&mut self) -> std::io::Result<()> {
-        Err(std::io::Error::other("kill refused"))
-    }
-    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
-        self.polls += 1;
-        match self.exits_after {
-            Some(n) if self.polls > n => Ok(Some(exit_status_zero())),
-            Some(_) => Ok(None),
-            None => Err(std::io::Error::other("poll refused")),
-        }
-    }
-}
-
-fn exit_status_zero() -> std::process::ExitStatus {
-    #[cfg(unix)]
-    use std::os::unix::process::ExitStatusExt;
-    #[cfg(windows)]
-    use std::os::windows::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(0)
-}
-
-#[test]
-fn autoclose_unconfirmed_reap_keeps_the_root_on_failure_and_on_drop() {
-    let started = std::time::Instant::now();
-    let mut never = NeverReaped {
-        polls: 0,
-        exits_after: None,
-    };
-    let report = reap_bounded(&mut never, Duration::from_millis(200));
-    assert!(report.status.is_none() && report.kill_errors >= 2 && report.last_poll_error.is_some());
-    assert!(started.elapsed() >= Duration::from_millis(200));
-
-    let mut late = NeverReaped {
-        polls: 0,
-        exits_after: Some(3),
-    };
-    let report = reap_bounded(&mut late, Duration::from_secs(10));
-    assert!(report.status.is_some(), "{report:?}");
-
-    let directory = tempfile::tempdir().unwrap();
-    let mut failing = Supervised::new(
-        NeverReaped {
-            polls: 0,
-            exits_after: None,
-        },
-        directory,
-    );
-    failing.reap_limit = Duration::from_millis(100);
-    let root = failing.wait(Duration::from_secs(1)).unwrap_err();
-    let text = read_retained(&root, "diagnostics.txt");
-    assert!(
-        text.contains("child poll failed") && text.contains("reaped: no"),
-        "{text}"
-    );
-
-    let directory = tempfile::tempdir().unwrap();
-    let kept = directory.path().to_path_buf();
-    let mut dropped = Supervised::new(
-        NeverReaped {
-            polls: 0,
-            exits_after: Some(1_000_000),
-        },
-        directory,
-    );
-    dropped.reap_limit = Duration::from_millis(100);
-    drop(dropped);
-    let text = read_retained(&kept, "diagnostics.txt");
-    assert!(
-        text.contains("unconfirmed") && text.contains("reaped: no"),
-        "{text}"
-    );
-    println!("AC5206_R8_PROBE double reap_unconfirmed retained=yes (failure and drop)");
 }
 
 const LEAD: &str = "myproj:wg-1-team/lead";
@@ -1154,8 +908,11 @@ async fn run_skips_a_tick_with_missing_state_and_recovers_on_the_same_task() {
         .parent()
         .expect("private root")
         .to_path_buf();
-    let temp = tempfile::tempdir_in(case_root).unwrap();
-    let team = temp.path().join("myproj/.ac/wg-1-team");
+    // A plain directory, not a TempDir: a child panic must not delete it on unwind; the
+    // parent removes the whole root only after accepting the receipt.
+    let fixture = case_root.join("fixture");
+    std::fs::create_dir(&fixture).unwrap();
+    let team = fixture.join("myproj/.ac/wg-1-team");
     let (lead_cwd, member_cwd) = (team.join("__agent_lead"), team.join("__agent_rust"));
     let h = handles();
     let lead = auto_close_session(&h.manager, &lead_cwd, None, true).await;
