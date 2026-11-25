@@ -325,13 +325,14 @@ class Desktop:
     # ----- windows and focus -----------------------------------------------------------
 
     def windows(self):
-        """Flat list of Sway view nodes: {conId, pid, name, focused}."""
+        """Flat list of Sway view nodes: {conId, pid, name, focused, rect}."""
         found = []
 
         def walk(node):
             if node.get("pid") is not None and node.get("type") in ("con", "floating_con"):
                 found.append({"conId": node["id"], "pid": node["pid"],
-                              "name": node.get("name") or "", "focused": node.get("focused")})
+                              "name": node.get("name") or "", "focused": node.get("focused"),
+                              "rect": node.get("rect") or {}})
             for child in node.get("nodes", []) + node.get("floating_nodes", []):
                 walk(child)
 
@@ -360,6 +361,18 @@ class Desktop:
         result = self.run(["/usr/bin/wtype", *args], timeout=10, check=False)
         if result.returncode != 0:
             raise DesktopError("key_failed", stage)
+
+    def click(self, x, y, con_id, pid, stage):
+        """One left click at output pixel (x, y) through the Sway seat, after a focus check."""
+        self.require_focus(con_id, pid, stage)
+        self.key_calls += 1
+        for command in (f"seat seat0 cursor set {int(x)} {int(y)}",
+                        "seat seat0 cursor press button1", "seat seat0 cursor release button1"):
+            result = self.run(["/usr/bin/swaymsg", "-s", self.swaysock, command],
+                              timeout=5, check=False)
+            if result.returncode != 0:
+                raise DesktopError("click_failed", stage)
+            time.sleep(0.1)
 
     def snapshot(self, binary, frame, con_id, pid, stage):
         """window.snapshot into a new private file; returns the full PNG bytes."""

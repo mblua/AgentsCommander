@@ -323,8 +323,15 @@ class Run:
         for step, pause in steps:
             self.dialog_key(step, dialog)
             time.sleep(pause)
-        # The chooser may only enter the folder on Return; then the accept button
-        # confirms it. Its mnemonic depends on the portal label (_Select or _Open).
+        # GTK ignores the virtual keyboard's Return here, so the header-bar Select
+        # button (top right, 48 px in from the edge, 22 px down) is clicked instead.
+        rect = dialog["rect"]
+        try:
+            self.desk.click(rect["x"] + rect["width"] - 48, rect["y"] + 22, dialog["conId"],
+                            self.desk.gtk_portal_pid, self.stage)
+        except dk.DesktopError as exc:
+            raise Failure(exc.code, self.stage) from exc
+        # Fallback keys. The accept mnemonic depends on the portal label (_Select or _Open).
         accepts = [("return", ["-k", "Return"]), ("alt_s", ["-M", "alt", "s", "-m", "alt"]),
                    ("alt_o", ["-M", "alt", "o", "-m", "alt"])]
         for name, keys in accepts:
