@@ -296,6 +296,11 @@ class Desktop:
     def start_portals(self, deadline):
         env = self.child_env()
         gtk = self.spawn("portal-gtk", [PORTAL_GTK, "--replace"], env)
+        # The frontend asks for the gtk backend at startup. If our backend does
+        # not own its name yet, dbus activates copies without a display that
+        # exit, and no FileChooser is exported.
+        wait_until(deadline, lambda: self.name_owner_pid(PORTAL_GTK_NAME) == gtk.pid,
+                   "portal_gtk_unavailable", "portals")
         portal = self.spawn("portal", [PORTAL, "--replace"], env)
         expected = {PORTAL_NAME: portal, PORTAL_GTK_NAME: gtk}
 
