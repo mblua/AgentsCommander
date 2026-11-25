@@ -452,6 +452,23 @@ impl DockerCommandOwnership {
     }
 
     #[cfg(test)]
+    pub(crate) fn retained_reader_handles_for_test(&self) -> Vec<(Option<bool>, Option<bool>)> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|entry| {
+                entry.owner.as_ref().map_or((None, None), |owner| {
+                    (
+                        owner.stdout.as_ref().map(JoinHandle::is_finished),
+                        owner.stderr.as_ref().map(JoinHandle::is_finished),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn wait_at_retry_gate_for_test(&self) {
         let gate = self
             .retry_gate

@@ -170,6 +170,11 @@ impl DockerProcessState {
     }
 
     #[cfg(test)]
+    pub(crate) fn retained_reader_handles_for_test(&self) -> Vec<(Option<bool>, Option<bool>)> {
+        self.command_ownership.retained_reader_handles_for_test()
+    }
+
+    #[cfg(test)]
     pub(crate) fn install_command_retry_gate_for_test(
         &self,
     ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
