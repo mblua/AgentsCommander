@@ -5,6 +5,7 @@
 //! on temporary trees, so every rejection is proven to name its contract and path.
 
 mod contracts;
+mod provenance;
 mod sources;
 
 use std::fs;
@@ -271,6 +272,9 @@ fn mailbox_contract_controls() {
     argument_controls();
     format_and_role_controls();
     delivery_path_controls();
+    provenance_controls();
+    guard_and_exit_controls();
+    scope_controls();
 }
 
 fn close_marker_controls() {
@@ -562,6 +566,135 @@ fn delivery_path_controls() {
         .accepts("log moved to an annex, with a test example left behind");
 }
 
+/// The INFO's session, target and notice come from the real call in the entry.
+fn provenance_controls() {
+    let call = "Self::log_internal_system_notice_delivery(session_id, target, notice);";
+    Fixture::base()
+        .edit(
+            DELIVERY,
+            call,
+            "let other = Uuid::new_v4();\n        \
+             Self::log_internal_system_notice_delivery(other, target, notice);",
+        )
+        .rejects("another Uuid passed to the helper", "argument 1", DELIVERY);
+    Fixture::base()
+        .edit(
+            DELIVERY,
+            call,
+            "Self::log_internal_system_notice_delivery(session_id, target, &spare);",
+        )
+        .rejects(
+            "another notice passed to the helper",
+            "argument 3",
+            DELIVERY,
+        );
+    Fixture::base()
+        .edit(
+            DELIVERY,
+            "match notice {",
+            "let shadow = notice;\n        match spare {",
+        )
+        .rejects("fields of another notice", "argument 3", DELIVERY);
+    let quiet = "\npub struct Quiet;\n\nimpl Quiet {\n    \
+        fn log_internal_system_notice_delivery(session_id: Uuid,\n        \
+        target: &InternalSystemTarget, notice: &InternalSystemNotice) {}\n}\n";
+    Fixture::base()
+        .append(DELIVERY, quiet)
+        .edit(
+            DELIVERY,
+            call,
+            "Quiet::log_internal_system_notice_delivery(session_id, target, notice);",
+        )
+        .rejects(
+            "qualified call to a homonym",
+            "delivery ContextAlert",
+            DELIVERY,
+        );
+    Fixture::base()
+        .append(DELIVERY, quiet)
+        .accepts("an uncalled homonym helper of another type");
+}
+
+/// Pattern guards and every successful `Ok` form.
+fn guard_and_exit_controls() {
+    let call = "        Self::log_internal_system_notice_delivery(session_id, target, notice);\n";
+    Fixture::base()
+        .edit(
+            DELIVERY,
+            call,
+            &format!(
+                concat!(
+                    "        if matches!(notice, InternalSystemNotice::ContextAlert {{ .. }}\n",
+                    "            | InternalSystemNotice::RemoteActivity {{ .. }} if ready()) {{\n",
+                    "    {call}        }}\n"
+                ),
+                call = call
+            ),
+        )
+        .rejects(
+            "call behind a guarded matches!",
+            "delivery ContextAlert",
+            DELIVERY,
+        );
+    let tail = "        Self::log_internal_system_notice_delivery(session_id, target, notice);\n        Ok(())";
+    Fixture::base()
+        .edit(DELIVERY, tail, &tail.replace("Ok(())", "Result::Ok(())"))
+        .accepts("qualified Ok tail");
+    Fixture::base()
+        .edit(
+            DELIVERY,
+            ".await?;\n",
+            ".await?;\n        if early() {\n            return std::result::Result::Ok(());\n        }\n",
+        )
+        .rejects("qualified Ok return before the INFO", "delivery ContextAlert", DELIVERY);
+    Fixture::base()
+        .edit(DELIVERY, tail, &tail.replace("Ok(())", "finish()"))
+        .rejects(
+            "unclassified success value",
+            "unresolved exit value",
+            DELIVERY,
+        );
+}
+
+/// Owner names resolve in the reference's own scopes first.
+fn scope_controls() {
+    let alias = "\npub type Alias = CoordinatorClocks;\n";
+    let local = "\nmod local {\n    use crate::other::Plain as Alias;\n    \
+        fn h() { let f = Alias::mark_auto_closed; }\n}\n";
+    Fixture::base()
+        .append("clocks.rs", alias)
+        .append(DELIVERY, "\npub struct Plain;\n")
+        .append(DELIVERY, local)
+        .accepts("local rename shadows a CoordinatorClocks alias elsewhere");
+    let imported = "\nmod local {\n    use super::super::clocks::Alias;\n    \
+        fn h() { let f = Alias::mark_auto_closed; }\n}\n";
+    Fixture::base()
+        .append("clocks.rs", alias)
+        .append(DELIVERY, imported)
+        .rejects(
+            "imported CoordinatorClocks alias",
+            T10,
+            "delivery.rs::local::h (reference #1",
+        );
+    Fixture::base()
+        .append("clocks.rs", alias)
+        .append(DELIVERY, "\npub type Alias = Plain;\npub struct Plain;\n")
+        .append(DELIVERY, "\nfn g() { let f = Alias::mark_auto_closed; }\n")
+        .accepts("same-module alias wins over a homonym elsewhere");
+    Fixture::base()
+        .append("clocks.rs", alias)
+        .append(DELIVERY, "\npub type Alias = Plain;\npub struct Plain;\n")
+        .append(
+            "../mailbox.rs",
+            "\nfn g() { let f = Alias::mark_auto_closed; }\n",
+        )
+        .rejects(
+            "homonyms disagree for an import",
+            "ambiguous owner",
+            "src-tauri/src/phone/mailbox.rs",
+        );
+}
+
 // ------------------------------------------------------------------ topology
 
 #[test]
@@ -630,6 +763,17 @@ fn mailbox_sources_cover_moves() {
             "fn l(c: &mut X) { c.mark_auto_closed(&f, t); }\n",
         )
         .rejects("restore under an inline module", T10, "inline/leaf.rs");
+    Fixture::base()
+        .edit(
+            "../mailbox.rs",
+            "mod clocks;",
+            "mod clocks;\nmod inline {\n    #[path = \"custom.rs\"]\n    mod leaf;\n}",
+        )
+        .add(
+            "inline/custom.rs",
+            "fn l(c: &mut X) { c.mark_auto_closed(&f, t); }\n",
+        )
+        .rejects("#[path] inside an inline module", T10, "inline/custom.rs");
 
     discovery_failures();
 }

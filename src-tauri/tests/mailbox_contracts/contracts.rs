@@ -12,20 +12,24 @@ use syn::punctuated::Punctuated;
 use syn::visit::{self, Visit};
 use syn::{Arm, Block, Expr, Pat, Stmt};
 
+use crate::provenance::{
+    entry_env, exit_kind, qualifier_reaches, quote_path, resolve_owner, returns_result, Owner,
+    NOTICE_PARAM, SESSION_PARAM, TARGET_PARAM,
+};
 use crate::sources::{
     expr_attrs, first_literal, inventory, is_test_only, last_ident, stmt_test_only, toks,
     type_ident, FnInfo, Index, LogSite, Tok, Tree, CONTEXT, MUTATOR, REMOTE,
 };
 
-const OWNER: &str = "CoordinatorClocks";
-const INJECT: &str = "inject_internal_notice_into_supported_agent_session";
-const DELIVER: &str = "inject_internal_system_notice";
-const NOTICE: &str = "InternalSystemNotice";
+pub const OWNER: &str = "CoordinatorClocks";
+pub const INJECT: &str = "inject_internal_notice_into_supported_agent_session";
+pub const DELIVER: &str = "inject_internal_system_notice";
+pub const NOTICE: &str = "InternalSystemNotice";
 pub const CONTEXT_INFO: &str = "[context-alert] delivered coordinatorSession={} project={} \
     workgroup={} member={} observed={} thresholds={:?}";
 const VARIANTS: [&str; 2] = ["ContextAlert", "RemoteActivity"];
 const FIELDS: [&str; 4] = ["workgroup", "member", "observed", "thresholds"];
-const MAX_DEPTH: usize = 8;
+pub const MAX_DEPTH: usize = 8;
 
 /// Counts the log contract identified, for the acceptance controls.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -51,34 +55,29 @@ pub fn verify(tree: &Tree) -> Result<Report, Vec<String>> {
 
 // ------------------------------------------------------------------ T10
 
-fn resolve_owner(index: &Index, name: &str) -> Option<String> {
-    let mut current = name.to_string();
-    for _ in 0..MAX_DEPTH {
-        if current == OWNER {
-            return Some(current);
-        }
-        match index.aliases.get(&current) {
-            Some(next) => current = next.clone(),
-            None => return index.declared.contains(&current).then_some(current),
-        }
-    }
-    None
-}
-
 fn close_marker_errors(index: &Index) -> Vec<String> {
     let mut errors = Vec::new();
     for r in &index.refs {
-        let resolved = r.owner.as_deref().and_then(|o| resolve_owner(index, o));
-        match (r.form, resolved.as_deref()) {
-            ("method call" | "method call in macro", _) | (_, Some(OWNER)) => errors.push(format!(
-                "T10 close-marker restore: {OWNER}::{MUTATOR} acquired by {} at {}",
-                r.form, r.site
-            )),
-            (_, Some(_)) => {}
-            (_, None) => errors.push(format!(
-                "T10 close-marker restore: unresolved owner {:?} of {MUTATOR} ({}) at {}",
+        let resolved = r
+            .owner
+            .as_deref()
+            .map(|o| resolve_owner(index, &r.chain, o));
+        let unresolved = |why: &str| {
+            format!(
+                "T10 close-marker restore: {why} owner {:?} of {MUTATOR} ({}) at {}",
                 r.owner, r.form, r.site
-            )),
+            )
+        };
+        match (r.form, resolved) {
+            ("method call" | "method call in macro", _) | (_, Some(Owner::Clocks)) => {
+                errors.push(format!(
+                    "T10 close-marker restore: {OWNER}::{MUTATOR} acquired by {} at {}",
+                    r.form, r.site
+                ));
+            }
+            (_, Some(Owner::Other)) => {}
+            (_, Some(Owner::Ambiguous)) => errors.push(unresolved("ambiguous")),
+            (_, Some(Owner::Unknown) | None) => errors.push(unresolved("unresolved")),
         }
     }
     errors
@@ -171,14 +170,15 @@ fn log_contract(index: &Index, errors: &mut Vec<String>) -> Report {
 // ------------------------------------------------------------------ argument origins
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Origin {
-    Param(Option<String>),
+pub enum Origin {
+    /// A parameter of the delivery entry, by name.
+    Entry(String),
     Field(String),
     Project,
     Other,
 }
 
-type Env = Vec<BTreeMap<String, Origin>>;
+pub type Env = Vec<BTreeMap<String, Origin>>;
 
 fn lookup(env: &Env, name: &str) -> Origin {
     env.iter()
@@ -187,7 +187,7 @@ fn lookup(env: &Env, name: &str) -> Origin {
         .unwrap_or(Origin::Other)
 }
 
-fn origin_of(env: &Env, expr: &Expr) -> Origin {
+pub fn origin_of(env: &Env, expr: &Expr) -> Origin {
     match expr {
         Expr::Path(p) if p.qself.is_none() && p.path.segments.len() == 1 => {
             lookup(env, &p.path.segments[0].ident.unraw().to_string())
@@ -209,7 +209,7 @@ fn pat_ident(pat: &Pat) -> Option<String> {
     }
 }
 
-fn params(sig: &syn::Signature) -> Vec<(String, Option<String>)> {
+pub fn params(sig: &syn::Signature) -> Vec<(String, Option<String>)> {
     sig.inputs
         .iter()
         .filter_map(|arg| match arg {
@@ -286,7 +286,7 @@ fn is_project_split(env: &Env, expr: &Expr) -> bool {
     };
     fqn.method == "fqn"
         && fqn.args.is_empty()
-        && origin_of(env, &fqn.receiver) == Origin::Param(Some("InternalSystemTarget".into()))
+        && matches!(origin_of(env, &fqn.receiver), Origin::Entry(ref n) if n == TARGET_PARAM)
 }
 
 fn context_arguments(index: &Index, site: &LogSite, errors: &mut Vec<String>) {
@@ -295,10 +295,11 @@ fn context_arguments(index: &Index, site: &LogSite, errors: &mut Vec<String>) {
             "log arguments: {CONTEXT:?} info outside a function"
         ));
     };
-    let mut env: Env = vec![params(&func.sig)
-        .into_iter()
-        .map(|(name, ty)| (name, Origin::Param(ty)))
-        .collect()];
+    let env = match entry_env(index, func) {
+        Ok(env) => env,
+        Err(why) => return errors.push(format!("log arguments: {why}")),
+    };
+    let mut env: Env = vec![env];
     let mut found = None;
     find_in_block(&func.block, &mut env, &site.mac, &mut found);
     let Some((env, args)) = found else {
@@ -315,7 +316,7 @@ fn context_arguments(index: &Index, site: &LogSite, errors: &mut Vec<String>) {
             func.name
         ));
     }
-    let mut want = vec![Origin::Param(Some("Uuid".into())), Origin::Project];
+    let mut want = vec![Origin::Entry(SESSION_PARAM.into()), Origin::Project];
     want.extend(FIELDS.iter().map(|f| Origin::Field((*f).into())));
     for (at, (arg, want)) in args.iter().zip(&want).enumerate() {
         let got = match (at, arg) {
@@ -389,9 +390,13 @@ fn find_in_expr(expr: &Expr, env: &mut Env, target: &syn::Macro, found: &mut Fou
             }
         }
         Expr::Match(m) => {
+            let on_notice =
+                matches!(origin_of(env, &m.expr), Origin::Entry(ref n) if n == NOTICE_PARAM);
             for arm in m.arms.iter().filter(|a| !is_test_only(&a.attrs)) {
                 let mut scope = BTreeMap::new();
-                bind_fields(&arm.pat, &mut scope);
+                if on_notice && variant_of(&arm.pat).as_deref() == Some(VARIANTS[0]) {
+                    bind_fields(&arm.pat, &mut scope);
+                }
                 env.push(scope);
                 find_in_expr(&arm.body, env, target, found);
                 env.pop();
@@ -513,11 +518,6 @@ fn notice_names(sig: &syn::Signature) -> BTreeSet<String> {
         .collect()
 }
 
-fn is_ok_unit(expr: &Expr) -> bool {
-    let Expr::Call(call) = expr else { return false };
-    matches!(&*call.func, Expr::Path(p) if p.path.is_ident("Ok"))
-}
-
 fn is_notice(notice: &BTreeSet<String>, expr: &Expr) -> bool {
     match expr {
         Expr::Path(p) => p
@@ -538,6 +538,19 @@ fn tokens_mention(mac: &syn::Macro, names: &BTreeSet<String>) -> bool {
 }
 
 impl Paths<'_> {
+    /// Whether an exit with `value` succeeds. In a `Result` function a value that
+    /// is neither `Ok(..)` nor `Err(..)` is reported instead of guessed.
+    fn exit_ok(&mut self, func: &FnInfo, value: &Expr) -> bool {
+        match exit_kind(value) {
+            Some(ok) => ok,
+            None if returns_result(&func.sig) => {
+                self.fail(func, "unresolved exit value on the delivery path");
+                false
+            }
+            None => false,
+        }
+    }
+
     fn fail(&mut self, func: &FnInfo, what: &str) {
         self.errors.push(format!(
             "delivery {}: {what} in {}::{}",
@@ -596,7 +609,7 @@ impl Paths<'_> {
                 Stmt::Expr(expr, semi) => {
                     let next = self.expr(func, expr, &notice, flows, depth);
                     if body && tail && semi.is_none() {
-                        let ok = is_ok_unit(expr);
+                        let ok = self.exit_ok(func, expr);
                         next.into_iter().map(|f| finish(f, ok)).collect()
                     } else {
                         next
@@ -664,6 +677,7 @@ impl Paths<'_> {
                     let scrutinee: Expr = input.parse()?;
                     input.parse::<syn::Token![,]>()?;
                     let pat = Pat::parse_multi_with_leading_vert(input)?;
+                    let guarded = input.peek(syn::Token![if]);
                     input.step(|cursor| {
                         let mut rest = *cursor;
                         while let Some((_, next)) = rest.token_tree() {
@@ -671,10 +685,17 @@ impl Paths<'_> {
                         }
                         Ok(((), rest))
                     })?;
-                    Ok((scrutinee, pat))
+                    Ok((scrutinee, pat, guarded))
                 };
-                let (scrutinee, pat) = parser.parse2(m.mac.tokens.clone()).ok()?;
-                is_notice(notice, &scrutinee).then(|| self.matches(&pat))
+                let (scrutinee, pat, guarded) = parser.parse2(m.mac.tokens.clone()).ok()?;
+                if !is_notice(notice, &scrutinee) {
+                    return None;
+                }
+                // A guard can reject a matching pattern: then either branch is reachable.
+                match self.matches(&pat) {
+                    true if guarded => None,
+                    taken => Some(taken),
+                }
             }
             _ => None,
         }
@@ -682,7 +703,14 @@ impl Paths<'_> {
 
     fn matches(&self, pat: &Pat) -> bool {
         match pat {
-            Pat::Wild(_) | Pat::Ident(_) => true,
+            Pat::Ident(i) => match &i.subpat {
+                Some((_, sub)) => self.matches(sub),
+                None => {
+                    !VARIANTS.contains(&i.ident.unraw().to_string().as_str())
+                        || i.ident == self.variant
+                }
+            },
+            Pat::Wild(_) => true,
             Pat::Or(o) => o.cases.iter().any(|c| self.matches(c)),
             other => variant_of(other).as_deref() == Some(self.variant),
         }
@@ -710,7 +738,10 @@ impl Paths<'_> {
                 Self::each(next, |s| vec![Flow::Next(s), Flow::Exit(s, false)])
             }
             Expr::Return(r) => {
-                let ok = r.expr.as_deref().is_some_and(is_ok_unit);
+                let ok = match r.expr.as_deref() {
+                    Some(e) => self.exit_ok(func, e),
+                    None => false,
+                };
                 let next = match &r.expr {
                     Some(e) => self.expr(func, e, notice, flows, depth),
                     None => flows,
@@ -728,9 +759,8 @@ impl Paths<'_> {
                 let Expr::Path(p) = &*c.func else {
                     return self.opaque(func, &c.func, flows);
                 };
-                let name = last_ident(&p.path).unwrap_or_default();
                 let args: Vec<&Expr> = c.args.iter().collect();
-                self.invoke(func, &name, None, &args, notice, flows, depth)
+                self.invoke(func, &p.path, None, &args, notice, flows, depth)
             }
             Expr::MethodCall(m) => {
                 let mut flows = self.expr(func, &m.receiver, notice, flows, depth);
@@ -738,9 +768,9 @@ impl Paths<'_> {
                     flows = self.expr(func, arg, notice, flows, depth);
                 }
                 let args: Vec<&Expr> = m.args.iter().collect();
-                let name = m.method.unraw().to_string();
+                let path = syn::Path::from(m.method.clone());
                 let receiver = Some(&*m.receiver);
-                self.invoke(func, &name, receiver, &args, notice, flows, depth)
+                self.invoke(func, &path, receiver, &args, notice, flows, depth)
             }
             Expr::Closure(_) | Expr::Async(_) | Expr::Lit(_) | Expr::Path(_) => flows,
             other => self.opaque(func, other, flows),
@@ -853,13 +883,15 @@ impl Paths<'_> {
     fn invoke(
         &mut self,
         func: &FnInfo,
-        name: &str,
+        path: &syn::Path,
         receiver: Option<&Expr>,
         args: &[&Expr],
         notice: &BTreeSet<String>,
         flows: Vec<Flow>,
         depth: usize,
     ) -> Vec<Flow> {
+        let name = last_ident(path).unwrap_or_default();
+        let name = name.as_str();
         if name == INJECT {
             return Self::each(flows, |mut s| {
                 s.injected = true;
@@ -871,26 +903,29 @@ impl Paths<'_> {
         }
         let self_call =
             receiver.is_some_and(|r| matches!(r, Expr::Path(p) if p.path.is_ident("self")));
-        let candidates: Vec<&FnInfo> = self.index.fns.iter().filter(|f| f.name == name).collect();
-        let target = match candidates.as_slice() {
-            [] => return flows,
-            [one] => *one,
-            many => match many
-                .iter()
-                .find(|f| f.owner == func.owner && f.file == func.file)
-            {
-                Some(found) if receiver.is_none() || self_call => *found,
-                _ => {
-                    if self.relevant.contains(name) {
-                        self.fail(func, &format!("ambiguous call to {name}"));
-                    }
-                    return flows;
-                }
-            },
+        let named = self.index.fns.iter().filter(|f| f.name == name);
+        let candidates: Vec<&FnInfo> = if receiver.is_some() && !self_call {
+            // A method on another value: only methods can answer it.
+            named.filter(|f| f.sig.receiver().is_some()).collect()
+        } else {
+            named
+                .filter(|f| qualifier_reaches(func, path, receiver, f))
+                .collect()
         };
-        if receiver.is_some() && !self_call && target.sig.receiver().is_none() {
-            return flows;
-        }
+        let target = match candidates.as_slice() {
+            [one] => *one,
+            [] if receiver.is_some() && !self_call => return flows,
+            none_or_many => {
+                let what = if none_or_many.is_empty() {
+                    "unresolved"
+                } else {
+                    "ambiguous"
+                };
+                let shown = quote_path(path);
+                self.fail(func, &format!("{what} call to {shown}"));
+                return flows;
+            }
+        };
         let callee_params = params(&target.sig);
         let mut callee_notice = BTreeSet::new();
         for ((pname, _), arg) in callee_params.iter().zip(args) {

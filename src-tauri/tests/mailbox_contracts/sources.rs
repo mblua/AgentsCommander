@@ -124,7 +124,7 @@ impl Walker<'_> {
             let name = entry
                 .file_name()
                 .into_string()
-                .map_err(|_| format!("{dir}: name"))?;
+                .map_err(|raw| format!("{dir}: name is not UTF-8: {raw:?}"))?;
             names.push((name, kind.is_dir()));
         }
         names.sort();
@@ -158,7 +158,7 @@ impl Walker<'_> {
         self.parse(rel)?;
         let items = self.parsed[rel].items.clone();
         let dir = child_dir(rel, rel == self.facade);
-        self.walk_items(rel, &dir, &items, test)
+        self.walk_items(rel, &dir, &items, test, false)
     }
 
     fn walk_items(
@@ -167,6 +167,7 @@ impl Walker<'_> {
         dir: &str,
         items: &[Item],
         test: bool,
+        inline: bool,
     ) -> Result<(), String> {
         for item in items {
             match item {
@@ -180,10 +181,13 @@ impl Walker<'_> {
                         (Some((_, inner)), path_attr) => {
                             let sub = path_attr
                                 .map_or_else(|| format!("{dir}/{name}"), |p| format!("{dir}/{p}"));
-                            self.walk_items(rel, &sub, inner, edge)?;
+                            self.walk_items(rel, &sub, inner, edge, true)?;
                         }
                         (None, Some(p)) => {
-                            let base = parent_dir(rel);
+                            // Outside inline modules `#[path]` is relative to the
+                            // declaring file's directory; inside one, to the inline
+                            // module's own directory.
+                            let base = if inline { dir } else { parent_dir(rel) };
                             let target = normalize(&format!("{base}/{p}"))
                                 .ok_or_else(|| format!("{rel}: mod {name}: path escapes"))?;
                             self.enter(rel, name, &target, edge)?;
@@ -331,6 +335,8 @@ pub fn inventory(tree: &Tree) -> Index {
             owner: vec![None],
             func: Vec::new(),
             missing_arm: 0,
+            scopes: vec![(source.path.clone(), true)],
+            refs_in_site: BTreeMap::new(),
         };
         collector.visit_file(&source.file);
     }
@@ -401,9 +407,12 @@ pub struct LogSite {
 }
 
 pub struct MutatorRef {
+    /// Item path plus the ordinal of the reference inside that item.
     pub site: String,
     pub owner: Option<String>,
     pub form: &'static str,
+    /// Name scopes visible at the reference, innermost first, ending at its module.
+    pub chain: Vec<String>,
 }
 
 #[derive(Default)]
@@ -411,8 +420,10 @@ pub struct Index {
     pub fns: Vec<FnInfo>,
     pub logs: Vec<LogSite>,
     pub refs: Vec<MutatorRef>,
-    pub aliases: BTreeMap<String, String>,
-    pub declared: BTreeSet<String>,
+    /// `(scope, name) -> target name` for renames, type aliases and imports.
+    pub aliases: BTreeMap<(String, String), String>,
+    /// `(scope, name)` of the types declared in that scope.
+    pub declared: BTreeSet<(String, String)>,
     pub errors: Vec<String>,
 }
 
@@ -422,6 +433,9 @@ pub struct Collector<'a> {
     pub owner: Vec<Option<String>>,
     pub func: Vec<usize>,
     pub missing_arm: usize,
+    /// Name scopes: the file, inline modules (`true`) and function bodies (`false`).
+    pub scopes: Vec<(String, bool)>,
+    pub refs_in_site: BTreeMap<String, usize>,
 }
 
 // ------------------------------------------------------------------ collection
@@ -474,11 +488,45 @@ impl Collector<'_> {
                 .as_ref()
                 .map_or_else(|| f.name.clone(), |o| format!("{o}::{}", f.name))
         });
+        let module = self
+            .scopes
+            .iter()
+            .rev()
+            .find(|(_, m)| *m)
+            .map_or("", |(k, _)| k);
+        let inline = module.strip_prefix(self.file.as_str()).unwrap_or("");
         format!(
-            "{}::{}",
+            "{}{inline}::{}",
             self.file,
             func.unwrap_or_else(|| "<item>".to_string())
         )
+    }
+
+    fn scope(&self) -> String {
+        self.scopes
+            .last()
+            .map(|(k, _)| k.clone())
+            .unwrap_or_default()
+    }
+
+    fn chain(&self) -> Vec<String> {
+        let mut chain = Vec::new();
+        for (key, module) in self.scopes.iter().rev() {
+            chain.push(key.clone());
+            if *module {
+                break;
+            }
+        }
+        chain
+    }
+
+    fn name(&mut self, name: String, target: String) {
+        self.index.aliases.insert((self.scope(), name), target);
+    }
+
+    fn declare(&mut self, ident: &syn::Ident) {
+        let key = (self.scope(), ident.unraw().to_string());
+        self.index.declared.insert(key);
     }
 
     fn push_fn(&mut self, sig: &syn::Signature, block: &Block) -> usize {
@@ -496,11 +544,12 @@ impl Collector<'_> {
         match tree {
             syn::UseTree::Path(p) => self.record_use(&p.tree),
             syn::UseTree::Name(n) => {
-                self.index.declared.insert(n.ident.unraw().to_string());
+                let name = n.ident.unraw().to_string();
+                self.name(name.clone(), name);
             }
             syn::UseTree::Rename(r) => {
                 let (from, to) = (r.ident.unraw().to_string(), r.rename.unraw().to_string());
-                self.index.aliases.insert(to, from);
+                self.name(to, from);
             }
             syn::UseTree::Group(g) => g.items.iter().for_each(|t| self.record_use(t)),
             syn::UseTree::Glob(_) => {}
@@ -508,9 +557,18 @@ impl Collector<'_> {
     }
 
     fn mutator_ref(&mut self, owner: Option<String>, form: &'static str) {
-        let site = self.site();
+        let item = self.site();
+        let n = self.refs_in_site.entry(item.clone()).or_insert(0);
+        *n += 1;
+        let site = format!("{item} (reference #{n} in this item)");
         let owner = owner.map(|o| if o == "Self" { self.self_owner() } else { o });
-        self.index.refs.push(MutatorRef { site, owner, form });
+        let chain = self.chain();
+        self.index.refs.push(MutatorRef {
+            site,
+            owner,
+            form,
+            chain,
+        });
     }
 
     fn self_owner(&self) -> String {
@@ -619,8 +677,17 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             syn::Item::Fn(f) => {
                 let at = self.push_fn(&f.sig, &f.block);
                 self.func.push(at);
+                self.scopes
+                    .push((format!("{}::fn {}#{at}", self.scope(), f.sig.ident), false));
                 visit::visit_item_fn(self, f);
+                self.scopes.pop();
                 self.func.pop();
+            }
+            syn::Item::Mod(m) if m.content.is_some() => {
+                self.scopes
+                    .push((format!("{}::{}", self.scope(), m.ident.unraw()), true));
+                visit::visit_item_mod(self, m);
+                self.scopes.pop();
             }
             syn::Item::Impl(i) => {
                 self.owner.push(type_ident(&i.self_ty));
@@ -630,18 +697,16 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             syn::Item::Use(u) => self.record_use(&u.tree),
             syn::Item::Type(t) => {
                 if let Some(target) = type_ident(&t.ty) {
-                    self.index
-                        .aliases
-                        .insert(t.ident.unraw().to_string(), target);
+                    self.name(t.ident.unraw().to_string(), target);
                 }
                 visit::visit_item_type(self, t);
             }
             syn::Item::Struct(s) => {
-                self.index.declared.insert(s.ident.unraw().to_string());
+                self.declare(&s.ident);
                 visit::visit_item_struct(self, s);
             }
             syn::Item::Enum(e) => {
-                self.index.declared.insert(e.ident.unraw().to_string());
+                self.declare(&e.ident);
                 visit::visit_item_enum(self, e);
             }
             _ => visit::visit_item(self, item),
@@ -653,7 +718,10 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             syn::ImplItem::Fn(f) if !is_test_only(&f.attrs) => {
                 let at = self.push_fn(&f.sig, &f.block);
                 self.func.push(at);
+                self.scopes
+                    .push((format!("{}::fn {}#{at}", self.scope(), f.sig.ident), false));
                 visit::visit_impl_item_fn(self, f);
+                self.scopes.pop();
                 self.func.pop();
             }
             syn::ImplItem::Fn(_) => {}
