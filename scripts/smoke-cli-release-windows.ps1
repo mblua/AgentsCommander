@@ -185,6 +185,65 @@ function Add-Issue1577ResidueErrors {
     }
 }
 
+# Runs the copied CLI once and records exit code, output and timeout in $State.
+function Invoke-Issue1577Child {
+    param(
+        $Errors,
+        [hashtable]$State,
+        [string]$CopiedBinary,
+        [string]$Token,
+        [string]$CliRoot,
+        [string]$CommandPath,
+        [string]$StdoutPath,
+        [string]$StderrPath
+    )
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $CopiedBinary
+    $psi.Arguments = "list-peers-lean --token `"$Token`" --root `"$CliRoot`""
+    $psi.WorkingDirectory = $CliRoot
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.EnvironmentVariables.Remove("AGENTSCOMMANDER_CONFIG_DIR")
+    $psi.EnvironmentVariables.Remove("AGENTSCOMMANDER_TEST_CONFIG_DIR")
+    Set-Issue1577LogText -Path $CommandPath -Text "$CopiedBinary $($psi.Arguments)"
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $psi
+    if (-not $process.Start()) {
+        throw "Process.Start returned false for $CopiedBinary"
+    }
+    $State.process = $process
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+
+    if (-not $process.WaitForExit(15000)) {
+        $State.timedOut = $true
+        try { $process.Kill() } catch { $Errors.Add("timeout kill failed: $($_.Exception.Message)") | Out-Null }
+        if (-not $process.WaitForExit(5000)) {
+            $Errors.Add("timed-out child did not reap within 5 seconds: pid=$($process.Id)") | Out-Null
+        }
+    }
+
+    if ($process.HasExited) {
+        $State.exitCode = $process.ExitCode
+    }
+    if (-not $stdoutTask.Wait(5000)) {
+        $Errors.Add("stdout capture did not finish within 5 seconds") | Out-Null
+    } else {
+        $State.stdout = $stdoutTask.Result
+    }
+    if (-not $stderrTask.Wait(5000)) {
+        $Errors.Add("stderr capture did not finish within 5 seconds") | Out-Null
+    } else {
+        $State.stderr = $stderrTask.Result
+    }
+    Set-Issue1577LogText -Path $StdoutPath -Text $State.stdout
+    Set-Issue1577LogText -Path $StderrPath -Text $State.stderr
+}
+
 function Invoke-Issue1577AdjacentRefusalGate {
     param(
         [Parameter(Mandatory=$true)] [string]$BinaryPath,
@@ -233,50 +292,17 @@ function Invoke-Issue1577AdjacentRefusalGate {
         $before = Get-Issue1577TreeSnapshot -Roots $snapshotRoots
         Set-Issue1577LogText -Path $baselinePath -Text $before
 
-        $psi = [System.Diagnostics.ProcessStartInfo]::new()
-        $psi.FileName = $copiedBinary
-        $psi.Arguments = "list-peers-lean --token `"$Token`" --root `"$cliRoot`""
-        $psi.WorkingDirectory = $cliRoot
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.EnvironmentVariables.Remove("AGENTSCOMMANDER_CONFIG_DIR")
-        $psi.EnvironmentVariables.Remove("AGENTSCOMMANDER_TEST_CONFIG_DIR")
-        Set-Issue1577LogText -Path $commandPath -Text "$copiedBinary $($psi.Arguments)"
-
-        $process = [System.Diagnostics.Process]::new()
-        $process.StartInfo = $psi
-        if (-not $process.Start()) {
-            throw "Process.Start returned false for $copiedBinary"
+        $run = @{ exitCode = $null; stdout = ""; stderr = ""; timedOut = $false; process = $null }
+        try {
+            Invoke-Issue1577Child -Errors $errors -State $run -CopiedBinary $copiedBinary -Token $Token -CliRoot $cliRoot -CommandPath $commandPath -StdoutPath $stdoutPath -StderrPath $stderrPath
+        } finally {
+            $exitCode = $run.exitCode
+            $stdout = $run.stdout
+            $stderr = $run.stderr
+            $timedOut = $run.timedOut
+            $process = $run.process
+            $processStarted = $null -ne $run.process
         }
-        $processStarted = $true
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-
-        if (-not $process.WaitForExit(15000)) {
-            $timedOut = $true
-            try { $process.Kill() } catch { $errors.Add("timeout kill failed: $($_.Exception.Message)") | Out-Null }
-            if (-not $process.WaitForExit(5000)) {
-                $errors.Add("timed-out child did not reap within 5 seconds: pid=$($process.Id)") | Out-Null
-            }
-        }
-
-        if ($process.HasExited) {
-            $exitCode = $process.ExitCode
-        }
-        if (-not $stdoutTask.Wait(5000)) {
-            $errors.Add("stdout capture did not finish within 5 seconds") | Out-Null
-        } else {
-            $stdout = $stdoutTask.Result
-        }
-        if (-not $stderrTask.Wait(5000)) {
-            $errors.Add("stderr capture did not finish within 5 seconds") | Out-Null
-        } else {
-            $stderr = $stderrTask.Result
-        }
-        Set-Issue1577LogText -Path $stdoutPath -Text $stdout
-        Set-Issue1577LogText -Path $stderrPath -Text $stderr
 
         Add-Issue1577OutputErrors -Errors $errors -TimedOut $timedOut -ExitCode $exitCode -Stdout $stdout -Stderr $stderr -Candidate $candidate
 
