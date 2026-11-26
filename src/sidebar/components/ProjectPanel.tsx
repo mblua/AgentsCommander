@@ -289,9 +289,7 @@ function isSessionLive(session: Session | undefined): boolean {
 function MatrixFolderIcon() {
   return (
     <svg
-      class="session-context-matrix-icon"
-      viewBox="0 0 16 16"
-      aria-hidden="true"
+      class="session-context-matrix-icon" viewBox="0 0 16 16" aria-hidden="true"
     >
       <path
         fill="currentColor"
@@ -2265,9 +2263,7 @@ const ProjectPanel: Component = () => {
                     >
                       <span class="session-context-option-icon" aria-hidden="true">
                         <svg
-                          class="session-context-repo-icon"
-                          viewBox="0 0 16 16"
-                          aria-hidden="true"
+                          class="session-context-repo-icon" viewBox="0 0 16 16" aria-hidden="true"
                         >
                           <path
                             fill="currentColor"
@@ -3117,9 +3113,7 @@ const ProjectPanel: Component = () => {
                       selected, quick). */}
                   <Show when={replica.selectionState === "locked"}>
                     <span
-                      class="selection-lock-chip"
-                      role="img"
-                      aria-label={lockChipLabel()}
+                      class="selection-lock-chip" role="img" aria-label={lockChipLabel()}
                       title={lockChipLabel()}
                       data-ac-testid={lockChipTestId()}
                     >
@@ -3266,9 +3260,7 @@ const ProjectPanel: Component = () => {
             >
               <button
                 data-ac-testid={`project.header.${projectAutomationId()}.toggle`}
-                type="button"
-                class="project-header-main"
-                title={proj.path}
+                type="button" class="project-header-main" title={proj.path}
                 aria-expanded={!isProjectPanelCollapsed(proj.path)}
                 onClick={() => toggleProjectPanelCollapsed(proj.path)}
               >
@@ -4012,9 +4004,8 @@ const ProjectPanel: Component = () => {
                               return (
                                 <div class="ac-team-group">
                                   <div
-                                    class="ac-team-header"
+                                    class="ac-team-header" data-ac-role="row"
                                     data-ac-testid={`team.header.${teamIdPart()}`}
-                                    data-ac-role="row"
                                     data-ac-state={teamCollapsed() ? "collapsed" : "expanded"}
                                     onClick={() => togglePanelCollapsed(teamCollapsedKey, true)}
                                     onKeyDown={onRowKey(() => togglePanelCollapsed(teamCollapsedKey, true))}
@@ -4030,23 +4021,20 @@ const ProjectPanel: Component = () => {
                                   <Show when={!teamCollapsed()}>
                                     <div class="ac-team-members">
                                       <For each={visibleTeamMembers()}>
-                                        {(agentName) => {
-                                          return (
-                                            <div
-                                              class="ac-team-member"
-                                              data-ac-testid={`team.member.${teamIdPart()}`
-                                                + `.${automationIdPart(agentName)}`}
-                                              data-ac-role="row"
-                                              data-ac-detail={teamMemberDisplayLabel(agentName)}
-                                              title={agentName}
-                                            >
-                                              <span class="ac-team-member-name">{teamMemberDisplayLabel(agentName)}</span>
-                                              <Show when={agentName === team.coordinator}>
-                                                <span class="ac-discovery-badge coord">orchestrator</span>
-                                              </Show>
-                                            </div>
-                                          );
-                                        }}
+                                        {(agentName) => (
+                                          <div
+                                            class="ac-team-member" data-ac-role="row"
+                                            title={agentName}
+                                            data-ac-testid={`team.member.${teamIdPart()}`
+                                              + `.${automationIdPart(agentName)}`}
+                                            data-ac-detail={teamMemberDisplayLabel(agentName)}
+                                          >
+                                            <span class="ac-team-member-name">{teamMemberDisplayLabel(agentName)}</span>
+                                            <Show when={agentName === team.coordinator}>
+                                              <span class="ac-discovery-badge coord">orchestrator</span>
+                                            </Show>
+                                          </div>
+                                        )}
                                       </For>
                                     </div>
                                   </Show>
@@ -4292,8 +4280,7 @@ const ProjectPanel: Component = () => {
                 <Portal>
                   <Show when={haloBox()}>
                     <div
-                      class="replica-menu-halo-clip"
-                      aria-hidden="true"
+                      class="replica-menu-halo-clip" aria-hidden="true"
                       style={{
                         left: `${haloBox()!.clip.left}px`,
                         top: `${haloBox()!.clip.top}px`,
