@@ -28,6 +28,7 @@ const NewEntityAgentModal: Component<{
   const [templateQuery, setTemplateQuery] = createSignal("");
   const [selectedTemplateId, setSelectedTemplateId] = createSignal<string | null>(null);
   const [agencyStatus, setAgencyStatus] = createSignal<AgencyTemplatesStatus | null>(null);
+  const [agencyStatusFailed, setAgencyStatusFailed] = createSignal(false);
   const [agencyInstalling, setAgencyInstalling] = createSignal(false);
   const [agencyInstallError, setAgencyInstallError] = createSignal("");
   let nameRef!: HTMLInputElement;
@@ -50,8 +51,10 @@ const NewEntityAgentModal: Component<{
       console.error("list_role_templates failed:", templatesResult.reason);
     }
     if (statusResult.status === "fulfilled") {
+      setAgencyStatusFailed(false);
       setAgencyStatus(statusResult.value);
     } else {
+      setAgencyStatusFailed(true);
       console.error("get_agency_templates_status failed:", statusResult.reason);
     }
   };
@@ -64,6 +67,17 @@ const NewEntityAgentModal: Component<{
     filterRoleTemplates(templates(), templateQuery()),
   );
   const shouldShowAgencyInstall = createMemo(() => agencyStatus()?.available === false);
+  // #5228 tutorial marker: Agency template availability as the dialog knows it.
+  const agencyState = createMemo(() => {
+    const s = agencyStatus();
+    if (s === null) return agencyStatusFailed() ? "unknown" : "loading";
+    return s.available ? "ready" : "missing";
+  });
+  // #5228 tutorial marker: install button state (no nested ternary in JSX).
+  const installState = createMemo(() => {
+    if (agencyInstalling()) return "installing";
+    return agencyInstallError() ? "failed" : "idle";
+  });
 
   const selectTemplate = (t: RoleTemplateMeta | null) => {
     setSelectedTemplateId(t ? t.id : null);
@@ -196,7 +210,12 @@ const NewEntityAgentModal: Component<{
 
   return (
     <div class="modal-overlay" role="none" onKeyDown={handleKeyDown}>
-      <div class="agent-modal" data-ac-testid="newAgent.modal" data-ac-role="dialog">
+      <div
+        class="agent-modal"
+        data-ac-testid="newAgent.modal"
+        data-ac-role="dialog"
+        data-ac-state={agencyState()}
+      >
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Agent</span>
         </div>
@@ -225,6 +244,8 @@ const NewEntityAgentModal: Component<{
               </svg>
               <input id="new-agent-template-search"
                 class="tpl-picker-search-input"
+                data-ac-testid="newAgent.templateSearch"
+                data-ac-value={templateQuery()}
                 value={templateQuery()}
                 onInput={(e) => setTemplateQuery(e.currentTarget.value)}
                 onKeyDown={handleSearchKeyDown}
@@ -248,6 +269,8 @@ const NewEntityAgentModal: Component<{
                 <button
                   type="button"
                   class="tpl-agency-install-btn"
+                  data-ac-testid="newAgent.agencyInstall"
+                  data-ac-state={installState()}
                   disabled={agencyInstalling()}
                   onClick={handleInstallAgencyTemplates}
                   onKeyDown={(e) => {
@@ -262,6 +285,8 @@ const NewEntityAgentModal: Component<{
             </Show>
             <div
               class="tpl-picker-list"
+              data-ac-testid="newAgent.templates"
+              data-ac-state={selectedTemplateId() ?? "none"}
               ref={listRef}
               onKeyDown={handleListKeyDown}
               role="listbox"
@@ -276,6 +301,8 @@ const NewEntityAgentModal: Component<{
               <button
                 type="button"
                 class="tpl-picker-item"
+                data-ac-testid="newAgent.template"
+                data-ac-value="none"
                 classList={{ selected: selectedTemplateId() === null }}
                 onClick={() => selectTemplate(null)}
                 role="option"
@@ -289,6 +316,8 @@ const NewEntityAgentModal: Component<{
                   <button
                     type="button"
                     class="tpl-picker-item"
+                    data-ac-testid="newAgent.template"
+                    data-ac-value={t.id}
                     classList={{ selected: selectedTemplateId() === t.id }}
                     onClick={() => selectTemplate(t)}
                     title={t.description}
@@ -332,6 +361,8 @@ const NewEntityAgentModal: Component<{
               id="new-agent-name"
               data-ac-testid="newAgent.name"
               data-ac-role="input"
+              data-ac-state={nameDirty() ? "typed" : "auto"}
+              data-ac-value={name().trim()}
               ref={nameRef!}
               class="agent-search-input"
               value={name()}
@@ -350,6 +381,8 @@ const NewEntityAgentModal: Component<{
             <textarea
               id="new-agent-description"
               class="entity-textarea"
+              data-ac-testid="newAgent.description"
+              data-ac-state={description().trim() ? "filled" : "empty"}
               value={description()}
               onInput={(e) => {
                 setDescription(e.currentTarget.value);

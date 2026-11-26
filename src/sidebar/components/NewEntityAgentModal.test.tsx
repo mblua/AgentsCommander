@@ -190,4 +190,160 @@ describe("NewEntityAgentModal template picker", () => {
     expect(one("newAgent.name")).toBeInstanceOf(HTMLInputElement);
     expect(one("newAgent.create")).toBeInstanceOf(HTMLButtonElement);
   });
+
+  const tutorialTemplates: RoleTemplateMeta[] = [
+    {
+      id: "agency:finance-finance-bookkeeper-controller",
+      name: "Bookkeeper & Controller",
+      description: "",
+      source: "agency",
+      category: "Finance",
+      hasSkills: false,
+    },
+    {
+      id: "agency:marketing-marketing-social-media-strategist",
+      name: "Social Media Strategist",
+      description: "",
+      source: "agency",
+      category: "Marketing",
+      hasSkills: false,
+    },
+  ];
+
+  type StatusFixture = { value: unknown } | { reject: string } | { pending: Promise<unknown> };
+
+  async function mountWith({
+    templates: list = tutorialTemplates,
+    status,
+  }: {
+    templates?: RoleTemplateMeta[];
+    status: StatusFixture;
+  }) {
+    const fake = new FakeTransport();
+    fake.resolve("list_role_templates", list);
+    if ("value" in status) fake.resolve("get_agency_templates_status", status.value);
+    else if ("reject" in status) fake.reject("get_agency_templates_status", status.reject);
+    else fake.onInvoke("get_agency_templates_status", () => status.pending);
+    fake.reject("create_agent_matrix", "Unexpected create");
+    const { cleanup, root } = renderWithFakeTransport(
+      () => <NewEntityAgentModal projectPath="/fixture" onClose={vi.fn()} />,
+      fake,
+    );
+    dispose = cleanup;
+    const q = <T extends Element>(id: string) =>
+      root.querySelector<T>(`[data-ac-testid="${id}"]`)!;
+    await waitFor(() => expect(q("newAgent.modal")).not.toBeNull());
+    return { fake, root, q };
+  }
+
+  const ready = { value: { available: true, path: "/fixture" } };
+  const missing = { value: { available: false, path: "/fixture" } };
+
+  it("exposes each tutorial marker once with one template row per template", async () => {
+    const { root, q } = await mountWith({ status: ready });
+    const all = (id: string) => root.querySelectorAll(`[data-ac-testid="${id}"]`);
+    await waitFor(() => expect(all("newAgent.template")).toHaveLength(3));
+    expect(all("newAgent.templateSearch")).toHaveLength(1);
+    expect(q("newAgent.templateSearch")).toBeInstanceOf(HTMLInputElement);
+    expect(all("newAgent.templates")).toHaveLength(1);
+    expect(all("newAgent.description")).toHaveLength(1);
+    expect(q("newAgent.description")).toBeInstanceOf(HTMLTextAreaElement);
+    expect(all("newAgent.template")[0].getAttribute("data-ac-value")).toBe("none");
+  });
+
+  it("marks the Agency status as ready, missing, unknown or loading", async () => {
+    let state = (await mountWith({ status: ready })).q("newAgent.modal");
+    await waitFor(() => expect(state.getAttribute("data-ac-state")).toBe("ready"));
+    dispose?.();
+
+    const m = await mountWith({ status: missing });
+    await waitFor(() => expect(m.q("newAgent.modal").getAttribute("data-ac-state")).toBe("missing"));
+    expect(m.q("newAgent.agencyInstall").getAttribute("data-ac-state")).toBe("idle");
+    dispose?.();
+
+    state = (await mountWith({ status: { reject: "boom" } })).q("newAgent.modal");
+    await waitFor(() => expect(state.getAttribute("data-ac-state")).toBe("unknown"));
+    dispose?.();
+
+    let settle!: (value: unknown) => void;
+    const pending = new Promise((r) => (settle = r));
+    state = (await mountWith({ status: { pending } })).q("newAgent.modal");
+    await Promise.resolve();
+    expect(state.getAttribute("data-ac-state")).toBe("loading");
+    settle(ready.value);
+    await waitFor(() => expect(state.getAttribute("data-ac-state")).toBe("ready"));
+  });
+
+  it("mirrors search text, template choice, name and description", async () => {
+    const { root, q } = await mountWith({ status: ready });
+    const search = q<HTMLInputElement>("newAgent.templateSearch");
+    const list = q("newAgent.templates");
+    const name = q<HTMLInputElement>("newAgent.name");
+    const desc = q<HTMLTextAreaElement>("newAgent.description");
+    const create = q<HTMLButtonElement>("newAgent.create");
+    const row = (value: string) =>
+      root.querySelector(`[data-ac-testid="newAgent.template"][data-ac-value="${value}"]`)!;
+    await waitFor(() => expect(row(tutorialTemplates[0].id)).not.toBeNull());
+
+    expect(list.getAttribute("data-ac-state")).toBe("none");
+    expect(name.getAttribute("data-ac-state")).toBe("auto");
+    expect(name.getAttribute("data-ac-value")).toBe("");
+    expect(create.disabled).toBe(true);
+
+    input(search, "book");
+    expect(search.getAttribute("data-ac-value")).toBe("book");
+    expect(create.disabled).toBe(true);
+
+    click(row(tutorialTemplates[0].id));
+    expect(list.getAttribute("data-ac-state")).toBe(tutorialTemplates[0].id);
+    expect(name.getAttribute("data-ac-state")).toBe("auto");
+    expect(name.getAttribute("data-ac-value")).toBe("bookkeeper-controller");
+
+    input(name, "accountant");
+    expect(name.getAttribute("data-ac-state")).toBe("typed");
+    expect(name.getAttribute("data-ac-value")).toBe("accountant");
+    expect(create.disabled).toBe(false);
+
+    click(row("none"));
+    expect(list.getAttribute("data-ac-state")).toBe("none");
+
+    expect(desc.getAttribute("data-ac-state")).toBe("empty");
+    input(desc as unknown as HTMLInputElement, "x");
+    expect(desc.getAttribute("data-ac-state")).toBe("filled");
+    input(desc as unknown as HTMLInputElement, "   ");
+    expect(desc.getAttribute("data-ac-state")).toBe("empty");
+    expect(create.disabled).toBe(false);
+
+    input(name, "");
+    expect(name.getAttribute("data-ac-state")).toBe("typed");
+    expect(create.disabled).toBe(true);
+  });
+
+  it("marks the Agency install button as installing, failed, then gone when ready", async () => {
+    const { fake, root, q } = await mountWith({ status: missing });
+    await waitFor(() => expect(q("newAgent.agencyInstall")).not.toBeNull());
+    const btn = () => q<HTMLButtonElement>("newAgent.agencyInstall");
+
+    let finish!: (value: unknown) => void;
+    let fail!: (reason: unknown) => void;
+    fake.onInvoke(
+      "update_agency_templates",
+      () => new Promise((res, rej) => ((finish = res), (fail = rej))),
+    );
+    click(btn());
+    expect(btn().getAttribute("data-ac-state")).toBe("installing");
+    fail("network down");
+    await waitFor(() => expect(btn().getAttribute("data-ac-state")).toBe("failed"));
+    expect(root.querySelector(".tpl-agency-install-error")?.textContent).toBe("network down");
+
+    fake.resolve("get_agency_templates_status", ready.value);
+    click(btn());
+    expect(btn().getAttribute("data-ac-state")).toBe("installing");
+    finish({});
+    await waitFor(() =>
+      expect(q("newAgent.modal").getAttribute("data-ac-state")).toBe("ready"),
+    );
+    expect(root.querySelector('[data-ac-testid="newAgent.agencyInstall"]')).toBeNull();
+    expect(q<HTMLButtonElement>("newAgent.create").disabled).toBe(true);
+  });
 });
