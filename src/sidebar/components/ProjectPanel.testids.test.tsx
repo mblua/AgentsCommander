@@ -37,7 +37,13 @@ const BOT_2 = { id: "bot-two", label: "Bot Two", color: "blue" };
 function projectDiscovery(proj: string): AcDiscoveryResult {
   return discovery({
     agents: [{ name: "dev-docs", path: agentPath, roleExists: true }],
-    teams: [{ name: "team-alpha", coordinator: "dev-webpage-ui", agents: ["dev-webpage-ui"] }],
+    teams: [
+      {
+        name: "team-alpha",
+        coordinator: "project/dev-webpage-ui",
+        agents: ["project/dev-webpage-ui"],
+      },
+    ],
     workgroups: [
       {
         name: WG_NAME,
@@ -242,7 +248,15 @@ describe("ProjectPanel sidebar menu test ids", () => {
     await dismissMenus();
 
     const team = `${PA}.${AP("team-alpha")}`;
-    contextMenu(document.querySelector<HTMLElement>(".ac-team-header")!);
+    const teamHeader = `team.header.${team}`;
+    await expectOne(teamHeader);
+    expect(byId(teamHeader).getAttribute("data-ac-state")).toBe("collapsed");
+    click(byId(teamHeader));
+    await waitFor(() => expect(byId(teamHeader).getAttribute("data-ac-state")).toBe("expanded"));
+    const member = `team.member.${team}.project-dev-webpage-ui`;
+    await expectOne(member);
+    expect(byId(member).getAttribute("data-ac-detail")).toBe("dev-webpage-ui@project");
+    contextMenu(byId(teamHeader));
     await expectOne(`team.action.edit.${team}`, `team.action.delete.${team}`);
     click(byId(`team.action.delete.${team}`));
     await expectOne(`team.delete.cancel.${team}`, `team.delete.confirm.${team}`);

@@ -196,7 +196,7 @@ const NewEntityAgentModal: Component<{
 
   return (
     <div class="modal-overlay" role="none" onKeyDown={handleKeyDown}>
-      <div class="agent-modal">
+      <div class="agent-modal" data-ac-testid="newAgent.modal" data-ac-role="dialog">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Agent</span>
         </div>
@@ -225,6 +225,8 @@ const NewEntityAgentModal: Component<{
               </svg>
               <input id="new-agent-template-search"
                 class="tpl-picker-search-input"
+                data-ac-testid="newAgent.templateSearch"
+                data-ac-role="textbox"
                 value={templateQuery()}
                 onInput={(e) => setTemplateQuery(e.currentTarget.value)}
                 onKeyDown={handleSearchKeyDown}
@@ -240,7 +242,11 @@ const NewEntityAgentModal: Component<{
                     Install tested specialist role templates for new agents. You can still create a blank agent.
                   </div>
                   <Show when={agencyInstallError()}>
-                    <div class="tpl-agency-install-error" role="status" aria-live="polite">
+                    <div
+                      class="tpl-agency-install-error"
+                      data-ac-testid="newAgent.installTemplates.error"
+                      data-ac-role="status"
+                      role="status" aria-live="polite">
                       {agencyInstallError()}
                     </div>
                   </Show>
@@ -248,6 +254,9 @@ const NewEntityAgentModal: Component<{
                 <button
                   type="button"
                   class="tpl-agency-install-btn"
+                  data-ac-testid="newAgent.installTemplates"
+                  data-ac-role="button"
+                  data-ac-state={agencyInstalling() ? "installing" : "idle"}
                   disabled={agencyInstalling()}
                   onClick={handleInstallAgencyTemplates}
                   onKeyDown={(e) => {
@@ -262,6 +271,8 @@ const NewEntityAgentModal: Component<{
             </Show>
             <div
               class="tpl-picker-list"
+              data-ac-testid="newAgent.template.list"
+              data-ac-role="list"
               ref={listRef}
               onKeyDown={handleListKeyDown}
               role="listbox"
@@ -277,6 +288,9 @@ const NewEntityAgentModal: Component<{
                 type="button"
                 class="tpl-picker-item"
                 classList={{ selected: selectedTemplateId() === null }}
+                data-ac-testid="newAgent.template.none"
+                data-ac-role="option"
+                data-ac-state={selectedTemplateId() === null ? "selected" : "unselected"}
                 onClick={() => selectTemplate(null)}
                 role="option"
                 aria-selected={selectedTemplateId() === null}
@@ -285,11 +299,15 @@ const NewEntityAgentModal: Component<{
                 <div class="tpl-picker-item-desc">Blank role — current default behavior</div>
               </button>
               <For each={filteredTemplates()}>
-                {(t) => (
+                {(t, i) => (
                   <button
                     type="button"
                     class="tpl-picker-item"
                     classList={{ selected: selectedTemplateId() === t.id }}
+                    data-ac-testid={`newAgent.template.option.${i()}`}
+                    data-ac-role="option"
+                    data-ac-state={selectedTemplateId() === t.id ? "selected" : "unselected"}
+                    data-ac-detail={t.name}
                     onClick={() => selectTemplate(t)}
                     title={t.description}
                     role="option"
@@ -332,6 +350,8 @@ const NewEntityAgentModal: Component<{
               id="new-agent-name"
               ref={nameRef!}
               class="agent-search-input"
+              data-ac-testid="newAgent.name"
+              data-ac-role="textbox"
               value={name()}
               onInput={(e) => {
                 setName(e.currentTarget.value);
@@ -369,16 +389,26 @@ const NewEntityAgentModal: Component<{
           </div>
 
           <Show when={error()}>
-            <div class="new-agent-error">{error()}</div>
+            <div class="new-agent-error" data-ac-testid="newAgent.error" data-ac-role="status">
+              {error()}
+            </div>
           </Show>
         </div>
 
         <div class="new-agent-footer">
-          <button type="button" class="new-agent-cancel-btn" onClick={() => props.onClose()}>
+          <button
+            type="button"
+            class="new-agent-cancel-btn"
+            data-ac-testid="newAgent.cancel"
+            data-ac-role="button"
+            onClick={() => props.onClose()}
+          >
             Cancel
           </button>
           <button
             class="new-agent-create-btn"
+            data-ac-testid="newAgent.create"
+            data-ac-role="button"
             disabled={!canCreate() || creating()}
             onClick={handleCreate}
           >

@@ -178,4 +178,82 @@ describe("NewEntityAgentModal template picker", () => {
     keyDown(document, "Escape");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("exposes data-ac-testid hooks that track selection, filtering and cancel", async () => {
+    const { root, onClose } = await mount();
+    const byId = (id: string) => root.querySelectorAll(`[data-ac-testid="${id}"]`);
+    const one = (id: string) => {
+      expect(byId(id)).toHaveLength(1);
+      return byId(id)[0] as HTMLElement;
+    };
+    for (const id of ["modal", "name", "templateSearch", "template.list", "template.none"]) {
+      one(`newAgent.${id}`);
+    }
+    one("newAgent.cancel");
+    one("newAgent.create");
+    const optionRows = () =>
+      Array.from(root.querySelectorAll('[data-ac-testid^="newAgent.template.option."]'));
+    expect(optionRows().map((row) => row.getAttribute("data-ac-detail"))).toEqual([
+      "Alpha",
+      "Beta",
+    ]);
+    expect(optionRows().map((row) => row.getAttribute("data-ac-testid"))).toEqual([
+      "newAgent.template.option.0",
+      "newAgent.template.option.1",
+    ]);
+    expect(one("newAgent.template.none").getAttribute("data-ac-state")).toBe("selected");
+    click(one("newAgent.template.option.1"));
+    expect(one("newAgent.template.option.1").getAttribute("data-ac-state")).toBe("selected");
+    expect(one("newAgent.template.none").getAttribute("data-ac-state")).toBe("unselected");
+
+    const before = optionRows().length;
+    input(one("newAgent.templateSearch") as HTMLInputElement, "Alpha");
+    expect(optionRows().length).toBeLessThan(before);
+    expect(optionRows()).toHaveLength(1);
+    expect(optionRows()[0].getAttribute("data-ac-detail")).toBe("Alpha");
+
+    click(one("newAgent.cancel"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the install templates hook as idle when Agency templates are missing", async () => {
+    const fake = new FakeTransport();
+    fake.resolve("list_role_templates", templates);
+    fake.resolve("get_agency_templates_status", { available: false, path: "/fixture" });
+    const { cleanup, root } = renderWithFakeTransport(
+      () => <NewEntityAgentModal projectPath="/fixture" onClose={() => {}} />,
+      fake,
+    );
+    dispose = cleanup;
+    await waitFor(() =>
+      expect(root.querySelectorAll('[data-ac-testid="newAgent.installTemplates"]')).toHaveLength(1),
+    );
+    const install = root.querySelector('[data-ac-testid="newAgent.installTemplates"]')!;
+    expect(install.getAttribute("data-ac-state")).toBe("idle");
+  });
+  it("tracks install state and shows install and create errors by test ID", async () => {
+    const { root, fake, options } = await mount();
+    fake.resolve("get_agency_templates_status", { available: false, path: "/fixture" });
+    const q = (id: string) => root.querySelector<HTMLElement>(`[data-ac-testid="${id}"]`);
+    click(options()[1]);
+    click(q("newAgent.create")!);
+    await waitFor(() => expect(q("newAgent.error")?.textContent).toContain("Unexpected create"));
+    let fail!: (reason: string) => void;
+    fake.onInvoke("update_agency_templates", () => new Promise((_, rej) => (fail = rej)));
+    dispose?.();
+    const m = renderWithFakeTransport(
+      () => <NewEntityAgentModal projectPath="/fixture" onClose={() => {}} />,
+      fake,
+    );
+    dispose = m.cleanup;
+    const r = (id: string) => m.root.querySelector<HTMLElement>(`[data-ac-testid="${id}"]`);
+    await waitFor(() => expect(r("newAgent.installTemplates")).not.toBeNull());
+    click(r("newAgent.installTemplates")!);
+    expect(r("newAgent.installTemplates")!.getAttribute("data-ac-state")).toBe("installing");
+    fail("offline");
+    await waitFor(() =>
+      expect(r("newAgent.installTemplates.error")?.textContent).toContain("offline"),
+    );
+    expect(r("newAgent.installTemplates")!.getAttribute("data-ac-state")).toBe("idle");
+  });
 });

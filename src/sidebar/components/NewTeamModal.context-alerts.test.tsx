@@ -401,4 +401,170 @@ describe("NewTeamModal context alerts", () => {
     expect(fake.callsFor("discover_project")).toHaveLength(0);
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  describe("NewTeamModal data-ac-testid hooks", () => {
+    const rustPath = `${projectPath}\\.ac\\_agent_dev-rust`;
+
+    const byId = (id: string) => document.body.querySelectorAll(`[data-ac-testid="${id}"]`);
+    const hook = (id: string): HTMLElement => {
+      const found = byId(id);
+      if (found.length !== 1) throw new Error(`Expected one ${id}, found ${found.length}`);
+      return found[0] as HTMLElement;
+    };
+    const checked = (id: string) => (hook(id) as HTMLInputElement).checked;
+    const state = (id: string) => hook(id).getAttribute("data-ac-state");
+    const agentRows = () =>
+      Array.from(document.body.querySelectorAll('[data-ac-testid^="newTeam.agent."]')).filter(
+        (row) => !row.getAttribute("data-ac-testid")?.endsWith(".coord"),
+      );
+
+    function mount(setup?: (fake: FakeTransport) => void) {
+      const fake = new FakeTransport();
+      fake.resolve("list_all_agents", [
+        {
+          name: "dev-webpage-ui",
+          path: agentPath,
+          projectName: "Project",
+          projectPath,
+          isLocal: true,
+        },
+        { name: "dev-rust", path: rustPath, projectName: "Project", projectPath, isLocal: true },
+      ]);
+      fake.resolve("create_team", undefined);
+      fake.resolve("discover_project", discovery());
+      setup?.(fake);
+      const onClose = vi.fn();
+      rendered = renderWithFakeTransport(
+        () => <NewTeamModal projectPath={projectPath} onClose={onClose} />,
+        fake,
+      );
+      return { fake, onClose };
+    }
+
+    async function toStepThree() {
+      await waitFor(() => expect(byId("newTeam.name")).toHaveLength(1));
+      input(hook("newTeam.name") as HTMLInputElement, "dev-team");
+      click(hook("newTeam.next"));
+      expect(state("newTeam.modal")).toBe("step-2");
+      expect(state("newTeam.step")).toBe("step-2");
+      await waitFor(() => expect(byId("newTeam.agent.1")).toHaveLength(1));
+      click(hook("newTeam.agent.0"));
+      click(hook("newTeam.agent.1"));
+      click(hook("newTeam.agent.0.coord"));
+      expect(checked("newTeam.agent.0.coord")).toBe(true);
+      click(hook("newTeam.next"));
+      expect(state("newTeam.modal")).toBe("step-3");
+    }
+
+    it("drives the wizard to create_team using only test IDs", async () => {
+      const { fake } = mount();
+      await waitFor(() => expect(byId("newTeam.name")).toHaveLength(1));
+      input(hook("newTeam.name") as HTMLInputElement, "dev-team");
+      click(hook("newTeam.next"));
+      expect(state("newTeam.modal")).toBe("step-2");
+      expect(state("newTeam.step")).toBe("step-2");
+      await waitFor(() => expect(agentRows()).toHaveLength(2));
+
+      input(hook("newTeam.agentFilter") as HTMLInputElement, "rust");
+      expect(agentRows()).toHaveLength(1);
+      expect(agentRows()[0].getAttribute("data-ac-detail")).toBe("dev-rust");
+      expect(agentRows()[0].getAttribute("data-ac-testid")).toBe("newTeam.agent.0");
+      input(hook("newTeam.agentFilter") as HTMLInputElement, "");
+      expect(agentRows()).toHaveLength(2);
+
+      click(hook("newTeam.agent.0"));
+      click(hook("newTeam.agent.1"));
+      click(hook("newTeam.agent.0.coord"));
+      expect(checked("newTeam.agent.0.coord")).toBe(true);
+      click(hook("newTeam.next"));
+      expect(state("newTeam.modal")).toBe("step-3");
+      click(hook("newTeam.back"));
+      expect(state("newTeam.modal")).toBe("step-2");
+      expect(checked("newTeam.agent.0")).toBe(true);
+      expect(checked("newTeam.agent.1")).toBe(true);
+      click(hook("newTeam.next"));
+      expect(state("newTeam.modal")).toBe("step-3");
+
+      input(hook("newTeam.repoInput") as HTMLInputElement, repoUrl);
+      click(hook("newTeam.addRepo"));
+      const repoName = hook("newTeam.repo.0").querySelector(".wizard-repo-name")?.textContent;
+      expect(repoName).toBeTruthy();
+      expect(hook("newTeam.repo.0").getAttribute("data-ac-detail")).toBe(repoName);
+      expect(checked("newTeam.repo.0.agent.0")).toBe(true);
+      expect(checked("newTeam.repo.0.agent.1")).toBe(true);
+      click(hook("newTeam.repo.0.agent.1"));
+      expect(checked("newTeam.repo.0.agent.1")).toBe(false);
+      expect(checked("newTeam.repo.0.allAgents")).toBe(false);
+      click(hook("newTeam.repo.0.allAgents"));
+      expect(checked("newTeam.repo.0.agent.0")).toBe(true);
+      expect(checked("newTeam.repo.0.agent.1")).toBe(true);
+      click(hook("newTeam.repo.0.agent.1"));
+      expect(checked("newTeam.repo.0.agent.1")).toBe(false);
+
+      click(hook("newTeam.contextAlerts.add"));
+      input(hook("newTeam.contextAlerts.threshold.0") as HTMLInputElement, "30");
+      click(hook("newTeam.create"));
+      await waitFor(() => expect(fake.callsFor("create_team")).toHaveLength(1));
+      expect(fake.callsFor("create_team")[0].args).toMatchObject({
+        name: "dev-team",
+        agents: ["_agent_dev-webpage-ui", "_agent_dev-rust"],
+        coordinator: "_agent_dev-webpage-ui",
+        repos: [{ url: repoUrl, agents: ["_agent_dev-webpage-ui"] }],
+        contextAlertPercentages: [30],
+      });
+    });
+
+    it("removes a repo card by test ID", async () => {
+      mount();
+      await toStepThree();
+      input(hook("newTeam.repoInput") as HTMLInputElement, repoUrl);
+      click(hook("newTeam.addRepo"));
+      expect(byId("newTeam.repo.0")).toHaveLength(1);
+      click(hook("newTeam.repo.0.remove"));
+      expect(byId("newTeam.repo.0")).toHaveLength(0);
+    });
+
+    it("cancels step 1 by test ID", async () => {
+      const { onClose } = mount();
+      await waitFor(() => expect(byId("newTeam.cancel")).toHaveLength(1));
+      click(hook("newTeam.cancel"));
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+    it("shows repo and create errors on step 3 by test ID", async () => {
+      mount((fake) => fake.reject("create_team", "create failed"));
+      await toStepThree();
+      expect(byId("newTeam.repoError")).toHaveLength(0);
+      for (let n = 0; n < 2; n += 1) {
+        input(hook("newTeam.repoInput") as HTMLInputElement, repoUrl);
+        click(hook("newTeam.addRepo"));
+      }
+      expect(hook("newTeam.repoError").textContent).toContain("Repo already added");
+      input(hook("newTeam.repoInput") as HTMLInputElement, "");
+      click(hook("newTeam.create"));
+      await waitFor(() => expect(hook("newTeam.error").textContent).toContain("create failed"));
+    });
+
+    it("shows loading, empty and step 2 Back by test ID", async () => {
+      const agents = deferred<unknown[]>();
+      mount((fake) => fake.onInvoke("list_all_agents", () => agents.promise));
+      await waitFor(() => expect(byId("newTeam.name")).toHaveLength(1));
+      input(hook("newTeam.name") as HTMLInputElement, "dev-team");
+      click(hook("newTeam.next"));
+      expect(hook("newTeam.agents.loading").textContent).toContain("Loading agents");
+      expect(byId("newTeam.agents.empty")).toHaveLength(0);
+      agents.resolve([]);
+      await waitFor(() => expect(byId("newTeam.agents.empty")).toHaveLength(1));
+      expect(byId("newTeam.agents.loading")).toHaveLength(0);
+      click(hook("newTeam.back"));
+      expect(state("newTeam.modal")).toBe("step-1");
+    });
+
+    it("shows the agent load error on step 2 by test ID", async () => {
+      mount((fake) => fake.reject("list_all_agents", "load failed"));
+      await waitFor(() => expect(byId("newTeam.name")).toHaveLength(1));
+      input(hook("newTeam.name") as HTMLInputElement, "dev-team");
+      click(hook("newTeam.next"));
+      await waitFor(() => expect(hook("newTeam.error").textContent).toContain("load failed"));
+    });
+  });
 });
