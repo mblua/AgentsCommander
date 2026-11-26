@@ -1,7 +1,10 @@
 import { Component, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { JSX } from "solid-js";
 import { tutorialStore } from "../stores/tutorial";
-import { HIDDEN, view, type Probe } from "../tutorials/create-first-team";
+import { requestExternalLinkConfirmation } from "../../shared/external-links";
+import {
+  AGENCY_REPO_URL, HIDDEN, LINK_LABEL, view, type Probe,
+} from "../tutorials/create-first-team";
 
 // #5228 - ring around the real control and the step bubble. The ring never
 // takes clicks; there is no keyboard handler (Esc never ends the tutorial).
@@ -83,7 +86,7 @@ const TutorialOverlay: Component<{ tick: number; probe: Probe }> = (props) => {
   // Same step and target, still missing: one key, one timer.
   const missingKey = createMemo(() => {
     const cur = v();
-    if (!cur?.target || cur.final || rect() !== null) return "";
+    if (!cur?.target || cur.final || cur.next || rect() !== null) return "";
     return `${tutorialStore.ctx?.step}|${cur.target}`;
   });
   createEffect(() => {
@@ -127,6 +130,12 @@ const TutorialOverlay: Component<{ tick: number; probe: Probe }> = (props) => {
           >
             <p>{hidden() ? HIDDEN : cur().text}</p>
             <div class="tutorial-bubble-actions">
+              <Show when={cur().link}>
+                <button type="button" data-ac-testid="tutorial.link"
+                  onClick={() => requestExternalLinkConfirmation(AGENCY_REPO_URL)}>
+                  {LINK_LABEL}
+                </button>
+              </Show>
               <Show when={cur().skip}>
                 <button type="button" data-ac-testid="tutorial.skip"
                   onClick={() => tutorialStore.skipTemplates()}>Skip download</button>
@@ -134,8 +143,16 @@ const TutorialOverlay: Component<{ tick: number; probe: Probe }> = (props) => {
               <Show
                 when={cur().final}
                 fallback={
-                  <button type="button" data-ac-testid="tutorial.exit"
-                    onClick={() => tutorialStore.exit()}>Exit tutorial</button>
+                  <Show
+                    when={cur().next}
+                    fallback={
+                      <button type="button" data-ac-testid="tutorial.exit"
+                        onClick={() => tutorialStore.exit()}>Exit tutorial</button>
+                    }
+                  >
+                    <button type="button" data-ac-testid="tutorial.next"
+                      onClick={() => tutorialStore.showOrchestrators()}>Next</button>
+                  </Show>
                 }
               >
                 <button type="button" data-ac-testid="tutorial.done"

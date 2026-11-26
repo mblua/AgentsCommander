@@ -23,7 +23,7 @@ import {
   __resetTutorialProgressForTests, tutorialProgressStore,
 } from "../stores/tutorial-progress";
 import {
-  BOOKKEEPER_ID, FINAL, HIDDEN, startCtx, T_INSTALL, T_NAME_SKIP, T_PICK_BK, type RunCtx,
+  BOOKKEEPER_ID, HIDDEN, startCtx, T_INSTALL, T_NAME_SKIP, T_PICK_BK, type RunCtx,
 } from "../tutorials/create-first-team";
 import { automationIdPart } from "../../sidebar/components/replica-repo-badges";
 import TutorialLayer from "./TutorialLayer";
@@ -358,30 +358,125 @@ describe("TutorialOverlay", () => {
     expect(tutorialStore.active).toBe(false);
     expect(q("tutorial.bubble")).toBeNull();
   });
+});
 
-  it("at done, Done calls markCompleted", async () => {
-    const path = "/work/done";
-    const names = ["personal-assistant", "accountant", "social-media-expert"];
-    const p = {
-      path, folderName: "done", loops: [], contextTemplateUpdates: [],
-      agents: names.map((n) => ({ name: n, path: `${path}/.ac/_agent_${n}`, roleExists: true })),
-      teams: [{ name: "my-team", agents: names.map((n) => `done/${n}`),
-        coordinator: "done/personal-assistant" }],
-      workgroups: [{ name: "room-1", path: `${path}/.ac/room-1`, task: null, teamName: "my-team",
-        agents: names.map((n) => ({ name: n, path: `/r/${n}`, repoPaths: [],
-          isCoordinator: n === "personal-assistant" })) }],
-    } as unknown as ProjectState;
-    const ctx: RunCtx = { ...startCtx(0), step: "done", projectPath: path };
-    vi.spyOn(projectStore, "projects", "get").mockReturnValue([p]);
-    vi.spyOn(tutorialStore, "ctx", "get").mockReturnValue(ctx);
-    vi.spyOn(tutorialStore, "active", "get").mockReturnValue(true);
-    vi.spyOn(tutorialStore, "sync").mockImplementation(() => {});
-    const spy = vi.spyOn(tutorialProgressStore, "markCompleted");
+describe("P12: agency link and the two final bubbles", () => {
+  const L_FINAL = "Done! You can talk to your personal assistant (orchestrator) in the room " +
+    "or in the Orchestrators section of the project.";
+  const L_ORCH = "We recommend talking to it here, in Orchestrators: click personal-assistant " +
+    "and ask it to talk to the accountant.";
+  const L_OPEN = "Open the Orchestrators section of this project.";
+  const ROW = "replica.row.quick.r-personal-assistant";
+  const names = ["personal-assistant", "accountant", "social-media-expert"];
+  const path = "/work/done";
+  const finished = () => ({
+    path, folderName: "done", loops: [], contextTemplateUpdates: [],
+    agents: names.map((n) => ({ name: n, path: `${path}/.ac/_agent_${n}`, roleExists: true })),
+    teams: [{ name: "my-team", agents: names.map((n) => `done/${n}`),
+      coordinator: "done/personal-assistant" }],
+    workgroups: [{ name: "room-1", path: `${path}/.ac/room-1`, task: null, teamName: "my-team",
+      agents: names.map((n) => ({ name: n, path: `/r/${n}`, repoPaths: [],
+        isCoordinator: n === "personal-assistant" })) }],
+  } as unknown as ProjectState);
+  const text = () => must("tutorial.bubble").querySelector("p")?.textContent ?? "";
+  /** Real store: start, then a fresh outcome that points at the finished project. */
+  async function toDone(fakeTimers = false) {
+    let outcome = { seq: 0, path: null as string | null, created: false };
+    vi.spyOn(projectStore, "projects", "get").mockReturnValue([finished()]);
+    vi.spyOn(projectStore, "newProjectOutcome", "get").mockImplementation(() => outcome);
+    target("actionBar.newOpen");
+    target("actionBar.menu");
     await mountLayer({ tutorialHintDismissed: true });
-    expect(must("tutorial.bubble").textContent).toContain(FINAL);
+    if (fakeTimers) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    tutorialStore.start();
+    outcome = { seq: 1, path, created: true };
+    await flush();
+    await flush();
+    expect(tutorialStore.ctx?.step).toBe("done");
+  }
+
+  it("L1 the link button sends the agency URL through the confirm event", async () => {
+    let outcome = { seq: 0, path: null as string | null, created: false };
+    const p = { path: "/work/link", folderName: "link", loops: [], contextTemplateUpdates: [],
+      teams: [], workgroups: [], agents: [{ name: "personal-assistant",
+        path: "/work/link/.ac/_agent_personal-assistant", roleExists: true }] };
+    vi.spyOn(projectStore, "projects", "get").mockReturnValue([p as unknown as ProjectState]);
+    vi.spyOn(projectStore, "newProjectOutcome", "get").mockImplementation(() => outcome);
+    target("actionBar.newOpen");
+    target("actionBar.menu");
+    target(`project.action.newAgent.${automationIdPart("/work/link")}.projectMenu`);
+    target("newAgent.modal").setAttribute("data-ac-state", "missing");
+    target("newAgent.installTemplates");
+    await mountLayer({ tutorialHintDismissed: true });
+    tutorialStore.start();
+    outcome = { seq: 1, path: "/work/link", created: true };
+    await flush();
+    await flush();
+    expect(tutorialStore.ctx).toMatchObject({ step: "dialog", goalKey: "agent:1" });
+    const urls: string[] = [];
+    const on = (e: Event) => urls.push((e as CustomEvent<{ url: string }>).detail.url);
+    document.addEventListener("agentscommander:external-link-request", on);
+    cleanups.push(() =>
+      document.removeEventListener("agentscommander:external-link-request", on));
+    const link = must("tutorial.link");
+    expect(link.textContent?.trim()).toBe("Open agency-agents on GitHub");
+    click(link);
+    expect(urls).toEqual(["https://github.com/msitarzewski/agency-agents"]);
+    const order = [...must("tutorial.bubble").querySelectorAll("button")]
+      .map((b) => b.getAttribute("data-ac-testid"));
+    expect(order).toEqual(["tutorial.link", "tutorial.skip", "tutorial.exit"]);
+  });
+
+  it("L1 control: no link at openMenu", async () => {
+    target("actionBar.newOpen");
+    await mountLayer({ tutorialHintDismissed: true });
+    tutorialStore.start();
+    await flush();
+    expect(tutorialStore.ctx?.step).toBe("openMenu");
+    expect(q("tutorial.link")).toBeNull();
+  });
+
+  it("F1 two bubbles through the real store: Next, then Done on the row", async () => {
+    const spy = vi.spyOn(tutorialProgressStore, "markCompleted");
+    await toDone();
+    expect(text()).toContain(L_FINAL);
+    expect(q("tutorial.next")).not.toBeNull();
+    expect(q("tutorial.done")).toBeNull();
     expect(q("tutorial.exit")).toBeNull();
+    click(must("tutorial.next"));
+    expect(tutorialStore.ctx?.step).toBe("orch");
+    expect(spy).not.toHaveBeenCalled();
+    target(ROW, { top: 200, left: 10, width: 100, height: 20 });
+    await flush();
+    const ring = must("tutorial.ring");
+    expect([ring.style.top, ring.style.left]).toEqual(["196px", "6px"]);
+    expect(text()).toBe(L_ORCH);
+    expect(q("tutorial.next")).toBeNull();
     click(must("tutorial.done"));
     expect(spy).toHaveBeenCalledTimes(1);
+    expect(tutorialStore.active).toBe(false);
+  });
+
+  it("F3 room header missing at done: no hidden swap after 2 s", async () => {
+    await toDone(true);
+    vi.advanceTimersByTime(2000);
+    await flush();
+    expect(text()).toContain(L_FINAL);
+    expect(text()).not.toContain(HIDDEN);
+    expect(q("tutorial.next")).not.toBeNull();
+  });
+
+  it("F2 row missing at orch: corner text, no ring, no hidden swap", async () => {
+    await toDone();
+    click(must("tutorial.next"));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await flush();
+    expect(q("tutorial.ring")).toBeNull();
+    expect(text().startsWith(L_OPEN)).toBe(true);
+    vi.advanceTimersByTime(2000);
+    await flush();
+    expect(text().startsWith(L_OPEN)).toBe(true);
+    expect(q("tutorial.done")).not.toBeNull();
   });
 });
 

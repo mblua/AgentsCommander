@@ -20,6 +20,11 @@ export const tutorialStore = {
     const ctx = run();
     if (ctx !== null) setRun({ ...ctx, skip: true });
   },
+  /** Final bubble "Next": show the Orchestrators bubble. */
+  showOrchestrators(): void {
+    const ctx = run();
+    if (ctx?.step === "done") setRun({ ...ctx, step: "orch" });
+  },
   /** Apply the rules until nothing changes, at most 5 times. */
   sync(probe: Probe): void {
     let ctx = run();

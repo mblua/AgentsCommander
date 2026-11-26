@@ -5,8 +5,9 @@ import { describe, expect, it } from "vitest";
 import {
   AGENCY, DESC_FILLED, IDS, INSTALL, NAME_TYPED, NEW_OPEN_DISABLED, NO_TEMPLATE,
   templateRowSelector, ROOM_HEADER_CLASS, TEAM_STEPS, projectHeaderId, projectMenuId,
-  roomHeaderSelector,
+  orchRowId, roomHeaderSelector,
 } from "./create-first-team";
+import { automationIdPart } from "../../sidebar/components/replica-repo-badges";
 
 const moduleUrl = import.meta.url; // variable base keeps the file: URL node:fs reads
 const read = (rel: string) =>
@@ -120,6 +121,17 @@ describe("tutorial targets contract", () => {
       .toContain("outline: 2px solid var(--sidebar-warning, #e0a83a);");
     expect(block(".tutorial-ring {")).toContain("--sidebar-accent");
     expect(block(".tutorial-bubble--warn")).toContain("border-style: dashed");
+  });
+
+  it("P12: orchestrator row id shape and the bubble action row wrap", () => {
+    expect(PANEL).toContain(
+      "`replica.row.${automationIdPart(rowContext)}.${automationIdPart(replica.path)}`");
+    expect(PANEL).toContain('item.wg.taskTitle, "quick")');
+    expect(orchRowId("/a/b")).toBe(`replica.row.quick.${automationIdPart("/a/b")}`);
+    const css = read("../styles/main.css");
+    const start = css.indexOf(".tutorial-bubble-actions {");
+    expect(start).toBeGreaterThan(-1);
+    expect(css.slice(start, css.indexOf("}", start))).toContain("flex-wrap: wrap;");
   });
 
   it("control: a wrong id is not found", () => {

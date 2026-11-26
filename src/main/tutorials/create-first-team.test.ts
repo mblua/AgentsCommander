@@ -4,7 +4,7 @@ import type { ProjectState } from "../../sidebar/stores/project-merge";
 import type { AcAgentReplica, AcTeam, AcWorkgroup } from "../../shared/types";
 import type { NewProjectOutcome } from "../../sidebar/stores/project";
 import {
-  advance, BOOKKEEPER_ID, FINAL, NOTE_NAME, NOTE_NO_FOLDER, NOTE_NOT_EMPTY, NOTE_TEAM,
+  advance, BOOKKEEPER_ID, NOTE_NAME, NOTE_NO_FOLDER, NOTE_NOT_EMPTY, NOTE_TEAM,
   startCtx, T_CREATE, T_DOWNLOAD, T_FAILED, T_INSTALL, T_LOADING,
   T_NAME_SKIP, T_PICK_BK, T_UNKNOWN,
   T_WRONG_BK, templateRowSelector, view, type Probe, type RunCtx, type StepView,
@@ -28,6 +28,11 @@ const L_SUGGEST = 'We suggest "Social Media Strategist": type social media and c
 const L_NAME_AC = "Name it accountant (no spaces), then click Create.";
 const L_NAME_SM = "Name it social-media-expert (no spaces), then click Create.";
 const L_CHANGE_SM = "Change the name to social-media-expert, then click Create.";
+const L_FINAL = "Done! You can talk to your personal assistant (orchestrator) in the room " +
+  "or in the Orchestrators section of the project.";
+const L_ORCH = "We recommend talking to it here, in Orchestrators: click personal-assistant " +
+  "and ask it to talk to the accountant.";
+const L_ORCH_OPEN = "Open the Orchestrators section of this project. " + L_ORCH;
 const L_WARN_AC =
   "The name must be exactly accountant. Name it accountant (no spaces), then click Create.";
 
@@ -249,7 +254,7 @@ describe("create-first-team rules", () => {
     ctx = settle(ctx, probe);
     expect(ctx.step).toBe("done");
     expect(view(ctx, probe)).toEqual({ target: '.ac-wg-header[title="/home/u/proj/.ac/room-1"]',
-      text: FINAL, warn: false, final: true, skip: false });
+      text: L_FINAL, warn: false, final: false, skip: false, next: true });
   });
 
   function atFolder(): { probe: FakeProbe; ctx: RunCtx } {
@@ -441,12 +446,12 @@ describe("create-first-team rules", () => {
   it("A3. agent 2 missing: install, installing, failed, then ready in the same step", () => {
     let { probe, ctx } = toAgent(1);
     dlg(probe, { agency: "missing", install: "idle" });
-    expect(view(ctx, probe)).toEqual(v(INSTALL_BTN, T_INSTALL, false, true));
+    expect(view(ctx, probe)).toEqual({ ...v(INSTALL_BTN, T_INSTALL, false, true), link: true });
     expect(view(ctx, probe).group).toBeUndefined();
     dlg(probe, { agency: "missing", install: "installing" });
-    expect(view(ctx, probe)).toEqual(v(INSTALL_BTN, T_DOWNLOAD, false, true));
+    expect(view(ctx, probe)).toEqual({ ...v(INSTALL_BTN, T_DOWNLOAD, false, true), link: true });
     dlg(probe, { agency: "missing", install: "failed" });
-    expect(view(ctx, probe)).toEqual(v(INSTALL_BTN, T_FAILED, true, true));
+    expect(view(ctx, probe)).toEqual({ ...v(INSTALL_BTN, T_FAILED, true, true), link: true });
     dlg(probe, { agency: "ready" });
     expect(settle(ctx, probe)).toBe(ctx);
     expect(view(ctx, probe)).toEqual(vg(SEARCH, L_SEARCH_BK));
@@ -657,5 +662,64 @@ describe("create-first-team rules", () => {
     for (const t of [...shown, L_SEARCH_BK, L_SUGGEST]) {
       expect(t).toMatch(/click (Create|Next)\.( |$)/);
     }
+  });
+});
+
+describe("#5228 P12 final bubbles and agency link", () => {
+  const ROOM = "/home/u/proj/.ac/room-1";
+  const ROW = "replica.row.quick.r-__agent_personal-assistant";
+  function finished(): { probe: FakeProbe; ctx: RunCtx; p: ProjectState } {
+    const h = toHeader();
+    ALL.forEach((n) => addAgent(h.p, `proj/${n}`));
+    h.p.teams.push(team("my-team", ALL, "personal-assistant"));
+    h.p.workgroups.push(room(ROOM, ALL, "personal-assistant"));
+    const ctx = settle(h.ctx, h.probe);
+    expect(ctx.step).toBe("done");
+    return { ...h, ctx };
+  }
+
+  it("done view: FINAL text, Next, not final, room header target", () => {
+    const { probe, ctx } = finished();
+    expect(view(ctx, probe)).toEqual({ target: `.ac-wg-header[title="${ROOM}"]`,
+      text: L_FINAL, warn: false, final: false, skip: false, next: true });
+  });
+
+  it("orch view: row present rings it; row missing shows the corner text", () => {
+    const { probe, ctx: done } = finished();
+    const ctx: RunCtx = { ...done, step: "orch" };
+    expect(view(ctx, probe)).toEqual({ target: null, text: L_ORCH_OPEN, warn: false,
+      final: true, skip: false });
+    probe.show(ROW);
+    expect(view(ctx, probe)).toEqual({
+      target: '[data-ac-testid="replica.row.quick.r-__agent_personal-assistant"]',
+      text: L_ORCH, warn: false, final: true, skip: false });
+  });
+
+  it("advance at orch stays; project gone resets; goal lost shows the corner text", () => {
+    const { probe, ctx: done, p } = finished();
+    const ctx: RunCtx = { ...done, step: "orch" };
+    probe.show(ROW);
+    expect(advance(ctx, probe)).toBe(ctx);
+    p.workgroups = [];
+    expect(advance(ctx, probe)).toBe(ctx);
+    expect(view(ctx, probe)).toMatchObject({ target: null, text: L_ORCH_OPEN, final: true });
+    probe.projects = [];
+    expect(advance(ctx, probe)).toMatchObject({ step: "openMenu", projectPath: null });
+  });
+
+  it("only install rows have link; name and Create rows do not", () => {
+    const { probe, ctx } = toAgent(1);
+    for (const install of ["idle", "installing", "failed"]) {
+      dlg(probe, { agency: "missing", install });
+      expect(view(ctx, probe).link).toBe(true);
+    }
+    const a = toAgent(0);
+    dlg(a.probe, { name: "x", typed: true });
+    expect(view(a.ctx, a.probe).link).toBeUndefined();
+    dlg(a.probe, { name: "personal-assistant", typed: true, desc: "filled" });
+    expect(view(a.ctx, a.probe).link).toBeUndefined();
+    const b = toAgent(1);
+    dlg(b.probe, { agency: "ready", tpl: BOOKKEEPER_ID, name: "accountant", typed: true });
+    expect(view(b.ctx, b.probe).link).toBeUndefined();
   });
 });

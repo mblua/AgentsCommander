@@ -85,11 +85,19 @@ export const T_EXACT = (n: string) => `The name must be exactly ${n}.`;
 export const T_NAME_SKIP = (n: string) =>
   `Name it ${n} (no spaces), then click Create. No template is fine.`;
 export const T_UNKNOWN = "Could not check the templates."; // inputs v3, approved with prototype v3
-export const FINAL = "Done! Now you can ask your personal assistant (orchestrator) " +
-  "to talk to the accountant.";
+export const FINAL = "Done! You can talk to your personal assistant (orchestrator) in the " +
+  "room or in the Orchestrators section of the project.";
+export const T_ORCH = "We recommend talking to it here, in Orchestrators: click " +
+  "personal-assistant and ask it to talk to the accountant.";
+export const T_ORCH_OPEN = "Open the Orchestrators section of this project. ";
+export const orchRowId = (replicaPath: string) =>
+  `replica.row.quick.${automationIdPart(replicaPath)}`;
+// Same URL as DEFAULT_REPO (src-tauri/src/config/agency_cache.rs:45).
+export const AGENCY_REPO_URL = "https://github.com/msitarzewski/agency-agents";
+export const LINK_LABEL = "Open agency-agents on GitHub";
 
 export type StepId =
-  "openMenu" | "newProject" | "folder" | "header" | "menuItem" | "dialog" | "done";
+  "openMenu" | "newProject" | "folder" | "header" | "menuItem" | "dialog" | "done" | "orch";
 export type Probe = {
   has(testid: string): boolean;
   state(testid: string): string | null;
@@ -110,7 +118,7 @@ export type RunCtx = {
 };
 export type StepView =
   { target: string | null; text: string; warn: boolean; final: boolean; skip: boolean;
-    group?: string }; // group: selector of the list that belongs to the target's field
+    group?: string; link?: true; next?: true }; // group: selector of the list that belongs to the target's field
 
 type Workgroup = ProjectState["workgroups"][number];
 type Team = ProjectState["teams"][number];
@@ -255,7 +263,7 @@ export function advance(ctx: RunCtx, probe: Probe): RunCtx {
   if (ctx.projectPath === null) return advanceNoProject(ctx, probe);
   const p = findProject(probe, ctx.projectPath);
   if (!p) return next(ctx, { step: "openMenu", projectPath: null });
-  if (ctx.step === "done") return ctx;
+  if (ctx.step === "done" || ctx.step === "orch") return ctx;
   if (goal(p).kind === "finished") return next(ctx, { step: "done" });
   return advanceWithProject(ctx, p, probe);
 }
@@ -328,9 +336,10 @@ function templatesGateView(r: AgentRead, probe: Probe): StepView | null {
   if (r.agency !== AGENCY.missing) return null;
   const install = probe.state(IDS.agentInstall);
   const target = sel(IDS.agentInstall);
-  if (install === INSTALL.installing) return mark(plain(target, T_DOWNLOAD), false, true);
-  if (probe.has(IDS.agentInstallError)) return mark(plain(target, T_FAILED), true, true);
-  return mark(plain(target, T_INSTALL), false, true);
+  const link = (v: StepView): StepView => ({ ...v, link: true });
+  if (install === INSTALL.installing) return link(mark(plain(target, T_DOWNLOAD), false, true));
+  if (probe.has(IDS.agentInstallError)) return link(mark(plain(target, T_FAILED), true, true));
+  return link(mark(plain(target, T_INSTALL), false, true));
 }
 
 function pickBookkeeperView(r: AgentRead): StepView {
@@ -382,12 +391,22 @@ function dialogView(ctx: RunCtx, g: Goal, probe: Probe): StepView {
 const MENU_TEXT: Record<Kind, string> =
   { newAgent: "Click New Agent.", newTeam: "Click New Team.", newRoom: "Click New Room." };
 
+function orchView(g: Goal, probe: Probe): StepView {
+  const coord = g.kind === "finished" ? g.room.agents.find((r) => tail(r.name) === COORD) : null;
+  const id = coord ? orchRowId(coord.path) : null;
+  if (id && probe.has(id)) {
+    return { target: sel(id), text: T_ORCH, warn: false, final: true, skip: false };
+  }
+  return { target: null, text: T_ORCH_OPEN + T_ORCH, warn: false, final: true, skip: false };
+}
+
 function projectView(ctx: RunCtx, p: ProjectState, probe: Probe): StepView {
   const g = goal(p);
   if (ctx.step === "done") {
     const target = g.kind === "finished" ? roomHeaderSelector(g.room.path) : null;
-    return { target, text: FINAL, warn: false, final: true, skip: false };
+    return { target, text: FINAL, warn: false, final: false, skip: false, next: true };
   }
+  if (ctx.step === "orch") return orchView(g, probe);
   if (ctx.step === "menuItem") {
     const k = kindOf(g).menu;
     return plain(sel(projectMenuId(k, pid(p))), MENU_TEXT[k]);

@@ -692,9 +692,12 @@ html.light-theme .web-browser-error {
 .tutorial-bubble--warn { border-width: 2px; border-style: dashed; }
 .tutorial-bubble-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
   justify-content: flex-end;
   margin-top: var(--spacing-sm);
 }
+.tutorial-bubble-actions [data-ac-testid="tutorial.link"] { flex-basis: 100%; }
 .tutorial-bubble button {
   padding: 2px var(--spacing-sm);
   border: 1px solid var(--sidebar-border);
