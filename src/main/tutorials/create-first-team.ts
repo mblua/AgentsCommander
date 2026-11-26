@@ -24,7 +24,19 @@ export const IDS = {
   agentModal: "newAgent.modal", agentName: "newAgent.name", agentCreate: "newAgent.create",
   teamModal: "newTeam.modal", teamName: "newTeam.name", teamAgents: "newTeam.agents",
   teamCreate: "newTeam.create", roomModal: "newRoom.modal", roomTeam: "newRoom.teamSearch",
+  agentSearch: "newAgent.templateSearch", agentTemplates: "newAgent.templates",
+  agentTemplate: "newAgent.template", agentDesc: "newAgent.description",
+  agentInstall: "newAgent.agencyInstall",
 } as const;
+export const BOOKKEEPER_ID = "agency:finance-finance-bookkeeper-controller";
+export const AGENCY = { loading: "loading", missing: "missing", ready: "ready",
+  unknown: "unknown" } as const;                     // newAgent.modal data-ac-state
+export const INSTALL = { installing: "installing", failed: "failed" } as const;
+export const NAME_TYPED = "typed";                   // newAgent.name data-ac-state
+export const DESC_FILLED = "filled";                 // newAgent.description data-ac-state
+export const NO_TEMPLATE = "none";                   // newAgent.templates data-ac-state
+export const templateRowSelector = (id: string) =>
+  `[data-ac-testid="${IDS.agentTemplate}"][data-ac-value="${id}"]`;
 export const NEW_OPEN_DISABLED = "disabled"; // ActionBar triState value
 export const TEAM_STEPS = ["step-1", "step-2", "step-3"] as const;
 export const ROOM_HEADER_CLASS = "ac-wg-header";
@@ -45,6 +57,29 @@ export const NOTE_TEAM = "This team needs all three agents and personal-assistan
   "Create another team, for example my-team-2.";
 export const HIDDEN =
   "This step's control is hidden. Expand it in the sidebar or exit the tutorial.";
+export const EXAMPLE = '"Organizes my day, answers my messages and asks the accountant and ' +
+  'the social media expert for help."';
+export const T_NAME_PA = "Name it personal-assistant (no spaces).";
+export const T_ROLE = `Now write its role in Description. Example: ${EXAMPLE}`;
+export const T_CREATE = "Click Create.";
+export const T_LOADING = "Loading templates…";
+export const T_INSTALL = "Templates are not installed. Click Install templates. This downloads " +
+  "another open-source project (agency-agents on GitHub) with recommended role templates. " +
+  "It can take a minute.";
+export const T_DOWNLOAD = "Downloading templates… The next step starts when it ends.";
+export const T_FAILED = "The download failed (see the red text). Check your internet and click " +
+  "Install templates again, or skip.";
+export const T_SEARCH_BK = "Type bookkeeper in the search box.";
+export const T_PICK_BK = 'Click "Bookkeeper & Controller" (Finance).';
+export const T_WRONG_BK = 'Pick "Bookkeeper & Controller", not another template.';
+export const T_FILLED_AC = "The template filled the name. Change it to accountant.";
+export const T_SUGGEST = 'We suggest "Social Media Strategist": type social media and click it. ' +
+  "You can pick another template or No template.";
+export const T_NAME = (n: string) => `Name it ${n} (no spaces).`;
+export const T_CHANGE = (n: string) => `Change the name to ${n}.`;
+export const T_NAME_SKIP = (n: string) =>
+  `Name it ${n} (no spaces), then click Create. No template is fine.`;
+export const T_UNKNOWN = "Could not check the templates."; // inputs v3, approved with prototype v3
 export const FINAL = "Done! Now you can ask your personal assistant (orchestrator) " +
   "to talk to the accountant.";
 
@@ -53,6 +88,8 @@ export type StepId =
 export type Probe = {
   has(testid: string): boolean;
   state(testid: string): string | null;
+  value(testid: string): string | null; // its data-ac-value, or null
+  matches(selector: string): boolean; // document.querySelector(selector) !== null
   projects: readonly ProjectState[];
   outcome: NewProjectOutcome;
 };
@@ -63,8 +100,10 @@ export type RunCtx = {
   goalKey: string | null;
   count: number;
   note: string | null;
+  skip: boolean; // person chose "Skip download" in this run
 };
-export type StepView = { target: string | null; text: string; warn: boolean; final: boolean };
+export type StepView =
+  { target: string | null; text: string; warn: boolean; final: boolean; skip: boolean };
 
 type Workgroup = ProjectState["workgroups"][number];
 type Team = ProjectState["teams"][number];
@@ -78,7 +117,8 @@ type Kind = "newAgent" | "newTeam" | "newRoom";
 const NAMES = AGENTS.map((a) => a.name);
 
 export function startCtx(seq: number): RunCtx {
-  return { step: "openMenu", seq, projectPath: null, goalKey: null, count: 0, note: null };
+  return { step: "openMenu", seq, projectPath: null, goalKey: null, count: 0, note: null,
+    skip: false };
 }
 
 export function tail(ref: string): string {
@@ -207,7 +247,7 @@ export function advance(ctx: RunCtx, probe: Probe): RunCtx {
 }
 
 const plain = (target: string | null, text: string): StepView =>
-  ({ target, text, warn: false, final: false });
+  ({ target, text, warn: false, final: false, skip: false });
 
 function headerText(g: Goal): string {
   const tip = "Right-click the project name to see what you can create.";
@@ -227,12 +267,82 @@ function teamDialogView(probe: Probe): StepView {
   return plain(sel(IDS.teamName), `Name the team ${TEAM_NAME}, then click Next.`);
 }
 
-function dialogView(g: Goal, probe: Probe): StepView {
-  if (g.kind === "agent") {
-    const n = g.agent.name;
-    return plain(sel(IDS.agentName),
-      `Name it ${n} (no spaces), then click Create. Keep No template.`);
+type AgentRead = {
+  want: string; ok: boolean; typed: boolean; tpl: string; q: string;
+  agency: string | null; off: boolean; pre: string; bkGone: boolean;
+};
+
+function readAgent(ctx: RunCtx, want: string, probe: Probe): AgentRead {
+  const name = probe.value(IDS.agentName) ?? "";
+  const q = (probe.value(IDS.agentSearch) ?? "").toLowerCase();
+  const agency = probe.state(IDS.agentModal);
+  const unknown = agency === AGENCY.unknown;
+  const bkGone = !probe.matches(templateRowSelector(BOOKKEEPER_ID)) &&
+    (q === "" || q.includes("bookkeeper"));
+  return {
+    want, ok: name === want, typed: probe.state(IDS.agentName) === NAME_TYPED,
+    tpl: probe.state(IDS.agentTemplates) ?? NO_TEMPLATE, q, agency,
+    off: ctx.skip || unknown, pre: !ctx.skip && unknown ? T_UNKNOWN + " " : "", bkGone,
+  };
+}
+
+const mark = (v: StepView, warn: boolean, skip: boolean): StepView => ({ ...v, warn, skip });
+
+function firstAgentView(r: AgentRead, probe: Probe): StepView {
+  if (!r.ok) return plain(sel(IDS.agentName), T_NAME_PA);
+  if (probe.state(IDS.agentDesc) !== DESC_FILLED) return plain(sel(IDS.agentDesc), T_ROLE);
+  return plain(sel(IDS.agentCreate), T_CREATE);
+}
+
+/** Rows 4-9: skip/unknown and templates not ready. Null when templates are ready. */
+function templatesGateView(r: AgentRead, probe: Probe): StepView | null {
+  if (r.off && !r.ok) return plain(sel(IDS.agentName), r.pre + T_NAME_SKIP(r.want));
+  if (r.off) return plain(sel(IDS.agentCreate), r.pre + T_CREATE);
+  if (r.agency === AGENCY.loading || r.agency === null) {
+    return plain(sel(IDS.agentModal), T_LOADING);
   }
+  if (r.agency !== AGENCY.missing) return null;
+  const install = probe.state(IDS.agentInstall);
+  const target = sel(IDS.agentInstall);
+  if (install === INSTALL.installing) return mark(plain(target, T_DOWNLOAD), false, true);
+  if (install === INSTALL.failed) return mark(plain(target, T_FAILED), true, true);
+  return mark(plain(target, T_INSTALL), false, true);
+}
+
+function pickBookkeeperView(r: AgentRead): StepView {
+  if (r.bkGone && !r.ok) return plain(sel(IDS.agentName), T_NAME_SKIP(r.want));
+  if (r.bkGone) return plain(sel(IDS.agentCreate), T_CREATE);
+  if (!r.q.includes("bookkeeper")) return plain(sel(IDS.agentSearch), T_SEARCH_BK);
+  const row = templateRowSelector(BOOKKEEPER_ID);
+  if (r.tpl !== NO_TEMPLATE) return mark(plain(row, T_WRONG_BK), true, false);
+  return plain(row, T_PICK_BK);
+}
+
+function secondAgentView(r: AgentRead): StepView {
+  if (r.tpl !== BOOKKEEPER_ID) return pickBookkeeperView(r);
+  if (!r.ok) return plain(sel(IDS.agentName), r.typed ? T_NAME(r.want) : T_FILLED_AC);
+  return plain(sel(IDS.agentCreate), T_CREATE);
+}
+
+function thirdAgentView(r: AgentRead): StepView {
+  if (r.tpl === NO_TEMPLATE && !r.typed) return plain(sel(IDS.agentSearch), T_SUGGEST);
+  if (!r.ok) {
+    const change = !r.typed && r.tpl !== NO_TEMPLATE;
+    return plain(sel(IDS.agentName), change ? T_CHANGE(r.want) : T_NAME(r.want));
+  }
+  return plain(sel(IDS.agentCreate), T_CREATE);
+}
+
+function agentDialogView(ctx: RunCtx, index: number, want: string, probe: Probe): StepView {
+  const r = readAgent(ctx, want, probe);
+  if (index === 0) return firstAgentView(r, probe);
+  const gate = templatesGateView(r, probe);
+  if (gate) return gate;
+  return index === 1 ? secondAgentView(r) : thirdAgentView(r);
+}
+
+function dialogView(ctx: RunCtx, g: Goal, probe: Probe): StepView {
+  if (g.kind === "agent") return agentDialogView(ctx, g.index, g.agent.name, probe);
   if (g.kind === "team") return teamDialogView(probe);
   const team = g.kind === "room" ? g.team.name : "";
   return plain(sel(IDS.roomTeam), `Choose ${team}, then click Create.`);
@@ -245,22 +355,24 @@ function projectView(ctx: RunCtx, p: ProjectState, probe: Probe): StepView {
   const g = goal(p);
   if (ctx.step === "done") {
     const target = g.kind === "finished" ? roomHeaderSelector(g.room.path) : null;
-    return { target, text: FINAL, warn: false, final: true };
+    return { target, text: FINAL, warn: false, final: true, skip: false };
   }
   if (ctx.step === "menuItem") {
     const k = kindOf(g).menu;
     return plain(sel(projectMenuId(k, pid(p))), MENU_TEXT[k]);
   }
-  if (ctx.step === "dialog") return dialogView(g, probe);
+  if (ctx.step === "dialog") return dialogView(ctx, g, probe);
   const prefix = ctx.note ? `${ctx.note} ` : "";
   const target = sel(projectHeaderId(pid(p)));
-  return { target, text: prefix + headerText(g), warn: ctx.note !== null, final: false };
+  const warn = ctx.note !== null;
+  return { target, text: prefix + headerText(g), warn, final: false, skip: false };
 }
 
 export function view(ctx: RunCtx, probe: Probe): StepView {
   if (ctx.step === "openMenu") {
     const text = ctx.note ?? "Click New / Open to see the project options.";
-    return { target: sel(IDS.newOpen), text, warn: ctx.note !== null, final: false };
+    const warn = ctx.note !== null;
+    return { target: sel(IDS.newOpen), text, warn, final: false, skip: false };
   }
   if (ctx.step === "newProject") return plain(sel(IDS.menuNewProject), "Click New Project.");
   const p = findProject(probe, ctx.projectPath);

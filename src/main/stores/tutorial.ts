@@ -15,6 +15,11 @@ export const tutorialStore = {
     setRun(startCtx(projectStore.newProjectOutcome.seq));
   },
   exit(): void { setRun(null); },
+  /** Bubble button "Skip download": templates are not needed for the rest of this run. */
+  skipTemplates(): void {
+    const ctx = run();
+    if (ctx !== null) setRun({ ...ctx, skip: true });
+  },
   /** Apply the rules until nothing changes, at most 5 times. */
   sync(probe: Probe): void {
     let ctx = run();

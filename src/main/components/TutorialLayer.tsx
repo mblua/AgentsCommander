@@ -15,13 +15,15 @@ const find = (id: string) => document.querySelector(`[data-ac-testid="${id}"]`);
 const probe: Probe = {
   has: (id) => find(id) !== null,
   state: (id) => find(id)?.getAttribute("data-ac-state") ?? null,
+  value: (id) => find(id)?.getAttribute("data-ac-value") ?? null,
+  matches: (selector) => document.querySelector(selector) !== null,
   get projects() { return projectStore.projects; },
   get outcome() { return projectStore.newProjectOutcome; },
 };
 
 const OBSERVE: MutationObserverInit = {
   subtree: true, childList: true, attributes: true,
-  attributeFilter: ["data-ac-state", "data-ac-testid", "title"],
+  attributeFilter: ["data-ac-state", "data-ac-testid", "data-ac-value", "title"],
 };
 
 const TutorialLayer: Component = () => {

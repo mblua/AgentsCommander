@@ -3,7 +3,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  IDS, NEW_OPEN_DISABLED, ROOM_HEADER_CLASS, TEAM_STEPS, projectHeaderId, projectMenuId,
+  AGENCY, DESC_FILLED, IDS, INSTALL, NAME_TYPED, NEW_OPEN_DISABLED, NO_TEMPLATE,
+  templateRowSelector, ROOM_HEADER_CLASS, TEAM_STEPS, projectHeaderId, projectMenuId,
   roomHeaderSelector,
 } from "./create-first-team";
 
@@ -67,7 +68,21 @@ describe("tutorial targets contract", () => {
     for (const m of matches) expect(values.has(m[0].slice(1, -1)), m[0]).toBe(true);
   });
 
+  it("agent dialog markers match NewEntityAgentModal (P07)", () => {
+    const agm = read(OWNERS.newAgent!);
+    const literals = ["data-ac-value={t.id}", 'data-ac-value="none"',
+      "data-ac-value={templateQuery()}", "data-ac-value={name().trim()}", '"typed" : "auto"',
+      '"filled" : "empty"', 'selectedTemplateId() ?? "none"', '"installing"', '"failed"',
+      ...Object.values(AGENCY).map((a) => `"${a}"`)];
+    for (const l of literals) expect(agm, l).toContain(l);
+    expect([NAME_TYPED, DESC_FILLED, NO_TEMPLATE]).toEqual(["typed", "filled", "none"]);
+    expect(INSTALL).toEqual({ installing: "installing", failed: "failed" });
+    expect(templateRowSelector("x"))
+      .toBe('[data-ac-testid="newAgent.template"][data-ac-value="x"]');
+  });
+
   it("control: a wrong id is not found", () => {
     expect(hasTestid(read(OWNERS.actionBar!), "actionBar.newOpenX")).toBe(false);
+    expect(hasTestid(read(OWNERS.newAgent!), "newAgent.templatesX")).toBe(false);
   });
 });

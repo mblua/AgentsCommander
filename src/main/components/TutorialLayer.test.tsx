@@ -22,7 +22,10 @@ import { __resetTutorialStoreForTests, tutorialStore } from "../stores/tutorial"
 import {
   __resetTutorialProgressForTests, tutorialProgressStore,
 } from "../stores/tutorial-progress";
-import { FINAL, HIDDEN, startCtx, type RunCtx } from "../tutorials/create-first-team";
+import {
+  BOOKKEEPER_ID, FINAL, HIDDEN, startCtx, T_NAME_SKIP, T_PICK_BK, type RunCtx,
+} from "../tutorials/create-first-team";
+import { automationIdPart } from "../../sidebar/components/replica-repo-badges";
 import TutorialLayer from "./TutorialLayer";
 
 const sel = (id: string) => `[data-ac-testid="${id}"]`;
@@ -233,6 +236,68 @@ describe("TutorialOverlay", () => {
     await flush();
     expect(text()).toContain("Click Create.");
     expect(must("tutorial.ring").style.top).toBe("296px");
+  });
+
+  it("changing only data-ac-value schedules one frame", async () => {
+    await startRun();
+    const el = target("newAgent.name");
+    await flush();
+    const spy = vi.spyOn(tutorialStore, "sync");
+    el.setAttribute("data-ac-value", "a b");
+    expect(await flush()).toBe(1);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("skipTemplates with no run is a no-op", () => {
+    tutorialStore.skipTemplates();
+    expect(tutorialStore.ctx).toBeNull();
+    expect(tutorialStore.active).toBe(false);
+  });
+
+  it("real probe decides the agent 2 text (skip, value, Bookkeeper row)", async () => {
+    const path = "/work/agents";
+    const p = {
+      path, folderName: "agents", loops: [], contextTemplateUpdates: [], teams: [], workgroups: [],
+      agents: [{ name: "personal-assistant", path: `${path}/.ac/_agent_personal-assistant`,
+        roleExists: true }],
+    } as unknown as ProjectState;
+    let outcome = { seq: 0, path: null as string | null, created: false };
+    vi.spyOn(projectStore, "projects", "get").mockReturnValue([p]);
+    vi.spyOn(projectStore, "newProjectOutcome", "get").mockImplementation(() => outcome);
+    target("actionBar.newOpen");
+    target("actionBar.menu");
+    target(`project.action.newAgent.${automationIdPart(path)}.projectMenu`);
+    const modal = target("newAgent.modal");
+    modal.setAttribute("data-ac-state", "ready");
+    const name = target("newAgent.name");
+    name.setAttribute("data-ac-value", "accountant");
+    await mountLayer({ tutorialHintDismissed: true });
+    const text = () => must("tutorial.bubble").textContent ?? "";
+    const toDialog = async () => {
+      tutorialStore.start();
+      outcome = { seq: outcome.seq + 1, path, created: true };
+      await flush();
+      await flush();
+      expect(tutorialStore.ctx).toMatchObject({ step: "dialog", goalKey: "agent:1" });
+    };
+    await toDialog();
+    tutorialStore.skipTemplates();
+    await flush();
+    expect(text()).toContain("Click Create.");
+    name.setAttribute("data-ac-value", "x");
+    await flush();
+    expect(text()).toContain(T_NAME_SKIP("accountant"));
+    tutorialStore.exit();
+    await toDialog();
+    expect(tutorialStore.ctx?.skip).toBe(false);
+    const row = target("newAgent.template");
+    row.setAttribute("data-ac-value", BOOKKEEPER_ID);
+    target("newAgent.templateSearch").setAttribute("data-ac-value", "bookkeeper");
+    await flush();
+    expect(text()).toContain(T_PICK_BK);
+    row.remove();
+    await flush();
+    expect(text()).toContain(T_NAME_SKIP("accountant"));
   });
 
   it("Exit tutorial ends the run", async () => {

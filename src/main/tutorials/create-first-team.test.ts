@@ -4,8 +4,10 @@ import type { ProjectState } from "../../sidebar/stores/project-merge";
 import type { AcAgentReplica, AcTeam, AcWorkgroup } from "../../shared/types";
 import type { NewProjectOutcome } from "../../sidebar/stores/project";
 import {
-  advance, FINAL, NOTE_NAME, NOTE_NO_FOLDER, NOTE_NOT_EMPTY, NOTE_TEAM, startCtx, view,
-  type Probe, type RunCtx,
+  advance, BOOKKEEPER_ID, FINAL, NOTE_NAME, NOTE_NO_FOLDER, NOTE_NOT_EMPTY, NOTE_TEAM,
+  startCtx, T_CHANGE, T_CREATE, T_DOWNLOAD, T_FAILED, T_FILLED_AC, T_INSTALL, T_LOADING,
+  T_NAME, T_NAME_PA, T_NAME_SKIP, T_PICK_BK, T_ROLE, T_SEARCH_BK, T_SUGGEST, T_UNKNOWN,
+  T_WRONG_BK, templateRowSelector, view, type Probe, type RunCtx, type StepView,
 } from "./create-first-team";
 
 const PATH = "/home/u/proj";
@@ -33,10 +35,14 @@ function room(path: string, names: string[], coord: string | null): AcWorkgroup 
 class FakeProbe implements Probe {
   ids = new Set<string>();
   states = new Map<string, string>();
+  values = new Map<string, string>();
+  selectors = new Set<string>();
   projects: ProjectState[] = [];
   outcome: NewProjectOutcome = { seq: 0, path: null, created: false };
   has(t: string) { return this.ids.has(t); }
   state(t: string) { return this.states.get(t) ?? null; }
+  value(t: string) { return this.values.get(t) ?? null; }
+  matches(s: string) { return this.selectors.has(s); }
   show(...t: string[]) { t.forEach((x) => this.ids.add(x)); return this; }
   hide(...t: string[]) { t.forEach((x) => this.ids.delete(x)); return this; }
   pick(path: string | null, created: boolean) {
@@ -75,6 +81,39 @@ function toHeader(): { probe: FakeProbe; ctx: RunCtx; p: ProjectState } {
   return { probe, ctx, p };
 }
 
+const BK_ROW = templateRowSelector(BOOKKEEPER_ID);
+const NAME = tid("newAgent.name");
+const CREATE = tid("newAgent.create");
+const SEARCH = tid("newAgent.templateSearch");
+const INSTALL_BTN = tid("newAgent.agencyInstall");
+
+/** Fills the agent dialog markers (P07): name value/state, template, query, agency. */
+function dlg(probe: FakeProbe, m: { name?: string; typed?: boolean; tpl?: string; q?: string;
+  agency?: string; install?: string; desc?: string; row?: boolean }) {
+  const set = (map: Map<string, string>, k: string, v: string | undefined) =>
+    v === undefined ? map.delete(k) : map.set(k, v);
+  set(probe.values, "newAgent.name", m.name);
+  set(probe.states, "newAgent.name", m.typed ? "typed" : "auto");
+  set(probe.states, "newAgent.templates", m.tpl);
+  set(probe.values, "newAgent.templateSearch", m.q);
+  set(probe.states, "newAgent.modal", m.agency);
+  set(probe.states, "newAgent.agencyInstall", m.install);
+  set(probe.states, "newAgent.description", m.desc);
+  if (m.row === false) probe.selectors.delete(BK_ROW);
+  else probe.selectors.add(BK_ROW);
+}
+const v = (target: string, text: string, warn = false, skip = false): StepView =>
+  ({ target, text, warn, final: false, skip });
+
+/** Creates the agents before `index` and opens the dialog of agent `index`. */
+function toAgent(index: number): { probe: FakeProbe; ctx: RunCtx; p: ProjectState } {
+  const h = toHeader();
+  ALL.slice(0, index).forEach((n) => addAgent(h.p, `proj/${n}`));
+  const ctx = openDialog(h.probe, settle(h.ctx, h.probe), "newAgent", "newAgent.modal");
+  expect(ctx.goalKey).toBe(`agent:${index}`);
+  return { ...h, ctx };
+}
+
 /** Opens the menu and dialog of the current goal. */
 function openDialog(probe: FakeProbe, ctx: RunCtx, kind: string, modal: string): RunCtx {
   probe.show(menuId(kind));
@@ -86,12 +125,37 @@ function openDialog(probe: FakeProbe, ctx: RunCtx, kind: string, modal: string):
   return ctx;
 }
 
+/** Walks one agent dialog through its rows until Create is the target. */
+function walkAgent(probe: FakeProbe, ctx: RunCtx, i: number, name: string) {
+  if (i === 0) {
+    dlg(probe, {});
+    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME_PA));
+    dlg(probe, { name, typed: true });
+    expect(view(ctx, probe)).toEqual(v(tid("newAgent.description"), T_ROLE));
+    dlg(probe, { name, typed: true, desc: "filled" });
+  } else if (i === 1) {
+    dlg(probe, { agency: "ready" });
+    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SEARCH_BK));
+    dlg(probe, { agency: "ready", q: "bookkeeper" });
+    expect(view(ctx, probe)).toEqual(v(BK_ROW, T_PICK_BK));
+    dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name: "bk" });
+    expect(view(ctx, probe)).toEqual(v(NAME, T_FILLED_AC));
+    dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name, typed: true });
+  } else {
+    dlg(probe, { agency: "ready" });
+    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SUGGEST));
+    dlg(probe, { agency: "ready", name, typed: true });
+  }
+  expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
+}
+
 describe("create-first-team rules", () => {
   it("1. happy path from start to done", () => {
     const probe = new FakeProbe();
     let ctx = startCtx(0);
     expect(view(ctx, probe)).toEqual({ target: tid("actionBar.newOpen"),
-      text: "Click New / Open to see the project options.", warn: false, final: false });
+      text: "Click New / Open to see the project options.", warn: false, final: false,
+      skip: false });
     probe.show("actionBar.menu");
     ctx = settle(ctx, probe);
     expect(ctx.step).toBe("newProject");
@@ -112,7 +176,7 @@ describe("create-first-team rules", () => {
 
     const labels = ["personal assistant", "accountant", "social media expert"];
     ALL.forEach((name, i) => {
-      expect(view(ctx, probe)).toEqual({ target: HEADER, warn: false, final: false,
+      expect(view(ctx, probe)).toEqual({ target: HEADER, warn: false, final: false, skip: false,
         text: `Agent ${i + 1} of 3: ${labels[i]}. ` +
           "Right-click the project name to see what you can create." });
       probe.show(menuId("newAgent"));
@@ -123,8 +187,7 @@ describe("create-first-team rules", () => {
       probe.hide(menuId("newAgent")).show("newAgent.modal");
       ctx = settle(ctx, probe);
       expect(ctx).toMatchObject({ step: "dialog", goalKey: `agent:${i}`, count: i });
-      expect(view(ctx, probe)).toMatchObject({ target: tid("newAgent.name"),
-        text: `Name it ${name} (no spaces), then click Create. Keep No template.` });
+      walkAgent(probe, ctx, i, name);
       probe.hide("newAgent.modal");
       addAgent(p, `proj/${name}`);
       ctx = settle(ctx, probe);
@@ -163,7 +226,7 @@ describe("create-first-team rules", () => {
     ctx = settle(ctx, probe);
     expect(ctx.step).toBe("done");
     expect(view(ctx, probe)).toEqual({ target: '.ac-wg-header[title="/home/u/proj/.ac/room-1"]',
-      text: FINAL, warn: false, final: true });
+      text: FINAL, warn: false, final: true, skip: false });
   });
 
   function atFolder(): { probe: FakeProbe; ctx: RunCtx } {
@@ -320,5 +383,136 @@ describe("create-first-team rules", () => {
     ctx = settle(ctx, probe);
     expect(ctx.step).toBe("done");
     expect(view(ctx, probe).target).toBe('.ac-wg-header[title="/proj/.ac/room-2"]');
+  });
+
+  it("A1. agent 1 rows 1-3; empty Description keeps row 2; missing is ignored", () => {
+    const { probe, ctx } = toAgent(0);
+    dlg(probe, { agency: "missing" });
+    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME_PA));
+    dlg(probe, { agency: "missing", name: "personal-assistant", typed: true, desc: "empty" });
+    expect(view(ctx, probe)).toEqual(v(tid("newAgent.description"), T_ROLE));
+    expect(view(ctx, probe).target).not.toBe(CREATE);
+    dlg(probe, { agency: "missing", name: "personal-assistant", typed: true, desc: "filled" });
+    expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
+  });
+
+  it("A2. agent 2 ready: search, pick, rename, create; typed name; wrong template", () => {
+    const { probe, ctx } = toAgent(1);
+    dlg(probe, { agency: "ready", q: "Book" });
+    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SEARCH_BK));
+    dlg(probe, { agency: "ready", q: "BOOKKEEPER" });
+    expect(view(ctx, probe)).toEqual(v(BK_ROW, T_PICK_BK));
+    dlg(probe, { agency: "ready", q: "bookkeeper", tpl: "local:other", name: "other" });
+    expect(view(ctx, probe)).toEqual(v(BK_ROW, T_WRONG_BK, true));
+    dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name: "x" });
+    expect(view(ctx, probe)).toEqual(v(NAME, T_FILLED_AC));
+    dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name: "x", typed: true });
+    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME("accountant")));
+    dlg(probe, { agency: "ready", tpl: BOOKKEEPER_ID, name: "accountant", typed: true });
+    expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
+  });
+
+  it("A3. agent 2 missing: install, installing, failed, then ready in the same step", () => {
+    let { probe, ctx } = toAgent(1);
+    dlg(probe, { agency: "missing", install: "idle" });
+    expect(view(ctx, probe)).toEqual(v(INSTALL_BTN, T_INSTALL, false, true));
+    dlg(probe, { agency: "missing", install: "installing" });
+    expect(view(ctx, probe)).toEqual(v(INSTALL_BTN, T_DOWNLOAD, false, true));
+    dlg(probe, { agency: "missing", install: "failed" });
+    expect(view(ctx, probe)).toEqual(v(INSTALL_BTN, T_FAILED, true, true));
+    dlg(probe, { agency: "ready" });
+    expect(settle(ctx, probe)).toBe(ctx);
+    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SEARCH_BK));
+  });
+
+  it("A4. skip survives steps for agents 2 and 3; a new run resets it", () => {
+    let { probe, ctx, p } = toAgent(1);
+    dlg(probe, { agency: "missing" });
+    expect(view(ctx, probe).skip).toBe(true);
+    ctx = { ...ctx, skip: true };
+    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME_SKIP("accountant")));
+    dlg(probe, { agency: "missing", name: "accountant", typed: true });
+    expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
+    probe.hide("newAgent.modal");
+    addAgent(p, "proj/accountant");
+    ctx = settle(ctx, probe);
+    expect(ctx).toMatchObject({ step: "header", skip: true });
+    ctx = openDialog(probe, ctx, "newAgent", "newAgent.modal");
+    expect(ctx).toMatchObject({ goalKey: "agent:2", skip: true });
+    dlg(probe, { agency: "missing" });
+    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME_SKIP("social-media-expert")));
+    dlg(probe, { agency: "missing", name: "social-media-expert", typed: true });
+    expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
+    expect(startCtx(9).skip).toBe(false);
+  });
+
+  it("A5. unknown acts like skip with a prefix; with skip set, no prefix", () => {
+    const { probe, ctx } = toAgent(1);
+    dlg(probe, { agency: "unknown" });
+    expect(view(ctx, probe)).toEqual(v(NAME, `${T_UNKNOWN} ${T_NAME_SKIP("accountant")}`));
+    expect(view(ctx, probe).text).not.toContain("Install");
+    dlg(probe, { agency: "unknown", name: "accountant" });
+    expect(view(ctx, probe)).toEqual(v(CREATE, `${T_UNKNOWN} ${T_CREATE}`));
+    expect(view({ ...ctx, skip: true }, probe)).toEqual(v(CREATE, T_CREATE));
+  });
+
+  it("A6. loading (or no state) targets the modal", () => {
+    const { probe, ctx } = toAgent(2);
+    dlg(probe, { agency: "loading" });
+    expect(view(ctx, probe)).toEqual(v(tid("newAgent.modal"), T_LOADING));
+    dlg(probe, {});
+    expect(view(ctx, probe)).toEqual(v(tid("newAgent.modal"), T_LOADING));
+  });
+
+  it("A7. agent 3: suggestion, change after a pick, typed name; any template ok", () => {
+    const { probe, ctx } = toAgent(2);
+    dlg(probe, { agency: "ready", tpl: "none" });
+    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SUGGEST));
+    dlg(probe, { agency: "ready", tpl: "agency:marketing-x", name: "x" });
+    expect(view(ctx, probe)).toEqual(v(NAME, T_CHANGE("social-media-expert")));
+    dlg(probe, { agency: "ready", tpl: "agency:marketing-x", name: "social-media-expert",
+      typed: true });
+    expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
+    dlg(probe, { agency: "ready", name: "s", typed: true });
+    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME("social-media-expert")));
+  });
+
+  it("A8. accountant with No template and the right name advances, no note", () => {
+    let { probe, ctx, p } = toAgent(1);
+    dlg(probe, { agency: "ready", name: "accountant", typed: true });
+    probe.hide("newAgent.modal");
+    addAgent(p, "proj/accountant");
+    ctx = settle(ctx, probe);
+    expect(ctx).toMatchObject({ step: "header", note: null });
+    expect(view(ctx, probe).text).toContain("Agent 3 of 3");
+  });
+
+  it("A9. Bookkeeper row gone (9b-9c); a filtered-out row is not gone", () => {
+    const { probe, ctx } = toAgent(1);
+    for (const q of ["", "bookkeeper"]) {
+      dlg(probe, { agency: "ready", q, row: false });
+      expect(view(ctx, probe)).toEqual(v(NAME, T_NAME_SKIP("accountant")));
+      dlg(probe, { agency: "ready", q, row: false, name: "accountant" });
+      expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
+    }
+    dlg(probe, { agency: "ready", q: "tax", row: false });
+    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SEARCH_BK));
+  });
+
+  it("A10. no text shows the slug; the old agent line is gone", () => {
+    const texts: string[] = [];
+    for (const i of [0, 1, 2]) {
+      const { probe, ctx } = toAgent(i);
+      for (const agency of ["ready", "missing", "unknown", "loading"]) {
+        for (const tpl of [undefined, BOOKKEEPER_ID, "local:x"]) {
+          dlg(probe, { agency, tpl, q: "bookkeeper", install: "failed" });
+          texts.push(view(ctx, probe).text, view({ ...ctx, skip: true }, probe).text);
+        }
+      }
+    }
+    for (const t of texts) {
+      expect(t).not.toContain("finance-bookkeeper-controller");
+      expect(t).not.toContain("Keep No template");
+    }
   });
 });
