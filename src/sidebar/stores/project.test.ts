@@ -741,8 +741,7 @@ describe("projectStore", () => {
         .toEqual({ seq: before + 1, path: null, created: false });
     });
 
-    it("pickAndCheck on a folder with a workspace records a loaded, not created, project",
-      async () => {
+    it("pickAndCheck on a folder with a workspace records a loaded, not created, project", async () => {
       const before = projectStore.newProjectOutcome.seq;
       m.pickFolder.mockResolvedValueOnce(PROJECT_PATH);
       m.checkPath.mockResolvedValueOnce(true);

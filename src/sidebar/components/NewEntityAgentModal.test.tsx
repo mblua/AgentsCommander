@@ -242,8 +242,7 @@ describe("NewEntityAgentModal template picker", () => {
   it("exposes each tutorial marker once with one template row per template", async () => {
     const { root, q } = await mountWith({ status: ready });
     const all = (id: string) => root.querySelectorAll(`[data-ac-testid="${id}"]`);
-    const rows = () =>
-      root.querySelectorAll('[data-ac-testid="newAgent.template.list"] [data-ac-value]');
+    const rows = () => root.querySelectorAll('[data-ac-testid="newAgent.template.list"] [data-ac-value]');
     await waitFor(() => expect(rows()).toHaveLength(3));
     expect(all("newAgent.templateSearch")).toHaveLength(1);
     expect(q("newAgent.templateSearch")).toBeInstanceOf(HTMLInputElement);
@@ -259,8 +258,7 @@ describe("NewEntityAgentModal template picker", () => {
     dispose?.();
 
     const m = await mountWith({ status: missing });
-    await waitFor(() =>
-      expect(m.q("newAgent.modal").getAttribute("data-ac-state")).toBe("missing"));
+    await waitFor(() => expect(m.q("newAgent.modal").getAttribute("data-ac-state")).toBe("missing"));
     expect(m.q("newAgent.installTemplates").getAttribute("data-ac-state")).toBe("idle");
     dispose?.();
 
@@ -322,8 +320,7 @@ describe("NewEntityAgentModal template picker", () => {
     expect(create.disabled).toBe(true);
   });
 
-  it("marks the Agency install button as installing, idle + error, then gone when ready",
-    async () => {
+  it("marks the Agency install button as installing, idle + error, then gone when ready", async () => {
     const { fake, root, q } = await mountWith({ status: missing });
     await waitFor(() => expect(q("newAgent.installTemplates")).not.toBeNull());
     const btn = () => q<HTMLButtonElement>("newAgent.installTemplates");
