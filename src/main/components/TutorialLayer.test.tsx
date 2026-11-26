@@ -309,6 +309,37 @@ describe("TutorialOverlay", () => {
     expect(text()).toContain(T_NAME_SKIP("accountant"));
   });
 
+  it("real probe: a wrong typed first name warns, the right one does not", async () => {
+    const path = "/work/first";
+    const p = {
+      path, folderName: "first", loops: [], contextTemplateUpdates: [], teams: [], workgroups: [],
+      agents: [],
+    } as unknown as ProjectState;
+    let outcome = { seq: 0, path: null as string | null, created: false };
+    vi.spyOn(projectStore, "projects", "get").mockReturnValue([p]);
+    vi.spyOn(projectStore, "newProjectOutcome", "get").mockImplementation(() => outcome);
+    target("actionBar.newOpen");
+    target("actionBar.menu");
+    target(`project.action.newAgent.${automationIdPart(path)}.projectMenu`);
+    target("newAgent.modal");
+    const name = target("newAgent.name");
+    name.setAttribute("data-ac-state", "typed");
+    name.setAttribute("data-ac-value", "personal-assitant");
+    await mountLayer({ tutorialHintDismissed: true });
+    tutorialStore.start();
+    outcome = { seq: 1, path, created: true };
+    await flush();
+    await flush();
+    expect(tutorialStore.ctx).toMatchObject({ step: "dialog", goalKey: "agent:0" });
+    const bubble = () => must("tutorial.bubble");
+    expect(bubble().textContent).toContain("The name must be exactly personal-assistant.");
+    expect(bubble().classList.contains("tutorial-bubble--warn")).toBe(true);
+    name.setAttribute("data-ac-value", "personal-assistant");
+    await flush();
+    expect(bubble().textContent).not.toContain("The name must be exactly");
+    expect(bubble().classList.contains("tutorial-bubble--warn")).toBe(false);
+  });
+
   it("Exit tutorial ends the run", async () => {
     await startRun();
     click(must("tutorial.exit"));

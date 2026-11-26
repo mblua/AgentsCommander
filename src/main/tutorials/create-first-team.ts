@@ -59,8 +59,9 @@ export const HIDDEN =
   "This step's control is hidden. Expand it in the sidebar or exit the tutorial.";
 export const EXAMPLE = '"Organizes my day, answers my messages and asks the accountant and ' +
   'the social media expert for help."';
-export const T_NAME_PA = "Name it personal-assistant (no spaces).";
-export const T_ROLE = `Now write its role in Description. Example: ${EXAMPLE}`;
+export const T_NAME_PA = "Name it personal-assistant (no spaces), then write its role in " +
+  "Description and click Create.";
+export const T_ROLE = `Now write its role in Description, then click Create. Example: ${EXAMPLE}`;
 export const T_CREATE = "Click Create.";
 export const T_LOADING = "Loading templates…";
 export const T_INSTALL = "Templates are not installed. Click Install templates. This downloads " +
@@ -69,14 +70,18 @@ export const T_INSTALL = "Templates are not installed. Click Install templates. 
 export const T_DOWNLOAD = "Downloading templates… The next step starts when it ends.";
 export const T_FAILED = "The download failed (see the red text). Check your internet and click " +
   "Install templates again, or skip.";
-export const T_SEARCH_BK = "Type bookkeeper in the search box.";
+export const T_SEARCH_BK = 'Type bookkeeper in the search box, then click "Bookkeeper & ' +
+  'Controller" (Finance), change the name to accountant and click Create.';
 export const T_PICK_BK = 'Click "Bookkeeper & Controller" (Finance).';
 export const T_WRONG_BK = 'Pick "Bookkeeper & Controller", not another template.';
-export const T_FILLED_AC = "The template filled the name. Change it to accountant.";
-export const T_SUGGEST = 'We suggest "Social Media Strategist": type social media and click it. ' +
-  "You can pick another template or No template.";
-export const T_NAME = (n: string) => `Name it ${n} (no spaces).`;
-export const T_CHANGE = (n: string) => `Change the name to ${n}.`;
+export const T_FILLED_AC = "The template filled the name. Change it to accountant, then click " +
+  "Create.";
+export const T_SUGGEST = 'We suggest "Social Media Strategist": type social media and click it, ' +
+  "then name it social-media-expert and click Create. You can pick another template or " +
+  "No template.";
+export const T_NAME = (n: string) => `Name it ${n} (no spaces), then click Create.`;
+export const T_CHANGE = (n: string) => `Change the name to ${n}, then click Create.`;
+export const T_EXACT = (n: string) => `The name must be exactly ${n}.`;
 export const T_NAME_SKIP = (n: string) =>
   `Name it ${n} (no spaces), then click Create. No template is fine.`;
 export const T_UNKNOWN = "Could not check the templates."; // inputs v3, approved with prototype v3
@@ -101,6 +106,7 @@ export type RunCtx = {
   count: number;
   note: string | null;
   skip: boolean; // person chose "Skip download" in this run
+  filled: string | null; // name a template filled in this dialog (seen while auto), or null
 };
 export type StepView =
   { target: string | null; text: string; warn: boolean; final: boolean; skip: boolean };
@@ -118,7 +124,7 @@ const NAMES = AGENTS.map((a) => a.name);
 
 export function startCtx(seq: number): RunCtx {
   return { step: "openMenu", seq, projectPath: null, goalKey: null, count: 0, note: null,
-    skip: false };
+    skip: false, filled: null };
 }
 
 export function tail(ref: string): string {
@@ -195,7 +201,7 @@ function advanceMenuItem(ctx: RunCtx, p: ProjectState, probe: Probe): RunCtx {
   const k = kindOf(g);
   if (probe.has(k.dialog)) {
     const count = g.kind === "agent" ? p.agents.length : g.kind === "team" ? p.teams.length : 0;
-    return next(ctx, { step: "dialog", goalKey: g.key, count });
+    return next(ctx, { step: "dialog", goalKey: g.key, count, filled: null });
   }
   if (!probe.has(projectMenuId(k.menu, pid(p)))) return next(ctx, { step: "header" });
   return ctx;
@@ -207,11 +213,18 @@ function closedNote(ctx: RunCtx, p: ProjectState, g: Goal): string | null {
   return null;
 }
 
+function trackFilled(ctx: RunCtx, probe: Probe): RunCtx {
+  const auto = probe.state(IDS.agentName) !== NAME_TYPED ? probe.value(IDS.agentName) : null;
+  const filled = auto ? auto : ctx.filled;          // "" or null keeps the stored value
+  if (filled !== ctx.filled) return next(ctx, { filled });
+  return ctx;
+}
+
 function advanceDialog(ctx: RunCtx, p: ProjectState, probe: Probe): RunCtx {
   const g = goal(p);
-  if (g.key !== ctx.goalKey) return next(ctx, { step: "header", note: null });
-  if (probe.has(kindOf(g).dialog)) return ctx;
-  return next(ctx, { step: "header", note: closedNote(ctx, p, g) });
+  if (g.key !== ctx.goalKey) return next(ctx, { step: "header", note: null, filled: null });
+  if (probe.has(kindOf(g).dialog)) return g.kind === "agent" ? trackFilled(ctx, probe) : ctx;
+  return next(ctx, { step: "header", note: closedNote(ctx, p, g), filled: null });
 }
 
 function advanceWithProject(ctx: RunCtx, p: ProjectState, probe: Probe): RunCtx {
@@ -269,7 +282,7 @@ function teamDialogView(probe: Probe): StepView {
 
 type AgentRead = {
   want: string; ok: boolean; typed: boolean; tpl: string; q: string;
-  agency: string | null; off: boolean; pre: string; bkGone: boolean;
+  agency: string | null; off: boolean; pre: string; bkGone: boolean; bad: boolean;
 };
 
 function readAgent(ctx: RunCtx, want: string, probe: Probe): AgentRead {
@@ -279,8 +292,12 @@ function readAgent(ctx: RunCtx, want: string, probe: Probe): AgentRead {
   const unknown = agency === AGENCY.unknown;
   const bkGone = !probe.matches(templateRowSelector(BOOKKEEPER_ID)) &&
     (q === "" || q.includes("bookkeeper"));
+  const typed = probe.state(IDS.agentName) === NAME_TYPED;
+  const startOf = (full: string | null) => full !== null && full !== "" && full.startsWith(name);
+  // typed, not empty, wrong, and neither a start of the required name nor of the filled name
+  const bad = typed && name !== "" && name !== want && !startOf(want) && !startOf(ctx.filled);
   return {
-    want, ok: name === want, typed: probe.state(IDS.agentName) === NAME_TYPED,
+    want, ok: name === want, typed, bad,
     tpl: probe.state(IDS.agentTemplates) ?? NO_TEMPLATE, q, agency,
     off: ctx.skip || unknown, pre: !ctx.skip && unknown ? T_UNKNOWN + " " : "", bkGone,
   };
@@ -288,15 +305,20 @@ function readAgent(ctx: RunCtx, want: string, probe: Probe): AgentRead {
 
 const mark = (v: StepView, warn: boolean, skip: boolean): StepView => ({ ...v, warn, skip });
 
+function nameView(r: AgentRead, text: string): StepView {
+  const v = plain(sel(IDS.agentName), r.bad ? `${T_EXACT(r.want)} ${text}` : text);
+  return r.bad ? mark(v, true, false) : v;
+}
+
 function firstAgentView(r: AgentRead, probe: Probe): StepView {
-  if (!r.ok) return plain(sel(IDS.agentName), T_NAME_PA);
+  if (!r.ok) return nameView(r, T_NAME_PA);
   if (probe.state(IDS.agentDesc) !== DESC_FILLED) return plain(sel(IDS.agentDesc), T_ROLE);
   return plain(sel(IDS.agentCreate), T_CREATE);
 }
 
 /** Rows 4-9: skip/unknown and templates not ready. Null when templates are ready. */
 function templatesGateView(r: AgentRead, probe: Probe): StepView | null {
-  if (r.off && !r.ok) return plain(sel(IDS.agentName), r.pre + T_NAME_SKIP(r.want));
+  if (r.off && !r.ok) return nameView(r, r.pre + T_NAME_SKIP(r.want));
   if (r.off) return plain(sel(IDS.agentCreate), r.pre + T_CREATE);
   if (r.agency === AGENCY.loading || r.agency === null) {
     return plain(sel(IDS.agentModal), T_LOADING);
@@ -310,7 +332,7 @@ function templatesGateView(r: AgentRead, probe: Probe): StepView | null {
 }
 
 function pickBookkeeperView(r: AgentRead): StepView {
-  if (r.bkGone && !r.ok) return plain(sel(IDS.agentName), T_NAME_SKIP(r.want));
+  if (r.bkGone && !r.ok) return nameView(r, T_NAME_SKIP(r.want));
   if (r.bkGone) return plain(sel(IDS.agentCreate), T_CREATE);
   if (!r.q.includes("bookkeeper")) return plain(sel(IDS.agentSearch), T_SEARCH_BK);
   const row = templateRowSelector(BOOKKEEPER_ID);
@@ -320,7 +342,7 @@ function pickBookkeeperView(r: AgentRead): StepView {
 
 function secondAgentView(r: AgentRead): StepView {
   if (r.tpl !== BOOKKEEPER_ID) return pickBookkeeperView(r);
-  if (!r.ok) return plain(sel(IDS.agentName), r.typed ? T_NAME(r.want) : T_FILLED_AC);
+  if (!r.ok) return nameView(r, r.typed ? T_NAME(r.want) : T_FILLED_AC);
   return plain(sel(IDS.agentCreate), T_CREATE);
 }
 
@@ -328,7 +350,7 @@ function thirdAgentView(r: AgentRead): StepView {
   if (r.tpl === NO_TEMPLATE && !r.typed) return plain(sel(IDS.agentSearch), T_SUGGEST);
   if (!r.ok) {
     const change = !r.typed && r.tpl !== NO_TEMPLATE;
-    return plain(sel(IDS.agentName), change ? T_CHANGE(r.want) : T_NAME(r.want));
+    return nameView(r, change ? T_CHANGE(r.want) : T_NAME(r.want));
   }
   return plain(sel(IDS.agentCreate), T_CREATE);
 }

@@ -5,14 +5,31 @@ import type { AcAgentReplica, AcTeam, AcWorkgroup } from "../../shared/types";
 import type { NewProjectOutcome } from "../../sidebar/stores/project";
 import {
   advance, BOOKKEEPER_ID, FINAL, NOTE_NAME, NOTE_NO_FOLDER, NOTE_NOT_EMPTY, NOTE_TEAM,
-  startCtx, T_CHANGE, T_CREATE, T_DOWNLOAD, T_FAILED, T_FILLED_AC, T_INSTALL, T_LOADING,
-  T_NAME, T_NAME_PA, T_NAME_SKIP, T_PICK_BK, T_ROLE, T_SEARCH_BK, T_SUGGEST, T_UNKNOWN,
+  startCtx, T_CREATE, T_DOWNLOAD, T_FAILED, T_INSTALL, T_LOADING,
+  T_NAME_SKIP, T_PICK_BK, T_UNKNOWN,
   T_WRONG_BK, templateRowSelector, view, type Probe, type RunCtx, type StepView,
 } from "./create-first-team";
 
 const PATH = "/home/u/proj";
 const PID = "home-u-proj";
 const ALL = ["personal-assistant", "accountant", "social-media-expert"];
+
+// #5228 item 17: literal texts (never the exported consts) so a text change fails here.
+const L_NAME_PA = "Name it personal-assistant (no spaces), then write its role in " +
+  "Description and click Create.";
+const L_ROLE = "Now write its role in Description, then click Create. Example: \"Organizes " +
+  "my day, answers my messages and asks the accountant and the social media expert for help.\"";
+const L_SEARCH_BK = 'Type bookkeeper in the search box, then click "Bookkeeper & ' +
+  'Controller" (Finance), change the name to accountant and click Create.';
+const L_FILLED_AC = "The template filled the name. Change it to accountant, then click Create.";
+const L_SUGGEST = 'We suggest "Social Media Strategist": type social media and click it, ' +
+  "then name it social-media-expert and click Create. You can pick another template or " +
+  "No template.";
+const L_NAME_AC = "Name it accountant (no spaces), then click Create.";
+const L_NAME_SM = "Name it social-media-expert (no spaces), then click Create.";
+const L_CHANGE_SM = "Change the name to social-media-expert, then click Create.";
+const L_WARN_AC =
+  "The name must be exactly accountant. Name it accountant (no spaces), then click Create.";
 
 function project(path = PATH): ProjectState {
   return {
@@ -132,21 +149,21 @@ function openDialog(probe: FakeProbe, ctx: RunCtx, kind: string, modal: string):
 function walkAgent(probe: FakeProbe, ctx: RunCtx, i: number, name: string) {
   if (i === 0) {
     dlg(probe, {});
-    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME_PA));
+    expect(view(ctx, probe)).toEqual(v(NAME, L_NAME_PA));
     dlg(probe, { name, typed: true });
-    expect(view(ctx, probe)).toEqual(v(tid("newAgent.description"), T_ROLE));
+    expect(view(ctx, probe)).toEqual(v(tid("newAgent.description"), L_ROLE));
     dlg(probe, { name, typed: true, desc: "filled" });
   } else if (i === 1) {
     dlg(probe, { agency: "ready" });
-    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SEARCH_BK));
+    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SEARCH_BK));
     dlg(probe, { agency: "ready", q: "bookkeeper" });
     expect(view(ctx, probe)).toEqual(v(BK_ROW, T_PICK_BK));
     dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name: "bk" });
-    expect(view(ctx, probe)).toEqual(v(NAME, T_FILLED_AC));
+    expect(view(ctx, probe)).toEqual(v(NAME, L_FILLED_AC));
     dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name, typed: true });
   } else {
     dlg(probe, { agency: "ready" });
-    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SUGGEST));
+    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SUGGEST));
     dlg(probe, { agency: "ready", name, typed: true });
   }
   expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
@@ -391,9 +408,9 @@ describe("create-first-team rules", () => {
   it("A1. agent 1 rows 1-3; empty Description keeps row 2; missing is ignored", () => {
     const { probe, ctx } = toAgent(0);
     dlg(probe, { agency: "missing" });
-    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME_PA));
+    expect(view(ctx, probe)).toEqual(v(NAME, L_NAME_PA));
     dlg(probe, { agency: "missing", name: "personal-assistant", typed: true, desc: "empty" });
-    expect(view(ctx, probe)).toEqual(v(tid("newAgent.description"), T_ROLE));
+    expect(view(ctx, probe)).toEqual(v(tid("newAgent.description"), L_ROLE));
     expect(view(ctx, probe).target).not.toBe(CREATE);
     dlg(probe, { agency: "missing", name: "personal-assistant", typed: true, desc: "filled" });
     expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
@@ -402,15 +419,15 @@ describe("create-first-team rules", () => {
   it("A2. agent 2 ready: search, pick, rename, create; typed name; wrong template", () => {
     const { probe, ctx } = toAgent(1);
     dlg(probe, { agency: "ready", q: "Book" });
-    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SEARCH_BK));
+    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SEARCH_BK));
     dlg(probe, { agency: "ready", q: "BOOKKEEPER" });
     expect(view(ctx, probe)).toEqual(v(BK_ROW, T_PICK_BK));
     dlg(probe, { agency: "ready", q: "bookkeeper", tpl: "local:other", name: "other" });
     expect(view(ctx, probe)).toEqual(v(BK_ROW, T_WRONG_BK, true));
     dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name: "x" });
-    expect(view(ctx, probe)).toEqual(v(NAME, T_FILLED_AC));
+    expect(view(ctx, probe)).toEqual(v(NAME, L_FILLED_AC));
     dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name: "x", typed: true });
-    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME("accountant")));
+    expect(view(ctx, probe)).toEqual(v(NAME, L_WARN_AC, true));
     dlg(probe, { agency: "ready", tpl: BOOKKEEPER_ID, name: "accountant", typed: true });
     expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
   });
@@ -425,7 +442,7 @@ describe("create-first-team rules", () => {
     expect(view(ctx, probe)).toEqual(v(INSTALL_BTN, T_FAILED, true, true));
     dlg(probe, { agency: "ready" });
     expect(settle(ctx, probe)).toBe(ctx);
-    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SEARCH_BK));
+    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SEARCH_BK));
   });
 
   it("A4. skip survives steps for agents 2 and 3; a new run resets it", () => {
@@ -468,18 +485,20 @@ describe("create-first-team rules", () => {
   });
 
   it("A7. agent 3: suggestion, change after a pick, typed name; any template ok", () => {
-    const { probe, ctx } = toAgent(2);
+    let { probe, ctx } = toAgent(2);
     dlg(probe, { agency: "ready", tpl: "none" });
-    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SUGGEST));
+    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SUGGEST));
     dlg(probe, { agency: "ready", tpl: "agency:marketing-x", name: "x" });
-    expect(view(ctx, probe)).toEqual(v(NAME, T_CHANGE("social-media-expert")));
+    expect(view(ctx, probe)).toEqual(v(NAME, L_CHANGE_SM));
+    ctx = settle(ctx, probe);
+    expect(ctx.filled).toBe("x");
     dlg(probe, { agency: "ready", tpl: "agency:marketing-x", name: "x", typed: true });
-    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME("social-media-expert")));
+    expect(view(ctx, probe)).toEqual(v(NAME, L_NAME_SM));
     dlg(probe, { agency: "ready", tpl: "agency:marketing-x", name: "social-media-expert",
       typed: true });
     expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
     dlg(probe, { agency: "ready", name: "s", typed: true });
-    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME("social-media-expert")));
+    expect(view(ctx, probe)).toEqual(v(NAME, L_NAME_SM));
   });
 
   it("A8. accountant with No template and the right name advances, no note", () => {
@@ -501,7 +520,7 @@ describe("create-first-team rules", () => {
       expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
     }
     dlg(probe, { agency: "ready", q: "tax", row: false });
-    expect(view(ctx, probe)).toEqual(v(SEARCH, T_SEARCH_BK));
+    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SEARCH_BK));
   });
 
   it("A10. no text shows the slug; the old agent line is gone", () => {
@@ -518,6 +537,117 @@ describe("create-first-team rules", () => {
     for (const t of texts) {
       expect(t).not.toContain("finance-bookkeeper-controller");
       expect(t).not.toContain("Keep No template");
+    }
+  });
+
+  const W_PA = "The name must be exactly personal-assistant. Name it personal-assistant (no " +
+    "spaces), then write its role in Description and click Create.";
+  const W_SM = "The name must be exactly social-media-expert. Name it social-media-expert (no " +
+    "spaces), then click Create.";
+  const W_AC_SKIP = "The name must be exactly accountant. Name it accountant (no spaces), then " +
+    "click Create. No template is fine.";
+  const W_AC_UNKNOWN = "The name must be exactly accountant. Could not check the templates. " +
+    "Name it accountant (no spaces), then click Create. No template is fine.";
+  const shown: string[] = [];
+  const see = (ctx: RunCtx, probe: Probe, want: StepView) => {
+    const got = view(ctx, probe);
+    shown.push(got.text);
+    expect(got).toEqual(want);
+  };
+
+  it("W1.1 wrong typed first name warns", () => {
+    const { probe, ctx } = toAgent(0);
+    dlg(probe, { name: "personal-assitant", typed: true });
+    see(ctx, probe, v(NAME, W_PA, true));
+  });
+
+  it("W1.2 wrong typed name with Bookkeeper warns", () => {
+    const { probe, ctx } = toAgent(1);
+    dlg(probe, { agency: "ready", tpl: BOOKKEEPER_ID, name: "acountant", typed: true });
+    see(ctx, probe, v(NAME, L_WARN_AC, true));
+  });
+
+  it("W1.3 wrong typed third name with No template warns", () => {
+    const { probe, ctx } = toAgent(2);
+    dlg(probe, { agency: "ready", tpl: "none", name: "social-medai", typed: true });
+    see(ctx, probe, v(NAME, W_SM, true));
+  });
+
+  it("W1.4 wrong typed name after skip warns", () => {
+    const { probe, ctx } = toAgent(1);
+    dlg(probe, { agency: "missing", name: "acountant", typed: true });
+    see({ ...ctx, skip: true }, probe, v(NAME, W_AC_SKIP, true));
+  });
+
+  it("W1.5 wrong typed name with unknown templates warns, T_EXACT first", () => {
+    const { probe, ctx } = toAgent(1);
+    dlg(probe, { agency: "unknown", name: "acountant", typed: true });
+    see(ctx, probe, v(NAME, W_AC_UNKNOWN, true));
+  });
+
+  it("W1.6 wrong typed name with the Bookkeeper row missing warns", () => {
+    const { probe, ctx } = toAgent(1);
+    dlg(probe, { agency: "ready", q: "", row: false, name: "acountant", typed: true });
+    see(ctx, probe, v(NAME, W_AC_SKIP, true));
+  });
+
+  it("W2 a start of the name, empty, auto or right name: no warn", () => {
+    const a = toAgent(0);
+    dlg(a.probe, { name: "personal-", typed: true });
+    see(a.ctx, a.probe, v(NAME, L_NAME_PA));
+    dlg(a.probe, { name: "", typed: true });
+    see(a.ctx, a.probe, v(NAME, L_NAME_PA));
+    dlg(a.probe, { name: "personal-assistant", typed: true });
+    see(a.ctx, a.probe, v(tid("newAgent.description"), L_ROLE));
+    const b = toAgent(1);
+    dlg(b.probe, { agency: "ready", tpl: BOOKKEEPER_ID, name: "bookkeeper-controller" });
+    see(b.ctx, b.probe, v(NAME, L_FILLED_AC));
+    const c = toAgent(2);
+    dlg(c.probe, { agency: "ready", tpl: "none", name: "social-media", typed: true });
+    see(c.ctx, c.probe, v(NAME, L_NAME_SM));
+  });
+
+  it("W3-W5 erase a filled name is quiet; a typo warns; closing resets filled", () => {
+    let { probe, ctx } = toAgent(1);
+    const at = (name: string, typed: boolean) =>
+      dlg(probe, { agency: "ready", tpl: BOOKKEEPER_ID, name, typed });
+    at("bookkeeper-controller", false);
+    ctx = settle(ctx, probe);
+    expect(ctx.filled).toBe("bookkeeper-controller");
+    for (const name of ["bookkeeper-controlle", "b"]) {
+      at(name, true);
+      ctx = settle(ctx, probe);
+      see(ctx, probe, v(NAME, L_NAME_AC));
+    }
+    for (const name of ["acountant", "bookkeeper-x"]) {
+      at(name, true);
+      ctx = settle(ctx, probe);
+      see(ctx, probe, v(NAME, L_WARN_AC, true));
+    }
+    probe.hide("newAgent.modal");
+    ctx = settle(ctx, probe);
+    expect(ctx.filled).toBe(null);
+  });
+
+  it("W5b opening the dialog resets filled", () => {
+    const h = toHeader();
+    addAgent(h.p, "proj/personal-assistant");
+    let ctx = settle(h.ctx, h.probe);
+    h.probe.show(menuId("newAgent"));
+    ctx = settle(ctx, h.probe);
+    expect(ctx.step).toBe("menuItem");
+    ctx = { ...ctx, filled: "bookkeeper-controller" };
+    h.probe.hide(menuId("newAgent")).show("newAgent.modal");
+    dlg(h.probe, { name: "", agency: "ready" });
+    ctx = settle(ctx, h.probe);
+    expect(ctx.step).toBe("dialog");
+    expect(ctx.filled).toBe(null);
+  });
+
+  it("W6 (extra) every W1-W3, search and suggest text names the button", () => {
+    expect(shown.length).toBeGreaterThan(10);
+    for (const t of [...shown, L_SEARCH_BK, L_SUGGEST]) {
+      expect(t).toMatch(/click (Create|Next)\.( |$)/);
     }
   });
 });
