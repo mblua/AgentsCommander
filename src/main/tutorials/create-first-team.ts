@@ -24,19 +24,19 @@ export const IDS = {
   agentModal: "newAgent.modal", agentName: "newAgent.name", agentCreate: "newAgent.create",
   teamModal: "newTeam.modal", teamName: "newTeam.name", teamAgents: "newTeam.agents",
   teamCreate: "newTeam.create", roomModal: "newRoom.modal", roomTeam: "newRoom.teamSearch",
-  agentSearch: "newAgent.templateSearch", agentTemplates: "newAgent.templates",
-  agentTemplate: "newAgent.template", agentDesc: "newAgent.description",
-  agentInstall: "newAgent.agencyInstall",
+  agentSearch: "newAgent.templateSearch", agentTemplates: "newAgent.template.list",
+  agentDesc: "newAgent.description", agentInstall: "newAgent.installTemplates",
+  agentInstallError: "newAgent.installTemplates.error",
 } as const;
 export const BOOKKEEPER_ID = "agency:finance-finance-bookkeeper-controller";
 export const AGENCY = { loading: "loading", missing: "missing", ready: "ready",
   unknown: "unknown" } as const;                     // newAgent.modal data-ac-state
-export const INSTALL = { installing: "installing", failed: "failed" } as const;
+export const INSTALL = { installing: "installing" } as const;
 export const NAME_TYPED = "typed";                   // newAgent.name data-ac-state
 export const DESC_FILLED = "filled";                 // newAgent.description data-ac-state
-export const NO_TEMPLATE = "none";                   // newAgent.templates data-ac-state
+export const NO_TEMPLATE = "none";                   // newAgent.template.list data-ac-state
 export const templateRowSelector = (id: string) =>
-  `[data-ac-testid="${IDS.agentTemplate}"][data-ac-value="${id}"]`;
+  `[data-ac-testid="${IDS.agentTemplates}"] [data-ac-value="${id}"]`;
 export const NEW_OPEN_DISABLED = "disabled"; // ActionBar triState value
 export const TEAM_STEPS = ["step-1", "step-2", "step-3"] as const;
 export const ROOM_HEADER_CLASS = "ac-wg-header";
@@ -305,7 +305,7 @@ function templatesGateView(r: AgentRead, probe: Probe): StepView | null {
   const install = probe.state(IDS.agentInstall);
   const target = sel(IDS.agentInstall);
   if (install === INSTALL.installing) return mark(plain(target, T_DOWNLOAD), false, true);
-  if (install === INSTALL.failed) return mark(plain(target, T_FAILED), true, true);
+  if (probe.has(IDS.agentInstallError)) return mark(plain(target, T_FAILED), true, true);
   return mark(plain(target, T_INSTALL), false, true);
 }
 

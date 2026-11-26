@@ -297,8 +297,10 @@ describe("TutorialOverlay", () => {
     modal.setAttribute("data-ac-state", "ready");
     await toDialog();
     expect(tutorialStore.ctx?.skip).toBe(false);
-    const row = target("newAgent.template");
+    const list = target("newAgent.template.list");
+    const row = document.createElement("button");
     row.setAttribute("data-ac-value", BOOKKEEPER_ID);
+    list.appendChild(row);
     target("newAgent.templateSearch").setAttribute("data-ac-value", "bookkeeper");
     await flush();
     expect(text()).toContain(T_PICK_BK);
@@ -364,7 +366,7 @@ describe("P09: skip download, menu ring, bubble placement", () => {
     target("actionBar.menu");
     target(menuId(path));
     target("newAgent.modal").setAttribute("data-ac-state", "missing");
-    target("newAgent.agencyInstall");
+    target("newAgent.installTemplates");
     target("newAgent.name").setAttribute("data-ac-value", "x");
     await mountLayer({ tutorialHintDismissed: true });
     tutorialStore.start();

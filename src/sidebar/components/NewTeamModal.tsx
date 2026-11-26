@@ -83,6 +83,17 @@ const NewTeamModal: Component<{
     return new Map(entries);
   });
 
+  const agentIndexByPath = createMemo(
+    () =>
+      new Map(
+        Array.from(agentsByProject().values())
+          .flat()
+          .map((agent, i) => [agent.path, i]),
+      ),
+  );
+  const agentDetail = (agent: AgentEntry) =>
+    agent.isLocal ? agent.name : `${agent.name}@${agent.projectName}`;
+
   const selectedAgentList = createMemo(() =>
     allAgents().filter((agent) => selectedAgents().has(agent.path)),
   );
@@ -270,7 +281,12 @@ const NewTeamModal: Component<{
       >
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Team</span>
-          <span class="wizard-step-indicator">Step {step()} of 3</span>
+          <span
+            class="wizard-step-indicator"
+            data-ac-testid="newTeam.step"
+            data-ac-role="status"
+            data-ac-state={`step-${step()}`}
+          >Step {step()} of 3</span>
         </div>
 
         <Show when={step() === 1}>
@@ -279,10 +295,10 @@ const NewTeamModal: Component<{
               <label class="new-agent-label" for="new-team-name">Team name</label>
               <input
                 id="new-team-name"
-                data-ac-testid="newTeam.name"
-                data-ac-role="input"
                 ref={nameRef!}
                 class="agent-search-input"
+                data-ac-testid="newTeam.name"
+                data-ac-role="textbox"
                 value={teamName()}
                 onInput={(event) => setTeamName(event.currentTarget.value)}
                 placeholder="dream-team"
@@ -291,9 +307,18 @@ const NewTeamModal: Component<{
             </div>
           </div>
           <div class="new-agent-footer">
-            <button class="new-agent-cancel-btn" onClick={() => props.onClose()}>Cancel</button>
+            <button
+              class="new-agent-cancel-btn"
+              data-ac-testid="newTeam.cancel"
+              data-ac-role="button"
+              onClick={() => props.onClose()}
+            >
+              Cancel
+            </button>
             <button
               class="new-agent-create-btn"
+              data-ac-testid="newTeam.next"
+              data-ac-role="button"
               disabled={!canNext1()}
               onClick={() => setStep(2)}
             >
@@ -305,13 +330,26 @@ const NewTeamModal: Component<{
         <Show when={step() === 2}>
           <div class="wizard-body" data-ac-testid="newTeam.agents" data-ac-role="list">
             <Show when={createError()}>
-              <div class="new-agent-error" role="alert" aria-label="Agent selection error">{createError()}</div>
+              <div
+                class="new-agent-error"
+                data-ac-testid="newTeam.error"
+                data-ac-role="status"
+                role="alert"
+                aria-label="Agent selection error"
+              >{createError()}</div>
             </Show>
             <Show when={loadingAgents()}>
-              <div class="wizard-loading">Loading agents...</div>
+              <div
+                class="wizard-loading"
+                data-ac-testid="newTeam.agents.loading"
+                data-ac-role="status"
+              >
+                Loading agents...
+              </div>
             </Show>
             <Show when={!loadingAgents() && allAgents().length === 0}>
-              <div class="wizard-empty">No agents found in any project.</div>
+              <div class="wizard-empty" data-ac-testid="newTeam.agents.empty" data-ac-role="status">
+                No agents found in any project.</div>
             </Show>
             <Show when={!loadingAgents() && allAgents().length > 0}>
               <div class="wizard-search-row">
@@ -322,6 +360,8 @@ const NewTeamModal: Component<{
                 </svg>
                 <input
                   class="wizard-search-input"
+                  data-ac-testid="newTeam.agentFilter"
+                  data-ac-role="textbox"
                   value={agentFilter()}
                   onInput={(event) => setAgentFilter(event.currentTarget.value)}
                   placeholder="Filter agents..."
@@ -335,11 +375,15 @@ const NewTeamModal: Component<{
                       {(agent) => {
                         const isSelected = () => selectedAgents().has(agent.path);
                         const isCoordinator = () => coordinator() === agent.path;
+                        const testId = () => `newTeam.agent.${agentIndexByPath().get(agent.path)}`;
                         return (
                           <div class="wizard-agent-row">
                             <label class="wizard-checkbox-label">
                               <input
                                 type="checkbox"
+                                data-ac-testid={testId()}
+                                data-ac-role="checkbox"
+                                data-ac-detail={agentDetail(agent)}
                                 checked={isSelected()}
                                 onChange={() => toggleAgent(agent.path)}
                               />
@@ -350,6 +394,8 @@ const NewTeamModal: Component<{
                                 <input
                                   type="radio"
                                   name="coordinator"
+                                  data-ac-testid={`${testId()}.coord`}
+                                  data-ac-role="radio"
                                   checked={isCoordinator()}
                                   onChange={() => setCoordinator(agent.path)}
                                 />
@@ -366,9 +412,18 @@ const NewTeamModal: Component<{
             </Show>
           </div>
           <div class="new-agent-footer">
-            <button class="new-agent-cancel-btn" onClick={() => setStep(1)}>Back</button>
+            <button
+              class="new-agent-cancel-btn"
+              data-ac-testid="newTeam.back"
+              data-ac-role="button"
+              onClick={() => setStep(1)}
+            >
+              Back
+            </button>
             <button
               class="new-agent-create-btn"
+              data-ac-testid="newTeam.next"
+              data-ac-role="button"
               disabled={!canNext2()}
               onClick={() => setStep(3)}
             >
@@ -381,6 +436,7 @@ const NewTeamModal: Component<{
           <div class="wizard-body">
             <TeamContextAlertsEditor
               idPrefix="new-team-context-alerts"
+              testIdPrefix="newTeam.contextAlerts"
               drafts={contextAlertDrafts()}
               validation={contextAlertValidation()}
               disabled={creating()}
@@ -397,6 +453,8 @@ const NewTeamModal: Component<{
               <div class="wizard-repo-input-row">
                 <input
                   class="agent-search-input"
+                  data-ac-testid="newTeam.repoInput"
+                  data-ac-role="textbox"
                   value={repoInput()}
                   disabled={creating()}
                   onInput={(event) => {
@@ -418,6 +476,8 @@ const NewTeamModal: Component<{
                 />
                 <button
                   class="new-agent-browse-btn"
+                  data-ac-testid="newTeam.addRepo"
+                  data-ac-role="button"
                   type="button"
                   disabled={creating()}
                   onClick={addRepo}
@@ -429,15 +489,22 @@ const NewTeamModal: Component<{
               <Show when={repos().length > 0}>
                 <div class="wizard-repo-list">
                   <For each={repos()}>
-                    {(repo) => {
+                    {(repo, r) => {
                       const allChecked = () =>
                         selectedAgentList().every((agent) => repo.agents.has(agent.path));
                       return (
-                        <div class="wizard-repo-card">
+                        <div
+                          class="wizard-repo-card"
+                          data-ac-testid={`newTeam.repo.${r()}`}
+                          data-ac-role="row"
+                          data-ac-detail={repoDisplayName(repo.url)}
+                        >
                           <div class="wizard-repo-header">
                             <span class="wizard-repo-name">{repoDisplayName(repo.url)}</span>
                             <button
                               class="wizard-repo-remove"
+                              data-ac-testid={`newTeam.repo.${r()}.remove`}
+                              data-ac-role="button"
                               type="button"
                               disabled={creating()}
                               onClick={() => removeRepo(repo.url)}
@@ -450,6 +517,8 @@ const NewTeamModal: Component<{
                             <label class="wizard-checkbox-label wizard-all-label">
                               <input
                                 type="checkbox"
+                                data-ac-testid={`newTeam.repo.${r()}.allAgents`}
+                                data-ac-role="checkbox"
                                 checked={allChecked()}
                                 disabled={creating()}
                                 onChange={() => toggleRepoAll(repo.url)}
@@ -457,10 +526,13 @@ const NewTeamModal: Component<{
                               <span>All agents</span>
                             </label>
                             <For each={selectedAgentList()}>
-                              {(agent) => (
+                              {(agent, s) => (
                                 <label class="wizard-checkbox-label">
                                   <input
                                     type="checkbox"
+                                    data-ac-testid={`newTeam.repo.${r()}.agent.${s()}`}
+                                    data-ac-role="checkbox"
+                                    data-ac-detail={agentDetail(agent)}
                                     checked={repo.agents.has(agent.path)}
                                     disabled={creating()}
                                     onChange={() => toggleRepoAgent(repo.url, agent.path)}
@@ -484,6 +556,8 @@ const NewTeamModal: Component<{
               <Show when={repoError()}>
                 <div
                   id="new-team-repository-error"
+                  data-ac-testid="newTeam.repoError"
+                  data-ac-role="status"
                   class="new-agent-error"
                   role="alert"
                   aria-label="Repository error"
@@ -496,6 +570,8 @@ const NewTeamModal: Component<{
             <Show when={createError()}>
               <div
                 id="new-team-create-error"
+                data-ac-testid="newTeam.error"
+                data-ac-role="status"
                 class="new-agent-error"
                 role="alert"
                 aria-label="Team creation error"
@@ -507,6 +583,8 @@ const NewTeamModal: Component<{
           <div class="new-agent-footer">
             <button
               class="new-agent-cancel-btn"
+              data-ac-testid="newTeam.back"
+              data-ac-role="button"
               disabled={creating()}
               onClick={() => {
                 if (!creating()) setStep(2);

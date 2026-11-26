@@ -9,6 +9,7 @@ import { MAX_CONTEXT_ALERT_THRESHOLDS } from "./team-context-alerts";
 
 interface TeamContextAlertsEditorProps {
   idPrefix: string;
+  testIdPrefix: string;
   drafts: readonly ContextAlertThresholdDraft[];
   validation: ContextAlertThresholdValidation;
   disabled: boolean;
@@ -87,6 +88,8 @@ export const TeamContextAlertsEditor: Component<TeamContextAlertsEditorProps> = 
         <button
           ref={addButton}
           class="new-agent-browse-btn"
+          data-ac-testid={`${props.testIdPrefix}.add`}
+          data-ac-role="button"
           type="button"
           disabled={props.disabled || props.drafts.length >= MAX_CONTEXT_ALERT_THRESHOLDS}
           aria-describedby={countId()}
@@ -94,18 +97,29 @@ export const TeamContextAlertsEditor: Component<TeamContextAlertsEditorProps> = 
         >
           Add threshold
         </button>
-        <span id={countId()} class="team-context-alert-count" aria-live="polite">
+        <span
+          id={countId()}
+          class="team-context-alert-count"
+          data-ac-testid={`${props.testIdPrefix}.count`}
+          data-ac-role="status"
+          aria-live="polite"
+        >
           {props.drafts.length} of {MAX_CONTEXT_ALERT_THRESHOLDS} thresholds
         </span>
       </div>
 
       <Show when={props.drafts.length === 0}>
-        <div class="wizard-empty team-context-alert-empty">No context alerts configured.</div>
+        <div
+          class="wizard-empty team-context-alert-empty"
+          data-ac-testid={`${props.testIdPrefix}.empty`}
+          data-ac-role="status"
+        >No context alerts configured.</div>
       </Show>
 
       <div class="team-context-alert-rows">
         <For each={draftIds()}>
           {(draftId, index) => {
+            const testId = () => `${props.testIdPrefix}.threshold.${index()}`;
             onCleanup(() => inputElements.delete(draftId));
             const rowValidation = () => validationById(draftId);
             const hasError = () => (rowValidation()?.errorCodes.length ?? 0) > 0;
@@ -129,6 +143,8 @@ export const TeamContextAlertsEditor: Component<TeamContextAlertsEditorProps> = 
                       }}
                       id={inputId(draftId)}
                       class="agent-search-input team-context-alert-input"
+                      data-ac-testid={testId()}
+                      data-ac-role="textbox"
                       type="text"
                       inputmode="numeric"
                       autocomplete="off"
@@ -147,13 +163,20 @@ export const TeamContextAlertsEditor: Component<TeamContextAlertsEditorProps> = 
                     <span class="team-context-alert-suffix" aria-hidden="true">%</span>
                   </div>
                   <Show when={hasError()}>
-                    <div id={rowErrorId(draftId)} class="team-context-alert-row-error">
+                    <div
+                      id={rowErrorId(draftId)}
+                      class="team-context-alert-row-error"
+                      data-ac-testid={`${testId()}.error`}
+                      data-ac-role="status"
+                    >
                       {rowValidation()?.messages.join(" ")}
                     </div>
                   </Show>
                 </div>
                 <button
                   class="new-agent-cancel-btn team-context-alert-remove"
+                  data-ac-testid={`${testId()}.remove`}
+                  data-ac-role="button"
                   type="button"
                   disabled={props.disabled}
                   aria-label={`Remove threshold ${index() + 1}`}
@@ -171,6 +194,8 @@ export const TeamContextAlertsEditor: Component<TeamContextAlertsEditorProps> = 
         <div
           id={aggregateErrorId()}
           class="new-agent-error team-context-alert-errors"
+          data-ac-testid={`${props.testIdPrefix}.errors`}
+          data-ac-role="status"
           role="alert"
           aria-label="Context alert threshold errors"
         >

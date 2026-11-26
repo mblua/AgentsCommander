@@ -85,7 +85,7 @@ const BK_ROW = templateRowSelector(BOOKKEEPER_ID);
 const NAME = tid("newAgent.name");
 const CREATE = tid("newAgent.create");
 const SEARCH = tid("newAgent.templateSearch");
-const INSTALL_BTN = tid("newAgent.agencyInstall");
+const INSTALL_BTN = tid("newAgent.installTemplates");
 
 /** Fills the agent dialog markers (P07): name value/state, template, query, agency. */
 function dlg(probe: FakeProbe, m: { name?: string; typed?: boolean; tpl?: string; q?: string;
@@ -94,10 +94,13 @@ function dlg(probe: FakeProbe, m: { name?: string; typed?: boolean; tpl?: string
     v === undefined ? map.delete(k) : map.set(k, v);
   set(probe.values, "newAgent.name", m.name);
   set(probe.states, "newAgent.name", m.typed ? "typed" : "auto");
-  set(probe.states, "newAgent.templates", m.tpl);
+  set(probe.states, "newAgent.template.list", m.tpl);
   set(probe.values, "newAgent.templateSearch", m.q);
   set(probe.states, "newAgent.modal", m.agency);
-  set(probe.states, "newAgent.agencyInstall", m.install);
+  const failed = m.install === "failed";
+  set(probe.states, "newAgent.installTemplates", failed ? "idle" : m.install);
+  if (failed) probe.show("newAgent.installTemplates.error");
+  else probe.hide("newAgent.installTemplates.error");
   set(probe.states, "newAgent.description", m.desc);
   if (m.row === false) probe.selectors.delete(BK_ROW);
   else probe.selectors.add(BK_ROW);

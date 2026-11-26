@@ -72,13 +72,13 @@ describe("tutorial targets contract", () => {
     const agm = read(OWNERS.newAgent!);
     const literals = ["data-ac-value={t.id}", 'data-ac-value="none"',
       "data-ac-value={templateQuery()}", "data-ac-value={name().trim()}", '"typed" : "auto"',
-      '"filled" : "empty"', 'selectedTemplateId() ?? "none"', '"installing"', '"failed"',
+      '"filled" : "empty"', 'selectedTemplateId() ?? "none"', '"installing"',
       ...Object.values(AGENCY).map((a) => `"${a}"`)];
     for (const l of literals) expect(agm, l).toContain(l);
     expect([NAME_TYPED, DESC_FILLED, NO_TEMPLATE]).toEqual(["typed", "filled", "none"]);
-    expect(INSTALL).toEqual({ installing: "installing", failed: "failed" });
+    expect(INSTALL).toEqual({ installing: "installing" });
     expect(templateRowSelector("x"))
-      .toBe('[data-ac-testid="newAgent.template"][data-ac-value="x"]');
+      .toBe('[data-ac-testid="newAgent.template.list"] [data-ac-value="x"]');
   });
 
   it("tutorial ring stacks above menus", () => {
@@ -99,6 +99,6 @@ describe("tutorial targets contract", () => {
 
   it("control: a wrong id is not found", () => {
     expect(hasTestid(read(OWNERS.actionBar!), "actionBar.newOpenX")).toBe(false);
-    expect(hasTestid(read(OWNERS.newAgent!), "newAgent.templatesX")).toBe(false);
+    expect(hasTestid(read(OWNERS.newAgent!), "newAgent.template.listX")).toBe(false);
   });
 });
