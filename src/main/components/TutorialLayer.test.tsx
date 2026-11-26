@@ -534,7 +534,8 @@ describe("P09: skip download, menu ring, bubble placement", () => {
   it("menu step ring sits on the menu item, not the header", async () => {
     const path = "/work/menu";
     atMenuItem(path);
-    target(`project.header.${automationIdPart(path)}`, { top: 300, left: 5, width: 50, height: 20 });
+    target(`project.header.${automationIdPart(path)}`,
+      { top: 300, left: 5, width: 50, height: 20 });
     target(menuId(path), { top: 100, left: 40, width: 180, height: 24 });
     await mountLayer({ tutorialHintDismissed: true });
     const ring = must("tutorial.ring");

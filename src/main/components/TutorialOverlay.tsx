@@ -14,7 +14,9 @@ const BUBBLE_W = 260;
 
 export type Box = { left: number; top: number; right: number; bottom: number };
 /** Bubble position that never overlaps the target box r (when the window allows it). */
-export function bubblePos(r: Box, h: number, vw: number, vh: number): { left: number; top: number } {
+export function bubblePos(
+  r: Box, h: number, vw: number, vh: number,
+): { left: number; top: number } {
   const clampX = (x: number) => Math.max(GAP, Math.min(x, vw - BUBBLE_W - GAP));
   const clampY = (y: number) => Math.max(GAP, Math.min(y, vh - h - GAP));
   const below = r.bottom + GAP;
