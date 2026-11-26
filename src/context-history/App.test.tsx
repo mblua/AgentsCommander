@@ -13,6 +13,7 @@ import type {
   AgentDetailResponse,
   AgentSummary,
   ChangesPageResponse,
+  FilterOptions,
   HistoryRecord,
   ReportResponse,
   ScopeWindowCoverage,
@@ -79,11 +80,22 @@ const agent: AgentSummary = {
   scopeWindows: null,
 };
 
-const reportResponse = (agents: AgentSummary[]): ReportResponse => ({
+const OPTIONS: FilterOptions = {
+  teamIds: ["team-a"],
+  codingAgentIds: ["claude"],
+  models: ["opus"],
+  efforts: [],
+};
+
+const reportResponse = (
+  agents: AgentSummary[],
+  filterOptions: FilterOptions = OPTIONS,
+): ReportResponse => ({
   ...header,
   agentsPage: agents,
   nextAgentCursor: null,
   totalAgents: agents.length,
+  filterOptions,
 });
 
 const session: SessionSummary = {
@@ -519,14 +531,6 @@ describe("ContextHistoryApp P18 order and Escape lifecycle", () => {
   // Written out by hand, not computed with the helper under test.
   const MIXED = ["a2", "", "a", "\u{1F600}", "A", "ä", "a10", "a"];
   const EXPECTED = ["A", "a", "a10", "a2", "ä", "\u{1F600}", ""];
-  const mixedAgent = (values: string[]): AgentSummary => ({
-    ...agent,
-    metadataBuckets: values.map((value) => ({
-      ...agent.metadataBuckets[0],
-      model: value,
-      teamIds: [value],
-    })),
-  });
   const optionValues = (select: HTMLSelectElement) => [...select.options].map((o) => o.value);
   const selectsOf = (root: Element) => {
     const all = [...root.querySelectorAll<HTMLSelectElement>("select")];
@@ -536,7 +540,10 @@ describe("ContextHistoryApp P18 order and Escape lifecycle", () => {
 
   it("orders team and metadata options by code unit, deduplicated", async () => {
     const fake = new FakeTransport();
-    fake.resolve("get_context_history_report", reportResponse([mixedAgent(MIXED)]));
+    fake.resolve(
+      "get_context_history_report",
+      reportResponse([agent], { ...OPTIONS, models: MIXED, teamIds: MIXED }),
+    );
     const view = mount(fake);
     cleanup = view.cleanup;
     await waitFor(() => void must(view.root, "[data-agent-key='dev']"));
@@ -548,9 +555,10 @@ describe("ContextHistoryApp P18 order and Escape lifecycle", () => {
   it("keeps a selected value that the next report no longer has, in order", async () => {
     const fake = new FakeTransport();
     let calls = 0;
-    fake.onInvoke("get_context_history_report", () =>
-      reportResponse([mixedAgent(calls++ === 0 ? MIXED : ["A", ""])]),
-    );
+    fake.onInvoke("get_context_history_report", () => {
+      const values = calls++ === 0 ? MIXED : ["A", ""];
+      return reportResponse([agent], { ...OPTIONS, models: values, teamIds: values });
+    });
     const view = mount(fake);
     cleanup = view.cleanup;
     await waitFor(() => void must(view.root, "[data-agent-key='dev']"));
@@ -564,6 +572,61 @@ describe("ContextHistoryApp P18 order and Escape lifecycle", () => {
       ),
     );
   });
+
+  it(
+    "lists every unfiltered option with an exact value selected and switches directly",
+    async () => {
+      const ALL: FilterOptions = {
+        teamIds: ["team-a", "team-b"],
+        codingAgentIds: ["claude", "codex"],
+        models: ["opus", "sonnet"],
+        efforts: ["high"],
+      };
+      const fake = new FakeTransport();
+      fake.onInvoke("get_context_history_report", () => ({
+        ...reportResponse([agent], ALL),
+        nextAgentCursor: "page-2",
+      }));
+      const view = mount(fake);
+      cleanup = view.cleanup;
+      await waitFor(() => void must(view.root, "[data-agent-key='dev']"));
+      const selects = () => view.root.querySelectorAll<HTMLSelectElement>("select");
+      // Team, Coding agent, Model at launch, Effort at launch (index 1 is Sessions).
+      const lists = () => [0, 2, 3, 4].map((index) => optionValues(selects()[index]));
+      const expected = [
+        ["", "team-a", "team-b"],
+        ["any", "unknown", "exact:claude", "exact:codex"],
+        ["any", "unknown", "exact:opus", "exact:sonnet"],
+        ["any", "unknown", "exact:high"],
+      ];
+      const choose = (index: number, value: string) => {
+        const select = selects()[index];
+        select.value = value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      const request = (call: number) => historyCalls(fake)[call].args.request;
+      expect(lists()).toEqual(expected);
+
+      choose(3, "exact:opus");
+      await waitFor(() => expect(historyCalls(fake)).toHaveLength(2));
+      expect(request(1)).toMatchObject({ model: { kind: "exact", value: "opus" } });
+      await waitFor(() => expect(lists()).toEqual(expected));
+
+      choose(3, "exact:sonnet");
+      await waitFor(() => expect(historyCalls(fake)).toHaveLength(3));
+      expect(request(2)).toMatchObject({ model: { kind: "exact", value: "sonnet" } });
+      await waitFor(() => expect(lists()).toEqual(expected));
+      expect(selectsOf(view.root).model.value).toBe("exact:sonnet");
+
+      choose(0, "team-b");
+      await waitFor(() => expect(historyCalls(fake)).toHaveLength(4));
+      expect(request(3)).toMatchObject({
+        teamId: "team-b",
+        model: { kind: "exact", value: "sonnet" },
+      });
+      await waitFor(() => expect(lists()).toEqual(expected));
+    },
+  );
 
   it("closes once on Escape from the region or a descendant; other keys do nothing", async () => {
     const fake = new FakeTransport();
