@@ -27,6 +27,7 @@ import {
 } from "../tutorials/create-first-team";
 import { automationIdPart } from "../../sidebar/components/replica-repo-badges";
 import TutorialLayer from "./TutorialLayer";
+import { bubblePos, type Box } from "./TutorialOverlay";
 
 const sel = (id: string) => `[data-ac-testid="${id}"]`;
 const q = (id: string) => document.body.querySelector<HTMLElement>(sel(id));
@@ -336,6 +337,115 @@ describe("TutorialOverlay", () => {
     expect(q("tutorial.exit")).toBeNull();
     click(must("tutorial.done"));
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("P09: skip download, menu ring, bubble placement", () => {
+  const agentsProject = (path: string) => ({
+    path, folderName: "agents", loops: [], contextTemplateUpdates: [], teams: [], workgroups: [],
+    agents: [{ name: "personal-assistant", path: `${path}/.ac/_agent_personal-assistant`,
+      roleExists: true }],
+  } as unknown as ProjectState);
+  function atMenuItem(path: string) {
+    vi.spyOn(projectStore, "projects", "get").mockReturnValue([agentsProject(path)]);
+    const ctx: RunCtx = { ...startCtx(0), step: "menuItem", projectPath: path };
+    vi.spyOn(tutorialStore, "ctx", "get").mockReturnValue(ctx);
+    vi.spyOn(tutorialStore, "active", "get").mockReturnValue(true);
+    vi.spyOn(tutorialStore, "sync").mockImplementation(() => {});
+  }
+  const menuId = (path: string) => `project.action.newAgent.${automationIdPart(path)}.projectMenu`;
+
+  it("Skip download on the install view sets skip and moves on", async () => {
+    const path = "/work/skip";
+    let outcome = { seq: 0, path: null as string | null, created: false };
+    vi.spyOn(projectStore, "projects", "get").mockReturnValue([agentsProject(path)]);
+    vi.spyOn(projectStore, "newProjectOutcome", "get").mockImplementation(() => outcome);
+    target("actionBar.newOpen");
+    target("actionBar.menu");
+    target(menuId(path));
+    target("newAgent.modal").setAttribute("data-ac-state", "missing");
+    target("newAgent.agencyInstall");
+    target("newAgent.name").setAttribute("data-ac-value", "x");
+    await mountLayer({ tutorialHintDismissed: true });
+    tutorialStore.start();
+    outcome = { seq: 1, path, created: true };
+    await flush();
+    await flush();
+    expect(tutorialStore.ctx).toMatchObject({ step: "dialog", goalKey: "agent:1" });
+    expect(must("tutorial.bubble").textContent).toContain(T_INSTALL);
+    click(must("tutorial.skip"));
+    expect(tutorialStore.ctx?.skip).toBe(true);
+    await flush();
+    expect(must("tutorial.bubble").querySelector("p")?.textContent)
+      .toBe("Name it accountant (no spaces), then click Create. No template is fine.");
+    expect(q("tutorial.skip")).toBeNull();
+  });
+
+  it("control: no Skip download at openMenu", async () => {
+    target("actionBar.newOpen");
+    await mountLayer({ tutorialHintDismissed: true });
+    tutorialStore.start();
+    await flush();
+    expect(tutorialStore.ctx?.step).toBe("openMenu");
+    expect(q("tutorial.skip")).toBeNull();
+    expect(q("tutorial.exit")).not.toBeNull();
+  });
+
+  it("menu step ring sits on the menu item, not the header", async () => {
+    const path = "/work/menu";
+    atMenuItem(path);
+    target(`project.header.${automationIdPart(path)}`, { top: 300, left: 5, width: 50, height: 20 });
+    target(menuId(path), { top: 100, left: 40, width: 180, height: 24 });
+    await mountLayer({ tutorialHintDismissed: true });
+    const ring = must("tutorial.ring");
+    expect([ring.style.top, ring.style.left, ring.style.width, ring.style.height])
+      .toEqual(["96px", "36px", "188px", "32px"]);
+  });
+
+  it("bubbleStyle uses bubblePos: bubble near the bottom goes above the ring", async () => {
+    const path = "/work/bottom";
+    vi.stubGlobal("innerHeight", 600);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(80);
+    atMenuItem(path);
+    target(menuId(path), { top: 560, left: 40, width: 180, height: 24 });
+    await mountLayer({ tutorialHintDismissed: true });
+    await flush();
+    const ring = must("tutorial.ring");
+    const rTop = parseFloat(ring.style.top);
+    const rBottom = rTop + parseFloat(ring.style.height);
+    const top = parseFloat(must("tutorial.bubble").style.top);
+    expect(top + 80 <= rTop || top >= rBottom).toBe(true);
+    expect(top + 80).toBeLessThanOrEqual(rTop);
+  });
+});
+
+describe("bubblePos", () => {
+  const H = 80;
+  const box = (left: number, top: number, w: number, h: number): Box =>
+    ({ left, top, right: left + w, bottom: top + h });
+  const overlaps = (r: Box, p: { left: number; top: number }) =>
+    p.top < r.bottom && p.top + H > r.top && p.left < r.right && p.left + 260 > r.left;
+  const cases: Array<[string, Box, number, number, { left: number; top: number }]> = [
+    ["below", box(40, 100, 180, 24), 1000, 600, { left: 40, top: 132 }],
+    ["above", box(40, 560, 180, 24), 1000, 600, { left: 40, top: 472 }],
+    ["right", box(40, 20, 180, 150), 1000, 180, { left: 228, top: 20 }],
+    ["left", box(500, 20, 180, 150), 800, 180, { left: 232, top: 20 }],
+  ];
+  it.each(cases)("%s of the target, no overlap", (_n, r, vw, vh, want) => {
+    const p = bubblePos(r, H, vw, vh);
+    expect(p).toEqual(want);
+    expect(overlaps(r, p)).toBe(false);
+  });
+  it("near bottom: no vertical overlap; control: the v5 formula overlaps", () => {
+    const r = box(40, 560, 180, 24);
+    const p = bubblePos(r, H, 1000, 600);
+    expect(p.top + H <= r.top || p.top >= r.bottom).toBe(true);
+    const v5 = Math.min(r.bottom + 8, 600 - H - 8);
+    expect(v5 < r.bottom && v5 + H > r.top).toBe(true);
+  });
+  it("window too small: rule 5", () => {
+    const r = box(40, 20, 180, 150);
+    expect(bubblePos(r, H, 300, 180)).toEqual({ left: 32, top: 92 });
   });
 });
 

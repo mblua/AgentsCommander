@@ -81,6 +81,22 @@ describe("tutorial targets contract", () => {
       .toBe('[data-ac-testid="newAgent.template"][data-ac-value="x"]');
   });
 
+  it("tutorial ring stacks above menus", () => {
+    const zOf = (css: string, selector: string) => {
+      const start = css.indexOf(selector + " {");
+      const block = css.slice(start, css.indexOf("}", start));
+      return Number(/z-index:\s*(\d+)/.exec(block)?.[1]);
+    };
+    const main = read("../styles/main.css");
+    const sidebar = read("../../sidebar/styles/sidebar.css");
+    const menu = zOf(sidebar, ".session-context-menu");
+    for (const s of [".tutorial-ring", ".tutorial-bubble"]) {
+      expect(zOf(main, s), s).toBeGreaterThan(menu);
+      expect(zOf(main, s), s).toBeLessThanOrEqual(10000);
+    }
+    expect(zOf(".x {\n  z-index: 5;\n}", ".x")).toBe(5);
+  });
+
   it("control: a wrong id is not found", () => {
     expect(hasTestid(read(OWNERS.actionBar!), "actionBar.newOpenX")).toBe(false);
     expect(hasTestid(read(OWNERS.newAgent!), "newAgent.templatesX")).toBe(false);

@@ -9,6 +9,22 @@ const MISSING_MS = 2000;
 const GAP = 8;
 const BUBBLE_W = 260;
 
+export type Box = { left: number; top: number; right: number; bottom: number };
+/** Bubble position that never overlaps the target box r (when the window allows it). */
+export function bubblePos(r: Box, h: number, vw: number, vh: number): { left: number; top: number } {
+  const clampX = (x: number) => Math.max(GAP, Math.min(x, vw - BUBBLE_W - GAP));
+  const clampY = (y: number) => Math.max(GAP, Math.min(y, vh - h - GAP));
+  const below = r.bottom + GAP;
+  if (below + h <= vh - GAP) return { left: clampX(r.left), top: below };
+  const above = r.top - GAP - h;
+  if (above >= GAP) return { left: clampX(r.left), top: above };
+  const right = r.right + GAP;
+  if (right + BUBBLE_W <= vw - GAP) return { left: right, top: clampY(r.top) };
+  const left = r.left - GAP - BUBBLE_W;
+  if (left >= GAP) return { left, top: clampY(r.top) };
+  return { left: clampX(r.left), top: clampY(below) };
+}
+
 const TutorialOverlay: Component<{ tick: number; probe: Probe }> = (props) => {
   let bubble: HTMLDivElement | undefined;
   const v = createMemo(() => {
@@ -34,13 +50,13 @@ const TutorialOverlay: Component<{ tick: number; probe: Probe }> = (props) => {
     const timer = setTimeout(() => setHidden(true), MISSING_MS);
     onCleanup(() => clearTimeout(timer));
   });
+  // Height is re-read each tick; flush() runs sync() before setTick().
   const bubbleStyle = (): JSX.CSSProperties => {
     const r = rect();
     if (!r) return { right: "24px", bottom: "24px" };
     const h = bubble?.offsetHeight ?? 0;
-    const left = Math.max(GAP, Math.min(r.left, window.innerWidth - BUBBLE_W - GAP));
-    const top = Math.max(GAP, Math.min(r.bottom + GAP, window.innerHeight - h - GAP));
-    return { left: `${left}px`, top: `${top}px` };
+    const p = bubblePos(r, h, window.innerWidth, window.innerHeight);
+    return { left: `${p.left}px`, top: `${p.top}px` };
   };
   return (
     <Show when={v()}>
@@ -68,6 +84,10 @@ const TutorialOverlay: Component<{ tick: number; probe: Probe }> = (props) => {
           >
             <p>{hidden() ? HIDDEN : cur().text}</p>
             <div class="tutorial-bubble-actions">
+              <Show when={cur().skip}>
+                <button type="button" data-ac-testid="tutorial.skip"
+                  onClick={() => tutorialStore.skipTemplates()}>Skip download</button>
+              </Show>
               <Show
                 when={cur().final}
                 fallback={
