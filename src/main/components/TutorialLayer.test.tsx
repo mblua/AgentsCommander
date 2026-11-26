@@ -27,7 +27,7 @@ import {
 } from "../tutorials/create-first-team";
 import { automationIdPart } from "../../sidebar/components/replica-repo-badges";
 import TutorialLayer from "./TutorialLayer";
-import { bubblePos, type Box } from "./TutorialOverlay";
+import { bubblePos, dialogPos, placeBubble, union, type Box } from "./TutorialOverlay";
 
 const sel = (id: string) => `[data-ac-testid="${id}"]`;
 const q = (id: string) => document.body.querySelector<HTMLElement>(sel(id));
@@ -53,6 +53,18 @@ function target(id: string, rect = { top: 10, left: 20, width: 30, height: 40 })
   el.getBoundingClientRect = () =>
     ({ ...rect, bottom: rect.top + rect.height, right: rect.left + rect.width }) as DOMRect;
   document.body.appendChild(el);
+  return el;
+}
+type R = { left: number; top: number; width: number; height: number };
+/** Like target(), inside `parent`, with extra attributes. */
+function box(id: string | null, rect: R, parent: HTMLElement = document.body,
+  attrs: Record<string, string> = {}) {
+  const el = document.createElement("div");
+  if (id) el.setAttribute("data-ac-testid", id);
+  for (const [k, val] of Object.entries(attrs)) el.setAttribute(k, val);
+  el.getBoundingClientRect = () =>
+    ({ ...rect, bottom: rect.top + rect.height, right: rect.left + rect.width }) as DOMRect;
+  parent.appendChild(el);
   return el;
 }
 function fake(flags: object = {}): FakeTransport {
@@ -479,6 +491,167 @@ describe("bubblePos", () => {
   it("window too small: rule 5", () => {
     const r = box(40, 20, 180, 150);
     expect(bubblePos(r, H, 300, 180)).toEqual({ left: 32, top: 92 });
+  });
+});
+
+describe("P11: bubble placement around menus and dialogs", () => {
+  const NAMES = ["personal-assistant", "accountant", "social-media-expert"];
+  const DIALOG = { "data-ac-role": "dialog" };
+  const rect = (left: number, top: number, width: number, height: number) =>
+    ({ left, top, width, height });
+  const proj = (path: string, n: number, team = false) => ({
+    path, folderName: "agents", loops: [], contextTemplateUpdates: [], workgroups: [],
+    agents: NAMES.slice(0, n).map((a) => ({ name: a, path: `${path}/.ac/_agent_${a}`,
+      roleExists: true })),
+    teams: team ? [{ name: "my-team", agents: NAMES.map((a) => `agents/${a}`),
+      coordinator: "agents/personal-assistant" }] : [],
+  } as unknown as ProjectState);
+  function mockRun(p: ProjectState | null, ctx: Partial<RunCtx>) {
+    vi.spyOn(projectStore, "projects", "get").mockReturnValue(p ? [p] : []);
+    const c: RunCtx = { ...startCtx(0), projectPath: p?.path ?? null, ...ctx };
+    vi.spyOn(tutorialStore, "ctx", "get").mockReturnValue(c);
+    vi.spyOn(tutorialStore, "active", "get").mockReturnValue(true);
+    vi.spyOn(tutorialStore, "sync").mockImplementation(() => {});
+  }
+  const pos = () => {
+    const b = must("tutorial.bubble");
+    return { left: b.style.left, top: b.style.top };
+  };
+  beforeEach(() => {
+    vi.stubGlobal("innerWidth", 1000);
+    vi.stubGlobal("innerHeight", 900);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(80);
+  });
+
+  const KIND_CASES: Array<[string, number, boolean, number]> = [
+    ["newAgent", 1, false, 100], ["newTeam", 3, false, 124], ["newRoom", 3, true, 148],
+  ];
+  it.each(KIND_CASES)("M1 %s: bubble below the whole project menu", async (kind, n, t, top) => {
+    const path = `/work/m1-${kind}`;
+    mockRun(proj(path, n, t), { step: "menuItem" });
+    const menu = box(null, rect(40, 100, 180, 200), document.body,
+      { class: "session-context-menu" });
+    box(`project.action.${kind}.${automationIdPart(path)}.projectMenu`,
+      rect(40, top, 180, 24), menu);
+    await mountLayer({ tutorialHintDismissed: true });
+    await flush();
+    expect(pos()).toEqual({ left: "40px", top: "308px" });
+    expect(must("tutorial.ring").style.top).toBe(`${top - 4}px`);
+  });
+
+  it("M2 New / Open menu: bubble below the menu", async () => {
+    mockRun(null, { step: "newProject" });
+    const menu = box("actionBar.menu", rect(40, 60, 180, 60), document.body,
+      { "data-ac-role": "menu" });
+    box("actionBar.menu.newProject", rect(40, 60, 180, 24), menu);
+    await mountLayer({ tutorialHintDismissed: true });
+    await flush();
+    expect(must("tutorial.bubble").textContent).toContain("Click New Project.");
+    expect(pos().top).toBe("128px");
+  });
+
+  /** Real store into the agent 2 dialog, search empty, Bookkeeper row present. */
+  async function toSearchStep(modalRect: R, w: number) {
+    const path = "/work/d";
+    let outcome = { seq: 0, path: null as string | null, created: false };
+    vi.spyOn(projectStore, "projects", "get").mockReturnValue([proj(path, 1)]);
+    vi.spyOn(projectStore, "newProjectOutcome", "get").mockImplementation(() => outcome);
+    target("actionBar.newOpen");
+    target("actionBar.menu");
+    target(`project.action.newAgent.${automationIdPart(path)}.projectMenu`);
+    const modal = box("newAgent.modal", modalRect, document.body,
+      { ...DIALOG, "data-ac-state": "ready" });
+    box("newAgent.templateSearch", rect(120, 260, w, 30), modal);
+    const list = box("newAgent.template.list", rect(120, 296, w, 168), modal);
+    box(null, rect(120, 296, w, 24), list, { "data-ac-value": BOOKKEEPER_ID });
+    await mountLayer({ tutorialHintDismissed: true });
+    tutorialStore.start();
+    outcome = { seq: 1, path, created: true };
+    await flush();
+    await flush();
+    await flush();
+    expect(tutorialStore.ctx).toMatchObject({ step: "dialog", goalKey: "agent:1" });
+    expect(must("tutorial.bubble").textContent).toContain("Type bookkeeper in the search box");
+  }
+
+  it("D1 New Agent search step: bubble above the dialog", async () => {
+    await toSearchStep(rect(100, 200, 800, 600), 760);
+    expect(pos()).toEqual({ left: "120px", top: "112px" });
+    expect(112 + 80).toBeLessThanOrEqual(200);
+  });
+  it("D2 no room above: bubble right of the dialog", async () => {
+    await toSearchStep(rect(100, 40, 500, 800), 460);
+    expect(pos()).toEqual({ left: "608px", top: "260px" });
+  });
+  it("D3 no room above or at the sides: bubble below the template list", async () => {
+    await toSearchStep(rect(20, 40, 960, 800), 760);
+    expect(pos()).toEqual({ left: "120px", top: "472px" });
+  });
+
+  function roomDialog(modalRect: R) {
+    mockRun(proj("/work/room", 3, true), { step: "dialog", goalKey: "room" });
+    const modal = box("newRoom.modal", modalRect, document.body, DIALOG);
+    box("newRoom.teamSearch", rect(120, 360, 760, 30), modal);
+    return modal;
+  }
+  it("D4 New Room: bubble above the dialog", async () => {
+    roomDialog(rect(100, 300, 800, 400));
+    await mountLayer({ tutorialHintDismissed: true });
+    await flush();
+    expect(must("tutorial.bubble").textContent).toContain("Choose my-team");
+    expect(pos()).toEqual({ left: "120px", top: "212px" });
+  });
+  it("D4 New Room, list open: bubble below the team list", async () => {
+    const modal = roomDialog(rect(20, 40, 960, 800));
+    box("newRoom.team.list", rect(120, 394, 760, 180), modal);
+    await mountLayer({ tutorialHintDismissed: true });
+    await flush();
+    expect(pos().top).toBe("582px");
+  });
+  it("D4 New Room, list hidden: rule A step 5 above the field", async () => {
+    vi.stubGlobal("innerHeight", 470);
+    const modal = roomDialog(rect(20, 40, 960, 420));
+    box("newRoom.team.list", rect(0, 0, 0, 0), modal);
+    await mountLayer({ tutorialHintDismissed: true });
+    await flush();
+    expect(pos()).toEqual({ left: "120px", top: "272px" });
+  });
+
+  it("D5 New Team wizard step 1: bubble above the dialog", async () => {
+    mockRun(proj("/work/team5", 3), { step: "dialog", goalKey: "team" });
+    const modal = box("newTeam.modal", rect(100, 300, 800, 400), document.body,
+      { ...DIALOG, "data-ac-state": "step-1" });
+    box("newTeam.name", rect(120, 360, 760, 30), modal);
+    await mountLayer({ tutorialHintDismissed: true });
+    await flush();
+    expect(must("tutorial.bubble").textContent).toContain("Name the team my-team");
+    expect(pos().top).toBe("212px");
+  });
+});
+
+describe("dialogPos", () => {
+  const H = 80;
+  const b = (left: number, top: number, w: number, h: number): Box =>
+    ({ left, top, right: left + w, bottom: top + h });
+  const t = b(120, 260, 200, 30);
+  const g = b(120, 260, 200, 200);
+  const cases: Array<[string, Box, number, number, { left: number; top: number }]> = [
+    ["above", b(100, 200, 400, 400), 1000, 900, { left: 120, top: 112 }],
+    ["right", b(100, 40, 400, 800), 1000, 900, { left: 508, top: 260 }],
+    ["left", b(400, 40, 590, 800), 1000, 900, { left: 132, top: 260 }],
+    ["below g", b(20, 40, 960, 800), 1000, 900, { left: 120, top: 468 }],
+    ["fallback", b(20, 40, 960, 500), 1000, 550, { left: 120, top: 172 }],
+  ];
+  it.each(cases)("rule A: %s", (_n, d, vw, vh, want) => {
+    expect(dialogPos(t, d, g, H, vw, vh)).toEqual(want);
+  });
+  it("placeBubble: no area is bubblePos(t); a menu area is bubblePos(union)", () => {
+    expect(placeBubble(t, t, null, H, 1000, 900)).toEqual(bubblePos(t, H, 1000, 900));
+    const menu = b(100, 200, 300, 300);
+    expect(placeBubble(t, t, { dialog: false, box: menu }, H, 1000, 900))
+      .toEqual(bubblePos(union(t, menu), H, 1000, 900));
+    expect(placeBubble(t, t, { dialog: false, box: menu }, H, 1000, 900))
+      .toEqual({ left: 100, top: 508 });
   });
 });
 

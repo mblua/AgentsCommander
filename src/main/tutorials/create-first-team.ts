@@ -26,7 +26,7 @@ export const IDS = {
   teamCreate: "newTeam.create", roomModal: "newRoom.modal", roomTeam: "newRoom.teamSearch",
   agentSearch: "newAgent.templateSearch", agentTemplates: "newAgent.template.list",
   agentDesc: "newAgent.description", agentInstall: "newAgent.installTemplates",
-  agentInstallError: "newAgent.installTemplates.error",
+  agentInstallError: "newAgent.installTemplates.error", roomTeamList: "newRoom.team.list",
 } as const;
 export const BOOKKEEPER_ID = "agency:finance-finance-bookkeeper-controller";
 export const AGENCY = { loading: "loading", missing: "missing", ready: "ready",
@@ -109,7 +109,8 @@ export type RunCtx = {
   filled: string | null; // name a template filled in this dialog (seen while auto), or null
 };
 export type StepView =
-  { target: string | null; text: string; warn: boolean; final: boolean; skip: boolean };
+  { target: string | null; text: string; warn: boolean; final: boolean; skip: boolean;
+    group?: string }; // group: selector of the list that belongs to the target's field
 
 type Workgroup = ProjectState["workgroups"][number];
 type Team = ProjectState["teams"][number];
@@ -303,6 +304,7 @@ function readAgent(ctx: RunCtx, want: string, probe: Probe): AgentRead {
   };
 }
 
+const withGroup = (v: StepView, id: string): StepView => ({ ...v, group: sel(id) });
 const mark = (v: StepView, warn: boolean, skip: boolean): StepView => ({ ...v, warn, skip });
 
 function nameView(r: AgentRead, text: string): StepView {
@@ -334,10 +336,14 @@ function templatesGateView(r: AgentRead, probe: Probe): StepView | null {
 function pickBookkeeperView(r: AgentRead): StepView {
   if (r.bkGone && !r.ok) return nameView(r, T_NAME_SKIP(r.want));
   if (r.bkGone) return plain(sel(IDS.agentCreate), T_CREATE);
-  if (!r.q.includes("bookkeeper")) return plain(sel(IDS.agentSearch), T_SEARCH_BK);
+  if (!r.q.includes("bookkeeper")) {
+    return withGroup(plain(sel(IDS.agentSearch), T_SEARCH_BK), IDS.agentTemplates);
+  }
   const row = templateRowSelector(BOOKKEEPER_ID);
-  if (r.tpl !== NO_TEMPLATE) return mark(plain(row, T_WRONG_BK), true, false);
-  return plain(row, T_PICK_BK);
+  if (r.tpl !== NO_TEMPLATE) {
+    return withGroup(mark(plain(row, T_WRONG_BK), true, false), IDS.agentTemplates);
+  }
+  return withGroup(plain(row, T_PICK_BK), IDS.agentTemplates);
 }
 
 function secondAgentView(r: AgentRead): StepView {
@@ -347,7 +353,9 @@ function secondAgentView(r: AgentRead): StepView {
 }
 
 function thirdAgentView(r: AgentRead): StepView {
-  if (r.tpl === NO_TEMPLATE && !r.typed) return plain(sel(IDS.agentSearch), T_SUGGEST);
+  if (r.tpl === NO_TEMPLATE && !r.typed) {
+    return withGroup(plain(sel(IDS.agentSearch), T_SUGGEST), IDS.agentTemplates);
+  }
   if (!r.ok) {
     const change = !r.typed && r.tpl !== NO_TEMPLATE;
     return nameView(r, change ? T_CHANGE(r.want) : T_NAME(r.want));
@@ -367,7 +375,8 @@ function dialogView(ctx: RunCtx, g: Goal, probe: Probe): StepView {
   if (g.kind === "agent") return agentDialogView(ctx, g.index, g.agent.name, probe);
   if (g.kind === "team") return teamDialogView(probe);
   const team = g.kind === "room" ? g.team.name : "";
-  return plain(sel(IDS.roomTeam), `Choose ${team}, then click Create.`);
+  const v = plain(sel(IDS.roomTeam), `Choose ${team}, then click Create.`);
+  return withGroup(v, IDS.roomTeamList);
 }
 
 const MENU_TEXT: Record<Kind, string> =

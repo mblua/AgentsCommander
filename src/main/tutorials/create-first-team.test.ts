@@ -124,6 +124,8 @@ function dlg(probe: FakeProbe, m: { name?: string; typed?: boolean; tpl?: string
 }
 const v = (target: string, text: string, warn = false, skip = false): StepView =>
   ({ target, text, warn, final: false, skip });
+const LIST = '[data-ac-testid="newAgent.template.list"]';
+const vg = (t: string, x: string, w = false): StepView => ({ ...v(t, x, w), group: LIST });
 
 /** Creates the agents before `index` and opens the dialog of agent `index`. */
 function toAgent(index: number): { probe: FakeProbe; ctx: RunCtx; p: ProjectState } {
@@ -155,15 +157,15 @@ function walkAgent(probe: FakeProbe, ctx: RunCtx, i: number, name: string) {
     dlg(probe, { name, typed: true, desc: "filled" });
   } else if (i === 1) {
     dlg(probe, { agency: "ready" });
-    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SEARCH_BK));
+    expect(view(ctx, probe)).toEqual(vg(SEARCH, L_SEARCH_BK));
     dlg(probe, { agency: "ready", q: "bookkeeper" });
-    expect(view(ctx, probe)).toEqual(v(BK_ROW, T_PICK_BK));
+    expect(view(ctx, probe)).toEqual(vg(BK_ROW, T_PICK_BK));
     dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name: "bk" });
     expect(view(ctx, probe)).toEqual(v(NAME, L_FILLED_AC));
     dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name, typed: true });
   } else {
     dlg(probe, { agency: "ready" });
-    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SUGGEST));
+    expect(view(ctx, probe)).toEqual(vg(SEARCH, L_SUGGEST));
     dlg(probe, { agency: "ready", name, typed: true });
   }
   expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
@@ -240,7 +242,8 @@ describe("create-first-team rules", () => {
     probe.hide(menuId("newRoom")).show("newRoom.modal");
     ctx = settle(ctx, probe);
     expect(view(ctx, probe)).toMatchObject({ target: tid("newRoom.teamSearch"),
-      text: "Choose my-team, then click Create." });
+      text: "Choose my-team, then click Create.",
+      group: '[data-ac-testid="newRoom.team.list"]' });
     probe.hide("newRoom.modal");
     p.workgroups.push(room("/home/u/proj/.ac/room-1", ALL, "personal-assistant"));
     ctx = settle(ctx, probe);
@@ -409,21 +412,24 @@ describe("create-first-team rules", () => {
     const { probe, ctx } = toAgent(0);
     dlg(probe, { agency: "missing" });
     expect(view(ctx, probe)).toEqual(v(NAME, L_NAME_PA));
+    expect(view(ctx, probe).group).toBeUndefined();
     dlg(probe, { agency: "missing", name: "personal-assistant", typed: true, desc: "empty" });
     expect(view(ctx, probe)).toEqual(v(tid("newAgent.description"), L_ROLE));
     expect(view(ctx, probe).target).not.toBe(CREATE);
+    expect(view(ctx, probe).group).toBeUndefined();
     dlg(probe, { agency: "missing", name: "personal-assistant", typed: true, desc: "filled" });
     expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
+    expect(view(ctx, probe).group).toBeUndefined();
   });
 
   it("A2. agent 2 ready: search, pick, rename, create; typed name; wrong template", () => {
     const { probe, ctx } = toAgent(1);
     dlg(probe, { agency: "ready", q: "Book" });
-    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SEARCH_BK));
+    expect(view(ctx, probe)).toEqual(vg(SEARCH, L_SEARCH_BK));
     dlg(probe, { agency: "ready", q: "BOOKKEEPER" });
-    expect(view(ctx, probe)).toEqual(v(BK_ROW, T_PICK_BK));
+    expect(view(ctx, probe)).toEqual(vg(BK_ROW, T_PICK_BK));
     dlg(probe, { agency: "ready", q: "bookkeeper", tpl: "local:other", name: "other" });
-    expect(view(ctx, probe)).toEqual(v(BK_ROW, T_WRONG_BK, true));
+    expect(view(ctx, probe)).toEqual(vg(BK_ROW, T_WRONG_BK, true));
     dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name: "x" });
     expect(view(ctx, probe)).toEqual(v(NAME, L_FILLED_AC));
     dlg(probe, { agency: "ready", q: "bookkeeper", tpl: BOOKKEEPER_ID, name: "x", typed: true });
@@ -436,13 +442,14 @@ describe("create-first-team rules", () => {
     let { probe, ctx } = toAgent(1);
     dlg(probe, { agency: "missing", install: "idle" });
     expect(view(ctx, probe)).toEqual(v(INSTALL_BTN, T_INSTALL, false, true));
+    expect(view(ctx, probe).group).toBeUndefined();
     dlg(probe, { agency: "missing", install: "installing" });
     expect(view(ctx, probe)).toEqual(v(INSTALL_BTN, T_DOWNLOAD, false, true));
     dlg(probe, { agency: "missing", install: "failed" });
     expect(view(ctx, probe)).toEqual(v(INSTALL_BTN, T_FAILED, true, true));
     dlg(probe, { agency: "ready" });
     expect(settle(ctx, probe)).toBe(ctx);
-    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SEARCH_BK));
+    expect(view(ctx, probe)).toEqual(vg(SEARCH, L_SEARCH_BK));
   });
 
   it("A4. skip survives steps for agents 2 and 3; a new run resets it", () => {
@@ -480,6 +487,7 @@ describe("create-first-team rules", () => {
     const { probe, ctx } = toAgent(2);
     dlg(probe, { agency: "loading" });
     expect(view(ctx, probe)).toEqual(v(tid("newAgent.modal"), T_LOADING));
+    expect(view(ctx, probe).group).toBeUndefined();
     dlg(probe, {});
     expect(view(ctx, probe)).toEqual(v(tid("newAgent.modal"), T_LOADING));
   });
@@ -487,7 +495,7 @@ describe("create-first-team rules", () => {
   it("A7. agent 3: suggestion, change after a pick, typed name; any template ok", () => {
     let { probe, ctx } = toAgent(2);
     dlg(probe, { agency: "ready", tpl: "none" });
-    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SUGGEST));
+    expect(view(ctx, probe)).toEqual(vg(SEARCH, L_SUGGEST));
     dlg(probe, { agency: "ready", tpl: "agency:marketing-x", name: "x" });
     expect(view(ctx, probe)).toEqual(v(NAME, L_CHANGE_SM));
     ctx = settle(ctx, probe);
@@ -520,7 +528,7 @@ describe("create-first-team rules", () => {
       expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
     }
     dlg(probe, { agency: "ready", q: "tax", row: false });
-    expect(view(ctx, probe)).toEqual(v(SEARCH, L_SEARCH_BK));
+    expect(view(ctx, probe)).toEqual(vg(SEARCH, L_SEARCH_BK));
   });
 
   it("A10. no text shows the slug; the old agent line is gone", () => {

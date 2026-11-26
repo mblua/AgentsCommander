@@ -25,6 +25,33 @@ export function bubblePos(r: Box, h: number, vw: number, vh: number): { left: nu
   return { left: clampX(r.left), top: clampY(below) };
 }
 
+const AREA = '[data-ac-role="dialog"], [data-ac-role="menu"], .session-context-menu';
+export type Area = { dialog: boolean; box: Box };
+export const union = (a: Box, b: Box): Box => ({
+  left: Math.min(a.left, b.left), top: Math.min(a.top, b.top),
+  right: Math.max(a.right, b.right), bottom: Math.max(a.bottom, b.bottom),
+});
+/** Rule A (owner): above the dialog; else outside right; else outside left;
+ *  else inside, below the field group g; else bubblePos around g. */
+export function dialogPos(t: Box, d: Box, g: Box, h: number, vw: number, vh: number) {
+  const clampX = (x: number) => Math.max(GAP, Math.min(x, vw - BUBBLE_W - GAP));
+  const clampY = (y: number) => Math.max(GAP, Math.min(y, vh - h - GAP));
+  const above = d.top - GAP - h;
+  if (above >= GAP) return { left: clampX(t.left), top: above };
+  const right = d.right + GAP;
+  if (right + BUBBLE_W <= vw - GAP) return { left: right, top: clampY(t.top) };
+  const left = d.left - GAP - BUBBLE_W;
+  if (left >= GAP) return { left, top: clampY(t.top) };
+  const below = g.bottom + GAP;
+  if (below + h <= vh - GAP) return { left: clampX(t.left), top: below };
+  return bubblePos(g, h, vw, vh);
+}
+/** g = target, joined with its field group when the step has one. */
+export function placeBubble(t: Box, g: Box, area: Area | null, h: number, vw: number, vh: number) {
+  if (area?.dialog) return dialogPos(t, area.box, g, h, vw, vh);
+  return bubblePos(area ? union(g, area.box) : g, h, vw, vh);
+}
+
 const TutorialOverlay: Component<{ tick: number; probe: Probe }> = (props) => {
   let bubble: HTMLDivElement | undefined;
   const v = createMemo(() => {
@@ -37,6 +64,20 @@ const TutorialOverlay: Component<{ tick: number; probe: Probe }> = (props) => {
     const target = v()?.target;
     const el = target ? document.querySelector(target) : null;
     return el ? el.getBoundingClientRect() : null;
+  });
+  const around = createMemo(() => {
+    void props.tick;
+    const cur = v();
+    const el = cur?.target ? document.querySelector(cur.target) : null;
+    if (!el) return null;
+    let g: Box = el.getBoundingClientRect();
+    const gr = cur?.group ? document.querySelector(cur.group)?.getBoundingClientRect() : null;
+    if (gr && gr.width > 0 && gr.height > 0) g = union(g, gr);
+    const a = el.closest(AREA);
+    const area = a
+      ? { dialog: a.matches('[data-ac-role="dialog"]'), box: a.getBoundingClientRect() }
+      : null;
+    return { g, area };
   });
   const [hidden, setHidden] = createSignal(false);
   // Same step and target, still missing: one key, one timer.
@@ -55,7 +96,9 @@ const TutorialOverlay: Component<{ tick: number; probe: Probe }> = (props) => {
     const r = rect();
     if (!r) return { right: "24px", bottom: "24px" };
     const h = bubble?.offsetHeight ?? 0;
-    const p = bubblePos(r, h, window.innerWidth, window.innerHeight);
+    const ar = around();
+    const { innerWidth: vw, innerHeight: vh } = window;
+    const p = placeBubble(r, ar?.g ?? r, ar?.area ?? null, h, vw, vh);
     return { left: `${p.left}px`, top: `${p.top}px` };
   };
   return (

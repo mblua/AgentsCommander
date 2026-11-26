@@ -97,6 +97,31 @@ describe("tutorial targets contract", () => {
     expect(zOf(".x {\n  z-index: 5;\n}", ".x")).toBe(5);
   });
 
+  it("bubble areas: dialog and menu markers exist in their owner files", () => {
+    for (const k of KINDS) expect(read(OWNERS[k]!), k).toContain('data-ac-role="dialog"');
+    expect(read(OWNERS.actionBar!)).toContain('data-ac-role="menu"');
+    const at = PANEL.indexOf("project.action.newAgent.");
+    expect(at).toBeGreaterThan(0);
+    expect(PANEL.slice(Math.max(0, at - 300), at)).toContain('class="session-context-menu"');
+  });
+
+  it("bubbles are yellow, the ring stays cyan", () => {
+    const main = read("../styles/main.css");
+    const block = (sel: string) => {
+      const start = main.indexOf(sel);
+      expect(start, sel).toBeGreaterThanOrEqual(0);
+      return main.slice(start, main.indexOf("}", start));
+    };
+    const bubble = block(".tutorial-bubble {");
+    expect(bubble).toContain("border: 1px solid var(--sidebar-warning, #e0a83a);");
+    expect(bubble).toContain("0 0 12px var(--sidebar-warning, #e0a83a)");
+    expect(bubble).not.toContain("--sidebar-accent");
+    expect(block(".tutorial-bubble button:focus-visible"))
+      .toContain("outline: 2px solid var(--sidebar-warning, #e0a83a);");
+    expect(block(".tutorial-ring {")).toContain("--sidebar-accent");
+    expect(block(".tutorial-bubble--warn")).toContain("border-style: dashed");
+  });
+
   it("control: a wrong id is not found", () => {
     expect(hasTestid(read(OWNERS.actionBar!), "actionBar.newOpenX")).toBe(false);
     expect(hasTestid(read(OWNERS.newAgent!), "newAgent.template.listX")).toBe(false);
