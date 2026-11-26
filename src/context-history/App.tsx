@@ -16,9 +16,9 @@ import {
   sessionWindowLabel,
   type AgentSummary,
   type BoundaryReason,
+  type FilterOptions,
   type HistoryRecord,
   type LaunchFilter,
-  type MetadataBucket,
   type ScopeWindowCoverage,
   type SessionSummary,
 } from "../shared/context-history";
@@ -108,32 +108,20 @@ function byCodeUnit(a: string, b: string): number {
   return a < b ? -1 : 1;
 }
 
-/** Exact values offered by a launch filter: those seen plus the selected one. */
-function exactValues(
-  agents: AgentSummary[],
-  field: MetadataField,
-  selected: LaunchFilter,
-): string[] {
-  const values = new Set<string>();
-  for (const agent of agents) {
-    for (const bucket of agent.metadataBuckets as MetadataBucket[]) {
-      const value = bucket[field];
-      if (value !== null) values.add(value);
-    }
-  }
-  if (selected.kind === "exact") values.add(selected.value);
-  return [...values].sort(byCodeUnit);
-}
+const OPTION_LIST: Record<MetadataField, Exclude<keyof FilterOptions, "teamIds">> = {
+  codingAgentId: "codingAgentIds",
+  model: "models",
+  effort: "efforts",
+};
 
-function teamValues(agents: AgentSummary[], selected: string | null): string[] {
-  const values = new Set<string>();
-  for (const agent of agents) {
-    for (const bucket of agent.metadataBuckets) {
-      for (const team of bucket.teamIds) values.add(team);
-    }
-  }
-  if (selected !== null) values.add(selected);
-  return [...values].sort(byCodeUnit);
+const exactOf = (filter: LaunchFilter): string | null =>
+  filter.kind === "exact" ? filter.value : null;
+
+/** A dropdown's exact values: the backend's options plus the selected one. */
+function offeredValues(values: readonly string[] | undefined, selected: string | null): string[] {
+  const set = new Set(values ?? []);
+  if (selected !== null) set.add(selected);
+  return [...set].sort(byCodeUnit);
 }
 
 /** Team attribution of one count-mode scope, never a merged bucket. */
@@ -230,6 +218,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
   });
 
   const agents = createMemo(() => agentsOf(state.report()));
+  const filterOptions = createMemo(() => state.report().data?.filterOptions);
   const sessions = createMemo(() => sessionsOf(state.detail()));
   const records = createMemo(() => recordsOf(state.changes()));
 
@@ -286,7 +275,12 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
       >
         <option value="any">{TEXT.all}</option>
         <option value="unknown">{TEXT.unknown}</option>
-        <For each={exactValues(agents(), field, state.filters()[field])}>
+        <For
+          each={offeredValues(
+            filterOptions()?.[OPTION_LIST[field]],
+            exactOf(state.filters()[field]),
+          )}
+        >
           {(value) => <option value={`exact:${value}`}>{value}</option>}
         </For>
       </select>
@@ -409,7 +403,7 @@ const ContextHistoryApp: Component<ContextHistoryAppProps> = (props) => {
                 }
               >
                 <option value="">{TEXT.all}</option>
-                <For each={teamValues(agents(), state.filters().teamId)}>
+                <For each={offeredValues(filterOptions()?.teamIds, state.filters().teamId)}>
                   {(team) => <option value={team}>{team}</option>}
                 </For>
               </select>

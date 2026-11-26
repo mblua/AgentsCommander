@@ -112,10 +112,19 @@ export interface AgentSummary extends Aggregate {
   scopeWindows: ScopeWindowCoverage[] | null;
 }
 
+/** Values each filter can offer: unfiltered selection plus the shown sessions. */
+export interface FilterOptions {
+  teamIds: string[];
+  codingAgentIds: string[];
+  models: string[];
+  efforts: string[];
+}
+
 export interface ReportResponse extends ResponseHeader {
   agentsPage: AgentSummary[];
   nextAgentCursor: string | null;
   totalAgents: number;
+  filterOptions: FilterOptions;
 }
 
 export interface SessionStats {

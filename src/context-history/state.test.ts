@@ -42,6 +42,7 @@ function report(agents: AgentSummary[], next: string | null, total: number): Rep
     agentsPage: agents,
     nextAgentCursor: next,
     totalAgents: total,
+    filterOptions: { teamIds: [], codingAgentIds: [], models: [], efforts: [] },
   };
 }
 
