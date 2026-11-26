@@ -89,6 +89,46 @@ where
     }
 }
 
+/// Starts the named thread `signal-exit` with its own current-thread runtime, then
+/// `install()` and `run(streams, first, |_| {})`. The receiver gets `true` once all
+/// handlers are registered (readiness) or `false` on failure; callers may drop it.
+pub(crate) fn spawn_listener<F>(first: F) -> mpsc::Receiver<bool>
+where
+    F: FnOnce(&SignalExit) + Send + 'static,
+{
+    let (ready, ready_rx) = mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("signal-exit".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::warn!("[signal] handler install failed: {e}");
+                    let _ = ready.send(false);
+                    return;
+                }
+            };
+            let _enter = rt.enter();
+            let streams = match install() {
+                Ok(streams) => streams,
+                Err(e) => {
+                    log::warn!("[signal] handler install failed: {e}");
+                    let _ = ready.send(false);
+                    return;
+                }
+            };
+            let _ = ready.send(true);
+            rt.block_on(run(streams, first, |_| {}));
+        });
+    if let Err(e) = spawned {
+        log::warn!("[signal] handler install failed: {e}");
+    }
+    ready_rx
+}
+
 /// Starts a detached thread that, after `after`, runs `report` for at most
 /// `REPORT_CAP` and then ends the process with `128 + signo`.
 pub(crate) fn spawn_watchdog<P>(signo: i32, after: Duration, report: P)

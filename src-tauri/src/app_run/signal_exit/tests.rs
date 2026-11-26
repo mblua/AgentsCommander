@@ -226,3 +226,21 @@ fn t4_watchdog_exits_blocked_process() {
     assert_eq!(status.code(), Some(143), "{status}; stdout: {stdout}");
     assert!(elapsed < Duration::from_secs(5), "took {elapsed:?}");
 }
+
+/// T6: the production listener thread and runtime catch the signal.
+#[test]
+fn t6_spawn_listener_reaches_first() {
+    const CASE: &str = "t6_spawn_listener_reaches_first";
+    if in_child(CASE) {
+        let (tx, rx) = mpsc::channel();
+        let ready = spawn_listener(move |s: &SignalExit| {
+            let _ = tx.send(s.name);
+        });
+        assert_eq!(ready.recv_timeout(Duration::from_secs(5)), Ok(true));
+        raise(libc::SIGTERM);
+        let got = rx.recv_timeout(Duration::from_secs(5)).ok();
+        println!("\nfirst {}", got.unwrap_or("none"));
+        return;
+    }
+    parent_first(CASE, "SIGTERM");
+}

@@ -72,6 +72,7 @@ pub(super) struct SetupCtx {
     pub(super) selection_coordinator_for_setup: crate::session::selection::SelectionCoordinator,
     pub(super) resource_monitor_for_setup: Arc<resource_monitor::ResourceMonitorState>,
     pub(super) ui_automation_state_for_setup: crate::testability::ui_automation::UiAutomationState,
+    pub(super) quit_gate_for_setup: Arc<crate::QuitGate>,
 }
 pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn std::error::Error>> {
     let app = SetupApp(app);
@@ -90,6 +91,8 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     );
 
     start_startup_housekeeping(app, &ctx.shutdown_for_setup);
+    #[cfg(unix)]
+    spawn_signal_exit(app, ctx.quit_gate_for_setup);
     let (git_watcher, discovery_branch_watcher) = start_git_and_remote_watchers(
         app,
         [
@@ -259,8 +262,6 @@ fn mark_restore_in_progress(app: SetupApp<'_>) -> StartupSessions {
 
 fn start_startup_housekeeping(app: SetupApp<'_>, shutdown: &ShutdownSignal) {
     spawn_screenshot_hotkey_registration(app);
-    #[cfg(unix)]
-    spawn_signal_exit(app);
 
     // Spawn the background task that emits `error_log_event`
     // pings to the UI when ERROR entries are captured. The task runs
@@ -285,35 +286,26 @@ fn start_startup_housekeeping(app: SetupApp<'_>, shutdown: &ShutdownSignal) {
 
 /// #5275: logs SIGTERM, SIGHUP and SIGINT and sends the first one through the
 /// single orderly exit, bounded by the watchdog. Not tied to `ShutdownSignal`,
-/// so repeats are still logged during shutdown.
+/// so repeats are still logged during shutdown. Runs on its own thread
+/// (`signal_exit::spawn_listener`).
 #[cfg(unix)]
-fn spawn_signal_exit(app: SetupApp<'_>) {
+fn spawn_signal_exit(app: SetupApp<'_>, gate: Arc<crate::QuitGate>) {
     use super::signal_exit::{self, SignalExit, SIGNAL_EXIT_DEADLINE};
     let handle = app.handle().clone();
-    let gate = app.state::<Arc<crate::QuitGate>>().inner().clone();
-    tauri::async_runtime::spawn(async move {
-        let streams = match signal_exit::install() {
-            Ok(streams) => streams,
-            Err(e) => {
-                log::warn!("[signal] handler install failed: {e}");
-                return;
-            }
-        };
-        let first = move |s: &SignalExit| {
-            let name = s.name;
-            signal_exit::spawn_watchdog(s.signo, SIGNAL_EXIT_DEADLINE, move || {
-                let secs = SIGNAL_EXIT_DEADLINE.as_secs();
-                log::error!("[signal] shutdown exceeded {secs}s after {name}; forcing exit");
-                log::logger().flush();
-            });
-            if gate.claim_signal_exit() {
-                crate::quit_gate::exit_closing_detached(&crate::TauriQuitHost::new(handle));
-            } else {
-                log::warn!("[signal] exit already claimed by quit gate; waiting");
-            }
-        };
-        signal_exit::run(streams, first, |_| {}).await;
-    });
+    let first = move |s: &SignalExit| {
+        let name = s.name;
+        signal_exit::spawn_watchdog(s.signo, SIGNAL_EXIT_DEADLINE, move || {
+            let secs = SIGNAL_EXIT_DEADLINE.as_secs();
+            log::error!("[signal] shutdown exceeded {secs}s after {name}; forcing exit");
+            log::logger().flush();
+        });
+        if gate.claim_signal_exit() {
+            crate::quit_gate::exit_closing_detached(&crate::TauriQuitHost::new(handle));
+        } else {
+            log::warn!("[signal] exit already claimed by quit gate; waiting");
+        }
+    };
+    let _ready = signal_exit::spawn_listener(first);
 }
 
 fn start_restore(app: SetupApp<'_>, start: RestoreStart) {
