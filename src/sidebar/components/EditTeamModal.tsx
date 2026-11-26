@@ -409,6 +409,7 @@ const EditTeamModal: Component<{
             <div class="wizard-body">
               <TeamContextAlertsEditor
                 idPrefix="edit-team-context-alerts"
+                testIdPrefix="editTeam.contextAlerts"
                 drafts={contextAlertDrafts()}
                 validation={contextAlertValidation()}
                 disabled={saving()}

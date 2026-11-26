@@ -43,6 +43,7 @@ function mountEditor(initial: ContextAlertThresholdDraft[], initiallyDisabled = 
     () => (
       <TeamContextAlertsEditor
         idPrefix="test-context-alerts"
+        testIdPrefix="t"
         drafts={drafts()}
         validation={validateContextAlertThresholdDrafts(drafts())}
         disabled={disabled()}
@@ -211,5 +212,21 @@ describe("TeamContextAlertsEditor", () => {
     mounted.setDisabled(false);
     expect(thresholdInput.disabled).toBe(false);
     expect(removeButton(mounted.root, 1).disabled).toBe(false);
+  });
+
+  it("exposes data-ac-testid hooks under the given prefix", () => {
+    const editor = mountEditor([]);
+    cleanupEditor = editor.cleanup;
+    const byId = (id: string) => editor.root.querySelectorAll(`[data-ac-testid="${id}"]`);
+    expect(byId("t.add")).toHaveLength(1);
+    expect(byId("t.count")).toHaveLength(1);
+    expect(byId("t.empty")).toHaveLength(1);
+    click(byId("t.add")[0]);
+    expect(byId("t.threshold.0")).toHaveLength(1);
+    expect(byId("t.threshold.0.remove")).toHaveLength(1);
+    expect(byId("t.empty")).toHaveLength(0);
+    click(byId("t.threshold.0.remove")[0]);
+    expect(byId("t.threshold.0")).toHaveLength(0);
+    expect(byId("t.empty")).toHaveLength(1);
   });
 });

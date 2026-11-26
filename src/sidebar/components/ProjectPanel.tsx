@@ -4007,10 +4007,15 @@ const ProjectPanel: Component = () => {
                               const teamCollapsedKey = projectPanelCollapseKey(proj.path, "team", team.name);
                               const teamCollapsed = () => isPanelCollapsed(teamCollapsedKey, true);
                               const visibleTeamMembers = () => filteredTeamMembers(team);
+                              const teamIdPart = () =>
+                                `${projectAutomationId()}.${automationIdPart(team.name)}`;
                               return (
                                 <div class="ac-team-group">
                                   <div
                                     class="ac-team-header"
+                                    data-ac-testid={`team.header.${teamIdPart()}`}
+                                    data-ac-role="row"
+                                    data-ac-state={teamCollapsed() ? "collapsed" : "expanded"}
                                     onClick={() => togglePanelCollapsed(teamCollapsedKey, true)}
                                     onKeyDown={onRowKey(() => togglePanelCollapsed(teamCollapsedKey, true))}
                                     onContextMenu={(e) => handleTeamContextMenu(e, team)}
@@ -4027,7 +4032,14 @@ const ProjectPanel: Component = () => {
                                       <For each={visibleTeamMembers()}>
                                         {(agentName) => {
                                           return (
-                                            <div class="ac-team-member" title={agentName}>
+                                            <div
+                                              class="ac-team-member"
+                                              data-ac-testid={`team.member.${teamIdPart()}`
+                                                + `.${automationIdPart(agentName)}`}
+                                              data-ac-role="row"
+                                              data-ac-detail={teamMemberDisplayLabel(agentName)}
+                                              title={agentName}
+                                            >
                                               <span class="ac-team-member-name">{teamMemberDisplayLabel(agentName)}</span>
                                               <Show when={agentName === team.coordinator}>
                                                 <span class="ac-discovery-badge coord">orchestrator</span>

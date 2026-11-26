@@ -115,15 +115,83 @@ Keep sanitization/120-character limit; parse complete fixture JSON, truncation m
 
 Separate R2 gates: new official binary receipt; five TASK cases (Clean 23/23 bytes, explicit 37 and UI state); deterministic D2-b; focus before ArrowDown; native Windows keyboard/mouse/Tab/IME NOT-RUN until authorized; new light/dark open/closed screenshots/bounds at normal/minimum geometry; isolation, unique receipts, manifest/cleanup. Normal placement x450/y250/1401x902; minimum 1200x900 physical at DPR1.5 requests 800 logical width, actual viewport may be 786. Record measured identity/DPR/viewport, no smaller geometry or OS fallback. Cropped captures cannot prove absent pixels/full comparison. Five PASS do not waive gates or inherit B acceptance.
 
+## New Agent Dialog (#5172)
+
+Open with `contextClick` on `project.header.<P>`, then `click` `project.action.newAgent.<P>.projectMenu`. The template list loads after the dialog mounts: `wait` for `newAgent.template.option.0` before searching.
+
+| Behavior | Selector | Action |
+|---|---|---|
+| Detect dialog (role dialog) | `newAgent.modal` | `query`, `wait` |
+| Filter templates | `newAgent.templateSearch` | `setValue`, `query` |
+| Install Agency templates (state `installing`/`idle`) | `newAgent.installTemplates` | `query`, `click`, `wait` |
+| Read install error | `newAgent.installTemplates.error` | `query` |
+| Inspect template list | `newAgent.template.list` | `query` |
+| Pick "No template" (state `selected`/`unselected`) | `newAgent.template.none` | `query`, `click` |
+| Pick a template (detail = name, state `selected`/`unselected`) | `newAgent.template.option.<i>` | `query`, `click` |
+| Set agent name | `newAgent.name` | `setValue` |
+| Read create error | `newAgent.error` | `query` |
+| Cancel dialog | `newAgent.cancel` | `click` |
+| Create agent | `newAgent.create` | `query`, `click` |
+
+## New Team Dialog (#5172)
+
+Open with `contextClick` on `project.header.<P>`, then `click` `project.action.newTeam.<P>.projectMenu`. Wizard steps are exclusive: controls of hidden steps give `missing_selector`. Checkbox and radio inputs are toggled with `click`; the snapshot reports `checked`.
+
+| Behavior | Selector | Action |
+|---|---|---|
+| Detect dialog (state `step-1`/`step-2`/`step-3`) | `newTeam.modal` | `query`, `wait` |
+| Read step indicator (role status, state `step-<n>`) | `newTeam.step` | `query` |
+| Set team name (step 1) | `newTeam.name` | `setValue` |
+| Filter agents (step 2) | `newTeam.agentFilter` | `setValue` |
+| Read loading / no-agents status | `newTeam.agents.loading`, `newTeam.agents.empty` | `query`, `wait` |
+| Select agent (detail `name`, or `name@project` if not local) | `newTeam.agent.<a>` | `query`, `click` |
+| Set coordinator (selected agents only) | `newTeam.agent.<a>.coord` | `click` |
+| Enter repo URL (step 3) | `newTeam.repoInput` | `setValue` |
+| Add repo | `newTeam.addRepo` | `click` |
+| Inspect repo card (detail = repo display name) | `newTeam.repo.<r>` | `query` |
+| Remove repo | `newTeam.repo.<r>.remove` | `click` |
+| Toggle all agents of a repo | `newTeam.repo.<r>.allAgents` | `click` |
+| Toggle one agent of a repo (detail as agent row) | `newTeam.repo.<r>.agent.<s>` | `click` |
+| Read repo / create errors | `newTeam.repoError`, `newTeam.error` | `query` |
+| Cancel (step 1) | `newTeam.cancel` | `click` |
+| Back (steps 2 and 3) | `newTeam.back` | `click` |
+| Next (steps 1 and 2) | `newTeam.next` | `click` |
+| Create (step 3) | `newTeam.create` | `click` |
+| Context alerts editor | `newTeam.contextAlerts.*` | see below |
+
+Index rule: `<a>` is the 0-based position in the agent list as shown (after the filter), `<r>` the position in the repo list, `<s>` the position among selected agents, `<i>` the position in the filtered template list. Indices change when the list is filtered, added to or removed from: query the row `detail` just before `click`.
+
+## Context Usage Alerts Editor (#5172)
+
+Shared by New Team (`X` = `newTeam.contextAlerts`) and Edit Team (`X` = `editTeam.contextAlerts`). `<k>` is the 0-based row index.
+
+| Behavior | Selector | Action |
+|---|---|---|
+| Add threshold | `X.add` | `click` |
+| Read count / empty state | `X.count`, `X.empty` | `query` |
+| Set percentage | `X.threshold.<k>` | `setValue` |
+| Read row error | `X.threshold.<k>.error` | `query` |
+| Remove threshold | `X.threshold.<k>.remove` | `click` |
+| Read error summary | `X.errors` | `query` |
+
+## Teams Section (#5172)
+
+`<P>` = automationIdPart(project.path), `<T>` = automationIdPart(team.name), `<M>` = automationIdPart(member entry). The member entry is the `team.agents` value, written as `<projectFolder>/<agent>`; automationIdPart replaces each run of characters outside `[a-zA-Z0-9._-]` with `-` and trims `-`. Example: agent `tech-lead` of project folder `project` gives `team.member.<P>.dev-team.project-tech-lead`. The full entry is kept so same-named agents of two projects never collide.
+
+| Behavior | Selector | Action |
+|---|---|---|
+| Expand/collapse team (state `collapsed`/`expanded`) | `team.header.<P>.<T>` | `query`, `click`, `contextClick` |
+| Inspect member (detail = display label, e.g. `tech-lead@project`) | `team.member.<P>.<T>.<M>` | `query` |
+| Team menu actions (after `contextClick` on the header) | `team.action.edit.<P>.<T>`, `team.action.delete.<P>.<T>` | `click` |
+
 ## Known Gaps For Follow-Up
 
 | Surface | Missing action/selector family |
 |---|---|
-| Project panel rows | `project.row.*`, `workgroup.row.*`, `team.row.*`, `agent.row.*`, `replica.row.*` |
+| Project panel rows | `project.row.*`, `workgroup.row.*`, `agent.row.*`, `replica.row.*` |
 | Session rows | `session.row.<sessionId>` and row action selectors for close, detach, Telegram, explorer, mic |
 | Context menus | Use `contextClick` on the owning row/header selector, then `query`/`click` the mounted action selector. Project Loops selectors include `project.loops.header.<projectId>`, `loop.row.<projectId>.<loopId>`, `loop.action.new.<projectId>`, `loop.action.runNow.<projectId>.<loopId>`, `loop.action.edit.<projectId>.<loopId>`, `loop.action.toggle.<projectId>.<loopId>`, and `loop.action.delete.<projectId>.<loopId>`. Loop delete uses an in-app confirmation with `loop.delete.confirm.<projectId>.<loopId>` and `loop.delete.cancel.<projectId>.<loopId>`. Disabled Loop rows use `data-ac-state="loop-disabled"` so their context menus remain actionable; reserve `data-ac-state="disabled"` for controls that automation should reject for non-query actions. |
-| Agent/open/new-agent modals | Dialog roots, list rows, template picker rows, form fields, launch actions |
-| New Team modal | Dialog root, wizard step markers, team name input, agent filter, agent checkboxes, orchestrator radio buttons, repo input, create/back/next buttons |
+| Open Agent modal | Only one hook today; list rows, form fields, launch actions |
 | New Room modal | Creation progress/error state |
 | Target-window evidence | HWND-surface screenshot support; for non-reserved monitors, foreground/unobscured assertion before screen-rectangle capture |
 | Terminal internals | xterm buffer inspection is out of DOM-selector scope for #497 |

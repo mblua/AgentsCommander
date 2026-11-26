@@ -349,4 +349,19 @@ describe("EditTeamModal context alerts", () => {
     expect(fake.callsFor("discover_project")).toHaveLength(0);
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it("uses the editTeam test ID prefix for the shared alerts editor", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake, teamConfig());
+    rendered = renderWithFakeTransport(
+      () => (
+        <EditTeamModal projectPath={projectPath} teamName={teamName} onClose={() => undefined} />
+      ),
+      fake,
+    );
+    await advanceToStepThree();
+    const byId = (id: string) => document.body.querySelectorAll(`[data-ac-testid="${id}"]`);
+    expect(byId("editTeam.contextAlerts.add")).toHaveLength(1);
+    expect(byId("newTeam.contextAlerts.add")).toHaveLength(0);
+  });
 });
