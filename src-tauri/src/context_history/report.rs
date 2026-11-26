@@ -8,6 +8,7 @@
 //! selected session counts, even one observed after `to`.
 //! Means are always `sum / count` over records, never a mean of means.
 
+mod filter_options;
 mod session_windows;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +21,7 @@ use crate::context_history::{
     HistoryRecord, InitialKind, MatrixType, MetadataSource, TeamAttribution, MAX_IDENTITY_BYTES,
     MAX_METADATA_BYTES,
 };
+use filter_options::FilterOptions;
 pub(crate) use session_windows::SessionStats;
 use session_windows::{
     agent_windows, mean_of, newest, recent_per_scope, record_order, session_order, ScopeWindow,
@@ -169,6 +171,18 @@ impl ReportQuery {
         }
     }
 
+    /// The same selection without team or launch filters.
+    fn without_metadata_filters(&self) -> Self {
+        Self {
+            team_id: None,
+            coding_agent_id: LaunchFilter::Any,
+            model: LaunchFilter::Any,
+            effort: LaunchFilter::Any,
+            cursor: None,
+            ..self.clone()
+        }
+    }
+
     fn matches_session(&self, first: &HistoryRecord) -> bool {
         let agent = self
             .agent_key
@@ -284,6 +298,8 @@ pub(crate) struct ReportResponse {
     pub(crate) agents_page: Vec<AgentSummary>,
     pub(crate) next_agent_cursor: Option<String>,
     pub(crate) total_agents: u64,
+    /// Options of every filter: the selection without team or launch filters, plus the shown one.
+    pub(crate) filter_options: FilterOptions,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -646,6 +662,7 @@ pub(crate) fn build_report(
     let target = PageTarget::new(PageKind::Agents, None, None);
     let after: Option<String> = cursor_after(query, target)?;
     let selection = select(records, query);
+    let unfiltered = select(records, &query.without_metadata_filters());
     let agents: Vec<(&str, Vec<&SessionView>)> =
         sessions_by_agent(&selection).into_iter().collect();
     let all: Vec<&SessionView> = selection.sessions.iter().collect();
@@ -661,6 +678,13 @@ pub(crate) fn build_report(
             .collect(),
         next_agent_cursor,
         total_agents: agents.len() as u64,
+        filter_options: FilterOptions::from_sessions(
+            unfiltered
+                .sessions
+                .iter()
+                .chain(&selection.sessions)
+                .map(SessionView::first),
+        ),
     })
 }
 

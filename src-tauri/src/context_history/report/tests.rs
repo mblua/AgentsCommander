@@ -943,3 +943,58 @@ fn history_cursor_pin_bytes_and_second_page() {
     assert_eq!(ids, (1100..1150).map(Uuid::from_u128).collect::<Vec<_>>());
     assert_eq!(tail, pages(&after(&emitted[2].1)).expect("live tail"));
 }
+
+#[test]
+fn filter_options_cover_the_unfiltered_selection_and_the_shown_sessions() {
+    let mut records = many_agents(101);
+    for record in records
+        .iter_mut()
+        .filter(|record| record.agent_key == "agent-101")
+    {
+        record.coding_agent_id = Some("codex".to_string());
+        record.model = Some("sonnet".to_string());
+        record.effort = Some("high".to_string());
+        record.team_ids = vec!["team-b".to_string()];
+    }
+    let older = NOW - 2 * DAY_MS;
+    records.extend(with(session(500, older, &[(older, 10)]), |record| {
+        record.agent_key = "agent-001".to_string();
+        record.model = Some("old".to_string());
+    }));
+    records.extend(with(
+        session(600, NOW - DAY_MS, &[(NOW - DAY_MS, 10)]),
+        |record| {
+            record.agent_key = "agent-002".to_string();
+            record.team_attribution = TeamAttribution::Ambiguous;
+            record.team_ids = vec!["team-a".to_string(), "team-c".to_string()];
+        },
+    ));
+    let unfiltered = report(&records, &recent(1));
+    assert!(
+        unfiltered.next_agent_cursor.is_some(),
+        "agent-101 is on page 2"
+    );
+    let options = &unfiltered.filter_options;
+    assert_eq!(options.team_ids, ["team-a", "team-b", "team-c"]);
+    assert_eq!(options.coding_agent_ids, ["claude", "codex"]);
+    assert_eq!(options.models, ["opus", "sonnet"]);
+    assert_eq!(options.efforts, ["high"]);
+    let json = serde_json::to_value(&unfiltered).expect("json");
+    assert_eq!(
+        json["filterOptions"]["models"],
+        serde_json::json!(["opus", "sonnet"])
+    );
+    let mut filtered = recent(1);
+    filtered.team_id = Some("team-a".to_string());
+    filtered.coding_agent_id = LaunchFilter::Exact("claude".to_string());
+    filtered.model = LaunchFilter::Exact("opus".to_string());
+    filtered.effort = LaunchFilter::Unknown;
+    let narrowed = report(&records, &filtered);
+    assert_eq!(narrowed.total_agents, 100);
+    assert_eq!(&narrowed.filter_options, options);
+    let mut old = recent(1);
+    old.model = LaunchFilter::Exact("old".to_string());
+    let shown = report(&records, &old);
+    assert_eq!(shown.total_agents, 1, "count mode filters before ranking");
+    assert_eq!(shown.filter_options.models, ["old", "opus", "sonnet"]);
+}
