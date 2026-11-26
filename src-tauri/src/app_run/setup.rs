@@ -259,6 +259,8 @@ fn mark_restore_in_progress(app: SetupApp<'_>) -> StartupSessions {
 
 fn start_startup_housekeeping(app: SetupApp<'_>, shutdown: &ShutdownSignal) {
     spawn_screenshot_hotkey_registration(app);
+    #[cfg(unix)]
+    spawn_signal_exit(app);
 
     // Spawn the background task that emits `error_log_event`
     // pings to the UI when ERROR entries are captured. The task runs
@@ -279,6 +281,39 @@ fn start_startup_housekeeping(app: SetupApp<'_>, shutdown: &ShutdownSignal) {
     // workgroups AND caps the unbounded-growth secondary finding. Robust +
     // self-healing: live agents re-write their cache every launch.
     crate::config::session_context::sweep_context_cache_at_startup();
+}
+
+/// #5275: logs SIGTERM, SIGHUP and SIGINT and sends the first one through the
+/// single orderly exit, bounded by the watchdog. Not tied to `ShutdownSignal`,
+/// so repeats are still logged during shutdown.
+#[cfg(unix)]
+fn spawn_signal_exit(app: SetupApp<'_>) {
+    use super::signal_exit::{self, SignalExit, SIGNAL_EXIT_DEADLINE};
+    let handle = app.handle().clone();
+    let gate = app.state::<Arc<crate::QuitGate>>().inner().clone();
+    tauri::async_runtime::spawn(async move {
+        let streams = match signal_exit::install() {
+            Ok(streams) => streams,
+            Err(e) => {
+                log::warn!("[signal] handler install failed: {e}");
+                return;
+            }
+        };
+        let first = move |s: &SignalExit| {
+            let name = s.name;
+            signal_exit::spawn_watchdog(s.signo, SIGNAL_EXIT_DEADLINE, move || {
+                let secs = SIGNAL_EXIT_DEADLINE.as_secs();
+                log::error!("[signal] shutdown exceeded {secs}s after {name}; forcing exit");
+                log::logger().flush();
+            });
+            if gate.claim_signal_exit() {
+                crate::quit_gate::exit_closing_detached(&crate::TauriQuitHost::new(handle));
+            } else {
+                log::warn!("[signal] exit already claimed by quit gate; waiting");
+            }
+        };
+        signal_exit::run(streams, first, |_| {}).await;
+    });
 }
 
 fn start_restore(app: SetupApp<'_>, start: RestoreStart) {

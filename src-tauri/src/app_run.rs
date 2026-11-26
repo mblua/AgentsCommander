@@ -11,6 +11,8 @@ pub(crate) mod history_environment;
     reason = "`setup/` is outside #4906; this keeps its lints exactly as before the file-level warn"
 )]
 mod setup;
+#[cfg(unix)]
+mod signal_exit;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;

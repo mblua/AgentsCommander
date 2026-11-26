@@ -111,7 +111,11 @@ async fn force_bumps_the_allocator_so_the_next_round_is_distinct() {
         "epoch {} must be past the forced one",
         next.epoch
     );
-    assert_eq!(host.exits(), 2, "the new round exits on its own account");
+    assert_eq!(
+        host.exits(),
+        1,
+        "the later round reaches Exiting but never calls exit again (one exit per process)"
+    );
 }
 
 // --- cancellation / drop -------------------------------------------------

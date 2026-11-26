@@ -810,9 +810,9 @@ impl TauriQuitHost {
                 closed
             }),
             Box::new(move |code| {
-                // SINGLE production exit site for the quit gate. Everything else routes
-                // its Exiting decision through quit_gate_run, which calls this once
-                // per terminal Exiting (see try_claim_exit).
+                // SINGLE production exit site, called at most once per process. Two
+                // callers claim it first: quit_gate_run (QuitGate::try_claim_exit) and
+                // the Unix signal route (QuitGate::claim_signal_exit, app_run::signal_exit).
                 app.exit(code);
             }),
         )
