@@ -229,4 +229,18 @@ describe("TeamContextAlertsEditor", () => {
     expect(byId("t.threshold.0")).toHaveLength(0);
     expect(byId("t.empty")).toHaveLength(1);
   });
+
+  it("shows row and summary error hooks only for an invalid draft", () => {
+    const editor = mountEditor([draft(1, "30"), draft(2, "abc")]);
+    cleanupEditor = editor.cleanup;
+    const q = (id: string) => editor.root.querySelectorAll(`[data-ac-testid="${id}"]`);
+    expect(q("t.threshold.0.error")).toHaveLength(0);
+    expect(q("t.threshold.1.error")).toHaveLength(1);
+    expect(q("t.threshold.1.error")[0].textContent?.trim()).not.toBe("");
+    expect(q("t.errors")).toHaveLength(1);
+    expect(q("t.errors")[0].textContent?.trim()).not.toBe("");
+    editor.setDrafts([draft(1, "30")]);
+    expect(q("t.threshold.1.error")).toHaveLength(0);
+    expect(q("t.errors")).toHaveLength(0);
+  });
 });
