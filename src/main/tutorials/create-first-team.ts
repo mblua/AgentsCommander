@@ -116,9 +116,10 @@ export type RunCtx = {
   skip: boolean; // person chose "Skip download" in this run
   filled: string | null; // name a template filled in this dialog (seen while auto), or null
 };
+// group: selector of the list that belongs to the target's field
 export type StepView =
   { target: string | null; text: string; warn: boolean; final: boolean; skip: boolean;
-    group?: string; link?: true; next?: true }; // group: selector of the list that belongs to the target's field
+    group?: string; link?: true; next?: true };
 
 type Workgroup = ProjectState["workgroups"][number];
 type Team = ProjectState["teams"][number];
