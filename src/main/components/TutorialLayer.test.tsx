@@ -23,7 +23,7 @@ import {
   __resetTutorialProgressForTests, tutorialProgressStore,
 } from "../stores/tutorial-progress";
 import {
-  BOOKKEEPER_ID, FINAL, HIDDEN, startCtx, T_NAME_SKIP, T_PICK_BK, type RunCtx,
+  BOOKKEEPER_ID, FINAL, HIDDEN, startCtx, T_INSTALL, T_NAME_SKIP, T_PICK_BK, type RunCtx,
 } from "../tutorials/create-first-team";
 import { automationIdPart } from "../../sidebar/components/replica-repo-badges";
 import TutorialLayer from "./TutorialLayer";
@@ -281,13 +281,19 @@ describe("TutorialOverlay", () => {
       expect(tutorialStore.ctx).toMatchObject({ step: "dialog", goalKey: "agent:1" });
     };
     await toDialog();
-    tutorialStore.skipTemplates();
+    modal.setAttribute("data-ac-state", "missing");
     await flush();
+    expect(text()).toContain(T_INSTALL);
+    tutorialStore.skipTemplates();
+    expect(tutorialStore.ctx?.skip).toBe(true);
+    await flush();
+    expect(text()).not.toContain(T_INSTALL);
     expect(text()).toContain("Click Create.");
     name.setAttribute("data-ac-value", "x");
     await flush();
     expect(text()).toContain(T_NAME_SKIP("accountant"));
     tutorialStore.exit();
+    modal.setAttribute("data-ac-state", "ready");
     await toDialog();
     expect(tutorialStore.ctx?.skip).toBe(false);
     const row = target("newAgent.template");

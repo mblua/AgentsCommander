@@ -470,6 +470,8 @@ describe("create-first-team rules", () => {
     expect(view(ctx, probe)).toEqual(v(SEARCH, T_SUGGEST));
     dlg(probe, { agency: "ready", tpl: "agency:marketing-x", name: "x" });
     expect(view(ctx, probe)).toEqual(v(NAME, T_CHANGE("social-media-expert")));
+    dlg(probe, { agency: "ready", tpl: "agency:marketing-x", name: "x", typed: true });
+    expect(view(ctx, probe)).toEqual(v(NAME, T_NAME("social-media-expert")));
     dlg(probe, { agency: "ready", tpl: "agency:marketing-x", name: "social-media-expert",
       typed: true });
     expect(view(ctx, probe)).toEqual(v(CREATE, T_CREATE));
