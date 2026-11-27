@@ -619,3 +619,99 @@ html.light-theme .web-browser-error {
   flex: 1;
   min-height: 0;
 }
+
+/* --- #5228 Home tutorials, hint and guided overlay ----------------------- */
+.home-tutorials {
+  padding: var(--spacing-md) calc(var(--spacing-lg) * 1.5) var(--spacing-xs);
+  font-family: var(--font-ui);
+  color: var(--sidebar-fg);
+  flex-shrink: 0;
+}
+.home-tutorials h3 { margin: 0 0 var(--spacing-sm); font-size: 15px; }
+.home-tutorial-card {
+  max-width: 420px;
+  padding: var(--spacing-md);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-md);
+  background: var(--sidebar-hover);
+}
+.home-tutorial-card strong { display: block; font-size: var(--font-size-md); }
+.home-tutorial-card p {
+  margin: var(--spacing-xs) 0 var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+}
+.home-tutorial-card button {
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: 1px solid var(--sidebar-accent);
+  background: var(--btn-primary-bg, rgba(0, 212, 255, 0.2));
+  color: var(--btn-primary-fg, #00d4ff);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.home-tutorial-card button:disabled { opacity: 0.4; cursor: not-allowed; }
+.home-tutorial-card button:focus-visible { outline: 2px solid var(--sidebar-accent); }
+.home-tutorial-done {
+  display: inline-block;
+  margin-left: var(--spacing-sm);
+  padding: 0 var(--spacing-sm);
+  border: 1px solid var(--sidebar-accent);
+  border-radius: 999px;
+  color: var(--sidebar-accent);
+  font-size: 11px;
+  font-weight: normal;
+}
+.home-tutorial-card .home-tutorial-note { color: var(--sidebar-fg); }
+
+/* Above .modal-overlay (1000) and the right-click menus (.session-context-menu 9999),
+   so the ring shows on open dialogs and menus (#5228 AC-5228-002). */
+.tutorial-ring {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  border: 2px solid var(--sidebar-accent);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 12px var(--sidebar-accent);
+}
+.tutorial-bubble {
+  position: fixed;
+  z-index: 10000;
+  max-width: 260px;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--sidebar-warning, #e0a83a);
+  border-radius: var(--radius-md);
+  background: var(--sidebar-bg);
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  box-shadow: 0 0 12px var(--sidebar-warning, #e0a83a), 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.tutorial-bubble p { margin: 0; }
+.tutorial-bubble--warn { border-width: 2px; border-style: dashed; }
+.tutorial-bubble-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+  justify-content: flex-end;
+  margin-top: var(--spacing-sm);
+}
+.tutorial-bubble-actions [data-ac-testid="tutorial.link"] { flex-basis: 100%; }
+.tutorial-bubble button {
+  padding: 2px var(--spacing-sm);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--sidebar-fg);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.tutorial-bubble button:focus-visible { outline: 2px solid var(--sidebar-warning, #e0a83a); }
+.tutorial-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+.tutorial-hint button { border: none; padding: 0 var(--spacing-xs); }

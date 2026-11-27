@@ -22,6 +22,7 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { __disposeSettingsSubscriptionsForTests } from "../../shared/stores/settings";
+import { NEW_PROJECT_PICKER_TITLE } from "../stores/project";
 
 // Kept in sync with the fixture plugin; the suite never imports the .mts.
 const CONFIRM_PATH = "C:/issue-4945/fixture-project";
@@ -242,6 +243,9 @@ describe("ActionBar ordinary desktop New Project (#4945 P3)", () => {
     await waitFor(() => expect(fake.callsFor("new_project")).toHaveLength(1));
     expect(fake.lastCall("new_project")?.args).toEqual({ path: CONFIRM_PATH });
     expect(fake.callsFor("pick_folder")).toHaveLength(1);
+    expect(fake.lastCall("pick_folder")?.args)
+      .toEqual({ defaultPath: null, title: NEW_PROJECT_PICKER_TITLE });
+    expect(NEW_PROJECT_PICKER_TITLE).toBe("Select a folder for your project");
     expect(q(CONFIRM)).toBeNull();
     expect(q(NOTICE)).toBeNull();
   });

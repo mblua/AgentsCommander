@@ -3,6 +3,7 @@ import type { AgentConfig, AppSettings } from "../../shared/types";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import { baseSettings } from "../../shared/testing/base-settings";
 import type { TempRoomAgentChoice } from "../../shared/temp-rooms";
+import type { TutorialSettings } from "../../shared/tutorial-settings";
 
 function agent(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -528,6 +529,24 @@ describe("mergeSettingsForSavePreservingProjects outside-writer keys", () => {
     const merged = mergeSettingsForSavePreservingProjects(draft, settings(), draft);
 
     expect("tempRoomAgent" in merged).toBe(false);
+  });
+
+  it("tutorial flags: fresh true wins over a stale false draft (#5228)", () => {
+    const draft = { ...settings(), tutorialHintDismissed: false, teamTutorialCompleted: false };
+    const fresh = { ...settings(), tutorialHintDismissed: true, teamTutorialCompleted: true };
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, draft) as AppSettings &
+      TutorialSettings;
+
+    expect(merged.tutorialHintDismissed).toBe(true);
+    expect(merged.teamTutorialCompleted).toBe(true);
+  });
+
+  it("tutorial flags: absent everywhere read as false (#5228)", () => {
+    const merged = mergeSettingsForSavePreservingProjects(settings(), settings(), settings()) as
+      AppSettings & TutorialSettings;
+
+    expect(merged.tutorialHintDismissed).toBe(false);
+    expect(merged.teamTutorialCompleted).toBe(false);
   });
 
   it("4. layout: fresh width and side win with, without and with differing seed", () => {

@@ -28,6 +28,7 @@ const NewEntityAgentModal: Component<{
   const [templateQuery, setTemplateQuery] = createSignal("");
   const [selectedTemplateId, setSelectedTemplateId] = createSignal<string | null>(null);
   const [agencyStatus, setAgencyStatus] = createSignal<AgencyTemplatesStatus | null>(null);
+  const [agencyStatusFailed, setAgencyStatusFailed] = createSignal(false);
   const [agencyInstalling, setAgencyInstalling] = createSignal(false);
   const [agencyInstallError, setAgencyInstallError] = createSignal("");
   let nameRef!: HTMLInputElement;
@@ -50,8 +51,10 @@ const NewEntityAgentModal: Component<{
       console.error("list_role_templates failed:", templatesResult.reason);
     }
     if (statusResult.status === "fulfilled") {
+      setAgencyStatusFailed(false);
       setAgencyStatus(statusResult.value);
     } else {
+      setAgencyStatusFailed(true);
       console.error("get_agency_templates_status failed:", statusResult.reason);
     }
   };
@@ -64,6 +67,12 @@ const NewEntityAgentModal: Component<{
     filterRoleTemplates(templates(), templateQuery()),
   );
   const shouldShowAgencyInstall = createMemo(() => agencyStatus()?.available === false);
+  // #5228 tutorial marker: Agency template availability as the dialog knows it.
+  const agencyState = createMemo(() => {
+    const s = agencyStatus();
+    if (s === null) return agencyStatusFailed() ? "unknown" : "loading";
+    return s.available ? "ready" : "missing";
+  });
 
   const selectTemplate = (t: RoleTemplateMeta | null) => {
     setSelectedTemplateId(t ? t.id : null);
@@ -196,7 +205,12 @@ const NewEntityAgentModal: Component<{
 
   return (
     <div class="modal-overlay" role="none" onKeyDown={handleKeyDown}>
-      <div class="agent-modal" data-ac-testid="newAgent.modal" data-ac-role="dialog">
+      <div
+        class="agent-modal"
+        data-ac-testid="newAgent.modal"
+        data-ac-role="dialog"
+        data-ac-state={agencyState()}
+      >
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Agent</span>
         </div>
@@ -227,6 +241,7 @@ const NewEntityAgentModal: Component<{
                 class="tpl-picker-search-input"
                 data-ac-testid="newAgent.templateSearch"
                 data-ac-role="textbox"
+                data-ac-value={templateQuery()}
                 value={templateQuery()}
                 onInput={(e) => setTemplateQuery(e.currentTarget.value)}
                 onKeyDown={handleSearchKeyDown}
@@ -273,6 +288,7 @@ const NewEntityAgentModal: Component<{
               class="tpl-picker-list"
               data-ac-testid="newAgent.template.list"
               data-ac-role="list"
+              data-ac-state={selectedTemplateId() ?? "none"}
               ref={listRef}
               onKeyDown={handleListKeyDown}
               role="listbox"
@@ -291,6 +307,7 @@ const NewEntityAgentModal: Component<{
                 data-ac-testid="newAgent.template.none"
                 data-ac-role="option"
                 data-ac-state={selectedTemplateId() === null ? "selected" : "unselected"}
+                data-ac-value="none"
                 onClick={() => selectTemplate(null)}
                 role="option"
                 aria-selected={selectedTemplateId() === null}
@@ -308,6 +325,7 @@ const NewEntityAgentModal: Component<{
                     data-ac-role="option"
                     data-ac-state={selectedTemplateId() === t.id ? "selected" : "unselected"}
                     data-ac-detail={t.name}
+                    data-ac-value={t.id}
                     onClick={() => selectTemplate(t)}
                     title={t.description}
                     role="option"
@@ -352,6 +370,8 @@ const NewEntityAgentModal: Component<{
               class="agent-search-input"
               data-ac-testid="newAgent.name"
               data-ac-role="textbox"
+              data-ac-state={nameDirty() ? "typed" : "auto"}
+              data-ac-value={name().trim()}
               value={name()}
               onInput={(e) => {
                 setName(e.currentTarget.value);
@@ -368,6 +388,8 @@ const NewEntityAgentModal: Component<{
             <textarea
               id="new-agent-description"
               class="entity-textarea"
+              data-ac-testid="newAgent.description"
+              data-ac-state={description().trim() ? "filled" : "empty"}
               value={description()}
               onInput={(e) => {
                 setDescription(e.currentTarget.value);

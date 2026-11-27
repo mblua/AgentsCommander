@@ -38,6 +38,8 @@ mapped path no longer exists. Add one line here when you add a store module.
 | `src/main/stores/centralView.ts` | `centralViewStore` | central view (terminal and others) |
 | `src/main/stores/error-modal.ts` | `errorModalStore` | error log entries, index |
 | `src/main/stores/home.ts` | `homeStore` | home panel visible, content, loading, error |
+| `src/main/stores/tutorial.ts` | `tutorialStore` | running tutorial context (active, step state; not saved) |
+| `src/main/stores/tutorial-progress.ts` | `tutorialProgressStore` | saved tutorial flags: loaded, hint dismissed, team tutorial completed |
 | `src/main/stores/webBrowser.ts` | `webBrowserStore` | web browser snapshot, error |
 | `src/terminal/stores/terminal.ts` | `terminalStore` | active task snapshot, read state, task cache |
 | `src/spec-board/stores/spec-board.ts` | `specBoardStore` | spec-board state |
