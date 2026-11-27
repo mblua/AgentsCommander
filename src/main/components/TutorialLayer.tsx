@@ -2,9 +2,11 @@ import { Component, Show, createEffect, createSignal, onCleanup, onMount } from 
 import { Portal } from "solid-js/web";
 import { isBrowser } from "../../shared/platform";
 import { projectStore } from "../../sidebar/stores/project";
+import { rootMessageStore } from "../stores/root-message-tutorial";
 import { tutorialStore } from "../stores/tutorial";
 import { tutorialProgressStore } from "../stores/tutorial-progress";
 import type { Probe } from "../tutorials/create-first-team";
+import RootMessageOverlay from "./RootMessageOverlay";
 import TutorialHint from "./TutorialHint";
 import TutorialOverlay from "./TutorialOverlay";
 
@@ -40,6 +42,7 @@ const TutorialLayer: Component = () => {
   };
   const watching = () => {
     const p = tutorialProgressStore;
+    if (rootMessageStore.active) return true;
     return tutorialStore.active || (p.loaded && !p.hintDismissed && !p.completed);
   };
   onMount(() => void tutorialProgressStore.load());
@@ -69,6 +72,9 @@ const TutorialLayer: Component = () => {
       <TutorialHint tick={tick()} />
       <Show when={tutorialStore.active}>
         <TutorialOverlay tick={tick()} probe={probe} />
+      </Show>
+      <Show when={rootMessageStore.active}>
+        <RootMessageOverlay tick={tick()} />
       </Show>
     </Portal>
   );

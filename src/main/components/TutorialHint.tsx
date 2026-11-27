@@ -1,5 +1,6 @@
 import { Component, Show, createMemo } from "solid-js";
 import { homeStore } from "../stores/home";
+import { rootMessageStore } from "../stores/root-message-tutorial";
 import { tutorialStore } from "../stores/tutorial";
 import { tutorialProgressStore } from "../stores/tutorial-progress";
 import { IDS } from "../tutorials/create-first-team";
@@ -10,7 +11,7 @@ const TutorialHint: Component<{ tick: number }> = (props) => {
     void props.tick;
     const p = tutorialProgressStore;
     if (!p.loaded || p.hintDismissed || p.completed) return null;
-    if (homeStore.visible || tutorialStore.active) return null;
+    if (homeStore.visible || tutorialStore.active || rootMessageStore.active) return null;
     const el = document.querySelector(`[data-ac-testid="${IDS.home}"]`);
     return el ? el.getBoundingClientRect() : null;
   });

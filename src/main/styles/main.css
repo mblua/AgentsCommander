@@ -628,6 +628,7 @@ html.light-theme .web-browser-error {
   flex-shrink: 0;
 }
 .home-tutorials h3 { margin: 0 0 var(--spacing-sm); font-size: 15px; }
+.home-tutorial-cards { display: flex; flex-wrap: wrap; gap: var(--spacing-md); }
 .home-tutorial-card {
   max-width: 420px;
   padding: var(--spacing-md);
@@ -709,6 +710,15 @@ html.light-theme .web-browser-error {
   cursor: pointer;
 }
 .tutorial-bubble button:focus-visible { outline: 2px solid var(--sidebar-warning, #e0a83a); }
+.tutorial-message {
+  margin: var(--spacing-sm) 0 0;
+  max-height: 160px;
+  overflow: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+  user-select: text;
+}
 .tutorial-hint {
   display: flex;
   align-items: center;

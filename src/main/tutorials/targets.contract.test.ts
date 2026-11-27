@@ -8,6 +8,7 @@ import {
   orchRowId, roomHeaderSelector,
 } from "./create-first-team";
 import { automationIdPart } from "../../sidebar/components/replica-repo-badges";
+import { BANNER, RM_IDS } from "./root-agent-message";
 
 const moduleUrl = import.meta.url; // variable base keeps the file: URL node:fs reads
 const read = (rel: string) =>
@@ -132,6 +133,17 @@ describe("tutorial targets contract", () => {
     const start = css.indexOf(".tutorial-bubble-actions {");
     expect(start).toBeGreaterThan(-1);
     expect(css.slice(start, css.indexOf("}", start))).toContain("flex-wrap: wrap;");
+  });
+
+  it("#5287 root-message targets and banner states", () => {
+    const banner = read(`${SIDEBAR}RootAgentBanner.tsx`);
+    expect(hasTestid(banner, RM_IDS.banner)).toBe(true);
+    expect(hasTestid(read(OWNERS.actionBar!), RM_IDS.settings)).toBe(true);
+    expect(banner).toContain("data-ac-state={bannerState()}");
+    const start = banner.indexOf("const bannerState = () => {");
+    expect(start).toBeGreaterThan(-1);
+    const body = banner.slice(start, banner.indexOf("};", start));
+    for (const s of Object.values(BANNER)) expect(body, s).toContain(`"${s}"`);
   });
 
   it("control: a wrong id is not found", () => {

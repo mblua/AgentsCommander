@@ -19,6 +19,9 @@ import { sessionsStore } from "../../sidebar/stores/sessions";
 import { __resetHomeStoreForTests } from "../stores/home";
 import { __resetTutorialStoreForTests, tutorialStore } from "../stores/tutorial";
 import {
+  __resetRootMessageStoreForTests, rootMessageStore,
+} from "../stores/root-message-tutorial";
+import {
   __resetTutorialProgressForTests, tutorialProgressStore,
 } from "../stores/tutorial-progress";
 import HomeView from "./HomeView";
@@ -53,6 +56,7 @@ beforeEach(() => {
   __resetHomeStoreForTests();
   __resetTutorialStoreForTests();
   __resetTutorialProgressForTests();
+  __resetRootMessageStoreForTests();
 });
 afterEach(() => {
   while (cleanups.length) cleanups.pop()?.();
@@ -126,5 +130,34 @@ describe("HomeTutorials", () => {
     click(startBtn());
     expect(tutorialStore.active).toBe(true);
     expect(startBtn().disabled).toBe(true);
+  });
+
+  // #5287
+  const rmBtn = () => must("home.tutorial.rootMessage.start") as HTMLButtonElement;
+  it("two cards; the #5228 card keeps its testids and state", () => {
+    mount(() => <HomeTutorials />);
+    const cards = document.querySelectorAll(".home-tutorial-cards > .home-tutorial-card");
+    expect(cards.length).toBe(2);
+    expect(must("home.tutorial.team").dataset.acState).toBe("new");
+    expect(startBtn().disabled).toBe(false);
+    expect(must("home.tutorial.rootMessage").textContent)
+      .toContain("Build the same team with one message to the Root Agent");
+    expect(rmBtn().disabled).toBe(false);
+  });
+
+  it("root-message Start disables the #5228 Start", () => {
+    mount(() => <HomeTutorials />);
+    click(rmBtn());
+    expect(rootMessageStore.active).toBe(true);
+    expect(rmBtn().disabled).toBe(true);
+    expect(startBtn().disabled).toBe(true);
+  });
+
+  it("#5228 Start disables the root-message Start", () => {
+    mount(() => <HomeTutorials />);
+    click(startBtn());
+    expect(tutorialStore.active).toBe(true);
+    expect(rmBtn().disabled).toBe(true);
+    expect(rootMessageStore.active).toBe(false);
   });
 });
