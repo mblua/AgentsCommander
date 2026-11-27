@@ -476,7 +476,25 @@ fn open_rotated_log(
 /// serialized through a `Mutex` so concurrent log calls within one process
 /// do not interleave bytes mid-line).
 pub fn init_logger() {
-    INIT.get_or_init(init_logger_inner);
+    INIT.get_or_init(|| init_logger_inner(true));
+}
+
+/// GUI entry point: same logger as [`init_logger`]. On Linux it first sends a
+/// discarded or closed stderr to `<config_dir>/stderr.log` (#5279) and then
+/// stops echoing log lines to stderr, because `app.log` already has them.
+#[cfg(target_os = "linux")]
+pub fn init_gui_logger() {
+    INIT.get_or_init(|| {
+        let route = capture_gui_stderr();
+        init_logger_inner(!matches!(route, StderrRoute::Captured(_)));
+        log_stderr_route(&route);
+    });
+}
+
+/// GUI entry point: same logger as [`init_logger`] (no stderr capture here).
+#[cfg(not(target_os = "linux"))]
+pub fn init_gui_logger() {
+    init_logger();
 }
 
 /// Apply the shared format closure (timestamp + universal secret scrub +
@@ -485,7 +503,11 @@ pub fn init_logger() {
 /// moves to this parameter, so both the `RUST_LOG` path and the runtime-gated
 /// path build on one definition. Do NOT reorder: the capture stays BEFORE
 /// the buf/file writes (M1) so a failing write cannot skip error capture.
-fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<AppLogFile>>>) {
+fn install_format(
+    builder: &mut env_logger::Builder,
+    log_state: Arc<Option<Arc<AppLogFile>>>,
+    echo_stderr: bool,
+) {
     builder.format(move |buf, record| {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let line = format!(
@@ -510,7 +532,7 @@ fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<A
         if should_capture(record) {
             error_sink().capture(ErrorLogEntry::from_record(ts.to_string(), record));
         }
-        if !machine_output_enabled() {
+        if echo_stderr && !machine_output_enabled() {
             buf.write_all(line.as_bytes())?;
         }
         if let Some(ref state) = *log_state {
@@ -527,7 +549,7 @@ fn install_format(builder: &mut env_logger::Builder, log_state: Arc<Option<Arc<A
     });
 }
 
-fn init_logger_inner() {
+fn init_logger_inner(echo_stderr: bool) {
     if let Err(error) = crate::config::instance_gitignore::ensure_instance_gitignore() {
         if !machine_output_enabled() {
             eprintln!("[instance-gitignore] warning: {error}");
@@ -572,7 +594,7 @@ fn init_logger_inner() {
     if let Ok(rust_log) = crate::config::environment::rust_log() {
         let mut builder = env_logger::Builder::from_env(env_logger::Env::default());
         builder.parse_filters(&rust_log);
-        install_format(&mut builder, Arc::clone(&log_state));
+        install_format(&mut builder, Arc::clone(&log_state), echo_stderr);
         let inner = builder.build();
         let max_level = inner.filter();
         let logger = PrivacyFilterLogger { inner };
@@ -599,7 +621,7 @@ fn init_logger_inner() {
 
     let mut builder = env_logger::Builder::from_env(env_logger::Env::default());
     builder.parse_filters(GATE_INNER_FILTER);
-    install_format(&mut builder, Arc::clone(&log_state));
+    install_format(&mut builder, Arc::clone(&log_state), echo_stderr);
     let inner = builder.build(); // build(), NOT init(): we wrap it below
 
     let gate = LevelGateLogger {
@@ -831,6 +853,132 @@ async fn error_emit_loop<E: ErrorLogEvents + ?Sized>(
             () = shutdown.cancelled() => return,
             () = sink.wait_for_capture() => events.error_log_event(),
         }
+    }
+}
+
+/// #5279: where the GUI's stderr goes for this run.
+#[cfg(target_os = "linux")]
+enum StderrRoute {
+    Inherited,
+    Captured(std::path::PathBuf),
+    CaptureFailed(String),
+}
+
+/// #5279: what fd 2 is at GUI start.
+#[cfg(target_os = "linux")]
+enum StderrKind {
+    Closed,
+    NullLike,
+    Other,
+}
+
+/// Classifies fd 2: closed, a non-terminal character device such as
+/// `/dev/null`, or anything else (terminal, file, pipe, socket, fstat error).
+#[cfg(target_os = "linux")]
+fn stderr_kind() -> StderrKind {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        return StderrKind::Other;
+    }
+    let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `st` is a valid, writable `stat` buffer for the whole call;
+    // fstat only writes into it and reports failure through errno.
+    let rc = unsafe { libc::fstat(libc::STDERR_FILENO, st.as_mut_ptr()) };
+    if rc < 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EBADF) => StderrKind::Closed,
+            _ => StderrKind::Other,
+        };
+    }
+    // SAFETY: fstat returned 0, so it fully initialised `st`.
+    let st = unsafe { st.assume_init() };
+    if st.st_mode & libc::S_IFMT == libc::S_IFCHR {
+        StderrKind::NullLike
+    } else {
+        StderrKind::Other
+    }
+}
+
+/// Sends fd 2 to `<config_dir>/stderr.log` when it is closed or `/dev/null`;
+/// leaves a stderr someone chose (terminal, file, pipe, socket) alone.
+#[cfg(target_os = "linux")]
+fn capture_gui_stderr() -> StderrRoute {
+    if matches!(stderr_kind(), StderrKind::Other) {
+        return StderrRoute::Inherited;
+    }
+    let Some(dir) = crate::config::config_dir() else {
+        return StderrRoute::CaptureFailed("no config dir".to_string());
+    };
+    let (file, path) = match open_stderr_capture(&dir) {
+        Ok(opened) => opened,
+        Err(e) => return StderrRoute::CaptureFailed(e.to_string()),
+    };
+    match redirect_stderr(file) {
+        Ok(()) => StderrRoute::Captured(path),
+        Err(e) => StderrRoute::CaptureFailed(e.to_string()),
+    }
+}
+
+/// Keeps the previous run as `stderr.prev.log` (best effort), opens a new
+/// `stderr.log` in append mode and writes this run's header line.
+#[cfg(target_os = "linux")]
+fn open_stderr_capture(dir: &std::path::Path) -> std::io::Result<(std::fs::File, PathBuf)> {
+    use crate::config::instance_artifacts::{STDERR_LOG_FILE_NAME, STDERR_PREV_LOG_FILE_NAME};
+    debug_logs::ensure_app_log_directory(dir)?;
+    let cur = dir.join(STDERR_LOG_FILE_NAME);
+    let prev = dir.join(STDERR_PREV_LOG_FILE_NAME);
+    if debug_logs::app_log_exists(&cur) {
+        let _ = debug_logs::rename_app_log(&cur, &prev);
+    }
+    let mut file = debug_logs::open_app_log_append(&cur)?;
+    let header = format!(
+        "=== AgentsCommander stderr pid={} started={} version={} ===\n",
+        std::process::id(),
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+        env!("CARGO_PKG_VERSION")
+    );
+    debug_logs::append_app_log(&mut file, header.as_bytes())?;
+    Ok((file, cur))
+}
+
+/// Makes `file` the process's fd 2.
+#[cfg(target_os = "linux")]
+fn redirect_stderr(file: std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::{AsRawFd, IntoRawFd};
+    if file.as_raw_fd() == libc::STDERR_FILENO {
+        // fd 2 was closed and the file took it: keep it open for the process,
+        // and clear O_CLOEXEC (std opens with it) so children inherit it like
+        // a dup2 target would.
+        let fd = file.into_raw_fd();
+        // SAFETY: `fd` is an open descriptor we own; F_SETFD only changes its
+        // flags. Failure is reported through errno.
+        let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
+        return if rc < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        };
+    }
+    // SAFETY: `file` is an open descriptor owned here for the whole call, and
+    // STDERR_FILENO is a valid dup2 target. dup2 has no memory preconditions;
+    // failure is reported through errno.
+    let rc = unsafe { libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO) };
+    if rc < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Records the stderr route in `app.log`; the logger must already be installed.
+#[cfg(target_os = "linux")]
+fn log_stderr_route(route: &StderrRoute) {
+    match route {
+        StderrRoute::Captured(p) => log::info!("[stderr] captured to {}", p.display()),
+        StderrRoute::CaptureFailed(e) => {
+            log::warn!("[stderr] capture failed: {e}; stderr stays where the launcher sent it");
+        }
+        StderrRoute::Inherited => {}
     }
 }
 

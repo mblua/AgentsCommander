@@ -148,6 +148,10 @@ pub(crate) const SETTINGS_BACKUP_ROTATION_GLOB: &str = SETTINGS_BACKUP_ROTATION_
 /// Every file the naming migration demotes, `<old name>.deprecated-<n>.no-git`,
 /// in any family: one glob keeps every set-aside copy out of Git.
 pub(crate) const SET_ASIDE_GLOB: &str = "*.deprecated-*.no-git";
+/// #5279: Linux GUI stderr, current run.
+pub(crate) const STDERR_LOG_FILE_NAME: &str = "stderr.log";
+/// #5279: Linux GUI stderr, previous run.
+pub(crate) const STDERR_PREV_LOG_FILE_NAME: &str = "stderr.prev.log";
 pub(crate) const TELEGRAM_BRIDGE_LOG_FILE_NAME: &str = "telegram-bridge.log";
 pub(crate) const UI_AUTOMATION_DIR_NAME: &str = "ui-automation";
 /// #5279: this instance's own `WebView` data directory (Linux, Windows).

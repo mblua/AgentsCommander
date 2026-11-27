@@ -2,6 +2,8 @@ use super::*;
 // The gate's enabled()/log() are `log::Log` trait methods; bring the
 // trait into scope so the tests can call them on a `LevelGateLogger` value.
 use log::Log;
+#[cfg(target_os = "linux")]
+mod stderr_capture;
 
 /// Build an `ErrorLogEntry` carrying `message`; the other fields are fixed.
 fn entry(message: &str) -> ErrorLogEntry {
@@ -345,7 +347,11 @@ fn issue_3083_real_file_gate_format_append_and_private_rejection() {
         {
             let mut builder = env_logger::Builder::new();
             builder.parse_filters(GATE_INNER_FILTER);
-            install_format(&mut builder, Arc::new(Some(build_app_log(tmp.path(), 0))));
+            install_format(
+                &mut builder,
+                Arc::new(Some(build_app_log(tmp.path(), 0))),
+                true,
+            );
             let gate = LevelGateLogger {
                 inner: builder.build(),
                 level: Arc::new(AtomicU8::new(level as u8)),
@@ -396,6 +402,7 @@ fn issue_3083_real_file_rotation_and_continuity() {
         install_format(
             &mut builder,
             Arc::new(Some(build_app_log(tmp.path(), APP_LOG_MAX_BYTES - 1))),
+            true,
         );
         let gate = LevelGateLogger {
             inner: builder.build(),
@@ -432,7 +439,11 @@ fn muted_type_is_skipped_by_real_logger_but_still_written_and_redacted() {
     {
         let mut builder = env_logger::Builder::new();
         builder.parse_filters(GATE_INNER_FILTER);
-        install_format(&mut builder, Arc::new(Some(build_app_log(tmp.path(), 0))));
+        install_format(
+            &mut builder,
+            Arc::new(Some(build_app_log(tmp.path(), 0))),
+            true,
+        );
         let gate = LevelGateLogger {
             inner: builder.build(),
             level: Arc::new(AtomicU8::new(log::Level::Error as u8)),
@@ -808,7 +819,7 @@ fn error_record_survives_gate_at_strictest_level_and_reaches_264_sink() {
     builder.parse_filters(GATE_INNER_FILTER);
     // No app.log file: an empty log_state makes the closure's file branch a
     // no-op; the tee path is independent of the file sink.
-    install_format(&mut builder, Arc::new(None::<Arc<AppLogFile>>));
+    install_format(&mut builder, Arc::new(None::<Arc<AppLogFile>>), true);
     let gate = LevelGateLogger {
         inner: builder.build(),
         level: Arc::new(AtomicU8::new(log::Level::Error as u8)),
