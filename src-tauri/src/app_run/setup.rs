@@ -72,6 +72,7 @@ pub(super) struct SetupCtx {
     pub(super) selection_coordinator_for_setup: crate::session::selection::SelectionCoordinator,
     pub(super) resource_monitor_for_setup: Arc<resource_monitor::ResourceMonitorState>,
     pub(super) ui_automation_state_for_setup: crate::testability::ui_automation::UiAutomationState,
+    pub(super) quit_gate_for_setup: Arc<crate::QuitGate>,
 }
 pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn std::error::Error>> {
     let app = SetupApp(app);
@@ -90,6 +91,8 @@ pub(super) fn setup(app: &mut tauri::App, ctx: SetupCtx) -> Result<(), Box<dyn s
     );
 
     start_startup_housekeeping(app, &ctx.shutdown_for_setup);
+    #[cfg(unix)]
+    spawn_signal_exit(app, ctx.quit_gate_for_setup);
     let (git_watcher, discovery_branch_watcher) = start_git_and_remote_watchers(
         app,
         [
@@ -279,6 +282,30 @@ fn start_startup_housekeeping(app: SetupApp<'_>, shutdown: &ShutdownSignal) {
     // workgroups AND caps the unbounded-growth secondary finding. Robust +
     // self-healing: live agents re-write their cache every launch.
     crate::config::session_context::sweep_context_cache_at_startup();
+}
+
+/// #5275: logs SIGTERM, SIGHUP and SIGINT and sends the first one through the
+/// single orderly exit, bounded by the watchdog. Not tied to `ShutdownSignal`,
+/// so repeats are still logged during shutdown. Runs on its own thread
+/// (`signal_exit::spawn_listener`).
+#[cfg(unix)]
+fn spawn_signal_exit(app: SetupApp<'_>, gate: Arc<crate::QuitGate>) {
+    use super::signal_exit::{self, SignalExit, SIGNAL_EXIT_DEADLINE};
+    let handle = app.handle().clone();
+    let first = move |s: &SignalExit| {
+        let name = s.name;
+        signal_exit::spawn_watchdog(s.signo, SIGNAL_EXIT_DEADLINE, move || {
+            let secs = SIGNAL_EXIT_DEADLINE.as_secs();
+            log::error!("[signal] shutdown exceeded {secs}s after {name}; forcing exit");
+            log::logger().flush();
+        });
+        if gate.claim_signal_exit() {
+            crate::quit_gate::exit_closing_detached(&crate::TauriQuitHost::new(handle));
+        } else {
+            log::warn!("[signal] exit already claimed by quit gate; waiting");
+        }
+    };
+    let _ready = signal_exit::spawn_listener(first);
 }
 
 fn start_restore(app: SetupApp<'_>, start: RestoreStart) {

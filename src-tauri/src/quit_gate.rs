@@ -243,6 +243,10 @@ pub(crate) struct QuitGateInner {
     terminal: Option<(u64, QuitOutcome)>,
     /// Guards the one-exit rule for the current terminal `Exiting`.
     exit_claimed: bool,
+    /// Sticky one-exit rule for the whole process, shared by the gate and the
+    /// Unix signal route. Never reset by `finish`: a second `app.exit` would
+    /// make Tauri skip the `[shutdown]` block.
+    process_exit_claimed: bool,
 }
 
 impl QuitGateInner {
@@ -389,7 +393,8 @@ impl QuitGate {
         }
     }
 
-    /// True exactly once per terminal `Exiting`, for the single exit site.
+    /// True at most once per terminal `Exiting` and once per process (see
+    /// `claim_signal_exit`), for the single exit site.
     fn try_claim_exit(&self, epoch: u64) -> bool {
         let mut inner = self.lock();
         let is_exiting = matches!(
@@ -399,12 +404,28 @@ impl QuitGate {
                 ..
             })
         );
-        if is_exiting && !inner.exit_claimed {
+        if is_exiting && !inner.exit_claimed && !inner.process_exit_claimed {
             inner.exit_claimed = true;
+            inner.process_exit_claimed = true;
             true
         } else {
             false
         }
+    }
+
+    /// Claims the single process exit for a Unix signal. False when the gate
+    /// or an earlier signal already claimed it; that exit is already running.
+    #[cfg_attr(
+        not(unix),
+        allow(dead_code, reason = "only the Unix signal route calls it")
+    )]
+    pub(crate) fn claim_signal_exit(&self) -> bool {
+        let mut inner = self.lock();
+        if inner.exit_claimed || inner.process_exit_claimed {
+            return false;
+        }
+        inner.process_exit_claimed = true;
+        true
     }
 
     // --- command-facing state transitions ------------------------------------
