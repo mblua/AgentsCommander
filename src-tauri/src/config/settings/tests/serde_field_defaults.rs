@@ -872,3 +872,59 @@ fn read_ipc_blackbox_enabled_from_path_reads_only_a_merged_true() {
         );
     }
 }
+
+#[test]
+fn tutorial_flags_default_false_when_missing_from_json() {
+    // Old settings.json without the #5228 tutorial flags must deserialize to false.
+    let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": [],
+            "startOnlyCoordinators": true,
+            "sidebarAlwaysOnTop": false,
+            "raiseTerminalOnClick": true,
+            "voiceToTextEnabled": false,
+            "geminiApiKey": "",
+            "geminiModel": "gemini-2.5-flash",
+            "voiceAutoExecute": true,
+            "voiceAutoExecuteDelay": 15,
+            "sidebarZoom": 1.0,
+            "terminalZoom": 1.0,
+            "mainZoom": 1.0,
+            "guideZoom": 1.0,
+            "darkfactoryZoom": 1.0,
+            "sidebarGeometry": null,
+            "terminalGeometry": null,
+            "mainGeometry": null,
+            "mainSidebarWidth": 280.0,
+            "mainSidebarSide": "right",
+            "mainAlwaysOnTop": false,
+            "webServerEnabled": false,
+            "webServerPort": 7777,
+            "webServerBind": "127.0.0.1",
+            "projectPath": null,
+            "projectPaths": [],
+            "sidebarStyle": "noir-minimal",
+            "onboardingDismissed": false,
+            "coordSortByActivity": false
+        }"#;
+    let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
+    assert!(!s.tutorial_hint_dismissed);
+    assert!(!s.team_tutorial_completed);
+}
+
+#[test]
+fn tutorial_flags_round_trip_through_serde() {
+    let s = AppSettings {
+        tutorial_hint_dismissed: true,
+        team_tutorial_completed: true,
+        ..AppSettings::default()
+    };
+    let json = serde_json::to_string(&s).expect("serialize");
+    assert!(json.contains("\"tutorialHintDismissed\":true"));
+    assert!(json.contains("\"teamTutorialCompleted\":true"));
+    let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
+    assert!(back.tutorial_hint_dismissed);
+    assert!(back.team_tutorial_completed);
+}

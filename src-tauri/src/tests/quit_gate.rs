@@ -694,4 +694,34 @@ async fn stale_force_never_closes_detached() {
     assert_eq!(host.ops_named("exit"), 0);
 }
 
+// --- #5275 single process exit across the gate and the signal route ------
+
+#[tokio::test]
+async fn signal_claim_blocks_later_gate_exit() {
+    let (gate, host, dyn_host, _clock) = new_gate();
+    assert!(gate.claim_signal_exit());
+
+    let outcome = spawn_quit(&gate, &dyn_host, "attempt-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome, QuitOutcome::exiting(1));
+    assert_eq!(host.exits(), 0, "the signal route already owns the exit");
+    assert!(!gate.claim_signal_exit());
+}
+
+#[tokio::test]
+async fn gate_exit_blocks_later_signal_claim() {
+    let (gate, host, dyn_host, _clock) = new_gate();
+    let outcome = spawn_quit(&gate, &dyn_host, "attempt-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome, QuitOutcome::exiting(1));
+    assert_eq!(host.exits(), 1);
+
+    assert!(!gate.claim_signal_exit());
+    assert_eq!(host.exits(), 1);
+}
+
 mod force;

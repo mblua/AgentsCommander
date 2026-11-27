@@ -328,7 +328,7 @@ const NewTeamModal: Component<{
         </Show>
 
         <Show when={step() === 2}>
-          <div class="wizard-body">
+          <div class="wizard-body" data-ac-testid="newTeam.agents" data-ac-role="list">
             <Show when={createError()}>
               <div
                 class="new-agent-error"

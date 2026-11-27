@@ -2,6 +2,7 @@ import { Component, Show, createMemo, onMount } from "solid-js";
 import MarkdownIt from "markdown-it";
 import DOMPurify from "dompurify";
 import { homeStore } from "../stores/home";
+import HomeTutorials from "./HomeTutorials";
 
 const md = MarkdownIt({
   html: false,
@@ -37,6 +38,7 @@ const HomeView: Component = () => {
           ↻
         </button>
       </div>
+      <HomeTutorials />
       <Show when={homeStore.loading && homeStore.content === null}>
         <div class="home-status">Loading Home…</div>
       </Show>

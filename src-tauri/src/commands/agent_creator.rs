@@ -7,10 +7,16 @@ use std::path::PathBuf;
 use crate::config::agent_creation;
 
 /// Opens a native folder picker dialog and returns the selected path.
+/// `title` is optional; without it the window keeps the "new agent" title.
 #[tauri::command]
-pub async fn pick_folder(default_path: Option<String>) -> Result<Option<String>, String> {
-    let mut dialog =
-        rfd::AsyncFileDialog::new().set_title("Select parent folder for the new agent");
+pub async fn pick_folder(
+    default_path: Option<String>,
+    title: Option<String>,
+) -> Result<Option<String>, String> {
+    let title = title
+        .as_deref()
+        .unwrap_or("Select parent folder for the new agent");
+    let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
 
     if let Some(ref p) = default_path {
         let path = PathBuf::from(p);
