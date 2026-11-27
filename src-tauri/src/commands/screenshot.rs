@@ -174,6 +174,7 @@ impl crate::screenshot::ScreenshotHost for AppHandle {
     }
 
     fn open_overlay(&self, p: &crate::screenshot::OverlayWindowSpec) -> Result<(), String> {
+        use crate::commands::window::webview_data::InstanceDataDir;
         use crate::screenshot::PlacementFrame;
         use tauri::{WebviewUrl, WebviewWindowBuilder};
 
@@ -183,6 +184,7 @@ impl crate::screenshot::ScreenshotHost for AppHandle {
         let logical_x = p.logical_x;
         let logical_y = p.logical_y;
         let builder = WebviewWindowBuilder::new(self, &p.label, WebviewUrl::App(url.into()))
+            .instance_data_dir(crate::config::webview_data_dir())
             .title("Screenshot Capture")
             .decorations(false);
         // Tauri gates `transparent` behind `macos-private-api` on macOS; the

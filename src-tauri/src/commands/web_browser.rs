@@ -17,6 +17,8 @@ use tauri::{
     WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
+use crate::commands::window::webview_data::InstanceDataDir;
+
 mod mailbox;
 
 #[cfg(test)]
@@ -244,6 +246,7 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R>, Str
     let (load_app, title_app, popup_app) = (app.clone(), app.clone(), app.clone());
     let window =
         WebviewWindowBuilder::new(app, WEB_BROWSER_WINDOW_LABEL, WebviewUrl::External(url))
+            .instance_data_dir(crate::config::webview_data_dir())
             .title("Web Browser")
             .parent(&main)
             .map_err(|e| e.to_string())?

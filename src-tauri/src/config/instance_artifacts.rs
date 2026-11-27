@@ -88,10 +88,11 @@ pub(crate) use names::{
     SETTINGS_TMP_GLOB, SET_ASIDE_GLOB, SOURCE_CATALOG_BASE_LEDGER_NAME,
     SOURCE_CATALOG_LEDGER_ARTIFACT, SOURCE_CATALOG_LOCK_ARTIFACT,
     SOURCE_CATALOG_PERSONAL_LEDGER_NAME, SOURCE_CATALOG_PROJECT_LEDGER_NAME,
-    SOURCE_REGISTERED_INSTANCE_LEDGER_NAME, SOURCE_REGISTERED_INSTANCE_LOCK,
-    TELEGRAM_BRIDGE_LOG_FILE_NAME, TELEGRAM_DIAG_RAW_LOG_FILE_NAME,
+    SOURCE_REGISTERED_INSTANCE_LEDGER_NAME, SOURCE_REGISTERED_INSTANCE_LOCK, STDERR_LOG_FILE_NAME,
+    STDERR_PREV_LOG_FILE_NAME, TELEGRAM_BRIDGE_LOG_FILE_NAME, TELEGRAM_DIAG_RAW_LOG_FILE_NAME,
     TELEGRAM_DIAG_SENT_LOG_FILE_NAME, TEMP_ROOM_GROUPS_FILE_NAME, TEMP_ROOM_GROUPS_LOCK_NAME,
     UI_AUTOMATION_DIR_NAME, UNLEASHED_REPLICAS_FILE_NAME, UNLEASHED_REPLICAS_LOCK_NAME,
+    WEBVIEW_DATA_DIR_NAME,
 };
 #[cfg(test)]
 pub(crate) use names::{
@@ -767,6 +768,18 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: settings owner lifecycle lock; stable sidecar, never unlinked",
     },
     InstanceArtifact {
+        name: STDERR_LOG_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: GUI stderr of the current run (Linux), #5279",
+    },
+    InstanceArtifact {
+        name: STDERR_PREV_LOG_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: GUI stderr of the previous run (Linux), #5279",
+    },
+    InstanceArtifact {
         name: TELEGRAM_BRIDGE_LOG_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
@@ -814,6 +827,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: local web token",
+    },
+    InstanceArtifact {
+        name: WEBVIEW_DATA_DIR_NAME,
+        kind: ArtifactKind::Dir,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: this instance's own WebView data (localStorage, cache), #5279",
     },
     InstanceArtifact {
         name: GLOBAL_CONTEXT_TEMPLATE_FILENAME,

@@ -800,6 +800,13 @@ pub fn config_dir() -> Option<PathBuf> {
     instance_location().config_dir.clone()
 }
 
+/// #5279: `<config-dir>/webview-data`, this instance's own `WebView` data
+/// (`localStorage`, cache, cookies) on Linux and Windows. `None` in degraded
+/// mode; callers then keep the toolkit default.
+pub fn webview_data_dir() -> Option<PathBuf> {
+    config_dir().map(|dir| dir.join(instance_artifacts::WEBVIEW_DATA_DIR_NAME))
+}
+
 /// #1077: the authoritative ABSOLUTE instance base for portable project-path
 /// pairing, or `None` in any degraded mode. Consumed by the project codec, which
 /// canonicalizes it at its own boundary. Returns raw, uncanonicalized bytes.

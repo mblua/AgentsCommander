@@ -164,6 +164,8 @@ RUST_LOG=agentscommander=trace agentscommander.exe
 
 See [Log filtering](reference/log-filtering.md) for the five levels, the live selector, and precedence rules.
 
+Once after you upgrade to a version with per-instance WebView data (Linux and Windows), the first start cannot report the last run before the upgrade (a freeze marker is still reported), and the embedded web browser starts without cookies. The old shared folder (`~/.local/share/dev.agentscommander.app/` on Linux, `%LOCALAPPDATA%\dev.agentscommander.app\` on Windows) is not used and not deleted; older versions still use it.
+
 ---
 
 Still stuck? Open an [issue](https://github.com/mblua/AgentsCommander/issues) with:
@@ -171,3 +173,4 @@ Still stuck? Open an [issue](https://github.com/mblua/AgentsCommander/issues) wi
 - Your platform and route-specific AgentsCommander version/provenance evidence (installed npm or installer metadata, or the exact GitHub release tag, asset, and checksum)
 - The exact error message
 - A copy of `<config-dir>/app.log` from the configuration directory selected by that exact version (see [Log filtering](reference/log-filtering.md#where-logs-go))
+- On Linux, also `<config-dir>/stderr.log` and `stderr.prev.log` (see [Log filtering](reference/log-filtering.md#where-logs-go))
