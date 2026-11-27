@@ -92,6 +92,7 @@ pub(crate) use names::{
     TELEGRAM_BRIDGE_LOG_FILE_NAME, TELEGRAM_DIAG_RAW_LOG_FILE_NAME,
     TELEGRAM_DIAG_SENT_LOG_FILE_NAME, TEMP_ROOM_GROUPS_FILE_NAME, TEMP_ROOM_GROUPS_LOCK_NAME,
     UI_AUTOMATION_DIR_NAME, UNLEASHED_REPLICAS_FILE_NAME, UNLEASHED_REPLICAS_LOCK_NAME,
+    WEBVIEW_DATA_DIR_NAME,
 };
 #[cfg(test)]
 pub(crate) use names::{
@@ -814,6 +815,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: local web token",
+    },
+    InstanceArtifact {
+        name: WEBVIEW_DATA_DIR_NAME,
+        kind: ArtifactKind::Dir,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: this instance's own WebView data (localStorage, cache), #5279",
     },
     InstanceArtifact {
         name: GLOBAL_CONTEXT_TEMPLATE_FILENAME,

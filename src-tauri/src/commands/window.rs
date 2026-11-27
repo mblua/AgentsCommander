@@ -4,6 +4,8 @@
 //! owns `WatchersScopeState` (the watchers window scope). Detach/attach run through the
 //! `SelectionCoordinator`; settings persistence goes to `crate::config::settings`.
 
+pub(crate) mod webview_data;
+
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
@@ -16,6 +18,7 @@ use crate::session::selection::{
 };
 use crate::session::session::SessionStatus;
 use crate::DetachedSessionsState;
+use webview_data::InstanceDataDir;
 #[cfg(test)]
 #[derive(Default)]
 struct WindowDestroyAudit(std::sync::Mutex<Vec<String>>);
@@ -272,6 +275,7 @@ pub(crate) async fn execute_detach_transaction<R: tauri::Runtime>(
     let window = {
         let mut builder =
             WebviewWindowBuilder::new(transaction.app(), &label, WebviewUrl::App(url.into()))
+                .instance_data_dir(crate::config::webview_data_dir())
                 .title("Terminal [detached]")
                 .icon(icon)
                 .map_err(|error| error.to_string())?
@@ -679,6 +683,7 @@ pub async fn focus_main_window(app: AppHandle) -> Result<(), String> {
         "main",
         WebviewUrl::App("index.html?window=main".into()),
     )
+    .instance_data_dir(crate::config::webview_data_dir())
     .title(crate::config::profile::app_title())
     .icon(icon)
     .map_err(|e| e.to_string())?
@@ -719,6 +724,7 @@ pub async fn open_spec_board_window(app: AppHandle) -> Result<(), String> {
         "spec-board",
         WebviewUrl::App("index.html?window=spec-board".into()),
     )
+    .instance_data_dir(crate::config::webview_data_dir())
     .title(format!(
         "Spec Board - {}",
         crate::config::profile::app_title_suffix()
@@ -767,6 +773,7 @@ pub async fn open_resource_monitor_window(app: AppHandle) -> Result<(), String> 
         RESOURCE_MONITOR_WINDOW_LABEL,
         WebviewUrl::App("index.html?window=resource-monitor".into()),
     )
+    .instance_data_dir(crate::config::webview_data_dir())
     .title(format!(
         "Resource Monitor - {}",
         crate::config::profile::app_title_suffix()
@@ -959,6 +966,7 @@ pub async fn open_watchers_window<R: tauri::Runtime>(
         WATCHERS_WINDOW_LABEL,
         WebviewUrl::App(format!("index.html?window=watchers&sessionId={session_id}").into()),
     )
+    .instance_data_dir(crate::config::webview_data_dir())
     .title(format!(
         "Watcher Activity - {}",
         crate::config::profile::app_title_suffix()

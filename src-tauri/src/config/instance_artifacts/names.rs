@@ -150,6 +150,8 @@ pub(crate) const SETTINGS_BACKUP_ROTATION_GLOB: &str = SETTINGS_BACKUP_ROTATION_
 pub(crate) const SET_ASIDE_GLOB: &str = "*.deprecated-*.no-git";
 pub(crate) const TELEGRAM_BRIDGE_LOG_FILE_NAME: &str = "telegram-bridge.log";
 pub(crate) const UI_AUTOMATION_DIR_NAME: &str = "ui-automation";
+/// #5279: this instance's own `WebView` data directory (Linux, Windows).
+pub(crate) const WEBVIEW_DATA_DIR_NAME: &str = "webview-data";
 pub(crate) const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.root-agent.md";
 /// The live standalone global context template. Production retires it in place
 /// and never recreates it, and the entry holds the user's own bytes.

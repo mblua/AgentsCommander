@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+use crate::commands::window::webview_data::InstanceDataDir;
 use crate::config::settings::WindowGeometry;
 use crate::testability::window_placement::TestWindowPlacement;
 use crate::{
@@ -133,6 +134,7 @@ pub(super) fn create_main_window(
         "main",
         WebviewUrl::App("index.html?window=main".into()),
     )
+    .instance_data_dir(crate::config::webview_data_dir())
     .title(config::profile::app_title())
     .icon(icon)
     .map_err(|e| format!("Failed to set main window icon: {e}"))?
