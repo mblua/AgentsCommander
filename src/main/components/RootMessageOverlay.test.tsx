@@ -2,19 +2,12 @@
 // #5287 - ring and message bubble of the "one message to the Root Agent" tutorial.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const platform = vi.hoisted(() => ({ tauri: true }));
-vi.mock("../../shared/platform", () => ({
-  get isTauri() { return platform.tauri; },
-  get isBrowser() { return !platform.tauri; },
-  isWindows: false,
-}));
-
+import { SessionAPI } from "../../shared/ipc";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   baseSettings, click, installBrowserDomStubs, renderWithFakeTransport,
   resetUiStoresForTests, waitFor,
 } from "../../shared/testing/ui-harness";
-import { SessionAPI } from "../../shared/ipc";
 import {
   __disposeSettingsSubscriptionsForTests, settingsStore,
 } from "../../shared/stores/settings";
@@ -27,12 +20,21 @@ import {
 } from "../tutorials/root-agent-message";
 import TutorialLayer from "./TutorialLayer";
 
-const q = (id: string) => document.body.querySelector<HTMLElement>(`[data-ac-testid="${id}"]`);
-const must = (id: string) => {
+// vi.hoisted/vi.mock are hoisted above the imports by Vitest.
+const platform = vi.hoisted(() => ({ tauri: true }));
+vi.mock("../../shared/platform", () => ({
+  isWindows: false,
+  get isBrowser() { return !platform.tauri; },
+  get isTauri() { return platform.tauri; },
+}));
+
+const sel = (id: string) => `[data-ac-testid="${id}"]`;
+const q = (id: string) => document.body.querySelector<HTMLElement>(sel(id));
+function must(id: string): HTMLElement {
   const el = q(id);
-  if (!el) throw new Error(`Missing ${id}`);
-  return el;
-};
+  if (el) return el;
+  throw new Error(`Missing ${id}`);
+}
 const cleanups: Array<() => void> = [];
 let frames: FrameRequestCallback[] = [];
 const sessionSpies: Array<ReturnType<typeof vi.fn>> = [];
