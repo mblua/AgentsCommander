@@ -107,6 +107,8 @@ This deployment's selected machine-local application state. Never commit or shar
 | `.gitignore` | Ignore rules for this instance dir, for when the binary runs inside a git repo | `config/instance_gitignore.rs` |
 | `api-message-bus.sqlite3` (+ `-shm`, `-wal`) | SQLite database backing the API message bus | `api/message_store.rs` |
 | `app.log` | Main application log | `logging.rs` |
+| `stderr.log` | Linux only: this run's stderr when it would go nowhere (desktop launcher or background start, where stderr is `/dev/null` or closed). Starts with `=== AgentsCommander stderr pid=<pid> started=<time> version=<version> ===`. Holds toolkit messages (GTK, WebKitGTK, Wayland), crash and panic output, early errors, and helper-process stderr; log lines stay in `app.log`. Not used when stderr goes to a terminal, file, pipe or journal (including `tauri dev`). No size limit, not scrubbed for secrets | `logging.rs` |
+| `stderr.prev.log` | Linux only: the previous run's `stderr.log`. Only the current and previous runs are kept | `logging.rs` |
 | `api-audit.log` | API audit log | `api/audit.rs` |
 | `diag-raw.log`, `diag-sent.log` | Telegram Claude-watcher diagnostic captures | `telegram/claude_watcher/output.rs` |
 | `telegram-bridge.log` | Telegram bridge log | telegram logging |
@@ -115,6 +117,7 @@ This deployment's selected machine-local application state. Never commit or shar
 
 | Entry | What it is |
 |---|---|
+| `webview-data/` | Linux and Windows: this instance's WebView data (localStorage, cache, cookies), written by the window code (`commands/window/webview_data.rs`) through the toolkit. On Windows it is the WebView2 user data folder (`webview-data\EBWebView\`). Other builds use their own config dir, so they cannot read or delete it. macOS: unchanged, the WebView keeps its default location |
 | `instances/<uuid>/outbox/` | App outbox for the current run; AC removes stale instance dirs at boot |
 | `coding-agents/` | Instance catalog directory. For a project it is the legacy read and migration source, and since #1318 the managed catalog is the project's `.ac/coding-agents/`. With no registered project, startup seeds or refreshes a managed catalog here (`agents.10.default.json`, the `agents.50.personal.no-git.json` stub and the lock file); it never migrates a legacy file here |
 | `context-cache/` | Rendered session contexts (`ac-context-*.md`) |

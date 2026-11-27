@@ -82,11 +82,12 @@ set RUST_LOG=info,agentscommander_lib::pty=trace && agentscommander.exe
 | Channel | Destination |
 |---|---|
 | On-disk log file | `<config-dir>/app.log`, the persistent log. Rotated at 50 MB, keeping up to six files (`app.log` plus `app.log.1` through `app.log.5`). |
-| Live runtime logs | stderr of the AC process (visible if you launched from a terminal) |
+| Live runtime logs | stderr of the AC process. It shows in the terminal when you launch AC from one. |
 | In-app console capture | The DevTools console plus a rolling 500-entry in-memory buffer |
 | Debug logs export | `<config-dir>/debug-logs.txt`, written by the `save_debug_logs` IPC command with caller-supplied content (a console snapshot export). Not written automatically. |
+| Linux stderr file | `<config-dir>/stderr.log` (current run) and `stderr.prev.log` (previous run), when stderr would go nowhere. Toolkit messages, panics and early errors; log lines stay in `app.log`. No size limit, not scrubbed. |
 
-`<config-dir>` is the configuration directory selected by the exact binary version, the same directory as `settings.30.instance.no-git.json` (see the [settings reference](settings.md#file-location)). Attach `app.log` to any bug report.
+`<config-dir>` is the configuration directory selected by the exact binary version, the same directory as `settings.30.instance.no-git.json` (see the [settings reference](settings.md#file-location)). Attach `app.log` to any bug report. For a Linux crash report, also attach `stderr.log` and `stderr.prev.log`.
 
 ## See also
 
