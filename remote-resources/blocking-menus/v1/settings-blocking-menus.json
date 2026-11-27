@@ -44,6 +44,12 @@
         "notification": "claude lost the API connection mid-response; its response may be incomplete; check this terminal",
         "enabled": true,
         "capturedAgainst": "claude / Windows"
+      },
+      {
+        "pattern": "^\\s*Quick safety check:",
+        "notification": "claude is waiting for you to answer the folder-trust menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "claude / Linux"
       }
     ],
     "codex": [
@@ -110,6 +116,14 @@
         "notification": "pi is waiting for you to answer the folder-trust menu in this terminal",
         "enabled": true,
         "capturedAgainst": "pi 0.52 / Windows"
+      }
+    ],
+    "grok": [
+      {
+        "pattern": "^\\s*Do you trust the contents of this directory\\?",
+        "notification": "grok is waiting for you to answer the folder-trust menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "grok 1.0.92 / Linux"
       }
     ]
   },
