@@ -11,6 +11,8 @@ pub(crate) mod history_environment;
     reason = "`setup/` is outside #4906; this keeps its lints exactly as before the file-level warn"
 )]
 mod setup;
+#[cfg(unix)]
+mod signal_exit;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
@@ -165,7 +167,7 @@ fn manage_launch(
         .manage(l.response_close.clone())
         .manage(crate::pty::input_activity::new_typing_hold_state()) // Typing hold
         .manage(crate::session::warnings::new_session_warning_state())
-        .manage(Arc::new(QuitGate::new())) // Managed type: Arc<QuitGate>
+        .manage(Arc::clone(&l.setup_ctx.quit_gate_for_setup)) // Managed type: Arc<QuitGate>
         .setup(move |app| setup::setup(app, l.setup_ctx))
         // Every invoke that reaches the app handler is stamped here,
         // before dispatch: the only place in the process that sees the
@@ -312,6 +314,7 @@ fn prepare_launch(
         selection_coordinator_for_setup: for_setup.selection_coordinator_for_setup,
         resource_monitor_for_setup: for_setup.resource_monitor_for_setup,
         ui_automation_state_for_setup: for_setup.ui_automation_state_for_setup,
+        quit_gate_for_setup: Arc::new(QuitGate::new()),
     };
     let launch = Launch {
         boot,
