@@ -3,11 +3,11 @@
 use super::super::{
     agents_instance_path, apply_project_decode_to_value, capture_registered_profile_gate,
     captured_registered_profile_object, coding_agent_identity_with_physical_overlay,
-    ensure_project_paths_migrated_at_locked_path, legacy_profiles_shape_present,
-    physical_identity_violations, physical_profile_rows, prepare_registered_profile_owner,
-    production_instance_base, project_physical_profiles, read_agents_instance_file,
-    recheck_registered_profile_gate, refresh_agent_id_hashes, refresh_pair_id_hashes,
-    registered_profiles_for_read, repair_loaded_response_close_settings,
+    ensure_project_paths_migrated_at_locked_path, identity_violation_message,
+    legacy_profiles_shape_present, physical_identity_violations, physical_profile_rows,
+    prepare_registered_profile_owner, production_instance_base, project_physical_profiles,
+    read_agents_instance_file, recheck_registered_profile_gate, refresh_agent_id_hashes,
+    refresh_pair_id_hashes, registered_profiles_for_read, repair_loaded_response_close_settings,
     repair_loaded_room_idle_confirmation_settings, replace_project_projection,
     restore_agents_groups_for_redecode, restore_codex_home_carrier,
     restrict_split_profile_mutation_rows, retain_selected_legacy_profile_aliases,
@@ -393,9 +393,9 @@ pub(crate) fn validate_directional_prepared_identity(
     let proposed = project_physical_profiles(prepared, true)?;
     let old = physical_identity_violations(previous.as_object().unwrap(), false, true)?;
     let new = physical_identity_violations(proposed.as_object().unwrap(), false, true)?;
-    for (signature, (count, error)) in new {
-        if count > old.get(&signature).map_or(0, |(count, _)| *count) {
-            return Err(error.to_string());
+    for (signature, (count, error)) in &new {
+        if *count > old.get(signature).map_or(0, |(count, _)| *count) {
+            return Err(identity_violation_message(signature, error, &new));
         }
     }
     Ok(())

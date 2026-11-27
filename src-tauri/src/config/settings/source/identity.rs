@@ -17,6 +17,7 @@ use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 
 pub(crate) fn identity_preimage(parts: impl IntoIterator<Item = impl AsRef<str>>) -> String {
@@ -424,6 +425,44 @@ pub(crate) fn collect_profile_identity_violations(
     }
 }
 
+/// Plain text for the Settings UI. Only a new duplicate profile gets it; other codes
+/// keep the technical text. Letters come from every pair with the same group and preimage.
+pub(crate) fn identity_violation_message(
+    signature: &PhysicalIdentityViolation,
+    error: &IdentityValidationError,
+    violations: &BTreeMap<PhysicalIdentityViolation, (usize, IdentityValidationError)>,
+) -> String {
+    let PhysicalIdentityViolation::Profile([(group, _, preimage), _]) = signature else {
+        return error.to_string();
+    };
+    if error.code != IdentityValidationCode::DuplicateProfileIdentity {
+        return error.to_string();
+    }
+    let letters: BTreeSet<&str> = violations
+        .keys()
+        .filter_map(|key| match key {
+            PhysicalIdentityViolation::Profile(pair) => Some(pair),
+            PhysicalIdentityViolation::Configuration(_) => None,
+        })
+        .flatten()
+        .filter(|(other_group, _, other_preimage)| {
+            other_group == group && other_preimage == preimage
+        })
+        .map(|(_, letter, _)| letter.as_str())
+        .collect();
+    let letters: Vec<&str> = letters.into_iter().collect();
+    let listed = match letters.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => letters.join(", "),
+    };
+    format!(
+        "Coding agent '{}' has identical profiles {listed}. Each profile needs different \
+         additional arguments or environment variables: change them, or remove the extra \
+         profiles.",
+        error.existing_name
+    )
+}
+
 #[allow(
     clippy::unwrap_used,
     reason = "both projections always build a JSON object"
@@ -454,10 +493,11 @@ pub(crate) fn validate_physical_identity_delta(
         configurations_editable,
         profiles_editable,
     )?;
-    for (signature, (count, mut error)) in new {
-        if count > old.get(&signature).map_or(0, |(count, _)| *count) {
+    for (signature, (count, error)) in &new {
+        if *count > old.get(signature).map_or(0, |(count, _)| *count) {
+            let mut error = error.clone();
             // A prepended new row must still name an incumbent from BEFORE.
-            if let PhysicalIdentityViolation::Configuration(pair) = &signature {
+            if let PhysicalIdentityViolation::Configuration(pair) = signature {
                 let incumbent = before
                     .get("agents")
                     .and_then(Value::as_array)
@@ -474,7 +514,7 @@ pub(crate) fn validate_physical_identity_delta(
                     error.existing_name = incumbent.label;
                 }
             }
-            return Err(error.to_string());
+            return Err(identity_violation_message(signature, &error, &new));
         }
     }
     Ok(())

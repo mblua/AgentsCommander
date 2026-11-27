@@ -292,9 +292,10 @@ pub use source::{
     SourceSelectionTicket, SourceSnapshot,
 };
 use source::{
-    configuration_identity_debug, decode_registered_raw, physical_identity_violations, raw_entries,
-    refresh_pair_id_hashes, refresh_physical_pair_id_hashes, source_bytes_revision,
-    source_diagnostic, source_general_field_names, validate_physical_identity_delta,
+    configuration_identity_debug, decode_registered_raw, identity_violation_message,
+    physical_identity_violations, raw_entries, refresh_pair_id_hashes,
+    refresh_physical_pair_id_hashes, source_bytes_revision, source_diagnostic,
+    source_general_field_names, validate_physical_identity_delta,
 };
 #[cfg(test)]
 pub(crate) use source::{

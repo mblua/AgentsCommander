@@ -39,6 +39,7 @@ pub(crate) use identity::configuration_identity_debug;
 #[cfg(test)]
 pub(crate) use identity::identity_digest;
 pub use identity::identity_persisted_name;
+pub(crate) use identity::identity_violation_message;
 pub(crate) use identity::pair_identity;
 pub(crate) use identity::pair_identity_debug;
 pub(crate) use identity::physical_identity_violations;
