@@ -292,10 +292,9 @@ pub use source::{
     SourceSelectionTicket, SourceSnapshot,
 };
 use source::{
-    configuration_identity_debug, decode_registered_raw, identity_violation_message,
-    physical_identity_violations, raw_entries, refresh_pair_id_hashes,
-    refresh_physical_pair_id_hashes, source_bytes_revision, source_diagnostic,
-    source_general_field_names, validate_physical_identity_delta,
+    configuration_identity_debug, decode_registered_raw, physical_identity_violations, raw_entries,
+    refresh_pair_id_hashes, refresh_physical_pair_id_hashes, source_bytes_revision,
+    source_diagnostic, source_general_field_names, validate_physical_identity_delta,
 };
 #[cfg(test)]
 pub(crate) use source::{
@@ -307,13 +306,13 @@ pub(crate) use source::{
     SourceLocalInventory, SourceOriginalProofAggregate,
 };
 pub(crate) use source::{
-    execute_identity_reference_pair_guarded, identity_reference_pair_paths, list_active_sources,
-    pair_identity, pair_identity_debug, prepare_source_candidate_with_original_links,
-    publish_source_intent_with_validation, read_identity_reference_physical,
-    read_own_source_journal, read_source_snapshot, read_source_transition,
-    recover_source_target_packet, release_identity_reference_pair_guarded, source_complete_proof,
-    source_inventory_target, source_original_mappings, source_protocol_active,
-    source_transition_digest, source_transition_digest_bytes,
+    execute_identity_reference_pair_guarded, identity_reference_pair_paths,
+    identity_violation_message, list_active_sources, pair_identity, pair_identity_debug,
+    prepare_source_candidate_with_original_links, publish_source_intent_with_validation,
+    read_identity_reference_physical, read_own_source_journal, read_source_snapshot,
+    read_source_transition, recover_source_target_packet, release_identity_reference_pair_guarded,
+    source_complete_proof, source_inventory_target, source_original_mappings,
+    source_protocol_active, source_transition_digest, source_transition_digest_bytes,
     update_own_source_journal_with_validation, verify_completed_source_target,
     verify_identity_reference_pair_guarded, IdentityWriteLease, LegacyCompatibilityOrigin,
     OriginInputs, RawSourceSnapshot, SourceCoordinationError, SourceDiscoveredTargetEvidence,
