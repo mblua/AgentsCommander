@@ -20,6 +20,10 @@ import { projectStore } from "../../sidebar/stores/project";
 import { __resetHomeStoreForTests, homeStore } from "../stores/home";
 import { __resetTutorialStoreForTests, tutorialStore } from "../stores/tutorial";
 import {
+  __resetRootMessageStoreForTests, rootMessageStore,
+} from "../stores/root-message-tutorial";
+import { T_LIVE } from "../tutorials/root-agent-message";
+import {
   __resetTutorialProgressForTests, tutorialProgressStore,
 } from "../stores/tutorial-progress";
 import {
@@ -95,6 +99,7 @@ beforeEach(() => {
   __resetHomeStoreForTests();
   __resetTutorialStoreForTests();
   __resetTutorialProgressForTests();
+  __resetRootMessageStoreForTests();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -142,6 +147,14 @@ describe("TutorialHint", () => {
     target("actionBar.home");
     tutorialStore.start();
     await mountLayer();
+    expect(q("tutorial.hint")).toBeNull();
+  });
+  it("hidden while the root-message run is active (#5287)", async () => {
+    target("actionBar.home");
+    await mountLayer();
+    expect(q("tutorial.hint")).toBeTruthy();
+    rootMessageStore.start();
+    await flush();
     expect(q("tutorial.hint")).toBeNull();
   });
   it("hidden without the Home button", async () => {
@@ -202,6 +215,19 @@ describe("TutorialOverlay", () => {
     target("actionBar.menu");
     expect(await flush()).toBe(0);
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("#5287 root-message run: banner missing -> live updates after one frame", async () => {
+    const banner = target("rootAgent.banner");
+    banner.setAttribute("data-ac-state", "missing");
+    await mountLayer({ tutorialHintDismissed: true, teamTutorialCompleted: true });
+    expect(tutorialStore.active).toBe(false);
+    rootMessageStore.start();
+    await flush();
+    expect(must("rootMessage.bubble").textContent).not.toContain(T_LIVE);
+    banner.setAttribute("data-ac-state", "live"); // attribute-only change
+    expect(await flush()).toBe(1);
+    expect(must("rootMessage.bubble").textContent).toContain(T_LIVE);
   });
 
   it("a target missing for 2 s shows the hidden text, and returns", async () => {
