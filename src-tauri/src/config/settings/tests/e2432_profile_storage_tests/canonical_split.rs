@@ -618,3 +618,54 @@ fn split_inverse_shadowed_rows() {
     assert_eq!(std::fs::read(&inverse_path).unwrap(), stable);
     assert_eq!(std::fs::read(&inverse_agents).unwrap(), agents_bytes);
 }
+
+#[test]
+fn e2432_canonical_split_identical_profiles_reject_with_plain_message() {
+    let directional = tempfile::tempdir().unwrap();
+    let path = directional.path().join(SETTINGS_FILE_NAME);
+    let mut physical = serde_json::to_value(AppSettings::default()).unwrap();
+    let legacy = registered();
+    physical["agents"] = legacy["agents"].clone();
+    physical["codingAgentProfiles"] = legacy["codingAgentProfiles"].clone();
+    physical["rootToken"] = json!("directional-token");
+    std::fs::write(&path, serde_json::to_vec(&physical).unwrap()).unwrap();
+    let overlay = directional.path().join(SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
+    let mut overlay_rows = legacy["agents"].clone();
+    overlay_rows[0]["baseCommand"] = json!("overlay-command");
+    overlay_rows[1]["baseCommand"] = json!("overlay-second");
+    std::fs::write(
+        &overlay,
+        serde_json::to_vec(&json!({"agents":overlay_rows})).unwrap(),
+    )
+    .unwrap();
+    let _ = load_settings_from_path(&path);
+    std::fs::remove_file(&overlay).unwrap();
+    let sidecar = agents_instance_path(&path);
+    let stored: Value = serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+    assert!(stored.get("agents").is_none());
+    let mut draft = load_settings_for_cli_from_path(&path);
+    let one = draft
+        .coding_agent_profiles
+        .profiles_by_agent
+        .get_mut("one")
+        .unwrap();
+    let cell = one["B"].clone();
+    one.insert("A".into(), cell.clone());
+    one.insert("C".into(), cell);
+    let before = (
+        std::fs::read(&path).unwrap(),
+        std::fs::read(&sidecar).unwrap(),
+    );
+    let error = save_settings_to_path_preserving_project_paths(&draft, &path).unwrap_err();
+    assert_eq!(
+        error,
+        "Coding agent 'One' has identical profiles A, B and C. Each profile needs \
+         different additional arguments or environment variables: change them, or remove \
+         the extra profiles."
+    );
+    let after = (
+        std::fs::read(&path).unwrap(),
+        std::fs::read(&sidecar).unwrap(),
+    );
+    assert_eq!(after, before);
+}
