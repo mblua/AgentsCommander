@@ -47,6 +47,7 @@ pub use identity::refresh_agent_id_hashes;
 pub(crate) use identity::refresh_pair_id_hashes;
 pub(crate) use identity::refresh_physical_pair_id_hashes;
 pub(crate) use identity::source_transition_digest;
+pub(crate) use identity::validate_configuration_identity_delta;
 pub use identity::validate_identity_snapshot;
 #[cfg(test)]
 pub(crate) use identity::validate_identity_snapshot_with_digest;

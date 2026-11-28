@@ -210,7 +210,7 @@ pub enum IdentityValidationCode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, thiserror::Error)]
-#[error("{code:?}: existing Coding Agent '{existing_name}'")]
+#[error("{}", self.message())]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityValidationError {
     pub code: IdentityValidationCode,
@@ -218,6 +218,78 @@ pub struct IdentityValidationError {
     pub entry_hint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requested_profile: Option<String>,
+}
+
+impl IdentityValidationError {
+    fn message(&self) -> String {
+        let name = &self.existing_name;
+        match self.code {
+            IdentityValidationCode::DuplicateConfigurationIdentity => format!(
+                "DuplicateConfigurationIdentity: Coding Agent '{name}' has the same command and \
+                 envs (ignoring order, case and spaces), so both would share the same profiles. \
+                 Change the command or the envs."
+            ),
+            code => format!("{code:?}: existing Coding Agent '{name}'"),
+        }
+    }
+}
+
+/// Refuse rows that join a configuration identity; pre-existing duplicates stay allowed.
+pub(crate) fn validate_configuration_identity_delta(
+    before: &[AgentConfig],
+    after: &[AgentConfig],
+) -> Result<(), String> {
+    let kept: HashSet<(String, String)> = before
+        .iter()
+        .map(|agent| (agent.id.clone(), hash_of(agent)))
+        .collect();
+    let mut groups: Vec<(String, Vec<&AgentConfig>)> = Vec::new();
+    for agent in after {
+        let digest = hash_of(agent);
+        match groups.iter_mut().find(|(key, _)| *key == digest) {
+            Some((_, rows)) => rows.push(agent),
+            None => groups.push((digest, vec![agent])),
+        }
+    }
+    for (digest, group) in groups.iter().filter(|(_, rows)| rows.len() > 1) {
+        let Some(entry) = group
+            .iter()
+            .rev()
+            .find(|agent| !kept.contains(&(agent.id.clone(), digest.clone())))
+        else {
+            continue;
+        };
+        let existing = incumbent_label(group, &kept).unwrap_or_else(|| group[0].label.clone());
+        let named = group
+            .iter()
+            .find(|agent| kept.contains(&(agent.id.clone(), digest.clone())))
+            .unwrap_or(&group[0]);
+        let same = configuration_identity_preimage(&entry.command, &entry.envs)
+            == configuration_identity_preimage(&named.command, &named.envs);
+        return Err(IdentityValidationError {
+            code: if same {
+                IdentityValidationCode::DuplicateConfigurationIdentity
+            } else {
+                IdentityValidationCode::IdentityHashCollision
+            },
+            existing_name: existing,
+            entry_hint: entry.id.clone(),
+            requested_profile: None,
+        }
+        .to_string());
+    }
+    Ok(())
+}
+
+fn incumbent_label(group: &[&AgentConfig], kept: &HashSet<(String, String)>) -> Option<String> {
+    group
+        .iter()
+        .find(|agent| kept.contains(&(agent.id.clone(), hash_of(agent))))
+        .map(|agent| agent.label.clone())
+}
+
+fn hash_of(agent: &AgentConfig) -> String {
+    configuration_identity(&agent.command, &agent.envs)
 }
 
 /// Validate one physical source at a time; this never compares other sources.

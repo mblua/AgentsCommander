@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+use super::super::source::validate_configuration_identity_delta;
 use super::super::{
     agents_instance_path, apply_project_decode_to_value, capture_registered_profile_gate,
     captured_registered_profile_object, coding_agent_identity_with_physical_overlay,
@@ -15,8 +16,8 @@ use super::super::{
     select_project_source_at_locked_path, selected_registered_profile_owner,
     validate_physical_identity_delta, validate_registered_overlay_profile_edits,
     validate_split_canonical_profile_edits, write_identity_rows, write_pre_384_v1_backup,
-    AppSettings, MainWindowPlacementWriteMode, ProjectWriteMode, RegisteredProfileDocument,
-    StartupAgentRows, TerminalSnapshotGateWriteMode,
+    AgentConfig, AppSettings, MainWindowPlacementWriteMode, ProjectWriteMode,
+    RegisteredProfileDocument, StartupAgentRows, TerminalSnapshotGateWriteMode,
 };
 use super::{
     apply_registered_main_disk_fields, preflight_duplicate_agents,
@@ -432,6 +433,22 @@ fn prepare_save(
     };
     let (initial_disk, physical_sidecar, profile_gate) =
         capture_save_sources(path, disk_gate_stage)?;
+    if matches!(mode, ProjectWriteMode::Preserve)
+        && !settings.local_overlay_state.owns_top_level("agents")
+    {
+        let rows = physical_sidecar
+            .as_ref()
+            .and_then(|sidecar| sidecar.get("agents"))
+            .or_else(|| initial_disk.as_ref().and_then(|main| main.get("agents")));
+        let before: Vec<AgentConfig> = rows
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|raw| serde_json::from_value(raw.clone()).ok())
+            .collect();
+        validate_configuration_identity_delta(&before, &settings.agents)
+            .map_err(&reject_profiles)?;
+    }
     let (
         profile_before,
         (directional_split, profiles_unprotected, profiles_in_sidecar, consolidate_legacy),

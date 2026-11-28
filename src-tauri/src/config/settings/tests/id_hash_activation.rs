@@ -346,13 +346,34 @@ fn e2432_duplicate_rows_keep_existing_general_save_control() {
 
 #[test]
 fn e2432_id_hash_activation_anagram_alias_is_source_local() {
-    let (_temp, path) = hash_activation_seed(true);
+    let (temp, path) = hash_activation_seed(true);
     let mut settings = super::super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
     let mut alias = settings.agents[0].clone();
     alias.id = "beta".into();
     alias.label = "Alias".into();
     alias.command = "eduacl".into();
     settings.agents.push(alias);
+    let files = hash_activation_files(temp.path());
+    let error = super::super::save_settings_to_path_preserving_project_paths(&settings, &path)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("DuplicateConfigurationIdentity"), "{error}");
+    assert!(error.contains("'Incumbent'"), "{error}");
+    assert_eq!(hash_activation_files(temp.path()), files);
+    // #5288: the alias reaches disk only outside save, as a pre-existing duplicate.
+    let sidecar = b3_sidecar_path(temp.path());
+    let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+    let mut row = raw["agents"][0].clone();
+    row["id"] = serde_json::json!("beta");
+    row["label"] = serde_json::json!("Alias");
+    for key in ["command", "baseCommand"] {
+        if row.get(key).is_some() {
+            row[key] = serde_json::json!("eduacl");
+        }
+    }
+    raw["agents"].as_array_mut().unwrap().push(row);
+    b3_write(&sidecar, &raw);
+    let settings = super::super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
     let written =
         super::super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
     assert_eq!(written.agents[0].id_hash, written.agents[1].id_hash);

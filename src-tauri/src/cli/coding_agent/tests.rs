@@ -396,3 +396,71 @@ fn p02_direct_and_queued_updates_share_canonical_serializer_and_effect() {
         serde_json::to_value(queued.agent).unwrap()
     );
 }
+
+// ---- #5288: no new shared configuration identity -------------------------
+
+fn identity_seed(dir: &Path) -> (std::path::PathBuf, AppSettings) {
+    let path = dir.join("settings.json");
+    let settings = AppSettings {
+        agents: vec![serde_json::from_value(
+            json!({"id":"alpha","label":"Incumbent","color":"#123456","command":"claude"}),
+        )
+        .unwrap()],
+        ..AppSettings::default()
+    };
+    save_at(&settings, &path).unwrap();
+    let loaded = crate::config::settings::load_settings_from_path(&path);
+    (path, loaded)
+}
+
+fn identity_add(id: &str, command: &str, env: &[&str]) -> CodingAgentOp {
+    let mut agent: crate::config::settings::AgentConfig =
+        serde_json::from_value(json!({"id":id,"label":id,"color":"#654321","command":command}))
+            .unwrap();
+    let env: Vec<String> = env.iter().map(|row| row.to_string()).collect();
+    agent.envs = parse_env_flags(&env).unwrap();
+    CodingAgentOp::Add { agent }
+}
+
+const SHARED_IDENTITY_TEXT: &str = "DuplicateConfigurationIdentity: Coding Agent 'Incumbent' has \
+    the same command and envs (ignoring order, case and spaces), so both would share the same \
+    profiles. Change the command or the envs.";
+
+#[test]
+fn cli_add_refuses_existing_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, settings) = identity_seed(dir.path());
+    let before = std::fs::read(&path).unwrap();
+    let op = identity_add("beta", "claude", &[]);
+    let error = apply_and_save_direct(settings, &op, |s| save_at(s, &path)).unwrap_err();
+    assert!(error.contains(SHARED_IDENTITY_TEXT), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn cli_update_refuses_existing_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, settings) = identity_seed(dir.path());
+    let op = identity_add("beta", "codex", &[]);
+    let settings = apply_and_save_direct(settings, &op, |s| save_at(s, &path)).unwrap();
+    assert_eq!(settings.agent.unwrap().id, "beta");
+    let settings = crate::config::settings::load_settings_from_path(&path);
+    let before = std::fs::read(&path).unwrap();
+    let op: CodingAgentOp =
+        serde_json::from_value(json!({"kind":"update","id":"beta","patch":{"command":"claude"}}))
+            .unwrap();
+    let error = apply_and_save_direct(settings, &op, |s| save_at(s, &path)).unwrap_err();
+    assert!(error.contains(SHARED_IDENTITY_TEXT), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn cli_add_same_command_other_envs_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, settings) = identity_seed(dir.path());
+    let op = identity_add("beta", "claude", &["RTK_DB_PATH=x"]);
+    apply_and_save_direct(settings, &op, |s| save_at(s, &path)).unwrap();
+    let reload = crate::config::settings::load_settings_from_path(&path);
+    assert_eq!(reload.agents.len(), 2);
+    assert_ne!(reload.agents[0].id_hash, reload.agents[1].id_hash);
+}
