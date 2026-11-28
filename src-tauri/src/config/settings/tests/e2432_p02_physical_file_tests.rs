@@ -409,7 +409,8 @@ fn identity_file(registered: bool, rows: &[(&str, &str, &str)]) -> Value {
         })
         .collect();
     if registered {
-        json!({"agents":agents,"codingAgentProfiles":{"profilesByAgent":{},"profileLabelsByAgent":{}}})
+        let profiles = json!({"profilesByAgent":{},"profileLabelsByAgent":{}});
+        json!({"agents":agents,"codingAgentProfiles":profiles})
     } else {
         json!({"schemaVersion":1,"agents":agents})
     }
