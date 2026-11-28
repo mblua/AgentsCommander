@@ -53,14 +53,10 @@ import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
 import AgentHelpTipsModal from "./AgentHelpTipsModal";
 import {
-  EMPTY_AGENT_HELP_OVERLAY,
-  docsUrlFor,
-  loadAgentHelpOverlay,
-  paramsExampleFor,
-  resolveAgentHelpEntry,
-  resolveAgentHelpGeneral,
-  type AgentHelpOverlay,
+  EMPTY_AGENT_HELP_OVERLAY, docsUrlFor, loadAgentHelpOverlay, paramsExampleFor,
+  resolveAgentHelpEntry, resolveAgentHelpGeneral, type AgentHelpOverlay,
 } from "../../shared/agent-help";
+import { SharedIdentityWarning } from "./settings/SharedIdentityWarning";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import {
   GENERAL_CATEGORIES,
@@ -3733,6 +3729,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           </div>
           </div>
         </div>
+        <SharedIdentityWarning agents={displayedAgents()} index={i()} />
 
         <Show when={expanded()}>
           <div class="settings-agent-editor" data-ac-testid={`settings.agentRow.${i()}.editor`}>

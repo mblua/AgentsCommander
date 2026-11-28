@@ -394,3 +394,76 @@ fn e2432_p02_registered_atomic_failure_retains_actual_revision_and_owner() {
     assert_eq!(actual.revision, before.revision);
     assert_eq!(actual.rows[0].raw["label"], json!("Own"));
 }
+
+// #5288: an agent-file edit never adds a row to a shared configuration identity.
+fn identity_file(registered: bool, rows: &[(&str, &str, &str)]) -> Value {
+    let key = if registered { "id" } else { "key" };
+    let agents: Vec<Value> = rows
+        .iter()
+        .map(|(id, label, command)| {
+            let mut row = json!({key:id,"label":label,"color":"blue","baseCommand":command});
+            if !registered {
+                row["description"] = json!("d");
+            }
+            row
+        })
+        .collect();
+    if registered {
+        let profiles = json!({"profilesByAgent":{},"profileLabelsByAgent":{}});
+        json!({"agents":agents,"codingAgentProfiles":profiles})
+    } else {
+        json!({"schemaVersion":1,"agents":agents})
+    }
+}
+
+fn identity_upsert(hint: &str, patch: Value) -> AgentFileEdits {
+    edits(json!({"rows":[{"entryHint":hint,"action":"upsert","patch":patch}],"profileSets":[]}))
+}
+
+#[test]
+fn agent_file_edit_refuses_new_identity_duplicate() {
+    for registered in [true, false] {
+        let raw = identity_file(
+            registered,
+            &[("one", "One", "tool"), ("two", "Two", "other")],
+        );
+        let mut patch = json!({"label":"Three","color":"blue","baseCommand":"tool"});
+        if !registered {
+            patch["description"] = json!("d");
+        }
+        let added = identity_upsert("three", patch);
+        let error = prepare_agent_file_edits(&raw, registered, &added).unwrap_err();
+        assert!(error.contains("DuplicateConfigurationIdentity"), "{error}");
+        assert!(error.contains("'One'"), "{error}");
+        let edited = identity_upsert("two", json!({"baseCommand":"TO OL"}));
+        let error = prepare_agent_file_edits(&raw, registered, &edited).unwrap_err();
+        assert!(error.contains("'One'"), "{error}");
+    }
+}
+
+#[test]
+fn agent_file_edit_earlier_row_names_later() {
+    for registered in [true, false] {
+        let raw = identity_file(
+            registered,
+            &[("one", "One", "tool"), ("two", "Two", "other")],
+        );
+        let edited = identity_upsert("one", json!({"baseCommand":"other"}));
+        let error = prepare_agent_file_edits(&raw, registered, &edited).unwrap_err();
+        assert!(error.contains("'Two'"), "{error}");
+        assert!(!error.contains("'One'"), "{error}");
+    }
+}
+
+#[test]
+fn agent_file_edit_keeps_existing_duplicates() {
+    for registered in [true, false] {
+        let raw = identity_file(
+            registered,
+            &[("one", "One", "tool"), ("two", "Two", "tool")],
+        );
+        let edited = identity_upsert("two", json!({"label":"Renamed"}));
+        let after = prepare_agent_file_edits(&raw, registered, &edited).unwrap();
+        assert_eq!(after["agents"][1]["label"], "Renamed");
+    }
+}

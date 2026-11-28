@@ -862,7 +862,7 @@ fn e2432_p02_new_catalog_row_requires_complete_owned_fields() {
     let complete: AgentFileEdits =
         serde_json::from_value(json!({"rows":[{"entryHint":"added","acti\
         on":"upsert","patch":{"label":"Added","description":"Own","color":"blue","baseCommand":"cat\
-        alog-tool"}}],"profileSets":[]}))
+        alog-tool-2"}}],"profileSets":[]}))
         .unwrap();
     let committed = f
         .owner
@@ -879,7 +879,7 @@ fn e2432_p02_new_catalog_row_requires_complete_owned_fields() {
     assert_eq!(snapshot.rows[1].entry_hint, "added");
     assert_eq!(
         snapshot.rows[1].base_hash,
-        Some(configuration_identity("catalog-tool", &[]))
+        Some(configuration_identity("catalog-tool-2", &[]))
     );
     let stored: Value = serde_json::from_slice(&std::fs::read(&f.catalog).unwrap()).unwrap();
     assert_eq!(stored["agents"][0]["unknown"], json!([null]));

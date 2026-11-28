@@ -246,6 +246,31 @@ fn split_new_row_alias_edit(path: &std::path::Path) {
     third.label = "Three".into();
     third.command = "tool".into();
     new_row.agents.push(third);
+    let sidecar = agents_instance_path(directional_path);
+    let (before_main, before_sidecar) = (
+        std::fs::read(directional_path).unwrap(),
+        std::fs::read(&sidecar).unwrap(),
+    );
+    let error = save_settings_to_path_preserving_project_paths(&new_row, directional_path)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("'Two'"), "{error}");
+    assert_eq!(std::fs::read(directional_path).unwrap(), before_main);
+    assert_eq!(std::fs::read(&sidecar).unwrap(), before_sidecar);
+    // #5288: the alias row reaches disk only outside save, as a pre-existing duplicate.
+    let owner = if serde_json::from_slice::<Value>(&before_sidecar).unwrap()["agents"].is_array() {
+        sidecar.clone()
+    } else {
+        directional_path.to_path_buf()
+    };
+    let mut raw: Value = serde_json::from_slice(&std::fs::read(&owner).unwrap()).unwrap();
+    let mut row = raw["agents"][1].clone();
+    row["id"] = json!("three");
+    row["label"] = json!("Three");
+    row["baseCommand"] = json!("tool");
+    raw["agents"].as_array_mut().unwrap().push(row);
+    std::fs::write(&owner, serde_json::to_vec(&raw).unwrap()).unwrap();
+    let new_row = load_settings_for_cli_from_path(directional_path);
     let attached =
         save_settings_to_path_preserving_project_paths(&new_row, directional_path).unwrap();
     assert_eq!(
@@ -358,7 +383,7 @@ fn split_complete_target_edits(path: &std::path::Path, sidecar: &std::path::Path
     assert!(
         save_settings_to_path_preserving_project_paths(&divergent, directional_path)
             .unwrap_err()
-            .contains("sourceProfileConflict")
+            .contains("DuplicateConfigurationIdentity")
     );
     assert_eq!(std::fs::read(directional_path).unwrap(), before_main);
     assert_eq!(std::fs::read(directional_sidecar).unwrap(), before_sidecar);

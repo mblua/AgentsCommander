@@ -7,6 +7,7 @@
 
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+use super::super::super::source::validate_configuration_identity_delta;
 use super::super::super::{
     list_active_sources, source_bytes_revision, source_diagnostic, write_value_atomic_labeled,
     AppSettings, OperationOutcome, SettingsOperationGuard, SettingsPublisher, SettingsState,
@@ -56,6 +57,8 @@ pub(crate) fn prepare_agent_file_edits(
         apply_profile_slot_edits(owner, slots)?;
     }
     let (agents, profiles) = agent_file_decode(&canonical, registered)?;
+    let (before_agents, _) = agent_file_decode(before, registered)?;
+    validate_configuration_identity_delta(&before_agents, &agents)?;
     validate_agent_commands(&AppSettings {
         agents,
         coding_agent_profiles: profiles,

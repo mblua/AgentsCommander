@@ -15,6 +15,7 @@ mod app_defaults_4766;
 mod e2432_n1_and_round7;
 mod e2432_round7_o2_fallback;
 mod id_hash_activation;
+mod identity_uniqueness_5288;
 mod issue_3047_pair;
 mod legacy_profiles_and_agent_commands;
 mod lock_debug_and_id_hash_schema;
