@@ -411,7 +411,8 @@ fn id_hash_activation_profile_delta_preserves_history_and_rejects_new_pair() {
     let sidecar = b3_sidecar_path(temp.path());
     let mut raw = serde_json::Value::Object(b3_object(&sidecar));
     raw["codingAgentProfiles"]["profilesByAgent"]["alpha"] = serde_json::json!({
-        "A":{"command":"--one"},"B":{"command":"--one"},"C":{"command":"--two"}
+        "A":{"command":"--one"},"B":{"command":"--one"},"C":{"command":"--two"},
+        "D":{"command":"--three"},"E":{"command":"--three"}
     });
     let mut other = raw["agents"][0].clone();
     other["id"] = serde_json::json!("beta");
@@ -452,7 +453,12 @@ fn id_hash_activation_profile_delta_preserves_history_and_rejects_new_pair() {
     let before = hash_activation_files(temp.path());
     let error =
         super::super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap_err();
-    assert!(error.contains("DuplicateProfileIdentity") && error.contains("Renamed"));
+    assert_eq!(
+        error,
+        "Coding agent 'Renamed' has identical profiles A, B and C. Each profile needs \
+         different additional arguments or environment variables: change them, or remove \
+         the extra profiles."
+    );
     assert_eq!(hash_activation_files(temp.path()), before);
     loaded
         .coding_agent_profiles
@@ -466,6 +472,56 @@ fn id_hash_activation_profile_delta_preserves_history_and_rejects_new_pair() {
         .get_mut("alpha")
         .unwrap()
         .remove("C");
+    assert!(super::super::save_settings_to_path_preserving_project_paths(&loaded, &path).is_ok());
+}
+
+#[test]
+fn id_hash_activation_identical_empty_profiles_reject_with_plain_message() {
+    let (temp, path) = hash_activation_seed(true);
+    let sidecar = b3_sidecar_path(temp.path());
+    let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+    raw["codingAgentProfiles"]["profilesByAgent"]["alpha"] =
+        serde_json::json!({"A":{"command":""}});
+    b3_write(&sidecar, &raw);
+    let mut loaded = super::super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+    assert!(super::super::save_settings_to_path_preserving_project_paths(&loaded, &path).is_ok());
+    let expected = |letters: &str| {
+        format!(
+            "Coding agent 'Incumbent' has identical profiles {letters}. Each profile needs \
+             different additional arguments or environment variables: change them, or \
+             remove the extra profiles."
+        )
+    };
+    let mut error = String::new();
+    for (letter, letters) in [("B", "A and B"), ("C", "A, B and C")] {
+        let cells = loaded
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("alpha")
+            .unwrap();
+        let cell = cells["A"].clone();
+        cells.insert(letter.into(), cell);
+        let before = hash_activation_files(temp.path());
+        error = super::super::save_settings_to_path_preserving_project_paths(&loaded, &path)
+            .unwrap_err();
+        assert_eq!(error, expected(letters));
+        assert_eq!(hash_activation_files(temp.path()), before);
+    }
+    for code in [
+        "DuplicateProfileIdentity",
+        "disk_settings_validation_rejected",
+        "preserve_disk_gate",
+        "pid1:",
+    ] {
+        assert!(!error.contains(code), "{code} in {error}");
+    }
+    let cells = loaded
+        .coding_agent_profiles
+        .profiles_by_agent
+        .get_mut("alpha")
+        .unwrap();
+    cells.remove("B");
+    cells.remove("C");
     assert!(super::super::save_settings_to_path_preserving_project_paths(&loaded, &path).is_ok());
 }
 
